@@ -1,0 +1,19 @@
+# Build artifacts -- install.sh builds locally via `go build` when no
+# prebuilt binary is present; binaries aren't checked in.
+dist/
+/claude-burst
+
+# macOS
+.DS_Store
+
+# Local tooling state, not part of the project
+.omc/
+.claude/
+
+# Local runtime config/state/secrets, in case ever created inside this
+# directory instead of ~/.config/claude-burst/ (the real location).
+config.json
+state.json
+metrics.jsonl
+*.log
+.env
