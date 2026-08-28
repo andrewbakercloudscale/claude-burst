@@ -62,7 +62,11 @@ func rewriteModel(body []byte, modelMap map[string]string) ([]byte, string, erro
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	if err := dec.Decode(&v); err != nil {
-		return nil, "", fmt.Errorf("request is not JSON: %w", err)
+		// Deliberately not %w-wrapping err: Go's JSON decode errors quote
+		// the offending byte from the input, which would otherwise put a
+		// fragment of the request body into the log and metrics.jsonl,
+		// breaking the metadata-only logging guarantee.
+		return nil, "", fmt.Errorf("request body is not valid JSON")
 	}
 	model, _ := v["model"].(string)
 	if model == "" {

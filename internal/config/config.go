@@ -197,7 +197,11 @@ func Load() (Config, error) {
 	if cfg.Listen == "" {
 		cfg.Listen = "127.0.0.1:7777"
 	}
-	if cfg.MaxRequestMB <= 0 {
+	if cfg.MaxRequestMB <= 0 || cfg.MaxRequestMB > 1024 {
+		// The upper bound also guards against int64 overflow in
+		// MaxRequestMB * 1024 * 1024 turning negative and rejecting every
+		// request -- a self-inflicted denial of service from a garbage
+		// config value.
 		cfg.MaxRequestMB = 128
 	}
 	if cfg.ResetGraceSeconds < 0 {

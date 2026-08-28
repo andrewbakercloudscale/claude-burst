@@ -3,9 +3,11 @@ package router
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 )
 
@@ -51,7 +53,17 @@ func (p *PassthroughProvider) Prepare(ctx context.Context, in *http.Request, bod
 func buildForwardRequest(ctx context.Context, base *url.URL, in *http.Request, body []byte, stripInboundAuth bool) (*http.Request, error) {
 	u := *base
 	basePath := strings.TrimRight(u.Path, "/")
-	u.Path = basePath + in.URL.Path
+	// path.Join cleans ".."/"." segments before they ever reach the
+	// credentialed upstream. Confirm the cleaned result still lands under
+	// basePath rather than trusting the join alone: an inbound path with
+	// enough ".." segments to fully escape basePath would otherwise land on
+	// an unintended path at the SAME host, which for the Bedrock provider
+	// still carries its injected credential.
+	joined := path.Join(basePath, in.URL.Path)
+	if basePath != "" && joined != basePath && !strings.HasPrefix(joined, basePath+"/") {
+		return nil, fmt.Errorf("request path %q escapes base path %q", in.URL.Path, basePath)
+	}
+	u.Path = joined
 	u.RawQuery = in.URL.RawQuery
 	var rd io.Reader
 	if body != nil {

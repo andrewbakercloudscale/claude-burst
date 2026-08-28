@@ -6,6 +6,8 @@ Claude Burst is a Mac-only local gateway for Claude Code. It keeps your normal C
 
 This is an experimental MVP. Test it on a non-critical development account before any broader rollout.
 
+**No Claude subscription?** Claude Burst also supports a direct, metered Anthropic API key as the primary route instead of subscription passthrough (see [No-subscription setup](#no-subscription-setup-metered-api-key-primary) below). In that mode there's no included allowance to burst from, so failover to Bedrock is triggered by sustained failures instead of subscription-exhaustion headers — both routes are metered, so a single transient error doesn't flip traffic to a second paid provider.
+
 ## Why this exists
 
 Anthropic exposes materially different commercial models for access to the same Claude model families:
@@ -65,8 +67,9 @@ A metrics-write failure (disk full, permissions, etc.) is logged but never fails
 ## Requirements
 
 - macOS on Apple Silicon or Intel
-- Claude Code already installed and logged into the intended Pro/Max account
-- Amazon Bedrock access to the Claude models you want to use
+- Go 1.23+ (there's no prebuilt binary in the repo; `install.sh` builds one locally)
+- Either: Claude Code already installed and logged into the intended Pro/Max account (subscription mode), **or** a metered Anthropic API key (no-subscription mode)
+- Amazon Bedrock access to the Claude models you want to use, for the Bedrock secondary
 - A Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`
 
 The MVP uses Amazon Bedrock's Anthropic-compatible Messages API with a Bedrock API key because that preserves the Anthropic request/stream format and keeps the router small. IAM/SigV4/SSO credential support is a sensible next step.
@@ -74,7 +77,7 @@ The MVP uses Amazon Bedrock's Anthropic-compatible Messages API with a Bedrock A
 ## Install
 
 ```bash
-unzip claude-burst.zip
+git clone https://github.com/andrewbaker/claude-burst.git
 cd claude-burst
 
 export AWS_REGION=us-east-1
@@ -85,15 +88,33 @@ export AWS_BEARER_TOKEN_BEDROCK='your-bedrock-api-key'
 
 The installer:
 
-- installs the correct prebuilt Mac binary into `~/.local/bin/claude-burst`
+- builds `claude-burst` locally (`go build`) and installs it into `~/.local/bin/claude-burst`
 - stores the Bedrock key in macOS Keychain when `AWS_BEARER_TOKEN_BEDROCK` is present
 - writes the initial configuration
 - updates `~/.claude/settings.json` with only `ANTHROPIC_BASE_URL=http://127.0.0.1:7777`
-- does **not** add an Anthropic API key or gateway credential, so the saved Max login stays active
+- does **not** add an Anthropic credential of its own — in subscription mode this keeps the saved Max login active; in no-subscription mode, Claude Code's own `ANTHROPIC_API_KEY` (set separately, see below) is what gets forwarded
 - creates and starts a macOS LaunchAgent
 - adds `~/.local/bin` to `~/.zprofile` if required
 
 Restart Claude Code after installation.
+
+### No-subscription setup (metered API key primary)
+
+If you don't have a Claude Pro/Max subscription, use a direct Anthropic API key as the primary route instead of subscription passthrough:
+
+```bash
+export AWS_REGION=us-east-1
+export AWS_BEARER_TOKEN_BEDROCK='your-bedrock-api-key'
+
+./install.sh
+claude-burst keychain-set
+claude-burst configure --primary anthropic-api-key --secondary bedrock --region us-east-1
+claude-burst enable
+```
+
+Then set `ANTHROPIC_API_KEY` in Claude Code's own settings env (e.g. the `env` block in `~/.claude/settings.json`, alongside `ANTHROPIC_BASE_URL`) — **not** in claude-burst's config. The gateway never stores or injects an Anthropic credential itself; it only forwards whatever auth header Claude Code already sent, exactly like subscription mode does with the OAuth header.
+
+In this mode, both the primary (metered Anthropic API) and the secondary (Bedrock) cost money per token, so failover isn't triggered by a single rate-limit response — see [`metered_failover`](#configuration) below.
 
 ## Verify
 
@@ -110,6 +131,8 @@ You can also check Claude Code's own `/status` and `/usage` views to confirm tha
 ```text
 claude-burst serve
 claude-burst configure --region us-east-1
+claude-burst configure --primary anthropic-api-key --secondary bedrock
+claude-burst configure --secondary none
 claude-burst keychain-set
 claude-burst enable
 claude-burst disable
@@ -121,24 +144,40 @@ claude-burst version
 
 ## Configuration
 
-Configuration lives at `~/.config/claude-burst/config.json`.
-
-The important fields are:
+Configuration lives at `~/.config/claude-burst/config.json`. Legacy flat fields (`anthropic_base_url`, `bedrock_base_url`, `model_map`, `keychain_service`) are still read and still work unchanged — they're synthesized into `primary`/`secondary` automatically. New setups can also configure `primary`/`secondary` directly:
 
 ```json
 {
   "listen": "127.0.0.1:7777",
-  "anthropic_base_url": "https://api.anthropic.com",
-  "bedrock_base_url": "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic",
   "reset_grace_seconds": 10,
   "unknown_reset_seconds": 300,
+  "response_header_timeout_seconds": 60,
   "max_request_mb": 128,
-  "model_map": {
-    "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
-    "claude-opus-5": "global.anthropic.claude-opus-5"
+  "primary": {
+    "provider": "oauth-passthrough",
+    "base_url": "https://api.anthropic.com",
+    "failover_strategy": "subscription-limit"
+  },
+  "secondary": {
+    "provider": "bedrock",
+    "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic",
+    "keychain_service": "claude-burst-bedrock",
+    "model_map": {
+      "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
+      "claude-opus-5": "global.anthropic.claude-opus-5"
+    }
+  },
+  "metered_failover": {
+    "window_seconds": 60,
+    "min_failures": 3
   }
 }
 ```
+
+- `primary.provider` / `secondary.provider`: `oauth-passthrough` (subscription OAuth passthrough), `anthropic-api-key` (metered, no-subscription), or `bedrock`. Neither slot is tied to a specific vendor — either can hold either provider.
+- `primary.failover_strategy`: `subscription-limit` (only Anthropic's own subscription-exhaustion headers trigger failover — a bare 429 never does), `metered-failures` (a sliding-window failure count triggers failover, since every route is metered and a single blip shouldn't move traffic), or `none` (never fail over).
+- `metered_failover.window_seconds` / `min_failures`: for `metered-failures`, how many upstream failures (429/5xx/transport errors) inside a trailing window before failing over. Other 4xx errors (bad key, malformed request) never count — routing to the secondary wouldn't fix them.
+- `response_header_timeout_seconds`: bounds how long the gateway waits for a response to *start* before treating the upstream as failed (doesn't affect how long an already-started stream can run).
 
 Model IDs change over time. Keep `model_map` aligned with the Claude models enabled in your Bedrock account.
 
@@ -164,14 +203,28 @@ The metrics estimate answers: "What would these observed input/output tokens cos
 
 A local data-loss-prevention layer can reduce what leaves the machine, but it does not make a consumer Max account contractually or operationally identical to Claude for Work, the Claude API, or Bedrock. Review your organization's legal, procurement, retention, audit and account-management requirements before rolling consumer subscriptions out to employees.
 
+### 6. No caller authentication on the local gateway
+
+Any local process — including a browser tab, since `POST /v1/messages` with a simple content type needs no CORS preflight — can send the gateway a request. It cannot force an overflow window open (only genuine subscription-limit/sustained-failure signals do that), but it can ride an already-open one, and it can drive ordinary (non-overflow) traffic through your credential. Don't bind `listen` to anything but `127.0.0.1`.
+
+### 7. The Bedrock key is briefly visible in local process listings
+
+`claude-burst keychain-set` passes the key to `/usr/bin/security` as a command-line argument, so it's visible in `ps` output to other local processes for the duration of that one call. Reading it from stdin instead would close this, but `security`'s interactive password prompt doesn't reliably accept piped stdin in non-terminal contexts, so this hasn't been changed yet.
+
+### 8. Upstream error text (including the request path/query) is logged and metered failure detail is not size-bounded
+
+Transport-error and non-failover-error log lines include the upstream `error.Error()` string, which can contain the request URL (path and query, not host credentials — Go's `url.Error` redacts userinfo). Prompts and response bodies are never included per the metadata-only design, but treat `claude-burst.log` as containing request metadata, not as fully opaque.
+
 ## Testing
 
 ```bash
-go test ./...
+go test ./... -race
 go vet ./...
 ```
 
-The tests include a simulated Anthropic subscription rejection that verifies the same request is replayed to Bedrock, the model is remapped, the OAuth beta is removed from the Bedrock call, and the overflow reset state is persisted.
+CI runs both on every push and pull request (see `.github/workflows/test.yml`).
+
+The tests include a simulated Anthropic subscription rejection that verifies the same request is replayed to Bedrock, the model is remapped, the OAuth beta is removed from the Bedrock call, and the overflow reset state is persisted, plus an equivalent suite for the metered-failures strategy (sustained-failure threshold, window expiry, success reset, and the no-subscription primary forwarding its own auth header unchanged).
 
 ## Uninstall
 

@@ -104,21 +104,21 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 func buildProvider(rc config.RouteConfig, defaultKeychainService string, defaultModelMap map[string]string) (Provider, error) {
 	switch rc.Provider {
 	case "", "oauth-passthrough":
-		base, err := url.Parse(rc.BaseURL)
+		base, err := validateBaseURL("oauth-passthrough", rc.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("oauth-passthrough base URL: %w", err)
+			return nil, err
 		}
 		return NewPassthroughProvider("anthropic", base), nil
 	case "anthropic-api-key":
-		base, err := url.Parse(rc.BaseURL)
+		base, err := validateBaseURL("anthropic-api-key", rc.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("anthropic-api-key base URL: %w", err)
+			return nil, err
 		}
 		return NewPassthroughProvider("anthropic-api-key", base), nil
 	case "bedrock":
-		base, err := url.Parse(rc.BaseURL)
+		base, err := validateBaseURL("bedrock", rc.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("bedrock base URL: %w", err)
+			return nil, err
 		}
 		ks := rc.KeychainService
 		if ks == "" {
@@ -132,6 +132,22 @@ func buildProvider(rc config.RouteConfig, defaultKeychainService string, default
 	default:
 		return nil, fmt.Errorf("unknown provider %q", rc.Provider)
 	}
+}
+
+// validateBaseURL rejects the kind of malformed/incomplete base_url that
+// url.Parse alone lets through silently (e.g. "", a bare host with no
+// scheme, or a relative path) -- turning what would otherwise be a
+// confusing runtime request failure into a clear startup error naming which
+// route slot is misconfigured.
+func validateBaseURL(provider, raw string) (*url.URL, error) {
+	base, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s base_url: %w", provider, err)
+	}
+	if (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
+		return nil, fmt.Errorf("%s base_url must be an absolute http(s) URL, got %q", provider, raw)
+	}
+	return base, nil
 }
 
 // buildDetector constructs the FailoverDetector for a route slot's
@@ -226,16 +242,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		if rec := recover(); rec != nil {
-			s.logger.Printf("req=%s PANIC method=%s path=%s err=%v\n%s", rid, r.Method, r.URL.Path, rec, debug.Stack())
+			s.logger.Printf("req=%s PANIC method=%q path=%q err=%v\n%s", rid, r.Method, r.URL.Path, rec, debug.Stack())
 			if !sw.wroteHeader {
 				http.Error(sw, "internal error", http.StatusInternalServerError)
 			}
 		}
-		s.logger.Printf("req=%s done method=%s path=%s status=%d dur_ms=%d",
+		// %q (not %s) for method/path: both are attacker-influenced (the
+		// path arrives already percent-decoded, so e.g. %0A becomes a real
+		// newline) and this line is the audit trail the whole log design
+		// exists for -- an unquoted newline would let a caller forge what
+		// looks like a second, distinct log line.
+		s.logger.Printf("req=%s done method=%q path=%q status=%d dur_ms=%d",
 			rid, r.Method, r.URL.Path, sw.status, time.Since(start).Milliseconds())
 	}()
 
-	s.logger.Printf("req=%s start method=%s path=%s", rid, r.Method, r.URL.Path)
+	s.logger.Printf("req=%s start method=%q path=%q", rid, r.Method, r.URL.Path)
 	s.handle(sw, r)
 }
 
