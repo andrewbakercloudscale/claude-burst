@@ -152,25 +152,31 @@ func configure(args []string) {
 		cfg.Listen = *listen
 	}
 	if *primary != "" {
-		cfg.Primary.Provider = *primary
-		cfg.Primary.BaseURL = cfg.AnthropicBaseURL
-		if *primary == "anthropic-api-key" {
-			cfg.Primary.FailoverStrategy = "metered-failures"
-		} else {
-			cfg.Primary.FailoverStrategy = "subscription-limit"
+		baseURL, strategy, err := baseURLForProvider(cfg, *primary)
+		if err != nil {
+			fatal(fmt.Errorf("invalid --primary: %w", err))
 		}
+		cfg.Primary = config.RouteConfig{Provider: *primary, BaseURL: baseURL, FailoverStrategy: strategy}
 	}
 	if *secondary != "" {
 		if *secondary == "none" {
 			cfg.Secondary = config.RouteConfig{}
 			cfg.BedrockBaseURL = ""
 		} else {
-			cfg.Secondary.Provider = *secondary
-			if cfg.Secondary.BaseURL == "" {
-				cfg.Secondary.BaseURL = cfg.BedrockBaseURL
+			// baseURLForProvider always derives the base URL from the
+			// chosen provider's own field (cfg.AnthropicBaseURL or
+			// cfg.BedrockBaseURL) rather than reusing whatever was
+			// previously in cfg.Secondary.BaseURL -- so
+			// `configure --secondary bedrock` can never leave a slot
+			// pointed at the wrong vendor's endpoint.
+			baseURL, _, err := baseURLForProvider(cfg, *secondary)
+			if err != nil {
+				fatal(fmt.Errorf("invalid --secondary: %w", err))
 			}
-			cfg.Secondary.KeychainService = cfg.KeychainService
-			cfg.Secondary.ModelMap = cfg.ModelMap
+			cfg.Secondary = config.RouteConfig{
+				Provider: *secondary, BaseURL: baseURL,
+				KeychainService: cfg.KeychainService, ModelMap: cfg.ModelMap,
+			}
 		}
 	}
 	if *minFailures > 0 {
@@ -185,6 +191,27 @@ func configure(args []string) {
 	}
 	p, _ := config.ConfigPath()
 	fmt.Printf("wrote %s\n", p)
+}
+
+// baseURLForProvider derives the correct base URL and (for a primary slot)
+// failover strategy for a named provider, from that provider's own
+// legacy-field default -- never from whatever another slot's config
+// previously held. This is the fix for a real bug/misconfiguration risk: a
+// naive `cfg.Primary.BaseURL = cfg.AnthropicBaseURL` regardless of which
+// provider name was chosen would let `configure --primary bedrock` point
+// the Bedrock provider's Prepare() at api.anthropic.com, sending the
+// Keychain-stored Bedrock credential to the wrong host.
+func baseURLForProvider(cfg config.Config, provider string) (baseURL, failoverStrategy string, err error) {
+	switch provider {
+	case "oauth-passthrough":
+		return cfg.AnthropicBaseURL, "subscription-limit", nil
+	case "anthropic-api-key":
+		return cfg.AnthropicBaseURL, "metered-failures", nil
+	case "bedrock":
+		return cfg.BedrockBaseURL, "none", nil
+	default:
+		return "", "", fmt.Errorf("unknown provider %q (must be oauth-passthrough, anthropic-api-key, or bedrock)", provider)
+	}
 }
 
 func keychainSet(args []string) {

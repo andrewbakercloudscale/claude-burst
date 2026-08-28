@@ -2,10 +2,12 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -149,10 +151,10 @@ func TestEveryRequestIsLoggedStartAndDone(t *testing.T) {
 	s.ServeHTTP(rr, req)
 
 	logs := logBuf.String()
-	if !strings.Contains(logs, "start method=GET path=/healthz") {
+	if !strings.Contains(logs, `start method="GET" path="/healthz"`) {
 		t.Fatalf("missing start log line, got:\n%s", logs)
 	}
-	if !strings.Contains(logs, "done method=GET path=/healthz status=200") {
+	if !strings.Contains(logs, `done method="GET" path="/healthz" status=200`) {
 		t.Fatalf("missing done log line with status, got:\n%s", logs)
 	}
 	// Both lines for the same request must share a request id.
@@ -348,7 +350,7 @@ func TestPanicRecoveryReturns500AndLogsStack(t *testing.T) {
 	if !strings.Contains(logs, "PANIC") || !strings.Contains(logs, "simulated panic reading request body") {
 		t.Fatalf("missing panic log line, got:\n%s", logs)
 	}
-	if !strings.Contains(logs, "done method=POST path=/v1/messages") {
+	if !strings.Contains(logs, `done method="POST" path="/v1/messages"`) {
 		t.Fatalf("done line must still be logged after a recovered panic, got:\n%s", logs)
 	}
 }
@@ -358,6 +360,46 @@ func TestPanicRecoveryReturns500AndLogsStack(t *testing.T) {
 // subscription-limit rejection on the primary is passed straight through to
 // the client and overflow is never activated -- there is nothing to fail
 // over to.
+// TestValidateBaseURLRejectsGarbage is a regression test: url.Parse alone
+// accepts almost any string (empty, a bare host with no scheme, a relative
+// path), silently deferring the failure to request time instead of startup.
+// validateBaseURL must catch these at configuration/construction time.
+func TestValidateBaseURLRejectsGarbage(t *testing.T) {
+	for _, raw := range []string{"", "not-a-url-at-all", "/just-a-path", "ftp://example.com"} {
+		if _, err := validateBaseURL("test", raw); err == nil {
+			t.Fatalf("expected validateBaseURL to reject %q, got nil error", raw)
+		}
+	}
+	if _, err := validateBaseURL("test", "https://example.com/anthropic"); err != nil {
+		t.Fatalf("expected a valid https URL to pass, got %v", err)
+	}
+}
+
+// TestBuildForwardRequestRejectsPathTraversal is a regression test: a
+// request path with enough ".." segments to escape the configured base path
+// must not reach the credentialed upstream at an unintended path on the
+// same host.
+func TestBuildForwardRequestRejectsPathTraversal(t *testing.T) {
+	base, err := url.Parse("https://bedrock-runtime.us-east-1.amazonaws.com/anthropic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages/../../../secret-admin-api", nil)
+	if _, err := buildForwardRequest(context.Background(), base, in, nil, true); err == nil {
+		t.Fatal("expected a path-traversal request to be rejected, got nil error")
+	}
+
+	// A normal, non-escaping path must still work.
+	in = httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	req, err := buildForwardRequest(context.Background(), base, in, nil, true)
+	if err != nil {
+		t.Fatalf("unexpected error for a normal path: %v", err)
+	}
+	if req.URL.Path != "/anthropic/v1/messages" {
+		t.Fatalf("got path %q", req.URL.Path)
+	}
+}
+
 func TestNoSecondaryConfigured_NeverFailsOver(t *testing.T) {
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
