@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/andrewbaker/claude-burst/internal/keychain"
+	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 )
 
 // BedrockProvider forwards a request to Amazon Bedrock's Anthropic-compatible

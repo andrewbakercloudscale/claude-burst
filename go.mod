@@ -1,3 +1,3 @@
-module github.com/andrewbaker/claude-burst
+module github.com/andrewbakercloudscale/claude-burst
 
 go 1.23

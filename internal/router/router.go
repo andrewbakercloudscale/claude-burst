@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/andrewbaker/claude-burst/internal/config"
-	"github.com/andrewbaker/claude-burst/internal/metrics"
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
 
 type ctxKey int

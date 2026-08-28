@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/andrewbaker/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 // TestBaseURLForProviderNeverCrossesVendors is a regression test for a real
