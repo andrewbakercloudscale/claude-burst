@@ -1,0 +1,21 @@
+{
+  "listen": "127.0.0.1:7777",
+  "anthropic_base_url": "https://api.anthropic.com",
+  "bedrock_base_url": "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic",
+  "reset_grace_seconds": 10,
+  "unknown_reset_seconds": 300,
+  "max_request_mb": 128,
+  "keychain_service": "claude-burst-bedrock",
+  "model_map": {
+    "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
+    "claude-opus-5": "global.anthropic.claude-opus-5",
+    "claude-fable-5": "global.anthropic.claude-fable-5",
+    "claude-haiku-4-5-20251001": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  "pricing": {
+    "claude-sonnet-5": {"input_per_mtok": 2, "output_per_mtok": 10},
+    "global.anthropic.claude-sonnet-5": {"input_per_mtok": 2, "output_per_mtok": 10},
+    "claude-opus-5": {"input_per_mtok": 5, "output_per_mtok": 25},
+    "global.anthropic.claude-opus-5": {"input_per_mtok": 5, "output_per_mtok": 25}
+  }
+}
