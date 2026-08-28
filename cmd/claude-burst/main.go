@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andrewbaker/claude-burst/internal/config"
-	"github.com/andrewbaker/claude-burst/internal/keychain"
-	"github.com/andrewbaker/claude-burst/internal/metrics"
-	"github.com/andrewbaker/claude-burst/internal/router"
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 )
 
 const version = "0.2.0"

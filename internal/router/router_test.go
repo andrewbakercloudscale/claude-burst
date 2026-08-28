@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrewbaker/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 // newTestServer builds a Server wired to httptest primary/bedrock upstreams

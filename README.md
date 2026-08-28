@@ -77,7 +77,7 @@ The MVP uses Amazon Bedrock's Anthropic-compatible Messages API with a Bedrock A
 ## Install
 
 ```bash
-git clone https://github.com/andrewbaker/claude-burst.git
+git clone https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 export AWS_REGION=us-east-1
