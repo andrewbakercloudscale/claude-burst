@@ -141,7 +141,7 @@ func buildProvider(rc config.RouteConfig, defaultKeychainService string, default
 		if ks == "" {
 			ks = "claude-burst-together"
 		}
-		return NewOpenAICompatibleProvider("together", base, rc.Model, ks, "TOGETHER_API_KEY"), nil
+		return NewOpenAICompatibleProvider("together", base, rc.Model, rc.ModelMap, ks, "TOGETHER_API_KEY"), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", rc.Provider)
 	}
@@ -171,6 +171,8 @@ func buildDetector(strategy string, mf config.MeteredFailoverConfig) (FailoverDe
 		return subscriptionLimitDetector{}, nil
 	case "metered-failures":
 		return newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures), nil
+	case "subscription-limit+metered-failures":
+		return newCombinedDetector(mf), nil
 	case "none":
 		return noFailoverDetector{}, nil
 	default:

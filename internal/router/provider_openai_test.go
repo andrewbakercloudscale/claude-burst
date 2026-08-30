@@ -407,7 +407,7 @@ func TestOpenAICompatibleProviderPreparePropertiesNoInboundAuthLeak(t *testing.T
 	t.Setenv("TOGETHER_API_KEY", "test-together-key")
 
 	base, _ := url.Parse("https://api.together.xyz/v1")
-	p := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", "claude-burst-together-test-noleak", "TOGETHER_API_KEY")
+	p := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", nil, "claude-burst-together-test-noleak", "TOGETHER_API_KEY")
 
 	body := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`)
 	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
@@ -438,5 +438,55 @@ func TestOpenAICompatibleProviderPreparePropertiesNoInboundAuthLeak(t *testing.T
 	v := decodeOAIRequest(t, sentBody)
 	if v["model"] != "zai-org/GLM-5.3" {
 		t.Fatalf("outbound body model = %v", v["model"])
+	}
+}
+
+// TestOpenAICompatibleProviderConsistentFailoverUsesModelMap verifies that,
+// when modelMap is populated ("consistent failover"), a Claude model with an
+// explicit entry is sent to that entry's target rather than the fixed
+// fallback model.
+func TestOpenAICompatibleProviderConsistentFailoverUsesModelMap(t *testing.T) {
+	t.Setenv("TOGETHER_API_KEY", "test-together-key")
+
+	base, _ := url.Parse("https://api.together.xyz/v1")
+	modelMap := map[string]string{"claude-opus-5": "zai-org/GLM-5.3-Big"}
+	p := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", modelMap, "claude-burst-together-test-map", "TOGETHER_API_KEY")
+
+	body := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}]}`)
+	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+
+	req, _, err := p.Prepare(in.Context(), in, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentBody, _ := io.ReadAll(req.Body)
+	v := decodeOAIRequest(t, sentBody)
+	if v["model"] != "zai-org/GLM-5.3-Big" {
+		t.Fatalf("mapped Claude model must use its model_map entry, got %v", v["model"])
+	}
+}
+
+// TestOpenAICompatibleProviderConsistentFailoverFallsBackForUnmappedModel
+// verifies that a Claude model with NO entry in modelMap still gets a
+// target: it falls back to the fixed model, rather than erroring the way
+// Bedrock's model_map does for an unmapped model.
+func TestOpenAICompatibleProviderConsistentFailoverFallsBackForUnmappedModel(t *testing.T) {
+	t.Setenv("TOGETHER_API_KEY", "test-together-key")
+
+	base, _ := url.Parse("https://api.together.xyz/v1")
+	modelMap := map[string]string{"claude-opus-5": "zai-org/GLM-5.3-Big"}
+	p := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", modelMap, "claude-burst-together-test-map-fallback", "TOGETHER_API_KEY")
+
+	body := []byte(`{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"hi"}]}`)
+	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+
+	req, _, err := p.Prepare(in.Context(), in, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentBody, _ := io.ReadAll(req.Body)
+	v := decodeOAIRequest(t, sentBody)
+	if v["model"] != "zai-org/GLM-5.3" {
+		t.Fatalf("unmapped Claude model must fall back to the fixed model, got %v", v["model"])
 	}
 }

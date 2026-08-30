@@ -129,6 +129,7 @@ func configure(args []string) {
 	listen := fs.String("listen", "", "listen address")
 	bedrockBase := fs.String("bedrock-base-url", "", "override Bedrock Anthropic Messages base URL")
 	primary := fs.String("primary", "", "primary provider: oauth-passthrough | anthropic-api-key")
+	failoverStrategy := fs.String("failover-strategy", "", "override primary failover_strategy: subscription-limit | metered-failures | subscription-limit+metered-failures | none")
 	secondary := fs.String("secondary", "", "secondary provider: bedrock | openai-compatible | none")
 	secondaryBaseURL := fs.String("secondary-base-url", "", "base URL for an openai-compatible secondary, e.g. https://api.together.xyz/v1")
 	secondaryModel := fs.String("secondary-model", "", "target model for an openai-compatible secondary, e.g. zai-org/GLM-5.3")
@@ -159,6 +160,14 @@ func configure(args []string) {
 			fatal(fmt.Errorf("invalid --primary: %w", err))
 		}
 		cfg.Primary = config.RouteConfig{Provider: *primary, BaseURL: baseURL, FailoverStrategy: strategy}
+	}
+	if *failoverStrategy != "" {
+		switch *failoverStrategy {
+		case "subscription-limit", "metered-failures", "subscription-limit+metered-failures", "none":
+			cfg.Primary.FailoverStrategy = *failoverStrategy
+		default:
+			fatal(fmt.Errorf("invalid --failover-strategy %q (must be subscription-limit, metered-failures, subscription-limit+metered-failures, or none)", *failoverStrategy))
+		}
 	}
 	if *secondary != "" {
 		switch *secondary {
