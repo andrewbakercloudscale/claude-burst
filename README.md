@@ -216,6 +216,16 @@ Any local process — including a browser tab, since `POST /v1/messages` with a 
 
 Transport-error and non-failover-error log lines include the upstream `error.Error()` string, which can contain the request URL (path and query, not host credentials — Go's `url.Error` redacts userinfo). Prompts and response bodies are never included per the metadata-only design, but treat `claude-burst.log` as containing request metadata, not as fully opaque.
 
+### 9. Transparent intercept mode is machine-wide, and TLS interception is assumed benign
+
+The `/etc/hosts` entry transparent mode installs affects every process on the Mac, not just
+Claude Code — see the trade-off table above. Separately, the design assumes that TLS
+interception does not itself break Remote Control. That is well supported (Claude Code is
+widely run behind corporate inspecting proxies, and documents `NODE_EXTRA_CA_CERTS` for
+exactly that) but is not something this project can prove. `scripts/check-interception.sh`
+settles it on a network that actually inspects TLS: it distinguishes *intercepted* from
+*bypassed* from *not enrolled*, which a bare certificate-issuer check cannot.
+
 ## OpenAI-compatible secondary (e.g. Together AI / GLM)
 
 A secondary can now be an OpenAI-compatible chat-completions endpoint instead of Bedrock — e.g. Together AI serving GLM. Unlike `bedrock` and the two Anthropic-passthrough providers, which all speak Anthropic's Messages wire format natively and only need `Server.relay` to stream the response back byte-for-byte, this provider (`internal/router/provider_openai.go`) does real bidirectional translation: request body shape (`system`/`messages`/`tools`, including splitting Anthropic's nested `tool_result` blocks into OpenAI's sibling `tool` messages), non-streaming and **streaming** response shape (OpenAI's `delta`-based SSE chunks translated live into Anthropic's `message_start`/`content_block_start`/`content_block_delta`/`content_block_stop`/`message_delta`/`message_stop` event sequence, including parallel tool calls), and tool-call schema (`tool_use` blocks ↔ `tool_calls`). Verified against a real Together AI + GLM 5.3 endpoint, including a genuine streaming tool call.
@@ -253,6 +263,68 @@ Unlike Bedrock's `model_map` (which errors on a Claude model with no entry), an 
 Store the API key with `claude-burst keychain-set --provider together` (reads `TOGETHER_API_KEY`; the key name is provider-specific, not Together-specific — a different OpenAI-compatible vendor would use its own env var).
 
 **Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected**, in favor of the above. It would have required reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`) — exactly the pattern this README's design principles (and the source blog post) call out as why other third-party tools have been blocked by Anthropic. Not planned.
+
+## Keeping Remote Control: transparent intercept mode (optional)
+
+Claude Code disables **Remote Control** whenever `ANTHROPIC_BASE_URL` names a host other
+than `api.anthropic.com` — a check on the literal variable value, not on where the traffic
+ends up ([docs](https://code.claude.com/docs/en/remote-control.md)). The default `base-url`
+mode sets exactly that variable, so enabling the gateway costs you that feature.
+
+`transparent` mode leaves the variable unset and gets into the path at the DNS layer
+instead: `/etc/hosts` points the hostname at the gateway, which terminates TLS with a
+locally generated CA. Claude Code believes it reached Anthropic directly, so Remote Control
+keeps working.
+
+```bash
+claude-burst configure --intercept-mode transparent
+claude-burst enable        # generates the CA, trusts it, prints the one sudo step left
+sudo scripts/transparent-root.sh install
+```
+
+Undo, at any time, idempotent, safe even if nothing was installed:
+
+```bash
+sudo scripts/transparent-root.sh remove
+```
+
+### What it costs
+
+| | `base-url` (default) | `transparent` |
+|---|---|---|
+| Remote Control | disabled | works |
+| root required | no | once, for `/etc/hosts` + pf |
+| certificates | none | local CA, added to `NODE_EXTRA_CA_CERTS` |
+| blast radius | this user's Claude Code | every process on the machine |
+
+The last row is the real trade. While the `/etc/hosts` entry exists, *everything* on the
+Mac that talks to that hostname goes through the gateway — so if the gateway is down,
+Anthropic is unreachable machine-wide, not just in one session. `transparent-root.sh
+install` therefore refuses to run unless `/healthz` answers, and verifies the pf redirect
+works *before* touching `/etc/hosts`; `remove` undoes `/etc/hosts` first.
+
+### How it avoids calling itself
+
+Once `/etc/hosts` maps the hostname to the gateway, that mapping applies to the gateway's
+own upstream requests too — it would call itself, forever. Go consults `/etc/hosts` in both
+its cgo and pure-Go resolver modes, so `PreferGo` does not avoid this. The gateway resolves
+the intercepted hostname over DNS-over-HTTPS instead (`intercept.resolver_doh`), which never
+consults `/etc/hosts`, and dials the returned address while leaving TLS `ServerName` as the
+real hostname so certificate verification is unchanged. Only the intercepted hostname is
+treated this way. A DoH answer pointing at loopback is rejected outright — that is the
+loop's exact shape. Set `intercept.upstream_addr` to pin an IP where DoH is blocked.
+
+### Checking whether it is working
+
+```bash
+claude-burst status                          # CA trusted? hosts entry? certificate?
+sudo scripts/transparent-root.sh status      # pf rule actually loaded?
+```
+
+Watch for `live rdr rule : MISSING` while the hosts entry is present. That is the bad
+state — DNS redirects but nothing listens — and the fix is `remove`.
+
+See [ROLLBACK.md](ROLLBACK.md) for undoing every part of this independently.
 
 ## Testing
 

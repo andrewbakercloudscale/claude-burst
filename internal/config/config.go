@@ -171,6 +171,13 @@ func (c *Config) ResolveRoutes() {
 // stays the original behaviour without this function having to write a value
 // into every config that never asked for the feature.
 func (i *InterceptConfig) applyDefaults() {
+	// Only materialise defaults for a config that actually opted in. Filling
+	// them in regardless would bake this machine's absolute home-directory
+	// paths into every config.json, including those of users who will never
+	// turn transparent mode on.
+	if i.Mode != InterceptTransparent {
+		return
+	}
 	if i.Host == "" {
 		i.Host = "api.anthropic.com"
 	}
