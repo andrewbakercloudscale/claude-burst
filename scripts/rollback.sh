@@ -10,7 +10,13 @@ LABEL="ninja.andrewbaker.claude-burst"
 SETTINGS="$HOME/.claude/settings.json"
 CONFIG="$HOME/.config/claude-burst/config.json"
 
-DIR="${0:A:h}"
+# Resolve this script's directory. Written the POSIX way rather than with zsh's
+# ${0:A:h}: these scripts are recovery tooling, and someone reaching for them in
+# an emergency will type `bash scripts/rollback.sh` as readily as `zsh`. Under
+# bash the zsh form expands to an unbound-variable error on line 2 and the
+# script does nothing at all -- a rollback that silently no-ops is worse than
+# one that refuses to run.
+DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # STEP 1, BEFORE ANYTHING ELSE: undo the machine-wide transparent-mode changes.
 #
