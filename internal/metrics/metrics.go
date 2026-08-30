@@ -103,3 +103,49 @@ func (s Summary) String() string {
 	return fmt.Sprintf("requests=%d primary=%d secondary=%d input_tokens=%d output_tokens=%d api_equivalent_usd=$%.2f",
 		s.Requests, s.PrimaryRequests, s.SecondaryRequests, s.InputTokens, s.OutputTokens, s.APIEquivalentUSD)
 }
+
+// Recent returns up to limit of the most recent events, newest first.
+//
+// It reads the whole file rather than seeking from the end: the log is
+// line-delimited JSON of unbounded line length, so a tail-seek would have to
+// guess where a record starts. Growth is bounded in practice (one line per
+// request) and this keeps the reader obviously correct.
+func Recent(path string, limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// Ring buffer: holds at most `limit` events regardless of file size.
+	ring := make([]Event, 0, limit)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for sc.Scan() {
+		var e Event
+		if json.Unmarshal(sc.Bytes(), &e) != nil {
+			continue
+		}
+		if len(ring) < limit {
+			ring = append(ring, e)
+		} else {
+			copy(ring, ring[1:])
+			ring[limit-1] = e
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	// Newest first.
+	out := make([]Event, 0, len(ring))
+	for i := len(ring) - 1; i >= 0; i-- {
+		out = append(out, ring[i])
+	}
+	return out, nil
+}

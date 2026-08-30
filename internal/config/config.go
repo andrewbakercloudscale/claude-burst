@@ -101,11 +101,18 @@ type Config struct {
 	Secondary       RouteConfig           `json:"secondary,omitempty"`
 	MeteredFailover MeteredFailoverConfig `json:"metered_failover,omitempty"`
 	Intercept       InterceptConfig       `json:"intercept,omitempty"`
+
+	// AdminListen is the local control panel's address. Deliberately a
+	// separate listener from Listen: in transparent mode the gateway serves
+	// the intercepted hostname, and admin routes must not be reachable there.
+	// Empty disables the panel entirely.
+	AdminListen string `json:"admin_listen,omitempty"`
 }
 
 func Default() Config {
 	return Config{
 		Listen:              "127.0.0.1:7777",
+		AdminListen:         "127.0.0.1:7788",
 		AnthropicBaseURL:    "https://api.anthropic.com",
 		BedrockBaseURL:      "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic",
 		ResetGraceSeconds:   10,

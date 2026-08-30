@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/admin"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
@@ -67,6 +68,12 @@ Commands:
   reset             Clear overflow state immediately
   stats             Summarize local routing/token metrics
   version           Print version
+
+Admin UI:
+  A local control panel runs alongside the gateway on 127.0.0.1:7788 by
+  default -- recent requests, response headers that drive failover, config
+  changes, and a one-click revert to stock Claude. It binds loopback and has
+  no login; disable it with: claude-burst configure --admin-listen off
 
 Keeping Claude Code's Remote Control (optional):
   Claude Code disables Remote Control whenever ANTHROPIC_BASE_URL names a host
@@ -156,6 +163,20 @@ func serve(args []string) {
 		fmt.Printf("intercept: transparent (serving TLS for %s)\n", cfg.Intercept.Host)
 	}
 
+	if cfg.AdminListen != "" {
+		a := admin.New(srv, metricsPath, version)
+		fmt.Printf("admin:  %s\n", admin.Describe(cfg.AdminListen))
+		// Runs alongside the gateway. A bind failure is logged and surfaced
+		// rather than swallowed -- an admin panel that silently is not there
+		// is worse than one that says why.
+		go func() {
+			if err := a.ListenAndServe(cfg.AdminListen); err != nil {
+				logger.Printf("admin server stopped: %v", err)
+				fmt.Fprintf(os.Stderr, "admin server stopped: %v\n", err)
+			}
+		}()
+	}
+
 	// No ReadTimeout/WriteTimeout/IdleTimeout on purpose. Claude Code's Remote
 	// Control registers and then long-polls for work, holding a connection
 	// open with nothing on it; a server-side deadline would sever exactly that
@@ -179,6 +200,7 @@ func configure(args []string) {
 	fs := flag.NewFlagSet("configure", flag.ExitOnError)
 	region := fs.String("region", "", "AWS Bedrock region")
 	listen := fs.String("listen", "", "listen address")
+	adminListen := fs.String("admin-listen", "", "admin UI address, or \"off\" to disable")
 	bedrockBase := fs.String("bedrock-base-url", "", "override Bedrock Anthropic Messages base URL")
 	primary := fs.String("primary", "", "primary provider: oauth-passthrough | anthropic-api-key")
 	failoverStrategy := fs.String("failover-strategy", "", "override primary failover_strategy: subscription-limit | metered-failures | subscription-limit+metered-failures | none")
@@ -207,6 +229,11 @@ func configure(args []string) {
 	}
 	if *listen != "" {
 		cfg.Listen = *listen
+	}
+	if *adminListen == "off" {
+		cfg.AdminListen = ""
+	} else if *adminListen != "" {
+		cfg.AdminListen = *adminListen
 	}
 	if *primary != "" {
 		baseURL, strategy, err := baseURLForProvider(cfg, *primary)
