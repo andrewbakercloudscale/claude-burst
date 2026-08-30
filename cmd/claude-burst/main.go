@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
+	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
 const version = "0.2.0"
@@ -32,9 +34,9 @@ func main() {
 	case "keychain-set":
 		keychainSet(os.Args[2:])
 	case "enable":
-		enable()
+		enable(os.Args[2:])
 	case "disable":
-		disable()
+		disable(os.Args[2:])
 	case "status":
 		status()
 	case "reset":
@@ -65,6 +67,16 @@ Commands:
   reset             Clear overflow state immediately
   stats             Summarize local routing/token metrics
   version           Print version
+
+Keeping Claude Code's Remote Control (optional):
+  Claude Code disables Remote Control whenever ANTHROPIC_BASE_URL names a host
+  other than api.anthropic.com, so the default "base-url" mode costs you that
+  feature. "transparent" mode instead redirects at the DNS layer and terminates
+  TLS locally, leaving the variable unset. It needs root once, for an
+  /etc/hosts entry and a pf rule:
+    claude-burst configure --intercept-mode transparent
+    claude-burst enable          # prints the one sudo step that remains
+  Undo with: sudo scripts/transparent-root.sh remove
 
 Setup with a Claude Max/Pro subscription (default), Bedrock overflow:
   export AWS_BEARER_TOKEN_BEDROCK='...'
@@ -111,10 +123,50 @@ func serve(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	logger.Printf("claude-burst %s listening on %s", version, cfg.Listen)
-	fmt.Printf("claude-burst %s listening on http://%s\n", version, cfg.Listen)
+
+	scheme := "http"
+	var tlsConfig *tls.Config
+	if cfg.Intercept.Transparent() {
+		leaf, caPEM, err := tlsca.LoadOrCreate(cfg.Intercept.CADir, cfg.Intercept.Host)
+		if err != nil {
+			fatal(err)
+		}
+		tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{*leaf},
+			MinVersion:   tls.VersionTLS12,
+		}
+		scheme = "https"
+
+		// A CA that is not in the trust bundle produces a TLS error at the
+		// client that looks like a network fault. Corporate tooling can
+		// regenerate that file and drop our block, so say so plainly at
+		// startup rather than leaving it to be discovered.
+		if b, rerr := os.ReadFile(cfg.Intercept.CABundle); rerr != nil || !tlsca.HasBlock(string(b)) {
+			msg := fmt.Sprintf("WARNING: the local CA is not present in %s -- Claude Code will reject this gateway's certificate. Run: claude-burst enable", cfg.Intercept.CABundle)
+			fmt.Fprintln(os.Stderr, msg)
+			logger.Print(msg)
+		}
+		_ = caPEM
+	}
+
+	logger.Printf("claude-burst %s listening on %s (%s)", version, cfg.Listen, scheme)
+	fmt.Printf("claude-burst %s listening on %s://%s\n", version, scheme, cfg.Listen)
 	fmt.Printf("primary: %s (%s)\nsecondary: %s (%s)\n", cfg.Primary.Provider, cfg.Primary.BaseURL, cfg.Secondary.Provider, cfg.Secondary.BaseURL)
-	if err := http.ListenAndServe(cfg.Listen, srv); err != nil {
+	if cfg.Intercept.Transparent() {
+		fmt.Printf("intercept: transparent (serving TLS for %s)\n", cfg.Intercept.Host)
+	}
+
+	// No ReadTimeout/WriteTimeout/IdleTimeout on purpose. Claude Code's Remote
+	// Control registers and then long-polls for work, holding a connection
+	// open with nothing on it; a server-side deadline would sever exactly that
+	// and present as Remote Control dropping repeatedly for no visible reason.
+	server := &http.Server{Addr: cfg.Listen, Handler: srv, TLSConfig: tlsConfig}
+	if tlsConfig != nil {
+		err = server.ListenAndServeTLS("", "") // certificates come from TLSConfig
+	} else {
+		err = server.ListenAndServe()
+	}
+	if err != nil {
 		fatal(err)
 	}
 }
@@ -135,6 +187,8 @@ func configure(args []string) {
 	secondaryModel := fs.String("secondary-model", "", "target model for an openai-compatible secondary, e.g. zai-org/GLM-5.3")
 	minFailures := fs.Int("metered-min-failures", 0, "consecutive-window failures before failing over in anthropic-api-key mode")
 	windowSeconds := fs.Int("metered-window-seconds", 0, "sliding window in seconds for metered failover")
+	interceptMode := fs.String("intercept-mode", "", "how Claude Code reaches the gateway: base-url (default) | transparent")
+	interceptHost := fs.String("intercept-host", "", "hostname to intercept in transparent mode (default api.anthropic.com)")
 	_ = fs.Parse(args)
 
 	if *region != "" {
@@ -213,6 +267,16 @@ func configure(args []string) {
 	if *windowSeconds > 0 {
 		cfg.MeteredFailover.WindowSeconds = *windowSeconds
 	}
+	if *interceptMode != "" {
+		cfg.Intercept.Mode = *interceptMode
+		if err := cfg.ValidateIntercept(); err != nil {
+			fatal(fmt.Errorf("invalid --intercept-mode: %w", err))
+		}
+	}
+	if *interceptHost != "" {
+		cfg.Intercept.Host = *interceptHost
+	}
+	cfg.ResolveRoutes()
 
 	if err := config.Save(cfg); err != nil {
 		fatal(err)
@@ -292,8 +356,50 @@ func status() {
 	} else {
 		fmt.Printf("route: PRIMARY (%s)\n", cfg.Primary.Provider)
 	}
-	fmt.Printf("gateway: http://%s\nprimary: %s (%s)\nsecondary: %s (%s)\n",
-		cfg.Listen, cfg.Primary.Provider, cfg.Primary.BaseURL, cfg.Secondary.Provider, cfg.Secondary.BaseURL)
+	scheme := "http"
+	if cfg.Intercept.Transparent() {
+		scheme = "https"
+	}
+	fmt.Printf("gateway: %s://%s\nprimary: %s (%s)\nsecondary: %s (%s)\n",
+		scheme, cfg.Listen, cfg.Primary.Provider, cfg.Primary.BaseURL, cfg.Secondary.Provider, cfg.Secondary.BaseURL)
+	reportIntercept(cfg)
+}
+
+// reportIntercept surfaces the facts that decide whether transparent mode is
+// actually working. Each can break independently and none of them announce
+// themselves: a missing CA looks like a TLS error, a missing hosts entry looks
+// like the feature silently not being on.
+func reportIntercept(cfg config.Config) {
+	if !cfg.Intercept.Transparent() {
+		fmt.Println("intercept: base-url (Remote Control disabled while enabled -- see --intercept-mode transparent)")
+		return
+	}
+	fmt.Printf("intercept: transparent (%s)\n", cfg.Intercept.Host)
+
+	ok := func(b bool) string {
+		if b {
+			return "yes"
+		}
+		return "NO"
+	}
+
+	bundle, berr := os.ReadFile(cfg.Intercept.CABundle)
+	fmt.Printf("  CA in trust bundle: %s (%s)\n", ok(berr == nil && tlsca.HasBlock(string(bundle))), cfg.Intercept.CABundle)
+
+	hosts, herr := os.ReadFile("/etc/hosts")
+	hostsEntry := herr == nil && strings.Contains(string(hosts), "# BEGIN claude-burst hosts")
+	fmt.Printf("  /etc/hosts entry:   %s\n", ok(hostsEntry))
+
+	if _, _, err := tlsca.LoadOrCreate(cfg.Intercept.CADir, cfg.Intercept.Host); err != nil {
+		fmt.Printf("  certificate:        NO (%v)\n", err)
+	} else {
+		fmt.Printf("  certificate:        yes (%s)\n", cfg.Intercept.CADir)
+	}
+
+	if !hostsEntry {
+		fmt.Println("  -> transparent mode is configured but not installed; run: claude-burst enable")
+	}
+	fmt.Println("  pf redirect state:  sudo scripts/transparent-root.sh status")
 }
 
 func reset() {
@@ -327,25 +433,122 @@ func stats(args []string) {
 	fmt.Println(s.String())
 }
 
-func enable() {
-	cfg, err := config.Load()
-	if err != nil {
-		fatal(err)
-	}
+// settingsPath returns ~/.claude/settings.json.
+func settingsPath() string {
 	h, err := os.UserHomeDir()
 	if err != nil {
 		fatal(err)
 	}
-	p := filepath.Join(h, ".claude", "settings.json")
-	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+	return filepath.Join(h, ".claude", "settings.json")
+}
+
+// readSettings parses settings.json into a generic map so unknown keys survive
+// a round trip. Note that Go marshals map keys in sorted order, so rewriting
+// this file reorders it -- harmless, but it is why the file looks churned
+// after an enable.
+func readSettings(p string) map[string]any {
+	root := map[string]any{}
+	b, err := os.ReadFile(p)
+	if os.IsNotExist(err) {
+		return root
+	}
+	if err != nil {
 		fatal(err)
 	}
-	root := map[string]any{}
-	if b, err := os.ReadFile(p); err == nil && len(b) > 0 {
+	if len(b) > 0 {
 		if err := json.Unmarshal(b, &root); err != nil {
 			fatal(fmt.Errorf("refusing to edit invalid %s: %w", p, err))
 		}
 	}
+	return root
+}
+
+func writeSettings(p string, root map[string]any) {
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		fatal(err)
+	}
+	b, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		fatal(err)
+	}
+	if err := os.WriteFile(p, append(b, '\n'), 0600); err != nil {
+		fatal(err)
+	}
+}
+
+// clearBaseURL removes our ANTHROPIC_BASE_URL if it points at this gateway,
+// leaving any value the user set deliberately. Matching the configured listen
+// address as well as the loopback prefix matters: with a non-loopback --listen
+// the old prefix-only check left the key stranded, silently keeping Claude
+// Code pointed at a gateway the user had just disabled.
+func clearBaseURL(root map[string]any, listen string) bool {
+	env, _ := root["env"].(map[string]any)
+	if env == nil {
+		return false
+	}
+	v, ok := env["ANTHROPIC_BASE_URL"].(string)
+	if !ok {
+		return false
+	}
+	ours := v == "http://"+listen || v == "https://"+listen || strings.HasPrefix(v, "http://127.0.0.1:")
+	if !ours {
+		return false
+	}
+	delete(env, "ANTHROPIC_BASE_URL")
+	if len(env) == 0 {
+		delete(root, "env")
+	} else {
+		root["env"] = env
+	}
+	return true
+}
+
+func enable(args []string) {
+	rejectArgs("enable", args)
+	cfg, err := config.Load()
+	if err != nil {
+		fatal(err)
+	}
+	p := settingsPath()
+	root := readSettings(p)
+
+	if cfg.Intercept.Transparent() {
+		// Transparent mode's entire purpose is that this variable stays unset:
+		// Claude Code disables Remote Control whenever it names another host.
+		// Setting it here would silently defeat the feature.
+		if clearBaseURL(root, cfg.Listen) {
+			writeSettings(p, root)
+			fmt.Printf("removed ANTHROPIC_BASE_URL from %s (transparent mode needs it unset)\n", p)
+		} else {
+			fmt.Printf("ANTHROPIC_BASE_URL already unset in %s\n", p)
+		}
+
+		_, caPEM, err := tlsca.LoadOrCreate(cfg.Intercept.CADir, cfg.Intercept.Host)
+		if err != nil {
+			fatal(err)
+		}
+		if err := tlsca.EnsureInBundle(cfg.Intercept.CABundle, caPEM); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("local CA in %s\ntrusted via %s\n", cfg.Intercept.CADir, cfg.Intercept.CABundle)
+
+		exe, _ := os.Executable()
+		helper := filepath.Join(filepath.Dir(exe), "transparent-root.sh")
+		fmt.Printf(`
+Two machine-wide steps remain, and they need root. They are deliberately NOT
+run for you: they affect every process on this Mac, not just Claude Code.
+
+  1. make sure the gateway is running and healthy
+  2. sudo %s install --host %s --gateway-port %s
+
+Undo at any time with:
+     sudo %s remove
+
+Then restart Claude Code. Verify with: claude-burst status
+`, helper, cfg.Intercept.Host, portOf(cfg.Listen), helper)
+		return
+	}
+
 	env, _ := root["env"].(map[string]any)
 	if env == nil {
 		env = map[string]any{}
@@ -356,47 +559,60 @@ func enable() {
 	// subscription; in anthropic-api-key mode, Claude Code's own
 	// ANTHROPIC_API_KEY (set separately) is what gets forwarded unchanged.
 	root["env"] = env
-	b, _ := json.MarshalIndent(root, "", "  ")
-	if err := os.WriteFile(p, append(b, '\n'), 0600); err != nil {
-		fatal(err)
-	}
+	writeSettings(p, root)
 	fmt.Printf("enabled Claude Burst in %s\nRestart Claude Code.\n", p)
 }
 
-func disable() {
-	h, err := os.UserHomeDir()
+func disable(args []string) {
+	rejectArgs("disable", args)
+	cfg, err := config.Load()
 	if err != nil {
 		fatal(err)
 	}
-	p := filepath.Join(h, ".claude", "settings.json")
-	b, err := os.ReadFile(p)
-	if os.IsNotExist(err) {
+	p := settingsPath()
+	if _, err := os.Stat(p); os.IsNotExist(err) && !cfg.Intercept.Transparent() {
 		fmt.Println("already disabled")
 		return
 	}
-	if err != nil {
-		fatal(err)
+	root := readSettings(p)
+	if clearBaseURL(root, cfg.Listen) {
+		writeSettings(p, root)
 	}
-	root := map[string]any{}
-	if err := json.Unmarshal(b, &root); err != nil {
-		fatal(err)
-	}
-	env, _ := root["env"].(map[string]any)
-	if env != nil {
-		if v, ok := env["ANTHROPIC_BASE_URL"].(string); ok && strings.HasPrefix(v, "http://127.0.0.1:") {
-			delete(env, "ANTHROPIC_BASE_URL")
+
+	if cfg.Intercept.Transparent() {
+		if err := tlsca.RemoveFromBundle(cfg.Intercept.CABundle); err != nil {
+			fatal(err)
 		}
-		if len(env) == 0 {
-			delete(root, "env")
-		} else {
-			root["env"] = env
-		}
-	}
-	out, _ := json.MarshalIndent(root, "", "  ")
-	if err := os.WriteFile(p, append(out, '\n'), 0600); err != nil {
-		fatal(err)
+		fmt.Printf("removed the local CA from %s (other certificates left untouched)\n", cfg.Intercept.CABundle)
+
+		exe, _ := os.Executable()
+		helper := filepath.Join(filepath.Dir(exe), "transparent-root.sh")
+		fmt.Printf(`
+The machine-wide redirect is still in place and needs root to remove.
+Until you run this, traffic to %s on this Mac still goes to the gateway:
+
+  sudo %s remove
+`, cfg.Intercept.Host, helper)
+		return
 	}
 	fmt.Println("disabled Claude Burst; restart Claude Code")
+}
+
+// portOf returns the port from a host:port listen address.
+func portOf(listen string) string {
+	if _, port, ok := strings.Cut(listen, ":"); ok {
+		return port
+	}
+	return listen
+}
+
+// rejectArgs fails on stray arguments. These subcommands take none, and
+// parsing nothing meant `claude-burst enable --help` silently EXECUTED enable
+// instead of printing help.
+func rejectArgs(cmd string, args []string) {
+	if len(args) > 0 {
+		fatal(fmt.Errorf("%s takes no arguments, got %q", cmd, strings.Join(args, " ")))
+	}
 }
 
 func fatal(err error) { fmt.Fprintln(os.Stderr, "error:", err); os.Exit(1) }
