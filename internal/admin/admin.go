@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/requests", s.readOnly(s.handleRequests))
 	mux.HandleFunc("/api/responses", s.readOnly(s.handleResponses))
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))
+	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/revert", s.mutating(s.handleRevert))
 	mux.HandleFunc("/api/restart", s.mutating(s.handleRestart))
@@ -239,6 +240,36 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	s.gateway.ClearOverflow()
 	writeJSON(w, map[string]string{"ok": "overflow cleared; the next request tries the primary"})
+}
+
+type forceRequest struct {
+	Minutes int `json:"minutes"`
+}
+
+func (s *Server) handleForce(w http.ResponseWriter, r *http.Request) {
+	var req forceRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	cfg, err := config.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if cfg.Secondary.Provider == "" || cfg.Secondary.Provider == config.ProviderNone {
+		http.Error(w, "no secondary provider is configured, so there is nothing to fail over to", http.StatusBadRequest)
+		return
+	}
+	if req.Minutes <= 0 {
+		req.Minutes = 15
+	}
+	if req.Minutes > 720 {
+		http.Error(w, "maximum is 720 minutes", http.StatusBadRequest)
+		return
+	}
+	until := s.gateway.ForceOverflow(time.Duration(req.Minutes)*time.Minute, "forced from the admin UI")
+	writeJSON(w, map[string]string{
+		"ok": fmt.Sprintf("inference now goes to %s (%s) until %s. Clear it any time with Clear overflow.",
+			cfg.Secondary.Provider, cfg.Secondary.Model, until.Format("15:04:05")),
+	})
 }
 
 type configRequest struct {

@@ -67,3 +67,25 @@ func TestResolveRoutesIsIdempotent(t *testing.T) {
 		t.Fatalf("ResolveRoutes must be idempotent: got %+v then %+v", provider, cfg.Primary)
 	}
 }
+
+// `configure --secondary none` used to be a silent no-op: it cleared Secondary
+// to the zero value, which writes nothing (omitempty), and ResolveRoutes then
+// rebuilt a bedrock secondary from the defaults Load seeds in. The marker must
+// survive a save/load round trip.
+func TestSecondaryNoneSurvivesResolveRoutes(t *testing.T) {
+	cfg := Default() // Default() supplies BedrockBaseURL, which is what used to resurrect it
+	cfg.Secondary = RouteConfig{Provider: ProviderNone}
+	cfg.BedrockBaseURL = ""
+	cfg.ResolveRoutes()
+	if cfg.Secondary.Provider != ProviderNone {
+		t.Fatalf("secondary = %q, want %q", cfg.Secondary.Provider, ProviderNone)
+	}
+
+	// Even with the legacy field still populated, an explicit none wins.
+	cfg2 := Default()
+	cfg2.Secondary = RouteConfig{Provider: ProviderNone}
+	cfg2.ResolveRoutes()
+	if cfg2.Secondary.Provider != ProviderNone {
+		t.Errorf("legacy bedrock_base_url resurrected the secondary: got %q", cfg2.Secondary.Provider)
+	}
+}
