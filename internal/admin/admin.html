@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Burst</title>
+<!-- Inline so the page needs no network and the browser stops asking for /favicon.ico. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='13'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #fbfcfd;
+    --border: #e3e6ea;
+    --text: #12161c;
+    --muted: #626b78;
+    --faint: #8b95a3;
+    --accent: #3b5bdb;
+    --ok: #2b8a5c;
+    --ok-bg: #e6f4ec;
+    --warn: #a86520;
+    --warn-bg: #fdf3e4;
+    --bad: #b4342c;
+    --bad-bg: #fdecea;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(16,22,32,.05), 0 4px 12px rgba(16,22,32,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --panel: #171a20;
+      --panel-2: #1c2027;
+      --border: #282d36;
+      --text: #e8ecf1;
+      --muted: #98a2b1;
+      --faint: #6d7784;
+      --accent: #7c93f5;
+      --ok: #5fd39b;
+      --ok-bg: #14301f;
+      --warn: #e0a75e;
+      --warn-bg: #33240f;
+      --bad: #f08579;
+      --bad-bg: #3a1a16;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 22px 64px; }
+
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
+  h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+  .ver { color: var(--faint); font: 12px var(--mono); }
+  .spacer { flex: 1; }
+  .updated { color: var(--faint); font-size: 12px; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    border: 1px solid transparent;
+  }
+  .badge.ok   { background: var(--ok-bg);   color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+  .badge.bad  { background: var(--bad-bg);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 25%, transparent); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); margin-bottom: 22px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 15px 16px; box-shadow: var(--shadow);
+  }
+  .card h3 { margin: 0 0 9px; font-size: 11px; font-weight: 600; text-transform: uppercase;
+             letter-spacing: .07em; color: var(--faint); }
+  .stat { font-size: 25px; font-weight: 640; letter-spacing: -.02em; line-height: 1.1; }
+  .stat small { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+  .sub { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
+
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+            box-shadow: var(--shadow); margin-bottom: 18px; overflow: hidden; }
+  section > h2 { margin: 0; padding: 13px 16px; font-size: 13px; font-weight: 620;
+                 border-bottom: 1px solid var(--border); background: var(--panel-2);
+                 display: flex; align-items: center; gap: 10px; }
+  section > h2 .hint { font-weight: 400; color: var(--faint); font-size: 12px; }
+  .body { padding: 16px; }
+
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+  input, select {
+    font: 13px/1.4 var(--mono); color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; min-width: 210px;
+  }
+  input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
+
+  button {
+    font: 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 550;
+    padding: 8px 14px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); cursor: pointer;
+  }
+  button:hover { border-color: var(--faint); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.danger { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 30%, transparent); color: var(--bad); }
+  button.danger:hover { border-color: var(--bad); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--faint); font-weight: 600; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); }
+  .scroll { overflow-x: auto; }
+
+  .pill { font: 11px var(--mono); padding: 1.5px 7px; border-radius: 5px; border: 1px solid var(--border);
+          background: var(--panel-2); color: var(--muted); }
+  .pill.p { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); background: var(--ok-bg); }
+  .pill.s { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); background: var(--warn-bg); }
+  .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); }
+
+  details.resp { border-bottom: 1px solid var(--border); }
+  details.resp:last-child { border-bottom: none; }
+  details.resp > summary {
+    cursor: pointer; padding: 9px 14px; display: flex; gap: 12px; align-items: center;
+    font-size: 12.5px; list-style: none;
+  }
+  details.resp > summary::-webkit-details-marker { display: none; }
+  details.resp > summary::before { content: "›"; color: var(--faint); transition: transform .12s; display: inline-block; }
+  details.resp[open] > summary::before { transform: rotate(90deg); }
+  details.resp > summary:hover { background: var(--panel-2); }
+  .hdrs { padding: 4px 14px 14px 32px; }
+  .hdrs div { display: grid; grid-template-columns: minmax(210px, auto) 1fr; gap: 12px; padding: 3px 0;
+              font: 12px var(--mono); border-top: 1px dashed var(--border); }
+  .hdrs div:first-child { border-top: none; }
+  .hdrs .k { color: var(--muted); }
+  .hdrs .v { word-break: break-all; }
+  .hl { color: var(--accent); font-weight: 600; }
+
+  .note { padding: 11px 13px; border-radius: 8px; font-size: 12.5px; margin-top: 13px; white-space: pre-wrap; }
+  .note.ok  { background: var(--ok-bg);   color: var(--ok); }
+  .note.warn{ background: var(--warn-bg); color: var(--warn); }
+  .note.bad { background: var(--bad-bg);  color: var(--bad); }
+  .note code { font-family: var(--mono); font-size: 12px; }
+  .empty { padding: 26px 16px; text-align: center; color: var(--faint); font-size: 13px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12.5px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; font-family: var(--mono); font-size: 12px; word-break: break-all; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Claude Burst</h1>
+    <span class="ver" id="ver"></span>
+    <span id="routeBadge"></span>
+    <span class="spacer"></span>
+    <span class="updated" id="updated"></span>
+  </header>
+
+  <div class="grid" id="cards"></div>
+
+  <section>
+    <h2>Configuration <span class="hint">saved to config.json; the gateway reads it at startup</span></h2>
+    <div class="body">
+      <div class="row">
+        <div>
+          <label for="secModel">Secondary model</label>
+          <input id="secModel" placeholder="zai-org/GLM-5.3">
+        </div>
+        <div>
+          <label for="strategy">Failover strategy</label>
+          <select id="strategy">
+            <option value="subscription-limit">subscription-limit</option>
+            <option value="metered-failures">metered-failures</option>
+            <option value="subscription-limit+metered-failures">subscription-limit + metered-failures</option>
+            <option value="none">none</option>
+          </select>
+        </div>
+        <div>
+          <label for="mode">Intercept mode</label>
+          <select id="mode">
+            <option value="base-url">base-url (no Remote Control)</option>
+            <option value="transparent">transparent (keeps Remote Control)</option>
+          </select>
+        </div>
+        <button class="primary" id="save">Save</button>
+      </div>
+      <div id="cfgNote"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Actions</h2>
+    <div class="body">
+      <div class="row">
+        <button id="reset">Clear overflow now</button>
+        <button id="restart">Restart gateway</button>
+        <button class="danger" id="revert">Revert to normal Claude</button>
+      </div>
+      <div id="actNote"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Recent responses <span class="hint">last 20, in memory only &mdash; headers that drive failover are highlighted</span></h2>
+    <div id="responses"><div class="empty">No responses yet.</div></div>
+  </section>
+
+  <section>
+    <h2>Recent requests <span class="hint">metadata only &mdash; no prompt or response content is stored or shown</span></h2>
+    <div class="scroll" id="requests"><div class="empty">No requests yet.</div></div>
+  </section>
+</div>
+
+<script>
+const H = {"X-Claude-Burst-Admin": "1", "Content-Type": "application/json"};
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// These are the headers that actually decide whether the gateway fails over.
+const KEY_HEADERS = /^(anthropic-ratelimit|retry-after|x-should-retry)/;
+
+let dirty = false;
+["secModel","strategy","mode"].forEach(id => $(id).addEventListener("input", () => dirty = true));
+
+function note(el, cls, msg) { el.innerHTML = `<div class="note ${cls}">${esc(msg)}</div>`; }
+
+function money(n) { return "$" + (n || 0).toFixed(2); }
+function num(n) { return (n || 0).toLocaleString(); }
+
+async function post(path, body) {
+  const r = await fetch(path, {method: "POST", headers: H, body: JSON.stringify(body || {})});
+  const text = await r.text();
+  if (!r.ok) throw new Error(text.trim() || r.statusText);
+  try { return JSON.parse(text); } catch { return {}; }
+}
+
+function renderCards(s) {
+  const rc = s.intercept.remote_control_expected;
+  const modeTransparent = s.intercept.mode === "transparent";
+  // Report what is actually true rather than what the mode implies: in
+  // base-url mode the variable is only set once `enable` has run, and saying
+  // otherwise would misreport a gateway that is configured but not enabled.
+  let interceptDetail;
+  if (modeTransparent) {
+    interceptDetail = `CA trusted: ${s.intercept.ca_trusted ? "yes" : "NO"} · hosts entry: ${s.intercept.hosts_entry ? "yes" : "NO"}`;
+  } else if (s.intercept.settings_base_url) {
+    interceptDetail = "ANTHROPIC_BASE_URL is set to " + s.intercept.settings_base_url;
+  } else {
+    interceptDetail = "ANTHROPIC_BASE_URL unset — the gateway is not enabled";
+  }
+
+  $("cards").innerHTML = `
+    <div class="card">
+      <h3>Routing</h3>
+      <div class="stat">${s.overflow ? "Secondary" : "Primary"}</div>
+      <div class="sub">${esc(s.overflow ? (s.secondary.provider || "—") : (s.primary.provider || "—"))}${
+        s.until ? " · until " + esc(s.until) : ""}</div>
+    </div>
+    <div class="card">
+      <h3>Remote Control</h3>
+      <div class="stat">${rc ? "Available" : "Disabled"}</div>
+      <div class="sub">${esc(interceptDetail)}</div>
+    </div>
+    <div class="card">
+      <h3>Last 24 hours</h3>
+      <div class="stat">${num(s.today.Requests)} <small>requests</small></div>
+      <div class="sub">${num(s.today.InputTokens)} in · ${num(s.today.OutputTokens)} out · ${money(s.today.APIEquivalentUSD)}</div>
+    </div>
+    <div class="card">
+      <h3>All time</h3>
+      <div class="stat">${money(s.totals.APIEquivalentUSD)}</div>
+      <div class="sub">${num(s.totals.Requests)} requests · ${num(s.totals.PrimaryRequests)} primary · ${num(s.totals.SecondaryRequests)} secondary</div>
+    </div>`;
+
+  $("routeBadge").innerHTML = s.overflow
+    ? `<span class="badge warn"><span class="dot"></span>OVERFLOW → SECONDARY</span>`
+    : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
+  $("ver").textContent = "v" + s.version + " · " + s.gateway;
+}
+
+function renderRequests(rows) {
+  if (!rows.length) { $("requests").innerHTML = `<div class="empty">No requests yet.</div>`; return; }
+  $("requests").innerHTML = `<table><thead><tr>
+      <th>Time</th><th>Slot</th><th>Model</th><th>Status</th>
+      <th class="num">ms</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th><th>Note</th>
+    </tr></thead><tbody>${rows.map(e => {
+      const slot = e.slot || (e.route === "anthropic" ? "primary" : "secondary");
+      return `<tr>
+        <td class="mono">${esc(new Date(e.time).toLocaleTimeString())}</td>
+        <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
+        <td class="mono">${esc(e.model || "—")}</td>
+        <td class="mono st-${String(e.http_status)[0]}">${esc(e.http_status)}</td>
+        <td class="num">${num(e.duration_ms)}</td>
+        <td class="num">${num(e.input_tokens)}</td>
+        <td class="num">${num(e.output_tokens)}</td>
+        <td class="num">${e.api_equivalent_usd ? money(e.api_equivalent_usd) : "—"}</td>
+        <td>${esc(e.note || "")}</td>
+      </tr>`;
+    }).join("")}</tbody></table>`;
+}
+
+function renderResponses(rows) {
+  if (!rows.length) {
+    $("responses").innerHTML = `<div class="empty">No responses captured yet. This ring is in memory, so it starts empty after a restart.</div>`;
+    return;
+  }
+  $("responses").innerHTML = rows.map(r => {
+    const keys = Object.keys(r.headers || {}).sort();
+    const hdrs = keys.length
+      ? keys.map(k => `<div><span class="k ${KEY_HEADERS.test(k) ? "hl" : ""}">${esc(k)}</span><span class="v">${esc(r.headers[k])}</span></div>`).join("")
+      : `<div><span class="k">(no headers matched the allowlist)</span><span class="v"></span></div>`;
+    const flagged = keys.filter(k => KEY_HEADERS.test(k)).length;
+    return `<details class="resp">
+      <summary>
+        <span class="mono">${esc(new Date(r.time).toLocaleTimeString())}</span>
+        <span class="pill ${r.slot === "primary" ? "p" : "s"}">${esc(r.slot || "?")}</span>
+        <span class="mono st-${String(r.status)[0]}">${esc(r.status)}</span>
+        <span class="mono">${esc(r.method)} ${esc(r.path)}</span>
+        <span class="spacer"></span>
+        <span class="pill">${keys.length} hdr${flagged ? " · " + flagged + " rate-limit" : ""}</span>
+      </summary>
+      <div class="hdrs">${hdrs}</div>
+    </details>`;
+  }).join("");
+}
+
+async function refresh() {
+  try {
+    const [s, reqs, resps] = await Promise.all([
+      fetch("/api/state").then(r => r.json()),
+      fetch("/api/requests?limit=50").then(r => r.json()),
+      fetch("/api/responses").then(r => r.json()),
+    ]);
+    renderCards(s);
+    renderRequests(reqs);
+    renderResponses(resps);
+    // Never clobber something the user is halfway through typing.
+    if (!dirty) {
+      $("secModel").value = s.secondary.model || "";
+      $("strategy").value = s.primary.strategy || "subscription-limit";
+      $("mode").value = s.intercept.mode || "base-url";
+    }
+    $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("updated").textContent = "gateway unreachable — " + e.message;
+  }
+}
+
+$("save").onclick = async () => {
+  try {
+    const r = await post("/api/config", {
+      secondary_model: $("secModel").value.trim(),
+      failover_strategy: $("strategy").value,
+      intercept_mode: $("mode").value,
+    });
+    dirty = false;
+    note($("cfgNote"), "ok", r.ok + (r.restart ? "\n" + r.restart : ""));
+    refresh();
+  } catch (e) { note($("cfgNote"), "bad", e.message); }
+};
+
+$("reset").onclick = async () => {
+  try { note($("actNote"), "ok", (await post("/api/reset")).ok); refresh(); }
+  catch (e) { note($("actNote"), "bad", e.message); }
+};
+
+$("restart").onclick = async () => {
+  if (!confirm("Restart the gateway?\n\nIn-flight requests will be dropped. If it is managed by launchd it comes straight back; if you started it by hand, it will simply stop.")) return;
+  try {
+    note($("actNote"), "warn", (await post("/api/restart")).ok);
+    setTimeout(refresh, 2500);
+  } catch (e) { note($("actNote"), "bad", e.message); }
+};
+
+$("revert").onclick = async () => {
+  if (!confirm("Revert to normal Claude?\n\nRemoves ANTHROPIC_BASE_URL from settings.json and the local CA from the trust bundle. Nothing else in settings.json is touched.\n\nYou will need to restart Claude Code.")) return;
+  try {
+    const r = await post("/api/revert");
+    let msg = r.steps.map(s => "• " + s).join("\n");
+    if (r.needs_root) msg += "\n\n⚠ " + r.warning + "\n\nRun: " + r.root_command;
+    note($("actNote"), r.needs_root ? "warn" : "ok", msg);
+    refresh();
+  } catch (e) { note($("actNote"), "bad", e.message); }
+};
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

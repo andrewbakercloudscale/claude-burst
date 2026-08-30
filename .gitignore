@@ -17,3 +17,6 @@ state.json
 metrics.jsonl
 *.log
 .env
+
+# Playwright MCP scratch output
+.playwright-mcp/

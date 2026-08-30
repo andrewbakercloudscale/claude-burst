@@ -65,6 +65,7 @@ type Server struct {
 	statePath         string
 	state             State
 	mu                sync.RWMutex
+	recent            recentRing
 	logger            *log.Logger
 }
 
@@ -408,6 +409,13 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	}
 
 	resp, err := s.clientFor(in.URL.Path).Do(req)
+	if resp != nil {
+		s.recent.add(RecentResponse{
+			Time: start, RequestID: rid, Method: in.Method, Path: in.URL.Path,
+			Slot: slot, Route: p.Name(), Model: model, Status: resp.StatusCode,
+			DurationMS: time.Since(start).Milliseconds(), Headers: filterHeaders(resp.Header),
+		})
+	}
 	if err != nil {
 		if allowFailover {
 			if d := fd.OnError(err); d.Failover {
