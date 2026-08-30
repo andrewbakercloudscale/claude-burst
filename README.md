@@ -215,6 +215,11 @@ Any local process — including a browser tab, since `POST /v1/messages` with a 
 
 Transport-error and non-failover-error log lines include the upstream `error.Error()` string, which can contain the request URL (path and query, not host credentials — Go's `url.Error` redacts userinfo). Prompts and response bodies are never included per the metadata-only design, but treat `claude-burst.log` as containing request metadata, not as fully opaque.
 
+## Roadmap (planned, not yet built)
+
+- **OpenAI-compatible secondary provider.** A secondary that speaks OpenAI's chat-completions wire format (e.g. an endpoint serving GLM 5.3) is planned, but does **not exist in this codebase yet**. It is a materially different job from the existing `bedrock` provider: `bedrock` and the two Anthropic-passthrough providers all speak Anthropic's Messages wire format natively, so today's router only needs to build an outbound request (`Provider.Prepare`) and can relay the response back byte-for-byte (`Server.relay` in `internal/router/router.go`), only peeking at SSE lines for token counts. An OpenAI-compatible provider needs real translation in both directions — request body shape (`system`/`messages`/`tools` don't map 1:1), non-streaming response shape, the **streaming SSE chunk format** (OpenAI's `delta`-based chunks vs. Anthropic's `message_start`/`content_block_delta`/`message_stop` event sequence), and tool-call schema (`tool_use` blocks vs. `tool_calls`). This needs its own design pass once the actual endpoint/auth/model-id details are known — don't assume it's a drop-in `NewXProvider()` like Bedrock was.
+- **Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected.** It would require reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`) — exactly the pattern this README's design principles (and the source blog post) call out as why other third-party tools have been blocked by Anthropic. Not planned.
+
 ## Testing
 
 ```bash
