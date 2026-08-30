@@ -58,6 +58,15 @@ const (
 	InterceptTransparent = "transparent"
 )
 
+// ProviderNone marks a slot as deliberately empty.
+//
+// It has to be an explicit value rather than an absent one. The legacy flat
+// fields (BedrockBaseURL and friends) are seeded from Default() on every Load
+// and are `omitempty`, so a secondary cleared to the zero RouteConfig wrote
+// nothing to disk and ResolveRoutes then rebuilt it from those defaults on the
+// next load -- `configure --secondary none` silently did nothing at all.
+const ProviderNone = "none"
+
 // InterceptConfig is opt-in. A config.json with no "intercept" block behaves
 // exactly as it did before this existed.
 type InterceptConfig struct {
@@ -152,6 +161,9 @@ func (c *Config) ResolveRoutes() {
 			BaseURL:          c.AnthropicBaseURL,
 			FailoverStrategy: "subscription-limit",
 		}
+	}
+	if c.Secondary.Provider == ProviderNone {
+		c.Secondary = RouteConfig{Provider: ProviderNone}
 	}
 	if c.Secondary.Provider == "" && c.BedrockBaseURL != "" {
 		c.Secondary = RouteConfig{

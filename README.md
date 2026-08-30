@@ -138,7 +138,8 @@ claude-burst keychain-set --provider together # OpenAI-compatible: reads TOGETHE
 claude-burst enable
 claude-burst disable
 claude-burst status
-claude-burst reset
+claude-burst reset                           # back to primary now
+claude-burst force-secondary --minutes 15    # route to the secondary on purpose (testing)
 claude-burst stats --days 30
 claude-burst version
 ```
@@ -325,6 +326,34 @@ Watch for `live rdr rule : MISSING` while the hosts entry is present. That is th
 state — DNS redirects but nothing listens — and the fix is `remove`.
 
 See [ROLLBACK.md](ROLLBACK.md) for undoing every part of this independently.
+
+## Forcing the secondary, and the admin UI
+
+A subscription primary only fails over on genuine exhaustion signals, which cannot be
+provoked on demand — so the secondary path stays unexercised until the day it is needed,
+which is the worst possible moment to find out it is misconfigured. To exercise it:
+
+```bash
+claude-burst force-secondary --minutes 15   # inference goes to the secondary
+claude-burst reset                          # back to the primary immediately
+```
+
+The forced state is recorded with `limit_claim: "forced"`, so neither the metrics nor
+`status` ever imply Anthropic reported a limit it did not.
+
+A local control panel runs alongside the gateway on `127.0.0.1:7788` (disable with
+`claude-burst configure --admin-listen off`). It shows routing state, usage, the last 50
+requests, and the last 20 upstream responses **with their headers** — the
+`anthropic-ratelimit-*` ones are what actually decide failover, so overflow behaviour
+becomes debuggable rather than mysterious. It can also force/clear overflow, change the
+secondary model and failover strategy, and revert Claude Code to the stock endpoint.
+
+It binds loopback and has no login, which is not by itself safe: a malicious page can point
+a hostname it controls at `127.0.0.1` and drive the UI from your own browser. Two defences
+apply to every request — the `Host` header must name loopback, and mutating requests must
+carry a custom header, which forces a CORS preflight the server never answers. Response
+headers are held in memory only and filtered through an allowlist; request rows are
+metadata only, never prompt or response content.
 
 ## Testing
 

@@ -199,7 +199,17 @@
     <h2>Actions</h2>
     <div class="body">
       <div class="row">
-        <button id="reset">Clear overflow now</button>
+        <div>
+          <label for="forceMins">Force secondary for</label>
+          <select id="forceMins" style="min-width:120px">
+            <option value="5">5 minutes</option>
+            <option value="15" selected>15 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="240">4 hours</option>
+          </select>
+        </div>
+        <button id="force">Force → secondary</button>
+        <button id="reset">Back to primary</button>
         <button id="restart">Restart gateway</button>
         <button class="danger" id="revert">Revert to normal Claude</button>
       </div>
@@ -363,6 +373,14 @@ $("save").onclick = async () => {
     note($("cfgNote"), "ok", r.ok + (r.restart ? "\n" + r.restart : ""));
     refresh();
   } catch (e) { note($("cfgNote"), "bad", e.message); }
+};
+
+$("force").onclick = async () => {
+  try {
+    const r = await post("/api/force", {minutes: parseInt($("forceMins").value, 10)});
+    note($("actNote"), "warn", r.ok);
+    refresh();
+  } catch (e) { note($("actNote"), "bad", e.message); }
 };
 
 $("reset").onclick = async () => {

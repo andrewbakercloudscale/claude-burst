@@ -82,7 +82,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	}
 
 	var secondary Provider
-	if cfg.Secondary.Provider != "" {
+	if cfg.Secondary.Provider != "" && cfg.Secondary.Provider != config.ProviderNone {
 		secondary, err = buildProvider(cfg.Secondary, cfg.KeychainService, cfg.ModelMap)
 		if err != nil {
 			return nil, fmt.Errorf("secondary provider: %w", err)
@@ -252,6 +252,28 @@ func (s *Server) inOverflow(now time.Time) bool {
 	until := s.state.OverflowUntil
 	s.mu.RUnlock()
 	return until > now.Unix()
+}
+
+// ForceOverflow routes inference to the secondary for d, regardless of what
+// the upstream is actually saying.
+//
+// This exists because a subscription primary only fails over on genuine
+// exhaustion signals, which cannot be provoked on demand -- so without it the
+// secondary path is untestable until the day it is needed, which is the worst
+// possible moment to discover it is misconfigured. The claim is recorded as
+// "forced" so the metrics and status output never imply Anthropic reported a
+// limit that it did not.
+func (s *Server) ForceOverflow(d time.Duration, reason string) time.Time {
+	if d <= 0 {
+		d = 15 * time.Minute
+	}
+	until := time.Now().Add(d)
+	s.mu.Lock()
+	s.state = State{OverflowUntil: until.Unix(), LimitClaim: "forced", LastReason: reason}
+	s.saveStateLocked()
+	s.mu.Unlock()
+	s.logger.Printf("FORCED to secondary until %s reason=%s", until.Format(time.RFC3339), reason)
+	return until
 }
 
 func (s *Server) activateOverflow(resetAt int64, claim, reason string) {

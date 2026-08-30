@@ -42,6 +42,8 @@ func main() {
 		status()
 	case "reset":
 		reset()
+	case "force-secondary":
+		forceSecondary(os.Args[2:])
 	case "stats":
 		stats(os.Args[2:])
 	case "version", "--version", "-v":
@@ -65,7 +67,8 @@ Commands:
   enable            Point Claude Code at the local gateway via ~/.claude/settings.json
   disable           Remove Claude Burst from Claude Code settings
   status            Show routing state
-  reset             Clear overflow state immediately
+  reset             Clear overflow state immediately (back to primary)
+  force-secondary   Route inference to the secondary for a while (testing)
   stats             Summarize local routing/token metrics
   version           Print version
 
@@ -253,7 +256,8 @@ func configure(args []string) {
 	if *secondary != "" {
 		switch *secondary {
 		case "none":
-			cfg.Secondary = config.RouteConfig{}
+			// Explicit marker, not the zero value: see config.ProviderNone.
+			cfg.Secondary = config.RouteConfig{Provider: config.ProviderNone}
 			cfg.BedrockBaseURL = ""
 		case "openai-compatible":
 			base := *secondaryBaseURL
@@ -442,6 +446,31 @@ func reset() {
 	}
 	srv.ClearOverflow()
 	fmt.Println("overflow state cleared; next inference request will try the primary provider")
+}
+
+// forceSecondary makes the untestable testable: a subscription primary only
+// fails over on real exhaustion signals, so without this the secondary path
+// stays unexercised until the day it is needed.
+func forceSecondary(args []string) {
+	fs := flag.NewFlagSet("force-secondary", flag.ExitOnError)
+	minutes := fs.Int("minutes", 15, "how long to stay on the secondary")
+	_ = fs.Parse(args)
+	cfg, err := config.Load()
+	if err != nil {
+		fatal(err)
+	}
+	if cfg.Secondary.Provider == "" || cfg.Secondary.Provider == config.ProviderNone {
+		fatal(fmt.Errorf("no secondary provider configured, so there is nothing to fail over to"))
+	}
+	statePath, _ := config.StatePath()
+	metricsPath, _ := config.MetricsPath()
+	srv, err := router.New(cfg, statePath, metricsPath, log.New(os.Stderr, "", 0))
+	if err != nil {
+		fatal(err)
+	}
+	until := srv.ForceOverflow(time.Duration(*minutes)*time.Minute, "forced from the CLI")
+	fmt.Printf("inference now goes to %s (%s) until %s\nback to primary at any time with: claude-burst reset\n",
+		cfg.Secondary.Provider, cfg.Secondary.Model, until.Format(time.RFC3339))
 }
 
 func stats(args []string) {
