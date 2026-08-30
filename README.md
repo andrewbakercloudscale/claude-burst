@@ -133,7 +133,8 @@ claude-burst serve
 claude-burst configure --region us-east-1
 claude-burst configure --primary anthropic-api-key --secondary bedrock
 claude-burst configure --secondary none
-claude-burst keychain-set
+claude-burst keychain-set                    # Bedrock: reads AWS_BEARER_TOKEN_BEDROCK
+claude-burst keychain-set --provider together # OpenAI-compatible: reads TOGETHER_API_KEY
 claude-burst enable
 claude-burst disable
 claude-burst status
@@ -215,10 +216,25 @@ Any local process — including a browser tab, since `POST /v1/messages` with a 
 
 Transport-error and non-failover-error log lines include the upstream `error.Error()` string, which can contain the request URL (path and query, not host credentials — Go's `url.Error` redacts userinfo). Prompts and response bodies are never included per the metadata-only design, but treat `claude-burst.log` as containing request metadata, not as fully opaque.
 
-## Roadmap (planned, not yet built)
+## OpenAI-compatible secondary (e.g. Together AI / GLM)
 
-- **OpenAI-compatible secondary provider.** A secondary that speaks OpenAI's chat-completions wire format (e.g. an endpoint serving GLM 5.3) is planned, but does **not exist in this codebase yet**. It is a materially different job from the existing `bedrock` provider: `bedrock` and the two Anthropic-passthrough providers all speak Anthropic's Messages wire format natively, so today's router only needs to build an outbound request (`Provider.Prepare`) and can relay the response back byte-for-byte (`Server.relay` in `internal/router/router.go`), only peeking at SSE lines for token counts. An OpenAI-compatible provider needs real translation in both directions — request body shape (`system`/`messages`/`tools` don't map 1:1), non-streaming response shape, the **streaming SSE chunk format** (OpenAI's `delta`-based chunks vs. Anthropic's `message_start`/`content_block_delta`/`message_stop` event sequence), and tool-call schema (`tool_use` blocks vs. `tool_calls`). This needs its own design pass once the actual endpoint/auth/model-id details are known — don't assume it's a drop-in `NewXProvider()` like Bedrock was.
-- **Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected.** It would require reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`) — exactly the pattern this README's design principles (and the source blog post) call out as why other third-party tools have been blocked by Anthropic. Not planned.
+A secondary can now be an OpenAI-compatible chat-completions endpoint instead of Bedrock — e.g. Together AI serving GLM. Unlike `bedrock` and the two Anthropic-passthrough providers, which all speak Anthropic's Messages wire format natively and only need `Server.relay` to stream the response back byte-for-byte, this provider (`internal/router/provider_openai.go`) does real bidirectional translation: request body shape (`system`/`messages`/`tools`, including splitting Anthropic's nested `tool_result` blocks into OpenAI's sibling `tool` messages), non-streaming and **streaming** response shape (OpenAI's `delta`-based SSE chunks translated live into Anthropic's `message_start`/`content_block_start`/`content_block_delta`/`content_block_stop`/`message_delta`/`message_stop` event sequence, including parallel tool calls), and tool-call schema (`tool_use` blocks ↔ `tool_calls`). Verified against a real Together AI + GLM 5.3 endpoint, including a genuine streaming tool call.
+
+Not translated (dropped, not an error): images/documents in message content, Anthropic extended-thinking (`thinking`/`redacted_thinking`) blocks in history, and prompt-caching `cache_control` hints — none have a meaningful equivalent on a generic OpenAI-compatible endpoint, and Claude Code's ordinary coding-agent traffic is overwhelmingly text + tool-use.
+
+Configure it as `secondary` in `config.json`:
+```json
+{
+  "secondary": {
+    "provider": "openai-compatible",
+    "base_url": "https://api.together.xyz/v1",
+    "model": "zai-org/GLM-5.3"
+  }
+}
+```
+Store the API key with `claude-burst keychain-set --provider together` (reads `TOGETHER_API_KEY`; the key name is provider-specific, not Together-specific — a different OpenAI-compatible vendor would use its own env var).
+
+**Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected**, in favor of the above. It would have required reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`) — exactly the pattern this README's design principles (and the source blog post) call out as why other third-party tools have been blocked by Anthropic. Not planned.
 
 ## Testing
 

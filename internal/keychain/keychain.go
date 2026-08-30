@@ -20,7 +20,7 @@ func account() string {
 
 func Store(service, value string) error {
 	if value == "" {
-		return fmt.Errorf("empty Bedrock key")
+		return fmt.Errorf("empty key")
 	}
 	cmd := exec.Command("/usr/bin/security", "add-generic-password", "-U", "-a", account(), "-s", service, "-w", value)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -29,18 +29,25 @@ func Store(service, value string) error {
 	return nil
 }
 
-func Load(service string) (string, error) {
-	if v := os.Getenv("AWS_BEARER_TOKEN_BEDROCK"); v != "" {
+// Load returns the secret for service, checking envVar first and falling
+// back to macOS Keychain. envVar is caller-specified (rather than hardcoded
+// here) because different providers use different env vars for the same
+// override convenience -- e.g. AWS_BEARER_TOKEN_BEDROCK for the "bedrock"
+// service, TOGETHER_API_KEY for a "claude-burst-together" service. A single
+// hardcoded env var here would silently hand one provider's secret to
+// another provider's Load call.
+func Load(service, envVar string) (string, error) {
+	if v := os.Getenv(envVar); v != "" {
 		return v, nil
 	}
 	cmd := exec.Command("/usr/bin/security", "find-generic-password", "-a", account(), "-s", service, "-w")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("Bedrock key not found in env or macOS Keychain")
+		return "", fmt.Errorf("key not found in %s or macOS Keychain (service %q)", envVar, service)
 	}
 	v := strings.TrimSpace(string(out))
 	if v == "" {
-		return "", fmt.Errorf("Bedrock key is empty")
+		return "", fmt.Errorf("key is empty (service %q)", service)
 	}
 	return v, nil
 }

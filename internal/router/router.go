@@ -129,6 +129,19 @@ func buildProvider(rc config.RouteConfig, defaultKeychainService string, default
 			mm = defaultModelMap
 		}
 		return NewBedrockProvider(base, mm, ks), nil
+	case "openai-compatible":
+		base, err := validateBaseURL("openai-compatible", rc.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		if rc.Model == "" {
+			return nil, fmt.Errorf("openai-compatible provider requires a configured model")
+		}
+		ks := rc.KeychainService
+		if ks == "" {
+			ks = "claude-burst-together"
+		}
+		return NewOpenAICompatibleProvider("together", base, rc.Model, ks, "TOGETHER_API_KEY"), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", rc.Provider)
 	}
@@ -373,7 +386,18 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		if fd != nil {
 			fd.OnSuccess()
 		}
-		tok := s.relay(w, resp, model)
+		var tok tokenUsage
+		if t, ok := p.(Translator); ok {
+			tok, err = t.TranslateResponse(w, resp, model)
+			if err != nil {
+				// The response has likely already started writing to the
+				// client by this point (translation is itself streaming);
+				// there's nothing safe left to do but log it.
+				s.logger.Printf("req=%s error stage=translate_response route=%s model=%q err=%v", rid, p.Name(), model, err)
+			}
+		} else {
+			tok = s.relay(w, resp, model)
+		}
 		s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
 			rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
 		s.writeMetric(in, slot, p.Name(), model, resp.StatusCode, start, tok, "", 0, note)

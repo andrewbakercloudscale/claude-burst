@@ -3,6 +3,7 @@ package router
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -565,6 +566,88 @@ func TestMeteredFailoverReplaysAfterSustainedFailures(t *testing.T) {
 	}
 	if primaryCalls != 3 {
 		t.Fatalf("expected exactly 3 primary calls, got %d", primaryCalls)
+	}
+}
+
+// TestOpenAICompatibleFailoverTranslatesResponse is the httptest analog of
+// TestFailoverReplaysRequestToBedrock for a translating secondary: a
+// subscription-limit rejection on the primary must still replay to the
+// secondary, but the secondary's OpenAI-shaped response must come back to
+// the client correctly translated into Anthropic's Messages format, not
+// relayed raw.
+func TestOpenAICompatibleFailoverTranslatesResponse(t *testing.T) {
+	t.Setenv("TOGETHER_API_KEY", "test-together-key")
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.Header().Set("anthropic-ratelimit-unified-representative-claim", "five_hour")
+		w.Header().Set("anthropic-ratelimit-unified-reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"limit"}}`))
+	}))
+	defer primary.Close()
+
+	togetherCalled := false
+	together := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		togetherCalled = true
+		if got := r.Header.Get("Authorization"); got != "Bearer test-together-key" {
+			t.Fatalf("bad auth %q", got)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		var oaiReq map[string]any
+		if err := json.Unmarshal(b, &oaiReq); err != nil {
+			t.Fatalf("outbound body not JSON: %v", err)
+		}
+		if oaiReq["model"] != "zai-org/GLM-5.3" {
+			t.Fatalf("model not remapped: %v", oaiReq["model"])
+		}
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hi from GLM"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3}}`))
+	}))
+	defer together.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primary.URL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{Provider: "openai-compatible", BaseURL: together.URL, Model: "zai-org/GLM-5.3", KeychainService: "claude-burst-together-test"}
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer oauth-token")
+	s.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !togetherCalled {
+		t.Fatal("Together was not called")
+	}
+	if !s.inOverflow(time.Now()) {
+		t.Fatal("overflow state was not activated")
+	}
+
+	var anthResp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &anthResp); err != nil {
+		t.Fatalf("client did not receive valid JSON: %v\nbody=%s", err, rr.Body.String())
+	}
+	if anthResp["type"] != "message" || anthResp["role"] != "assistant" {
+		t.Fatalf("response is not Anthropic-shaped: %v", anthResp)
+	}
+	content, ok := anthResp["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("got content=%v", anthResp["content"])
+	}
+	block := content[0].(map[string]any)
+	if block["type"] != "text" || block["text"] != "hi from GLM" {
+		t.Fatalf("got block=%v", block)
 	}
 }
 

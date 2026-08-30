@@ -25,7 +25,8 @@ type RouteConfig struct {
 	BaseURL          string            `json:"base_url,omitempty"`
 	FailoverStrategy string            `json:"failover_strategy,omitempty"`
 	KeychainService  string            `json:"keychain_service,omitempty"`
-	ModelMap         map[string]string `json:"model_map,omitempty"`
+	ModelMap         map[string]string `json:"model_map,omitempty"` // bedrock: per-Claude-model mapping
+	Model            string            `json:"model,omitempty"`     // openai-compatible: single fixed target model
 }
 
 type MeteredFailoverConfig struct {
