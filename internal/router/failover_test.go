@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 func TestMeteredFailoverDetector_SingleFailureDoesNotTrigger(t *testing.T) {
@@ -83,6 +85,50 @@ func TestMeteredFailoverDetector_TransportErrorCounts(t *testing.T) {
 type errTest struct{ msg string }
 
 func (e errTest) Error() string { return e.msg }
+
+func TestCombinedDetector_SubscriptionSignalFiresImmediately(t *testing.T) {
+	d := newCombinedDetector(config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 3})
+	h := http.Header{}
+	h.Set("anthropic-ratelimit-unified-status", "rejected")
+	dec := d.OnResponse(http.StatusTooManyRequests, h, nil)
+	if !dec.Failover {
+		t.Fatal("a genuine subscription-exhaustion signal must fail over on the first occurrence, same as plain subscription-limit")
+	}
+}
+
+func TestCombinedDetector_BareServerErrorNeedsSustainedFailures(t *testing.T) {
+	d := newCombinedDetector(config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 3})
+	for i := 0; i < 2; i++ {
+		if dec := d.OnResponse(http.StatusInternalServerError, http.Header{}, nil); dec.Failover {
+			t.Fatalf("failure %d: a bare 500 must not fail over before min_failures is reached", i+1)
+		}
+	}
+	dec := d.OnResponse(http.StatusInternalServerError, http.Header{}, nil)
+	if !dec.Failover {
+		t.Fatal("3 bare 500s within the window must fail over under subscription-limit+metered-failures")
+	}
+}
+
+func TestCombinedDetector_TimeoutCountsTowardMeteredWindow(t *testing.T) {
+	d := newCombinedDetector(config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 2})
+	if dec := d.OnError(errTest{"context deadline exceeded"}); dec.Failover {
+		t.Fatal("a single timeout must not fail over")
+	}
+	dec := d.OnError(errTest{"context deadline exceeded"})
+	if !dec.Failover {
+		t.Fatal("sustained timeouts must fail over under subscription-limit+metered-failures")
+	}
+}
+
+func TestCombinedDetector_SuccessResetsMeteredCount(t *testing.T) {
+	d := newCombinedDetector(config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 2})
+	d.OnResponse(http.StatusInternalServerError, http.Header{}, nil)
+	d.OnSuccess()
+	dec := d.OnResponse(http.StatusInternalServerError, http.Header{}, nil)
+	if dec.Failover {
+		t.Fatal("a success must reset the metered failure count even under the combined strategy")
+	}
+}
 
 func TestMeteredFailoverDetector_ConcurrentSafe(t *testing.T) {
 	d := newMeteredFailureDetector(60, 1000000) // high threshold: exercise the lock, not the trigger

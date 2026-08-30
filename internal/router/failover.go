@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 // subscriptionLimitDetector triggers failover only when Anthropic's own
@@ -84,6 +86,40 @@ func resetFromHeaders(h http.Header, claim string) int64 {
 	return 0
 }
 
+// combinedDetector layers a metered sliding-window failure count on top of
+// subscription-limit detection. A genuine Anthropic subscription-exhaustion
+// signal still fails over immediately (via sub), so normal Max/Pro overflow
+// behavior is unchanged; in addition, a run of ordinary 429/5xx responses or
+// transport errors (timeouts, connection refused) -- an Anthropic outage,
+// not plan exhaustion -- fails over once minFailures are seen inside the
+// trailing window. This is what "subscription-limit+metered-failures" buys
+// over plain "subscription-limit": resilience to Anthropic being down, not
+// just to the included allowance running out.
+type combinedDetector struct {
+	sub     subscriptionLimitDetector
+	metered *meteredFailureDetector
+}
+
+func newCombinedDetector(mf config.MeteredFailoverConfig) *combinedDetector {
+	return &combinedDetector{metered: newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures)}
+}
+
+func (d *combinedDetector) OnResponse(status int, h http.Header, body []byte) FailoverDecision {
+	if dec := d.sub.OnResponse(status, h, body); dec.Failover {
+		return dec
+	}
+	return d.metered.OnResponse(status, h, body)
+}
+
+func (d *combinedDetector) OnError(err error) FailoverDecision {
+	// Subscription-limit signals only ever arrive on a response; a transport
+	// error (timeout, connection refused) has no headers/body to inspect, so
+	// only the metered leg can ever fire here.
+	return d.metered.OnError(err)
+}
+
+func (d *combinedDetector) OnSuccess() { d.metered.OnSuccess() }
+
 // noFailoverDetector never triggers failover. Used for the secondary slot
 // (which must never itself fail over further -- a failure never chains past
 // two hops) and for a primary explicitly configured with failover_strategy
@@ -94,7 +130,7 @@ func (noFailoverDetector) OnResponse(int, http.Header, []byte) FailoverDecision 
 	return FailoverDecision{}
 }
 func (noFailoverDetector) OnError(error) FailoverDecision { return FailoverDecision{} }
-func (noFailoverDetector) OnSuccess()                      {}
+func (noFailoverDetector) OnSuccess()                     {}
 
 // meteredFailureDetector is for primary providers with no subscription-style
 // quota signal (e.g. anthropic-api-key), where every request -- on the

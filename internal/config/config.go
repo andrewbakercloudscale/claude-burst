@@ -15,18 +15,24 @@ type ModelPrice struct {
 }
 
 // RouteConfig describes one provider slot (primary or secondary). Provider
-// selects the implementation ("oauth-passthrough", "anthropic-api-key", or
-// "bedrock"); FailoverStrategy selects how failures on THIS slot are
-// evaluated to decide whether to move traffic to the other slot
-// ("subscription-limit", "metered-failures", or "none"). KeychainService and
-// ModelMap only apply to the "bedrock" provider.
+// selects the implementation ("oauth-passthrough", "anthropic-api-key",
+// "bedrock", or "openai-compatible"); FailoverStrategy selects how failures
+// on THIS slot are evaluated to decide whether to move traffic to the other
+// slot ("subscription-limit", "metered-failures",
+// "subscription-limit+metered-failures", or "none"). KeychainService applies
+// to "bedrock" and "openai-compatible". ModelMap applies to both: for
+// "bedrock" it is required (every Claude model must have an entry); for
+// "openai-compatible" it is optional and selects "consistent failover"
+// (per-Claude-model target, falling back to Model for any unmapped model)
+// -- leaving it empty keeps the simpler "fixed failover" behavior of always
+// targeting Model regardless of which Claude model was requested.
 type RouteConfig struct {
 	Provider         string            `json:"provider,omitempty"`
 	BaseURL          string            `json:"base_url,omitempty"`
 	FailoverStrategy string            `json:"failover_strategy,omitempty"`
 	KeychainService  string            `json:"keychain_service,omitempty"`
-	ModelMap         map[string]string `json:"model_map,omitempty"` // bedrock: per-Claude-model mapping
-	Model            string            `json:"model,omitempty"`     // openai-compatible: single fixed target model
+	ModelMap         map[string]string `json:"model_map,omitempty"` // bedrock: required per-Claude-model mapping; openai-compatible: optional "consistent failover" mapping
+	Model            string            `json:"model,omitempty"`     // openai-compatible: fixed/fallback target model
 }
 
 type MeteredFailoverConfig struct {

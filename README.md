@@ -176,7 +176,7 @@ Configuration lives at `~/.config/claude-burst/config.json`. Legacy flat fields 
 ```
 
 - `primary.provider` / `secondary.provider`: `oauth-passthrough` (subscription OAuth passthrough), `anthropic-api-key` (metered, no-subscription), or `bedrock`. Neither slot is tied to a specific vendor — either can hold either provider.
-- `primary.failover_strategy`: `subscription-limit` (only Anthropic's own subscription-exhaustion headers trigger failover — a bare 429 never does), `metered-failures` (a sliding-window failure count triggers failover, since every route is metered and a single blip shouldn't move traffic), or `none` (never fail over).
+- `primary.failover_strategy`: `subscription-limit` (only Anthropic's own subscription-exhaustion headers trigger failover — a bare 429 never does), `metered-failures` (a sliding-window failure count triggers failover, since every route is metered and a single blip shouldn't move traffic), `subscription-limit+metered-failures` (both: genuine subscription exhaustion fails over immediately as above, *and* a sustained run of 429/5xx responses or transport errors/timeouts — an Anthropic outage, not plan exhaustion — fails over once `metered_failover.min_failures` are seen inside the window), or `none` (never fail over). A subscription (`oauth-passthrough`) primary defaults to `subscription-limit` alone, which by design does **not** react to a bare 500 or a timeout — set `subscription-limit+metered-failures` (`claude-burst configure --failover-strategy subscription-limit+metered-failures`) if you also want overflow on an Anthropic outage.
 - `metered_failover.window_seconds` / `min_failures`: for `metered-failures`, how many upstream failures (429/5xx/transport errors) inside a trailing window before failing over. Other 4xx errors (bad key, malformed request) never count — routing to the secondary wouldn't fix them.
 - `response_header_timeout_seconds`: bounds how long the gateway waits for a response to *start* before treating the upstream as failed (doesn't affect how long an already-started stream can run).
 
@@ -222,7 +222,9 @@ A secondary can now be an OpenAI-compatible chat-completions endpoint instead of
 
 Not translated (dropped, not an error): images/documents in message content, Anthropic extended-thinking (`thinking`/`redacted_thinking`) blocks in history, and prompt-caching `cache_control` hints — none have a meaningful equivalent on a generic OpenAI-compatible endpoint, and Claude Code's ordinary coding-agent traffic is overwhelmingly text + tool-use.
 
-Configure it as `secondary` in `config.json`:
+Configure it as `secondary` in `config.json`. Two failover modes, chosen just by whether `model_map` is present:
+
+**Fixed failover** — every Claude model (sonnet, opus, haiku) fails over to the same target model:
 ```json
 {
   "secondary": {
@@ -232,6 +234,22 @@ Configure it as `secondary` in `config.json`:
   }
 }
 ```
+
+**Consistent failover** — each Claude model can fail over to a *different* target (e.g. opus to a stronger/pricier model, sonnet/haiku to a cheaper one), via `model_map`. `model` is still required as the fallback target for any Claude model with no explicit entry:
+```json
+{
+  "secondary": {
+    "provider": "openai-compatible",
+    "base_url": "https://api.together.xyz/v1",
+    "model": "zai-org/GLM-5.3",
+    "model_map": {
+      "claude-opus-5": "zai-org/GLM-5.3-Big"
+    }
+  }
+}
+```
+Unlike Bedrock's `model_map` (which errors on a Claude model with no entry), an unmapped model here silently falls back to `model` rather than failing the request — there's always a usable target.
+
 Store the API key with `claude-burst keychain-set --provider together` (reads `TOGETHER_API_KEY`; the key name is provider-specific, not Together-specific — a different OpenAI-compatible vendor would use its own env var).
 
 **Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected**, in favor of the above. It would have required reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`) — exactly the pattern this README's design principles (and the source blog post) call out as why other third-party tools have been blocked by Anthropic. Not planned.

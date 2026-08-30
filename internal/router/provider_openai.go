@@ -17,21 +17,28 @@ import (
 // OpenAICompatibleProvider forwards requests to an OpenAI-compatible
 // chat-completions endpoint (e.g. Together AI), translating Anthropic's
 // Messages wire format to/from OpenAI's chat-completions format in both
-// directions -- including streaming SSE and tool calls. Unlike the other
-// providers, it always targets ONE fixed model regardless of which Claude
-// model Claude Code requested: there is no equivalence between Claude
-// models and a third-party model, so per-request remapping (like Bedrock's
-// model_map) doesn't apply here.
+// directions -- including streaming SSE and tool calls.
+//
+// Two failover modes, selected purely by whether modelMap is populated:
+//   - "fixed failover" (modelMap empty): every Claude model -- sonnet, opus,
+//     haiku -- is sent to the single configured model. Simple, and the only
+//     option when the secondary only has one model worth using at all.
+//   - "consistent failover" (modelMap non-empty): the requested Claude model
+//     is looked up in modelMap first, so e.g. opus can fail over to a
+//     stronger/pricier third-party model while sonnet/haiku fail over to a
+//     cheaper one. model is still required in this mode as the fallback
+//     target for any Claude model with no explicit entry.
 type OpenAICompatibleProvider struct {
 	name            string
 	base            *url.URL
 	model           string
+	modelMap        map[string]string
 	keychainService string
 	apiKeyEnvVar    string
 }
 
-func NewOpenAICompatibleProvider(name string, base *url.URL, model, keychainService, apiKeyEnvVar string) *OpenAICompatibleProvider {
-	return &OpenAICompatibleProvider{name: name, base: base, model: model, keychainService: keychainService, apiKeyEnvVar: apiKeyEnvVar}
+func NewOpenAICompatibleProvider(name string, base *url.URL, model string, modelMap map[string]string, keychainService, apiKeyEnvVar string) *OpenAICompatibleProvider {
+	return &OpenAICompatibleProvider{name: name, base: base, model: model, modelMap: modelMap, keychainService: keychainService, apiKeyEnvVar: apiKeyEnvVar}
 }
 
 func (p *OpenAICompatibleProvider) Name() string { return p.name }
@@ -47,7 +54,12 @@ func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request
 		}
 	}
 
-	openaiBody, err := translateAnthropicRequest(body, p.model)
+	targetModel := p.model
+	if mapped := p.modelMap[requestedModel]; mapped != "" {
+		targetModel = mapped
+	}
+
+	openaiBody, err := translateAnthropicRequest(body, targetModel)
 	if err != nil {
 		return nil, "", &ProviderError{Status: http.StatusBadGateway, Stage: "request_translation", Model: requestedModel, Err: err}
 	}
@@ -310,8 +322,8 @@ func translateOpenAINonStream(w http.ResponseWriter, body io.Reader, model strin
 	var resp struct {
 		Choices []struct {
 			Message struct {
-				Content   string            `json:"content"`
-				ToolCalls []openaiToolCall  `json:"tool_calls"`
+				Content   string           `json:"content"`
+				ToolCalls []openaiToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
