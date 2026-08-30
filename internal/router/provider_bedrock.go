@@ -31,7 +31,7 @@ func (p *BedrockProvider) Name() string { return "bedrock" }
 func (p *BedrockProvider) Prepare(ctx context.Context, in *http.Request, body []byte) (*http.Request, string, error) {
 	requestedModel := requestModel(body)
 
-	key, err := keychain.Load(p.keychainService)
+	key, err := keychain.Load(p.keychainService, "AWS_BEARER_TOKEN_BEDROCK")
 	if err != nil {
 		return nil, "", &ProviderError{
 			Status: http.StatusServiceUnavailable, Stage: "keychain_load", Model: requestedModel,

@@ -219,14 +219,31 @@ func keychainSet(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	key := os.Getenv("AWS_BEARER_TOKEN_BEDROCK")
-	if key == "" {
-		fatal(fmt.Errorf("AWS_BEARER_TOKEN_BEDROCK is not set"))
+	fs := flag.NewFlagSet("keychain-set", flag.ExitOnError)
+	provider := fs.String("provider", "bedrock", "which secret to store: bedrock | together")
+	_ = fs.Parse(args)
+
+	var service, envVar, label string
+	switch *provider {
+	case "bedrock":
+		service, envVar, label = cfg.KeychainService, "AWS_BEARER_TOKEN_BEDROCK", "Bedrock"
+	case "together":
+		service, envVar, label = "claude-burst-together", "TOGETHER_API_KEY", "Together AI"
+		if cfg.Secondary.Provider == "openai-compatible" && cfg.Secondary.KeychainService != "" {
+			service = cfg.Secondary.KeychainService
+		}
+	default:
+		fatal(fmt.Errorf("--provider must be bedrock or together, got %q", *provider))
 	}
-	if err := keychain.Store(cfg.KeychainService, key); err != nil {
+
+	key := os.Getenv(envVar)
+	if key == "" {
+		fatal(fmt.Errorf("%s is not set", envVar))
+	}
+	if err := keychain.Store(service, key); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("stored Bedrock key in macOS Keychain service %q\n", cfg.KeychainService)
+	fmt.Printf("stored %s key in macOS Keychain service %q\n", label, service)
 }
 
 func status() {

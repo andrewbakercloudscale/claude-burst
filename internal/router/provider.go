@@ -57,3 +57,14 @@ type FailoverDetector interface {
 	OnError(err error) FailoverDecision
 	OnSuccess()
 }
+
+// Translator is implemented by a Provider whose upstream speaks a different
+// wire protocol than Anthropic's Messages API (e.g. an OpenAI-compatible
+// chat-completions endpoint). When a Provider also implements Translator,
+// forward() in router.go calls TranslateResponse instead of the generic
+// byte-for-byte Server.relay -- the three Anthropic-wire providers
+// (oauth-passthrough, anthropic-api-key, bedrock) implement neither this nor
+// any equivalent, since a raw relay is already correct for them.
+type Translator interface {
+	TranslateResponse(w http.ResponseWriter, resp *http.Response, model string) (tokenUsage, error)
+}
