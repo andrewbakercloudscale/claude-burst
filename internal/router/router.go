@@ -58,11 +58,14 @@ type Server struct {
 	primaryDetector FailoverDetector
 	secondary       Provider // nil if no secondary is configured
 	client          *http.Client
-	metrics         *metrics.Writer
-	statePath       string
-	state           State
-	mu              sync.RWMutex
-	logger          *log.Logger
+	// passthroughClient serves non-inference paths; identical to client but
+	// with no ResponseHeaderTimeout, for long-polling control-plane requests.
+	passthroughClient *http.Client
+	metrics           *metrics.Writer
+	statePath         string
+	state             State
+	mu                sync.RWMutex
+	logger            *log.Logger
 }
 
 func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (*Server, error) {
@@ -86,15 +89,38 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	}
 
 	timeout := time.Duration(cfg.ResponseHeaderTimeoutSeconds) * time.Second
+
+	newTransport := func(responseHeaderTimeout time.Duration) *http.Transport {
+		t := &http.Transport{ResponseHeaderTimeout: responseHeaderTimeout}
+		if cfg.Intercept.Transparent() {
+			// /etc/hosts now points the upstream hostname at this process, so
+			// the standard resolver would make the gateway call itself. See
+			// interceptResolver.
+			t.DialContext = newInterceptResolver(
+				cfg.Intercept.Host, cfg.Intercept.ResolverDoH, cfg.Intercept.UpstreamAddr,
+			).DialContext
+		}
+		return t
+	}
+
 	s := &Server{
 		cfg:             cfg,
 		primary:         primary,
 		primaryDetector: primaryDetector,
 		secondary:       secondary,
-		client:          &http.Client{Timeout: 0, Transport: &http.Transport{ResponseHeaderTimeout: timeout}},
-		metrics:         metrics.New(metricsPath),
-		statePath:       statePath,
-		logger:          logger,
+		client:          &http.Client{Timeout: 0, Transport: newTransport(timeout)},
+		// Control-plane traffic (notably Claude Code's Remote Control, which
+		// registers and then long-polls for work) can legitimately hold a
+		// connection open for minutes before sending any response header.
+		// ResponseHeaderTimeout would kill exactly that, presenting as Remote
+		// Control dropping every ~60s and looking like a network fault, so
+		// non-inference paths get a client without it. Inference keeps the
+		// bounded client, where the timeout is load-bearing for the
+		// metered-failures failover strategy.
+		passthroughClient: &http.Client{Timeout: 0, Transport: newTransport(0)},
+		metrics:           metrics.New(metricsPath),
+		statePath:         statePath,
+		logger:            logger,
 	}
 	s.loadState()
 	return s, nil
@@ -307,6 +333,12 @@ func (sw *statusWriter) Flush() {
 	}
 }
 
+// isInference reports whether a path carries a model call, as opposed to the
+// control-plane and probe traffic that is simply passed through.
+func isInference(path string) bool {
+	return strings.HasPrefix(path, "/v1/messages")
+}
+
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	rid := requestIDFrom(r.Context())
 
@@ -317,8 +349,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Claude Code's HEAD /api/hello is only a warm-up probe. Keep it on the primary.
-	inference := strings.HasPrefix(r.URL.Path, "/v1/messages")
-	if !inference {
+	if !isInference(r.URL.Path) {
 		s.forward(w, r, nil, "primary", s.primary, s.primaryDetector, s.secondary != nil, "")
 		return
 	}
@@ -349,6 +380,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 // failure warrants it -- activate the overflow window and replay the same
 // request to s.secondary. The secondary hop is always invoked with
 // allowFailover=false, so a failure never chains past two hops.
+// clientFor picks the bounded client for inference and the unbounded one for
+// pass-through control-plane traffic. Built defensively: a Server assembled in
+// a test without passthroughClient still works.
+func (s *Server) clientFor(path string) *http.Client {
+	if !isInference(path) && s.passthroughClient != nil {
+		return s.passthroughClient
+	}
+	return s.client
+}
+
 func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, slot string, p Provider, fd FailoverDetector, allowFailover bool, note string) {
 	rid := requestIDFrom(in.Context())
 	start := time.Now()
@@ -366,7 +407,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		return
 	}
 
-	resp, err := s.client.Do(req)
+	resp, err := s.clientFor(in.URL.Path).Do(req)
 	if err != nil {
 		if allowFailover {
 			if d := fd.OnError(err); d.Failover {
