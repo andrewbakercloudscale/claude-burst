@@ -3,29 +3,52 @@
 Written 2026-08-30. Covers every change made while building the optional
 transparent intercept mode, and how to undo each one independently.
 
-## TL;DR — is my machine changed right now?
+## TL;DR — what is on my machine right now?
 
-**No.** As of this document:
+Updated 2026-08-31, after deploying.
 
-- The running gateway is the **old binary**. None of the new code is deployed.
-- `~/.claude/settings.json` still has `ANTHROPIC_BASE_URL=http://127.0.0.1:7777`
-  (base-url mode) exactly as before.
-- `/etc/hosts` has **no** claude-burst entry.
-- pf is **Disabled**, as it was before.
-- No CA has been generated, and the `NODE_EXTRA_CA_CERTS` bundle is untouched.
+**Deployed and live:**
+- New gateway binary at `~/.local/bin/claude-burst`, running under LaunchAgent
+  `ninja.andrewbaker.claude-burst`, healthy on `127.0.0.1:7777`.
+- **Admin UI on <http://127.0.0.1:7788>** (loopback only, no login).
+- `~/.claude/settings.json` has `ANTHROPIC_BASE_URL=http://127.0.0.1:7777` — the same
+  `base-url` mode as before this work. Remote Control is disabled while that is set.
 
-Everything so far is source files. Nothing needs rolling back unless you
-deploy, and nothing machine-wide happens until you explicitly run
-`transparent-root.sh install`, which does not yet have any caller.
+**Not installed, and nothing on the machine refers to it:**
+- Transparent intercept mode. `intercept.mode` is unset (= `base-url`).
+- `/etc/hosts` has **no** claude-burst entry; pf is **Disabled**; no CA has been
+  generated; the `NODE_EXTRA_CA_CERTS` bundle is untouched.
 
-**If Claude Code is broken right now and you want out fast:**
+**If Claude Code is broken and you want out fast:**
 
 ```sh
-bash scripts/rollback.sh                    # settings.json, config.json, CA bundle
-sudo bash scripts/transparent-root.sh remove   # /etc/hosts + pf (safe if never installed)
+scripts/rollback.sh                       # settings.json, config.json, CA bundle
+sudo scripts/transparent-root.sh remove   # /etc/hosts + pf (safe if never installed)
 ```
-Then restart Claude Code. Both are idempotent and safe to run when nothing was
-installed.
+Then restart Claude Code. Both are idempotent and safe when nothing was installed.
+
+**To go back to the previous binary only:**
+
+```sh
+cp ~/.config/claude-burst/backups/claude-burst-bin.latest.bak ~/.local/bin/claude-burst
+launchctl kickstart -k gui/$UID/ninja.andrewbaker.claude-burst
+```
+
+## Run these scripts by path, not `bash script.sh`
+
+Every script here is `#!/bin/zsh` and several use zsh-only syntax. Invoking one as
+`bash scripts/rollback.sh` does **not** fall back gracefully:
+
+- `rollback.sh`, `deploy.sh`, `watchdog.sh` used zsh's `${0:A:h}` to find their own
+  directory. Under bash that is an unbound-variable error on line 2, so the script exits
+  having done nothing. These now use a POSIX form and work under either shell.
+- `transparent-root.sh` uses `${(@f)}` and `print -r` and cannot be made bash-compatible
+  without rewriting it. Bash fails at *parse* time, so it cannot even self-correct by
+  re-execing under zsh.
+
+An earlier version of this document told you to run `bash scripts/rollback.sh` in an
+emergency. That command would have silently done nothing. Invoke by path
+(`scripts/rollback.sh`) and the shebang picks the right shell.
 
 ## Why any of this exists
 
@@ -66,19 +89,17 @@ git revert 8a96ea9      # keeps history
 git reset --hard 3b94faf && git push --force-with-lease origin main
 ```
 
-### 2. Uncommitted working-tree changes
+### 2. Later commits
 
-| file | change |
+| commit | what |
 |---|---|
-| `scripts/transparent-root.sh` *(new)* | the root helper: `/etc/hosts` + pf, `install`/`remove`/`status` |
-| `scripts/rollback.sh` | calls `transparent-root.sh remove` first; also restores the CA bundle |
-| `scripts/backup-config.sh` | additionally snapshots `/etc/hosts` and the CA bundle |
+| `8fcb727` | `transparent-root.sh` root helper; rollback + backup cover `/etc/hosts` and the CA bundle |
+| `ca7eb6c` | transparent mode wired into `serve`/`enable`/`disable`/`status`; two CLI bug fixes |
+| `a45eafe` | admin UI on `127.0.0.1:7788` |
+| `16c7610` | `force-secondary`; fixes `--secondary none` never having worked |
 
-Undo:
-```sh
-git checkout -- scripts/rollback.sh scripts/backup-config.sh
-rm scripts/transparent-root.sh
-```
+All are inert with respect to transparent mode until `intercept.mode` is set. The admin UI
+is the one user-visible change from deploying, and it binds loopback only.
 
 ### 3. The pf spike — already reverted
 
@@ -96,7 +117,7 @@ enabled. Listed now so the recovery path exists before the thing it recovers.
 ### `/etc/hosts` and pf
 
 ```sh
-sudo bash scripts/transparent-root.sh remove
+sudo scripts/transparent-root.sh remove
 ```
 Removes the `/etc/hosts` block, the `/etc/pf.conf` anchor references and
 `/etc/pf.anchors/claude-burst`, reloads the pf ruleset, restores pf's previous
@@ -108,7 +129,7 @@ and `/etc/claude-burst/pf.conf.pre-install.bak`.
 
 To check without changing anything:
 ```sh
-sudo bash scripts/transparent-root.sh status
+sudo scripts/transparent-root.sh status
 ```
 Watch for `live rdr rule : MISSING` while the hosts entry is present — that is
 the one genuinely bad state (DNS redirects, nothing listens), and it means
@@ -164,7 +185,7 @@ listening and killed a live session with `Connection refused`.
 - **TLS interception is assumed not to break Remote Control.** The evidence is
   that it works on the Capitec/Zscaler network. That could not be verified in
   session: Zscaler was off, and all sampled hosts returned genuine issuers.
-  Settle it with `bash scripts/check-interception.sh` while the tunnel is on —
+  Settle it with `scripts/check-interception.sh` while the tunnel is on —
   it distinguishes *intercepted* from *bypassed* from *not enrolled*, which a
   bare issuer check cannot.
 - **`internal/keychain` has one failing test on this machine** — pre-existing

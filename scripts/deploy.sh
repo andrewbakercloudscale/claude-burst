@@ -37,7 +37,9 @@
 #      leaving Claude Code pointed at a dead gateway.
 set -uo pipefail
 
-ROOT="${0:A:h:h}"
+# POSIX form, not zsh's ${0:A:h:h}: under bash that expands to an
+# unbound-variable error and the deploy dies before doing anything.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LABEL="ninja.andrewbaker.claude-burst"
 INSTALL_DIR="$HOME/.local/bin"
 TARGET="$INSTALL_DIR/claude-burst"
