@@ -129,7 +129,9 @@ func configure(args []string) {
 	listen := fs.String("listen", "", "listen address")
 	bedrockBase := fs.String("bedrock-base-url", "", "override Bedrock Anthropic Messages base URL")
 	primary := fs.String("primary", "", "primary provider: oauth-passthrough | anthropic-api-key")
-	secondary := fs.String("secondary", "", "secondary provider: bedrock | none")
+	secondary := fs.String("secondary", "", "secondary provider: bedrock | openai-compatible | none")
+	secondaryBaseURL := fs.String("secondary-base-url", "", "base URL for an openai-compatible secondary, e.g. https://api.together.xyz/v1")
+	secondaryModel := fs.String("secondary-model", "", "target model for an openai-compatible secondary, e.g. zai-org/GLM-5.3")
 	minFailures := fs.Int("metered-min-failures", 0, "consecutive-window failures before failing over in anthropic-api-key mode")
 	windowSeconds := fs.Int("metered-window-seconds", 0, "sliding window in seconds for metered failover")
 	_ = fs.Parse(args)
@@ -159,10 +161,27 @@ func configure(args []string) {
 		cfg.Primary = config.RouteConfig{Provider: *primary, BaseURL: baseURL, FailoverStrategy: strategy}
 	}
 	if *secondary != "" {
-		if *secondary == "none" {
+		switch *secondary {
+		case "none":
 			cfg.Secondary = config.RouteConfig{}
 			cfg.BedrockBaseURL = ""
-		} else {
+		case "openai-compatible":
+			base := *secondaryBaseURL
+			if base == "" {
+				base = cfg.Secondary.BaseURL // allow re-running configure without repeating it
+			}
+			model := *secondaryModel
+			if model == "" {
+				model = cfg.Secondary.Model
+			}
+			if base == "" || model == "" {
+				fatal(fmt.Errorf("--secondary openai-compatible requires --secondary-base-url and --secondary-model"))
+			}
+			cfg.Secondary = config.RouteConfig{
+				Provider: "openai-compatible", BaseURL: strings.TrimRight(base, "/"), Model: model,
+				KeychainService: "claude-burst-together",
+			}
+		default:
 			// baseURLForProvider always derives the base URL from the
 			// chosen provider's own field (cfg.AnthropicBaseURL or
 			// cfg.BedrockBaseURL) rather than reusing whatever was
