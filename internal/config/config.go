@@ -40,6 +40,46 @@ type MeteredFailoverConfig struct {
 	MinFailures   int `json:"min_failures,omitempty"`
 }
 
+// Intercept modes -- how Claude Code is persuaded to send its traffic here.
+const (
+	// InterceptBaseURL points Claude Code at the gateway by setting
+	// ANTHROPIC_BASE_URL in ~/.claude/settings.json. Simple, needs no root and
+	// no certificates. Cost: Claude Code disables Remote Control whenever that
+	// variable names anything other than api.anthropic.com, so this mode gives
+	// up /remote-control. This is the default and the original behaviour.
+	InterceptBaseURL = "base-url"
+
+	// InterceptTransparent leaves ANTHROPIC_BASE_URL unset and instead puts the
+	// gateway in the path at the DNS layer (/etc/hosts) with local TLS
+	// termination, so Claude Code believes it is talking to api.anthropic.com
+	// directly and Remote Control keeps working. Costs a local CA, an
+	// /etc/hosts entry and a pf redirect -- i.e. root, and a machine-wide
+	// change rather than a per-user one.
+	InterceptTransparent = "transparent"
+)
+
+// InterceptConfig is opt-in. A config.json with no "intercept" block behaves
+// exactly as it did before this existed.
+type InterceptConfig struct {
+	Mode        string `json:"mode,omitempty"`         // InterceptBaseURL (default) | InterceptTransparent
+	Host        string `json:"host,omitempty"`         // hostname to impersonate locally
+	TLSPort     int    `json:"tls_port,omitempty"`     // port Claude Code connects to (443)
+	CADir       string `json:"ca_dir,omitempty"`       // where the local CA and leaf live
+	CABundle    string `json:"ca_bundle,omitempty"`    // NODE_EXTRA_CA_CERTS file to append the CA to
+	ResolverDoH string `json:"resolver_doh,omitempty"` // DNS-over-HTTPS endpoint used to resolve Host upstream
+
+	// UpstreamAddr optionally pins the upstream IP, skipping DoH entirely.
+	// Escape hatch for a network where DoH is blocked; normally empty.
+	UpstreamAddr string `json:"upstream_addr,omitempty"`
+}
+
+// Transparent reports whether transparent interception is active. Callers
+// should use this rather than comparing Mode by hand, so that an empty Mode
+// consistently reads as the default.
+func (i InterceptConfig) Transparent() bool {
+	return i.Mode == InterceptTransparent
+}
+
 type Config struct {
 	Listen                       string `json:"listen"`
 	ResetGraceSeconds            int    `json:"reset_grace_seconds"`
@@ -60,6 +100,7 @@ type Config struct {
 	Primary         RouteConfig           `json:"primary,omitempty"`
 	Secondary       RouteConfig           `json:"secondary,omitempty"`
 	MeteredFailover MeteredFailoverConfig `json:"metered_failover,omitempty"`
+	Intercept       InterceptConfig       `json:"intercept,omitempty"`
 }
 
 func Default() Config {
@@ -121,6 +162,55 @@ func (c *Config) ResolveRoutes() {
 	}
 	if c.ResponseHeaderTimeoutSeconds <= 0 {
 		c.ResponseHeaderTimeoutSeconds = 60
+	}
+	c.Intercept.applyDefaults()
+}
+
+// applyDefaults fills the intercept block's blanks. Mode is deliberately left
+// alone when empty: Transparent() treats "" as base-url, so an absent block
+// stays the original behaviour without this function having to write a value
+// into every config that never asked for the feature.
+func (i *InterceptConfig) applyDefaults() {
+	if i.Host == "" {
+		i.Host = "api.anthropic.com"
+	}
+	if i.TLSPort <= 0 || i.TLSPort > 65535 {
+		i.TLSPort = 443
+	}
+	if i.ResolverDoH == "" {
+		// Resolves Host upstream while /etc/hosts points it at us. This
+		// hostname must NOT be one we redirect, or the gateway would resolve
+		// its own upstream to itself.
+		i.ResolverDoH = "https://cloudflare-dns.com/dns-query"
+	}
+	if i.CADir == "" {
+		if d, err := ConfigDir(); err == nil {
+			i.CADir = filepath.Join(d, "ca")
+		}
+	}
+	if i.CABundle == "" {
+		// Prefer the bundle Claude Code is already being told to trust --
+		// on a machine behind a corporate proxy this file exists and holds
+		// the employer's CAs, and we must append to it rather than replace it.
+		if env := os.Getenv("NODE_EXTRA_CA_CERTS"); env != "" {
+			i.CABundle = env
+		} else if h, err := HomeDir(); err == nil {
+			i.CABundle = filepath.Join(h, ".claude", "certs", "node-extra-ca-certs.pem")
+		}
+	}
+}
+
+// ValidateIntercept rejects an unrecognised mode rather than quietly falling
+// back to base-url. A silent fallback would leave the user believing Remote
+// Control was preserved while the gateway had actually done the opposite --
+// the failure would surface much later, as a missing feature rather than an error.
+func (c *Config) ValidateIntercept() error {
+	switch c.Intercept.Mode {
+	case "", InterceptBaseURL, InterceptTransparent:
+		return nil
+	default:
+		return fmt.Errorf("intercept.mode %q is not recognised (want %q or %q)",
+			c.Intercept.Mode, InterceptBaseURL, InterceptTransparent)
 	}
 }
 
@@ -227,6 +317,9 @@ func Load() (Config, error) {
 		cfg.Pricing = map[string]ModelPrice{}
 	}
 	cfg.ResolveRoutes()
+	if err := cfg.ValidateIntercept(); err != nil {
+		return cfg, fmt.Errorf("parse %s: %w", p, err)
+	}
 	return cfg, nil
 }
 
