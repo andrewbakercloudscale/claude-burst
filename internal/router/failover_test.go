@@ -1,7 +1,10 @@
 package router
 
 import (
+	"net"
 	"net/http"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -85,6 +88,58 @@ func TestMeteredFailoverDetector_TransportErrorCounts(t *testing.T) {
 type errTest struct{ msg string }
 
 func (e errTest) Error() string { return e.msg }
+
+// TestMeteredFailoverDetector_LocalConnectivityFailuresDoNotCount is a
+// regression test for a real incident (2026-08-31): walking out of WiFi
+// range produced a burst of transport errors on the primary, which the
+// metered detector could not distinguish from a genuine Anthropic outage,
+// so it failed over to a secondary that was equally unreachable over the
+// same dead connection -- and then kept preferring it for
+// unknown_reset_seconds (5 minutes by default) after connectivity returned,
+// since a transport error carries no reset header to shorten that window.
+// DNS resolution failure and "no route to host"/"network unreachable" are
+// the unambiguous cases: they mean this machine has no path to the
+// internet at all, not that Anthropic specifically is having trouble.
+func TestMeteredFailoverDetector_LocalConnectivityFailuresDoNotCount(t *testing.T) {
+	dnsErr := &net.DNSError{Err: "no such host", Name: "api.anthropic.com", IsNotFound: true}
+	netUnreachable := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ENETUNREACH}}
+	hostUnreachable := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.EHOSTUNREACH}}
+
+	for name, err := range map[string]error{
+		"DNS resolution failure": dnsErr,
+		"network unreachable":    netUnreachable,
+		"host unreachable":       hostUnreachable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := newMeteredFailureDetector(60, 1) // minFailures=1: even one call must not trigger
+			if dec := d.OnError(err); dec.Failover {
+				t.Fatalf("%v must not count toward metered failover -- it means no network path exists, not that Anthropic is down", err)
+			}
+		})
+	}
+}
+
+// TestMeteredFailoverDetector_GenuineTransportErrorsStillCount guards the
+// other direction of the fix above: connection refused, timeouts, and
+// other transport errors that could plausibly be Anthropic's side (as
+// opposed to "this machine has no network at all") must keep counting
+// exactly as before. Narrowing the exclusion too far would silently break
+// the resilience-to-a-real-outage behavior this detector exists for.
+func TestMeteredFailoverDetector_GenuineTransportErrorsStillCount(t *testing.T) {
+	connRefused := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
+	for name, err := range map[string]error{
+		"connection refused": connRefused,
+		"generic timeout":    errTest{"context deadline exceeded"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := newMeteredFailureDetector(60, 2)
+			d.OnError(err)
+			if dec := d.OnError(err); !dec.Failover {
+				t.Fatalf("%v should still count toward metered failover -- it's not one of the unambiguous local-connectivity cases", err)
+			}
+		})
+	}
+}
 
 func TestCombinedDetector_SubscriptionSignalFiresImmediately(t *testing.T) {
 	d := newCombinedDetector(config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 3})
