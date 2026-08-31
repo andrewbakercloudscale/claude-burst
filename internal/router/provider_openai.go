@@ -54,10 +54,7 @@ func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request
 		}
 	}
 
-	targetModel := p.model
-	if mapped := p.modelMap[requestedModel]; mapped != "" {
-		targetModel = mapped
-	}
+	targetModel := p.targetFor(requestedModel)
 
 	openaiBody, err := translateAnthropicRequest(body, targetModel)
 	if err != nil {
@@ -77,6 +74,22 @@ func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request
 	// different, incompatible auth scheme and must never reach a
 	// third-party endpoint.
 	return req, requestedModel, nil
+}
+
+// targetFor resolves the upstream model for a requested Claude model: the
+// modelMap entry when "consistent failover" is configured, else the fixed
+// model. Shared by Prepare and ServeModel so the two can never disagree.
+func (p *OpenAICompatibleProvider) targetFor(requestedModel string) string {
+	if mapped := p.modelMap[requestedModel]; mapped != "" {
+		return mapped
+	}
+	return p.model
+}
+
+// ServeModel implements ServeModeler. See that interface for why Prepare cannot
+// return this value directly.
+func (p *OpenAICompatibleProvider) ServeModel(requestedModel string) string {
+	return p.targetFor(requestedModel)
 }
 
 func (p *OpenAICompatibleProvider) TranslateResponse(w http.ResponseWriter, resp *http.Response, model string) (tokenUsage, error) {

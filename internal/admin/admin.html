@@ -304,7 +304,7 @@ function renderRequests(rows) {
       return `<tr>
         <td class="mono">${esc(new Date(e.time).toLocaleTimeString())}</td>
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
-        <td class="mono">${esc(e.model || "—")}</td>
+        <td class="mono">${esc(e.model || "—")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--faint)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
         <td class="mono st-${String(e.http_status)[0]}">${esc(e.http_status)}</td>
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
@@ -332,6 +332,7 @@ function renderResponses(rows) {
         <span class="pill ${r.slot === "primary" ? "p" : "s"}">${esc(r.slot || "?")}</span>
         <span class="mono st-${String(r.status)[0]}">${esc(r.status)}</span>
         <span class="mono">${esc(r.method)} ${esc(r.path)}</span>
+        ${r.model && r.slot === "secondary" ? `<span class="mono" style="color:var(--muted)">${esc(r.model)}</span>` : ""}
         <span class="spacer"></span>
         <span class="pill">${keys.length} hdr${flagged ? " · " + flagged + " rate-limit" : ""}</span>
       </summary>
