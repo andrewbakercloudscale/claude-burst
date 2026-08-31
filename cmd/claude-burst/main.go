@@ -598,8 +598,7 @@ func enable(args []string) {
 		}
 		fmt.Printf("local CA in %s\ntrusted via %s\n", cfg.Intercept.CADir, cfg.Intercept.CABundle)
 
-		exe, _ := os.Executable()
-		helper := filepath.Join(filepath.Dir(exe), "transparent-root.sh")
+		helper := rootHelperPath()
 		fmt.Printf(`
 Two machine-wide steps remain, and they need root. They are deliberately NOT
 run for you: they affect every process on this Mac, not just Claude Code.
@@ -651,8 +650,7 @@ func disable(args []string) {
 		}
 		fmt.Printf("removed the local CA from %s (other certificates left untouched)\n", cfg.Intercept.CABundle)
 
-		exe, _ := os.Executable()
-		helper := filepath.Join(filepath.Dir(exe), "transparent-root.sh")
+		helper := rootHelperPath()
 		fmt.Printf(`
 The machine-wide redirect is still in place and needs root to remove.
 Until you run this, traffic to %s on this Mac still goes to the gateway:
@@ -662,6 +660,33 @@ Until you run this, traffic to %s on this Mac still goes to the gateway:
 		return
 	}
 	fmt.Println("disabled Claude Burst; restart Claude Code")
+}
+
+// rootHelperPath locates transparent-root.sh for the instructions we print.
+//
+// The binary is installed to ~/.local/bin but the script lives in the repo, so
+// deriving the path from the executable alone printed a command that does not
+// exist -- an instruction the user cannot run is worse than no instruction,
+// because they trust it and then have to work out why it failed.
+func rootHelperPath() string {
+	var candidates []string
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "transparent-root.sh"))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, "scripts", "transparent-root.sh"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, "Desktop", "github", "claude-burst", "scripts", "transparent-root.sh"))
+	}
+	for _, c := range candidates {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c
+		}
+	}
+	// Nothing found: name the file rather than a path that would not work.
+	return "scripts/transparent-root.sh (in the claude-burst repo)"
 }
 
 // portOf returns the port from a host:port listen address.
