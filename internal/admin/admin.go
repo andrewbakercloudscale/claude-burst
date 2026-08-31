@@ -141,18 +141,26 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 type stateResponse struct {
-	Version   string          `json:"version"`
-	Route     string          `json:"route"`
-	Overflow  bool            `json:"overflow"`
-	Until     string          `json:"until,omitempty"`
-	Claim     string          `json:"claim,omitempty"`
-	Reason    string          `json:"reason,omitempty"`
-	Gateway   string          `json:"gateway"`
-	Primary   routeInfo       `json:"primary"`
-	Secondary routeInfo       `json:"secondary"`
-	Intercept interceptInfo   `json:"intercept"`
-	Totals    metrics.Summary `json:"totals"`
-	Today     metrics.Summary `json:"today"`
+	Version string `json:"version"`
+	// ConfigError, when set, means config.json failed to load: every other
+	// field below is a zero value and must not be trusted for anything.
+	// Reported as a normal 200 response rather than an HTTP error status,
+	// because an HTTP error on THIS endpoint blanks the whole dashboard
+	// (it's what every page load and every Refresh click fetches first) --
+	// exactly the moment a working dashboard matters most, since a broken
+	// config.json is itself the thing someone would come here to diagnose.
+	ConfigError string          `json:"config_error,omitempty"`
+	Route       string          `json:"route"`
+	Overflow    bool            `json:"overflow"`
+	Until       string          `json:"until,omitempty"`
+	Claim       string          `json:"claim,omitempty"`
+	Reason      string          `json:"reason,omitempty"`
+	Gateway     string          `json:"gateway"`
+	Primary     routeInfo       `json:"primary"`
+	Secondary   routeInfo       `json:"secondary"`
+	Intercept   interceptInfo   `json:"intercept"`
+	Totals      metrics.Summary `json:"totals"`
+	Today       metrics.Summary `json:"today"`
 }
 
 type routeInfo struct {
@@ -181,7 +189,7 @@ type interceptInfo struct {
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Load()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSON(w, stateResponse{Version: s.version, ConfigError: err.Error()})
 		return
 	}
 	st := s.gateway.Status()
