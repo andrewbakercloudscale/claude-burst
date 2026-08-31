@@ -123,4 +123,3 @@ func TestSetBaseURLPreservesExistingEnv(t *testing.T) {
 		t.Error("base URL not set")
 	}
 }
-
