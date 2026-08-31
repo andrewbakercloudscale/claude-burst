@@ -1,10 +1,47 @@
 package metrics
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestWriteRotatesOversizedFile is a regression test: metrics.jsonl had no
+// rotation at all before this and grew forever for as long as the gateway
+// ran. Pre-seeds a file already past the rotation threshold (a single fast
+// write) rather than writing thousands of small Events to reach it
+// organically -- the rotation mechanics themselves are already covered by
+// internal/rotate's own tests; this only needs to prove Writer actually
+// wires into them, using the real unexported threshold rather than a
+// convenient placeholder.
+func TestWriteRotatesOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "metrics.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Repeat("x", maxBytes+1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := New(p)
+	if err := w.Write(Event{Route: "anthropic", HTTPStatus: 200}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if _, err := os.Stat(p + ".1"); err != nil {
+		t.Fatalf("expected the oversized file to be rotated to .1: %v", err)
+	}
+	cur, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cur), "xxxx") {
+		t.Fatal("current file still contains the old oversized content -- rotation did not actually swap files")
+	}
+	if !strings.Contains(string(cur), `"route":"anthropic"`) {
+		t.Fatalf("current file should contain the new event, got: %s", cur)
+	}
+}
 
 func TestSummarizeCountsBySlot(t *testing.T) {
 	dir := t.TempDir()

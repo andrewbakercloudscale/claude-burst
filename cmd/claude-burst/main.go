@@ -16,11 +16,27 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
 const version = "0.2.0"
+
+// claude-burst.log had no rotation before this and grew forever for as long
+// as the gateway ran, which for a LaunchAgent means indefinitely. Not (yet)
+// configurable via config.json -- generous defaults for a single-machine
+// personal gateway (current + logMaxBackups old files, ~60MB total), and a
+// config field is cheap to add later if tuning this turns out to matter.
+// metrics.jsonl has the same fix, with its own same-shaped constants next
+// to its Writer in internal/metrics -- that package owns its own rotation
+// rather than taking these as parameters, since it has exactly one real
+// caller (this file) and every other reference is a test constructing a
+// Writer directly.
+const (
+	logMaxBytes   = 10 * 1024 * 1024
+	logMaxBackups = 5
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -124,11 +140,7 @@ func serve(args []string) {
 	statePath, _ := config.StatePath()
 	metricsPath, _ := config.MetricsPath()
 	logPath, _ := config.LogPath()
-	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		fatal(err)
-	}
-	logger := log.New(lf, "", log.LstdFlags|log.LUTC)
+	logger := log.New(rotate.NewWriter(logPath, logMaxBytes, logMaxBackups), "", log.LstdFlags|log.LUTC)
 	srv, err := router.New(cfg, statePath, metricsPath, logger)
 	if err != nil {
 		fatal(err)
