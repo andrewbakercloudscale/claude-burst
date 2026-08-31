@@ -355,6 +355,29 @@ carry a custom header, which forces a CORS preflight the server never answers. R
 headers are held in memory only and filtered through an allowlist; request rows are
 metadata only, never prompt or response content.
 
+### A friendlier admin URL
+
+```bash
+sudo scripts/transparent-root.sh admin-host cloudscale-claudeburst.test
+claude-burst configure --admin-hostname cloudscale-claudeburst.test
+launchctl kickstart -k gui/$UID/ninja.andrewbaker.claude-burst
+```
+
+Then the panel is at <http://cloudscale-claudeburst.test:7788>. Use a **dotted** name —
+browsers treat a single-label name as a search term, and `.test` is reserved by RFC 6761 so
+it can never collide with a real domain. Undo with
+`sudo scripts/transparent-root.sh admin-host-remove` and
+`claude-burst configure --admin-hostname off`.
+
+This is a separate `/etc/hosts` block from transparent mode's, so removing one never
+disturbs the other.
+
+Be aware of the trade. The `Host` header check is a DNS-rebinding defence, and a hostname a
+hostile page can guess and navigate to weakens it. What still holds: mutating requests
+require a custom header, so a cross-origin page needs a preflight this server never answers,
+and no CORS headers are ever returned, so responses cannot be read cross-origin. A hostile
+page could therefore fire read-only requests but not see the answers.
+
 ## Testing
 
 ```bash

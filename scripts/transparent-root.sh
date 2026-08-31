@@ -43,6 +43,7 @@ END="# END claude-burst"
 # Tags must not be prefixes of one another, or a marker search for one block
 # would match the start of the other and delete the wrong lines.
 TAG_HOSTS="hosts"
+TAG_ADMIN="admin-host"
 TAG_RDR="pf-rdr"
 TAG_LOAD="pf-load"
 
@@ -343,6 +344,9 @@ do_status() {
     echo "  live rdr rule : none (consistent with the hosts entry being absent)"
   fi
   echo "  state file    : $STATE_FILE$([[ -f "$STATE_FILE" ]] || echo ' (absent)')"
+  if block_present "$HOSTS_FILE" "$TAG_ADMIN"; then
+    echo "  admin hostname: $(grep -A1 "^$BEGIN $TAG_ADMIN\$" "$HOSTS_FILE" | tail -1)"
+  fi
 }
 
 # --- self-test ---------------------------------------------------------------
@@ -420,13 +424,74 @@ self_test() {
     || check "removing rdr block leaves the load block intact" no yes
 
   echo
+  echo "== block independence =="
+  # Two separate /etc/hosts blocks coexist. Removing the transparent-mode one
+  # must not disturb the admin hostname, or `remove` would silently break the
+  # admin URL as a side effect.
+  local both; both=$(print -rn -- "$orig" \
+    | block_add "127.0.0.1 api.anthropic.com" "$TAG_HOSTS" \
+    | block_add "127.0.0.1 cloudscale-claudeburst.test" "$TAG_ADMIN")
+  local after; after=$(print -r -- "$both" | block_remove "$TAG_HOSTS")
+  print -r -- "$after" | grep -q "cloudscale-claudeburst.test" \
+    && check "removing transparent block keeps the admin hostname" yes yes \
+    || check "removing transparent block keeps the admin hostname" no yes
+  print -r -- "$after" | grep -q "api.anthropic.com" \
+    && check "transparent block actually went" no yes \
+    || check "transparent block actually went" yes yes
+  local after2; after2=$(print -r -- "$both" | block_remove "$TAG_ADMIN")
+  print -r -- "$after2" | grep -q "api.anthropic.com" \
+    && check "removing admin hostname keeps the transparent block" yes yes \
+    || check "removing admin hostname keeps the transparent block" no yes
+
+  echo
   if (( failures == 0 )); then echo "self-test: all edit paths OK"; return 0; fi
   echo "self-test: $failures check(s) failed"
   return 1
 }
 
+# admin-host is independent of transparent mode: it only maps a friendly name
+# to 127.0.0.1 so the admin UI has a nicer URL than a bare IP. It is a separate
+# /etc/hosts block with its own tag, so removing one never disturbs the other.
+do_admin_host() {
+  need_root admin-host
+  setup_helper
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    die "usage: sudo $0 admin-host <name>   (e.g. cloudscale-claudeburst.test)"
+  fi
+  if [[ "$name" != *.* ]]; then
+    echo "note: '$name' has no dot, so browsers may treat it as a search term."
+    echo "      A dotted name such as '$name.test' is more reliable (.test is"
+    echo "      reserved by RFC 6761 and will never collide with a real domain)."
+  fi
+  edit_file "$HOSTS_FILE" block_add "127.0.0.1 $name" "$TAG_ADMIN"
+  flush_dns
+  echo "added 127.0.0.1 $name"
+  echo
+  echo "Now tell the gateway to accept that Host header:"
+  echo "  claude-burst configure --admin-hostname $name"
+  echo "  launchctl kickstart -k gui/\$UID/ninja.andrewbaker.claude-burst"
+  echo
+  echo "Undo with: sudo $0 admin-host-remove"
+}
+
+do_admin_host_remove() {
+  need_root admin-host-remove
+  setup_helper
+  if block_present "$HOSTS_FILE" "$TAG_ADMIN"; then
+    edit_file "$HOSTS_FILE" block_remove "$TAG_ADMIN"
+    flush_dns
+    echo "removed the admin hostname from $HOSTS_FILE"
+  else
+    echo "no admin hostname entry present"
+  fi
+  echo "also clear it from config: claude-burst configure --admin-hostname off"
+}
+
 case "${1:-}" in
   install)     shift; do_install "$@" ;;
+  admin-host)  shift; do_admin_host "$@" ;;
+  admin-host-remove) do_admin_host_remove ;;
   remove)      do_remove ;;
   status)      do_status ;;
   --self-test) self_test ;;
@@ -435,6 +500,8 @@ case "${1:-}" in
 usage: sudo $0 install [--host H] [--port P] [--gateway-port G]
        sudo $0 remove
        sudo $0 status
+       sudo $0 admin-host <name>     # friendly URL for the admin UI
+       sudo $0 admin-host-remove
             $0 --self-test
 
 install and remove require root. remove is idempotent and safe to run at any

@@ -167,8 +167,12 @@ func serve(args []string) {
 	}
 
 	if cfg.AdminListen != "" {
-		a := admin.New(srv, metricsPath, version)
+		a := admin.New(srv, metricsPath, version, cfg.AdminHostname)
 		fmt.Printf("admin:  %s\n", admin.Describe(cfg.AdminListen))
+		if cfg.AdminHostname != "" {
+			_, port, _ := strings.Cut(cfg.AdminListen, ":")
+			fmt.Printf("        http://%s:%s\n", cfg.AdminHostname, port)
+		}
 		// Runs alongside the gateway. A bind failure is logged and surfaced
 		// rather than swallowed -- an admin panel that silently is not there
 		// is worse than one that says why.
@@ -204,6 +208,7 @@ func configure(args []string) {
 	region := fs.String("region", "", "AWS Bedrock region")
 	listen := fs.String("listen", "", "listen address")
 	adminListen := fs.String("admin-listen", "", "admin UI address, or \"off\" to disable")
+	adminHostname := fs.String("admin-hostname", "", "friendly hostname for the admin UI, or \"off\" to clear")
 	bedrockBase := fs.String("bedrock-base-url", "", "override Bedrock Anthropic Messages base URL")
 	primary := fs.String("primary", "", "primary provider: oauth-passthrough | anthropic-api-key")
 	failoverStrategy := fs.String("failover-strategy", "", "override primary failover_strategy: subscription-limit | metered-failures | subscription-limit+metered-failures | none")
@@ -232,6 +237,11 @@ func configure(args []string) {
 	}
 	if *listen != "" {
 		cfg.Listen = *listen
+	}
+	if *adminHostname == "off" {
+		cfg.AdminHostname = ""
+	} else if *adminHostname != "" {
+		cfg.AdminHostname = strings.ToLower(*adminHostname)
 	}
 	if *adminListen == "off" {
 		cfg.AdminListen = ""
