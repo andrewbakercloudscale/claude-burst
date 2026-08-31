@@ -19,7 +19,13 @@ warn() { echo "WARN: $1"; }
 bad()  { echo "FAIL: $1"; fail=1; }
 
 echo "== gateway =="
-if curl -sf -m 3 http://127.0.0.1:7777/healthz >/dev/null 2>&1; then
+# HTTPS-only in transparent mode, HTTP-only in base-url mode -- -k because
+# the gateway presents our own local CA, which curl doesn't read from
+# NODE_EXTRA_CA_CERTS. Liveness check, not a trust check. See
+# transparent-root.sh's probe_gateway for the original fix; deploy.sh and
+# watchdog.sh had the same http-only bug until 2026-08-31.
+if curl -skf -m 3 https://127.0.0.1:7777/healthz >/dev/null 2>&1 \
+  || curl -sf -m 3 http://127.0.0.1:7777/healthz >/dev/null 2>&1; then
   pass "gateway /healthz responding"
 else
   bad "gateway /healthz not responding (is it enabled? launchctl list ninja.andrewbaker.claude-burst)"

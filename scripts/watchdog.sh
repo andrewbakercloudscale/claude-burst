@@ -30,7 +30,16 @@ if ! launchctl list "$LABEL" >/dev/null 2>&1; then
   healthy=0
 fi
 
-if ! curl -sf -m 3 http://127.0.0.1:7777/healthz >/dev/null 2>&1; then
+# The gateway serves HTTPS-only in transparent mode, HTTP-only in base-url
+# mode; -k because it presents our own local CA, which curl doesn't read
+# from NODE_EXTRA_CA_CERTS -- this is a liveness check, not a trust check.
+# An http-only probe here always reports a healthy transparent-mode gateway
+# as dead, which means this watchdog would auto-rollback a perfectly good
+# gateway ~$DELAY seconds after every single enable -- confirmed as the
+# actual failure mode in production on 2026-08-31 (same bug in deploy.sh's
+# check). See transparent-root.sh's probe_gateway for the original fix.
+if ! curl -skf -m 3 https://127.0.0.1:7777/healthz >/dev/null 2>&1 \
+  && ! curl -sf -m 3 http://127.0.0.1:7777/healthz >/dev/null 2>&1; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') FAIL: /healthz not responding" >> "$LOG"
   healthy=0
 fi

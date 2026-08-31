@@ -7,11 +7,23 @@
 #   1. Back up the current binary and config (rollback material).
 #   2. Build the new binary to a TEMP file and smoke-test it there --
 #      nothing live is touched yet, so a bad build changes nothing.
-#   3. `claude-burst disable` -- points Claude Code straight at Anthropic.
-#      This is the fail-safe resting state: if anything below goes wrong,
-#      leaving this in place means you still have working Claude access
-#      with no local gateway in the loop, rather than being stuck pointed
-#      at a broken one.
+#   3. In base-url mode only: `claude-burst disable` -- points Claude Code
+#      straight at Anthropic. This is the fail-safe resting state: if
+#      anything below goes wrong, leaving this in place means you still have
+#      working Claude access with no local gateway in the loop, rather than
+#      being stuck pointed at a broken one. It also protects any Claude Code
+#      session that STARTS during the swap window (an already-running
+#      session can't hot-reload env vars anyway, so this only helps fresh
+#      launches).
+#      In transparent mode this step is skipped entirely: `disable` there
+#      only strips the local CA from the trust bundle -- it CANNOT detach
+#      Claude Code from the gateway, because that requires removing the
+#      machine-wide pf redirect and /etc/hosts entry, which need root and
+#      are deliberately never touched by an unattended script (see
+#      transparent-root.sh / rollback.sh). Calling it anyway would strip
+#      trust while the redirect stays live, breaking every request on this
+#      Mac to api.anthropic.com with a TLS trust error for the entire swap
+#      window -- confirmed happening in production on 2026-08-31.
 #   4. Atomically install the new binary via `mv` inside the SAME directory
 #      (not `cp` in place). This matters: overwriting the bytes of a binary
 #      while its own already-running process has it mapped executable trips
@@ -29,12 +41,19 @@
 #      downtime -- any Claude Code session already running against the
 #      gateway may see one connection blip here, same as any process
 #      restart. Sessions that start fresh during the whole window are
-#      unaffected because of step 3.
-#   6. On success: `claude-burst enable` restores the proxy. On failure at
-#      any point from step 3 onward: restore the previous binary, restart
-#      it, and re-enable only if THAT comes back healthy -- otherwise stay
-#      disabled (direct Anthropic) and say so loudly, rather than silently
-#      leaving Claude Code pointed at a dead gateway.
+#      unaffected because of step 3 (base-url mode only).
+#   6. On success: `claude-burst enable` restores the proxy, but ONLY if step
+#      3 actually ran `disable` (base-url mode) -- calling it unconditionally
+#      would touch CA trust state transparent mode never disturbed. On
+#      failure at any point from step 3 onward: restore the previous binary,
+#      restart it, and re-enable only if THAT comes back healthy. If the
+#      rollback binary also fails: in base-url mode Claude Code is still
+#      pointed straight at Anthropic (safe) and we say so; in transparent
+#      mode the machine-wide redirect is still live regardless of what this
+#      script does, so we say THAT loudly and point at the one command that
+#      actually fixes it (`sudo transparent-root.sh remove`), rather than
+#      claiming a "disabled (direct Anthropic)" state that transparent mode
+#      cannot reach without root.
 set -uo pipefail
 
 # POSIX form, not zsh's ${0:A:h:h}: under bash that expands to an
@@ -45,16 +64,24 @@ INSTALL_DIR="$HOME/.local/bin"
 TARGET="$INSTALL_DIR/claude-burst"
 BACKUP_DIR="${CLAUDE_BURST_BACKUP_DIR:-$HOME/.config/claude-burst/backups}"
 TS="$(date +%Y%m%d-%H%M%S)"
-HEALTH_URL="http://127.0.0.1:7777/healthz"
 HEALTH_TIMEOUT=15
 
 log() { echo "[deploy] $*"; }
 fail() { echo "[deploy] FAILED: $*" >&2; exit 1; }
 
+# The gateway serves HTTPS-only in transparent mode and HTTP-only in
+# base-url mode (cmd/claude-burst/main.go picks the scheme from
+# cfg.Intercept.Transparent() at startup). A plain-http check against an
+# https-only listener never succeeds regardless of build health -- that
+# false negative is exactly what turned a healthy transparent-mode deploy
+# into a false "rollback" here on 2026-08-31. Try both schemes so this
+# works unmodified in either mode; -k is fine, this only proves the process
+# is up and answering, not that its cert is trusted.
 wait_healthy() {
   local waited=0
   while (( waited < HEALTH_TIMEOUT )); do
-    if curl -sf -m 3 "$HEALTH_URL" >/dev/null 2>&1; then
+    if curl -sf -m 3 -k "https://127.0.0.1:7777/healthz" >/dev/null 2>&1 \
+      || curl -sf -m 3 "http://127.0.0.1:7777/healthz" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -96,9 +123,26 @@ if [[ -x "$TARGET" ]] && cmp -s "$TMPBIN" "$TARGET"; then
   exit 0
 fi
 
+# Determine mode via the (still-old, pre-swap) binary's own status output
+# rather than re-parsing config.json here in bash: it's the single place
+# that logic already lives, and a second implementation is exactly the kind
+# of drift this repo has been bitten by before.
+TRANSPARENT=0
+if [[ -x "$TARGET" ]] && "$TARGET" status 2>/dev/null | grep -q '^intercept: transparent'; then
+  TRANSPARENT=1
+fi
+
 # --- 3. Fail-safe: point Claude Code straight at Anthropic before the risky part ---
-log "disabling proxy (Claude Code -> direct Anthropic) for the swap window..."
-"$TARGET" disable || true
+# Base-url mode only -- see the top-of-file note on why this is actively
+# harmful (strips CA trust, achieves nothing) in transparent mode.
+DISABLED_FOR_SWAP=0
+if [[ "$TRANSPARENT" -eq 0 ]]; then
+  log "disabling proxy (Claude Code -> direct Anthropic) for the swap window..."
+  "$TARGET" disable || true
+  DISABLED_FOR_SWAP=1
+else
+  log "transparent mode: skipping disable/enable around the swap (see top-of-file note); relying on the atomic mv + health-checked restart instead"
+fi
 
 # --- 4. Atomic install ---
 mv "$TMPBIN" "$TARGET"
@@ -111,8 +155,10 @@ launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
 
 if wait_healthy; then
   log "new gateway is healthy"
-  "$TARGET" enable
-  log "re-enabled proxy -- restart any Claude Code session for the change to take effect"
+  if [[ "$DISABLED_FOR_SWAP" -eq 1 ]]; then
+    "$TARGET" enable
+    log "re-enabled proxy -- restart any Claude Code session for the change to take effect"
+  fi
   log "deploy complete"
   exit 0
 fi
@@ -124,13 +170,23 @@ if [[ -f "$BACKUP_DIR/claude-burst-bin.latest.bak" ]]; then
   chmod 755 "$TARGET"
   launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
   if wait_healthy; then
-    "$TARGET" enable
+    if [[ "$DISABLED_FOR_SWAP" -eq 1 ]]; then
+      "$TARGET" enable
+    fi
     echo "[deploy] rolled back to previous binary, it is healthy, proxy re-enabled" >&2
-  else
-    echo "[deploy] rollback binary ALSO failed to come up healthy -- leaving proxy DISABLED (direct Anthropic) so Claude access is not lost. Investigate $HOME/.config/claude-burst/claude-burst.log and Console.app crash reports." >&2
-    exit 1
+    exit 0
   fi
-else
-  echo "[deploy] no previous binary backup found to roll back to -- leaving proxy DISABLED (direct Anthropic). Investigate manually." >&2
-  exit 1
 fi
+
+# Both the new binary and the rollback (or there was no backup to roll back
+# to) failed to come up healthy. What's actually safe to claim here depends
+# entirely on intercept mode -- see the top-of-file note.
+if [[ "$TRANSPARENT" -eq 1 ]]; then
+  echo "[deploy] gateway is down and the machine-wide pf redirect + /etc/hosts entry are STILL ACTIVE -- this is not a 'disabled, direct to Anthropic' state, every request to api.anthropic.com on this Mac is currently broken. Run now:" >&2
+  echo "           sudo $ROOT/scripts/transparent-root.sh remove" >&2
+  echo "         or: bash $ROOT/scripts/rollback.sh   (also restores config/CA backups)" >&2
+else
+  echo "[deploy] leaving proxy disabled (Claude Code -> direct Anthropic) so Claude access is not lost." >&2
+fi
+echo "[deploy] Investigate $HOME/.config/claude-burst/claude-burst.log and Console.app crash reports." >&2
+exit 1
