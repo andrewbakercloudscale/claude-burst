@@ -2,11 +2,24 @@
 
 **Claude Max as included capacity. A metered secondary as paid overflow.**
 
-Claude Burst is a Mac-only local gateway for Claude Code. It keeps your normal Claude Pro/Max subscription login as the primary credential, observes Anthropic's authoritative subscription rate-limit headers, and only switches inference to a configured secondary when Anthropic says the subscription allowance is actually exhausted. The secondary can be Amazon Bedrock, any OpenAI-compatible chat-completions endpoint (e.g. Together AI serving GLM — see [OpenAI-compatible secondary](#openai-compatible-secondary-eg-together-ai--glm) below), or a direct Anthropic API key. When the reset timestamp arrives, it automatically returns to the subscription.
+Claude Burst is a Mac-only local gateway for Claude Code. It keeps your normal Claude Pro/Max subscription login as the primary credential, observes Anthropic's authoritative subscription rate-limit headers, and only switches inference to a configured secondary when Anthropic says the subscription allowance is actually exhausted. The secondary can be Amazon Bedrock, any OpenAI-compatible chat-completions endpoint (e.g. Together AI serving GLM — see [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below), or a direct Anthropic API key. When the reset timestamp arrives, it automatically returns to the subscription.
 
 This is an experimental MVP. Test it on a non-critical development account before any broader rollout.
 
 **No Claude subscription?** Claude Burst also supports a direct, metered Anthropic API key as the primary route instead of subscription passthrough (see [No-subscription setup](#no-subscription-setup-metered-api-key-primary) below). In that mode there's no included allowance to burst from, so failover to the secondary is triggered by sustained failures instead of subscription-exhaustion headers — both routes are metered, so a single transient error doesn't flip traffic to a second paid provider.
+
+## Supported providers
+
+Primary and secondary are independent, pluggable slots (`internal/router/provider.go`) — nothing here is tied to one vendor:
+
+| Slot | Options |
+| --- | --- |
+| **Primary** | `oauth-passthrough` — your existing Claude Pro/Max subscription login (the default, and the setup this whole README describes first) · `anthropic-api-key` — a direct, metered Anthropic API key, for accounts with no subscription |
+| **Secondary** | `bedrock` — Amazon Bedrock · `openai-compatible` — any OpenAI-compatible chat-completions endpoint, worked examples below for Together AI/GLM and OpenRouter · `none` — disable overflow entirely |
+
+See [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below for the openai-compatible worked examples, and [Configuration](#configuration) for every field.
+
+**Keeping Remote Control.** Pointing Claude Code at any local gateway normally costs you its Remote Control feature — Claude Code disables Remote Control the moment `ANTHROPIC_BASE_URL` names anything other than `api.anthropic.com`, and the default setup below sets exactly that variable. Claude Burst's `transparent` intercept mode solves this by never touching `ANTHROPIC_BASE_URL` at all: instead of using that config mechanism, it gets into the path a level lower, at DNS, so Claude Code's own settings never change and it believes it is still talking to `api.anthropic.com` directly. See [Keeping Remote Control: transparent intercept mode](#keeping-remote-control-transparent-intercept-mode-optional) below.
 
 ## Why this exists
 
@@ -26,8 +39,8 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 4. Generic `429` responses do **not** trigger overflow.
 5. Overflow activates only when Anthropic's subscription headers indicate a rejected unified limit, for example `anthropic-ratelimit-unified-status: rejected`, or when an explicit subscription-limit error is returned.
 6. Claude Burst reads Anthropic's reset timestamp and persists it locally.
-7. The rejected request is replayed to the Amazon Bedrock Anthropic Messages endpoint using a Bedrock API key stored in macOS Keychain.
-8. Future inference requests use Bedrock until the reset time plus a small safety grace period.
+7. The rejected request is replayed to the configured secondary — Amazon Bedrock's Anthropic Messages endpoint, or an OpenAI-compatible endpoint such as Together AI or OpenRouter — using a credential stored in macOS Keychain.
+8. Future inference requests use the secondary until the reset time plus a small safety grace period.
 9. The first request after that time goes back to Anthropic Max automatically.
 
 Claude Burst does not rotate Max accounts, suppress quota signals, fabricate headers, or attempt to extend the Max allowance. The subscription limit remains authoritative.
@@ -75,7 +88,7 @@ A metrics-write failure (disk full, permissions, etc.) is logged but never fails
 - macOS on Apple Silicon or Intel
 - Go 1.23+ (there's no prebuilt binary in the repo; `install.sh` builds one locally)
 - Either: Claude Code already installed and logged into the intended Pro/Max account (subscription mode), **or** a metered Anthropic API key (no-subscription mode)
-- A credential for whichever secondary you pick: Amazon Bedrock access plus a Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`, **or** an API key for an OpenAI-compatible endpoint such as Together AI (see [OpenAI-compatible secondary](#openai-compatible-secondary-eg-together-ai--glm) below), **or** none at all if you're running with `--secondary none`
+- A credential for whichever secondary you pick: Amazon Bedrock access plus a Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`, **or** an API key for an OpenAI-compatible endpoint such as Together AI (see [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below), **or** none at all if you're running with `--secondary none`
 
 The secondary is a pluggable slot (`internal/router/provider.go`), not a hardcoded vendor. The install example below uses Bedrock because it needs the fewest moving parts to try first — Bedrock and the two Anthropic-passthrough providers all speak Anthropic's Messages format natively — but it is one option, not a requirement.
 
@@ -91,7 +104,7 @@ export AWS_BEARER_TOKEN_BEDROCK='your-bedrock-api-key'
 ./install.sh
 ```
 
-Using Together AI / GLM (or another OpenAI-compatible endpoint) as the secondary instead? Skip the `AWS_*` exports above and see [OpenAI-compatible secondary](#openai-compatible-secondary-eg-together-ai--glm) below for the equivalent quickstart.
+Using Together AI / GLM (or another OpenAI-compatible endpoint) as the secondary instead? Skip the `AWS_*` exports above and see [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below for the equivalent quickstart.
 
 The installer:
 
@@ -234,9 +247,9 @@ exactly that) but is not something this project can prove. `scripts/check-interc
 settles it on a network that actually inspects TLS: it distinguishes *intercepted* from
 *bypassed* from *not enrolled*, which a bare certificate-issuer check cannot.
 
-## OpenAI-compatible secondary (e.g. Together AI / GLM)
+## OpenAI-compatible secondary (Together AI, OpenRouter, or any endpoint)
 
-A secondary can now be an OpenAI-compatible chat-completions endpoint instead of Bedrock — e.g. Together AI serving GLM. Unlike `bedrock` and the two Anthropic-passthrough providers, which all speak Anthropic's Messages wire format natively and only need `Server.relay` to stream the response back byte-for-byte, this provider (`internal/router/provider_openai.go`) does real bidirectional translation: request body shape (`system`/`messages`/`tools`, including splitting Anthropic's nested `tool_result` blocks into OpenAI's sibling `tool` messages), non-streaming and **streaming** response shape (OpenAI's `delta`-based SSE chunks translated live into Anthropic's `message_start`/`content_block_start`/`content_block_delta`/`content_block_stop`/`message_delta`/`message_stop` event sequence, including parallel tool calls), and tool-call schema (`tool_use` blocks ↔ `tool_calls`). Verified against a real Together AI + GLM 5.3 endpoint, including a genuine streaming tool call.
+A secondary can be any OpenAI-compatible chat-completions endpoint instead of Bedrock — not just one named vendor. `provider: "openai-compatible"` plus a `base_url` and `model` is the entire integration surface; nothing about the vendor is hardcoded anywhere in the request path. Two are shown below as concrete examples — Together AI serving GLM, and OpenRouter, which fronts many different model providers behind one OpenAI-compatible API — but the same `base_url`/`model` shape works for any other OpenAI-compatible endpoint too. Unlike `bedrock` and the two Anthropic-passthrough providers, which all speak Anthropic's Messages wire format natively and only need `Server.relay` to stream the response back byte-for-byte, this provider (`internal/router/provider_openai.go`) does real bidirectional translation: request body shape (`system`/`messages`/`tools`, including splitting Anthropic's nested `tool_result` blocks into OpenAI's sibling `tool` messages), non-streaming and **streaming** response shape (OpenAI's `delta`-based SSE chunks translated live into Anthropic's `message_start`/`content_block_start`/`content_block_delta`/`content_block_stop`/`message_delta`/`message_stop` event sequence, including parallel tool calls), and tool-call schema (`tool_use` blocks ↔ `tool_calls`). Verified against a real Together AI + GLM 5.3 endpoint, including a genuine streaming tool call.
 
 Not translated (dropped, not an error): images/documents in message content, Anthropic extended-thinking (`thinking`/`redacted_thinking`) blocks in history, and prompt-caching `cache_control` hints — none have a meaningful equivalent on a generic OpenAI-compatible endpoint, and Claude Code's ordinary coding-agent traffic is overwhelmingly text + tool-use.
 
@@ -268,7 +281,31 @@ Configure it as `secondary` in `config.json`. Two failover modes, chosen just by
 ```
 Unlike Bedrock's `model_map` (which errors on a Claude model with no entry), an unmapped model here silently falls back to `model` rather than failing the request — there's always a usable target.
 
-Store the API key with `claude-burst keychain-set --provider together` (reads `TOGETHER_API_KEY`; the key name is provider-specific, not Together-specific — a different OpenAI-compatible vendor would use its own env var).
+### Worked example: OpenRouter instead of Together AI
+
+Same shape, different endpoint and model:
+
+```json
+{
+  "secondary": {
+    "provider": "openai-compatible",
+    "base_url": "https://openrouter.ai/api/v1",
+    "model": "z-ai/glm-5.3"
+  }
+}
+```
+
+```bash
+claude-burst configure --secondary openai-compatible \
+  --secondary-base-url https://openrouter.ai/api/v1 \
+  --secondary-model z-ai/glm-5.3 \
+  --secondary-keychain-service claude-burst-openrouter
+claude-burst keychain-set --provider openrouter   # reads OPENROUTER_API_KEY
+```
+
+### Credential storage and naming
+
+`claude-burst keychain-set --provider <label>` stores whatever `<label>_API_KEY` is set in the environment (uppercased, hyphens become underscores) into a macOS Keychain service named `claude-burst-<label>` by default — `--provider together` reads `TOGETHER_API_KEY` into `claude-burst-together`, `--provider openrouter` reads `OPENROUTER_API_KEY` into `claude-burst-openrouter`, and so on for any other vendor. Nothing here is a hardcoded allowlist; `<label>` can be anything. At request time, the gateway derives the same identity back out of whichever keychain service `secondary.keychain_service` actually names, so the two directions always agree without a second place to keep in sync (`internal/router.EnvVarForProvider` / `openAICompatibleIdentity`). Use `--secondary-keychain-service` on `configure` if you want a service name other than the `claude-burst-<label>` default (for example, to run two different OpenAI-compatible secondaries side by side under distinct names).
 
 **Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected**, in favor of the above. It would have required reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`) — exactly the pattern this README's design principles (and the source blog post) call out as why other third-party tools have been blocked by Anthropic. Not planned.
 
