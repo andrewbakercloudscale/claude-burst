@@ -371,12 +371,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Claude Code's HEAD /api/hello is only a warm-up probe. Keep it on the primary.
-	if !isInference(r.URL.Path) {
-		s.forward(w, r, nil, "primary", s.primary, s.primaryDetector, s.secondary != nil, "")
-		return
-	}
-
+	// Read the body for every request, not just inference: Remote Control's
+	// register call (and any other control-plane POST) needs its body
+	// forwarded too, not just GETs/HEADs like the /api/hello warm-up probe.
 	maxBytes := s.cfg.MaxRequestMB * 1024 * 1024
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
 	if err != nil {
@@ -387,6 +384,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if int64(len(body)) > maxBytes {
 		s.logger.Printf("req=%s error stage=read_body reason=too_large limit_mb=%d actual_bytes=%d", rid, s.cfg.MaxRequestMB, len(body))
 		http.Error(w, fmt.Sprintf("request exceeds configured max_request_mb=%d", s.cfg.MaxRequestMB), http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	if !isInference(r.URL.Path) {
+		s.forward(w, r, body, "primary", s.primary, s.primaryDetector, s.secondary != nil, "")
 		return
 	}
 
