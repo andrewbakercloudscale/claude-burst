@@ -168,7 +168,7 @@ func buildProvider(rc config.RouteConfig, defaultKeychainService string, default
 		if ks == "" {
 			ks = "claude-burst-together"
 		}
-		label, envVar := OpenAICompatibleIdentity(ks)
+		label, envVar := openAICompatibleIdentity(ks)
 		return NewOpenAICompatibleProvider(label, base, rc.Model, rc.ModelMap, ks, envVar), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", rc.Provider)
@@ -179,20 +179,21 @@ func buildProvider(rc config.RouteConfig, defaultKeychainService string, default
 // expects to hold an openai-compatible secondary's API key, from a short
 // vendor label -- "together" -> "TOGETHER_API_KEY", "openrouter" ->
 // "OPENROUTER_API_KEY". Exported because cmd/claude-burst's keychain-set
-// needs the same convention in the opposite direction from
-// OpenAICompatibleIdentity below, and a second implementation is exactly
-// the kind of drift a naming convention like this invites.
+// needs this same half of the convention (label -> env var) to know which
+// env var to read for `--provider <label>`; openAICompatibleIdentity below
+// covers the other half (keychain service -> label) and only buildProvider
+// needs that one.
 func EnvVarForProvider(label string) string {
 	return strings.ToUpper(strings.ReplaceAll(label, "-", "_")) + "_API_KEY"
 }
 
-// OpenAICompatibleIdentity derives the short vendor label and API-key env
+// openAICompatibleIdentity derives the short vendor label and API-key env
 // var for an openai-compatible secondary from its keychain service name --
 // e.g. "claude-burst-together" -> ("together", "TOGETHER_API_KEY"),
 // "claude-burst-openrouter" -> ("openrouter", "OPENROUTER_API_KEY"). No
 // vendor is hardcoded here: a config that only ever set (or defaulted to)
 // "claude-burst-together" gets back exactly the identity it had before.
-func OpenAICompatibleIdentity(keychainService string) (label, envVar string) {
+func openAICompatibleIdentity(keychainService string) (label, envVar string) {
 	label = strings.TrimPrefix(keychainService, "claude-burst-")
 	if label == "" {
 		label = "openai-compatible"
