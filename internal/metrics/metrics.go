@@ -10,21 +10,25 @@ import (
 )
 
 type Event struct {
-	Time             time.Time `json:"time"`
-	RequestID        string    `json:"request_id,omitempty"`
-	SessionID        string    `json:"session_id,omitempty"`
-	AgentID          string    `json:"agent_id,omitempty"`
-	Slot             string    `json:"slot,omitempty"` // "primary" | "secondary"; empty on events written before this field existed
-	Route            string    `json:"route"`
-	Model            string    `json:"model,omitempty"`
-	HTTPStatus       int       `json:"http_status"`
-	DurationMS       int64     `json:"duration_ms"`
-	InputTokens      int64     `json:"input_tokens,omitempty"`
-	OutputTokens     int64     `json:"output_tokens,omitempty"`
-	APIEquivalentUSD float64   `json:"api_equivalent_usd,omitempty"`
-	LimitClaim       string    `json:"limit_claim,omitempty"`
-	ResetAt          int64     `json:"reset_at,omitempty"`
-	Note             string    `json:"note,omitempty"`
+	Time      time.Time `json:"time"`
+	RequestID string    `json:"request_id,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
+	AgentID   string    `json:"agent_id,omitempty"`
+	Slot      string    `json:"slot,omitempty"` // "primary" | "secondary"; empty on events written before this field existed
+	Route     string    `json:"route"`
+	Model     string    `json:"model,omitempty"`
+	// RequestedModel is what Claude Code asked for; Model is what served the
+	// request. They differ only when a remapping provider (Bedrock modelMap,
+	// openai-compatible fixed/mapped failover) was involved.
+	RequestedModel   string  `json:"requested_model,omitempty"`
+	HTTPStatus       int     `json:"http_status"`
+	DurationMS       int64   `json:"duration_ms"`
+	InputTokens      int64   `json:"input_tokens,omitempty"`
+	OutputTokens     int64   `json:"output_tokens,omitempty"`
+	APIEquivalentUSD float64 `json:"api_equivalent_usd,omitempty"`
+	LimitClaim       string  `json:"limit_claim,omitempty"`
+	ResetAt          int64   `json:"reset_at,omitempty"`
+	Note             string  `json:"note,omitempty"`
 }
 
 type Writer struct {

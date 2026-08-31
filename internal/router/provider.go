@@ -58,6 +58,29 @@ type FailoverDetector interface {
 	OnSuccess()
 }
 
+// ServeModeler is implemented by providers that serve a request with a
+// DIFFERENT upstream model than the one Claude Code asked for -- the
+// openai-compatible provider translating to a fixed or mapped third-party
+// model, and Bedrock with its modelMap.
+//
+// Prepare() cannot simply return the upstream model for these, because
+// forward() also passes Prepare's model into TranslateResponse, where it is
+// echoed back to Claude Code in the message envelope's "model" field. Claude
+// Code asked for claude-opus-5 and must see claude-opus-5 there, not
+// zai-org/GLM-5.3. So the requested model travels the existing path, and the
+// model that actually served -- the one that belongs in metrics.jsonl, in the
+// admin UI, and in cost lookups -- comes from here.
+//
+// Without this, secondary rows are labelled and priced as the requested Claude
+// model: an admin page showing "claude-opus-5, $2.08" for a request GLM
+// actually served, at prices GLM does not charge.
+type ServeModeler interface {
+	// ServeModel returns the upstream model that serves a request whose
+	// requested model is the argument. Must be deterministic for the same
+	// input, since it is evaluated twice per request (Prepare and metrics).
+	ServeModel(requestedModel string) string
+}
+
 // Translator is implemented by a Provider whose upstream speaks a different
 // wire protocol than Anthropic's Messages API (e.g. an OpenAI-compatible
 // chat-completions endpoint). When a Provider also implements Translator,

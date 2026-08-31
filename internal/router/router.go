@@ -426,22 +426,30 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		s.logger.Printf("req=%s error stage=%s route=%s requested_model=%q err=%v", rid, stage, p.Name(), reqModel, err)
 		http.Error(w, err.Error(), status)
-		s.writeMetric(in, slot, p.Name(), reqModel, 0, start, tokenUsage{}, "", 0, stage+" failed: "+err.Error())
+		s.writeMetric(in, slot, p.Name(), reqModel, reqModel, 0, start, tokenUsage{}, "", 0, stage+" failed: "+err.Error())
 		return
+	}
+
+	// The model that actually served, for metrics and the admin view. Falls
+	// back to the requested model for passthrough providers, which serve with
+	// exactly what was asked for.
+	serveModel := model
+	if sm, ok := p.(ServeModeler); ok {
+		serveModel = sm.ServeModel(model)
 	}
 
 	resp, err := s.clientFor(in.URL.Path).Do(req)
 	if resp != nil {
 		s.recent.add(RecentResponse{
 			Time: start, RequestID: rid, Method: in.Method, Path: in.URL.Path,
-			Slot: slot, Route: p.Name(), Model: model, Status: resp.StatusCode,
+			Slot: slot, Route: p.Name(), Model: serveModel, Status: resp.StatusCode,
 			DurationMS: time.Since(start).Milliseconds(), Headers: filterHeaders(resp.Header),
 		})
 	}
 	if err != nil {
 		if allowFailover {
 			if d := fd.OnError(err); d.Failover {
-				s.writeMetric(in, slot, p.Name(), model, 0, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary")
+				s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary")
 				s.activateOverflow(d.ResetAt, d.Claim, d.Reason)
 				s.logger.Printf("req=%s failover route=%s claim=%s reason=%q (transport error: %v) -> replaying to secondary", rid, p.Name(), d.Claim, d.Reason, err)
 				s.forward(w, in, body, "secondary", s.secondary, nil, false, d.Reason)
@@ -450,7 +458,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		s.logger.Printf("req=%s error stage=upstream_call route=%s err=%v", rid, p.Name(), err)
 		http.Error(w, p.Name()+" upstream error: "+err.Error(), http.StatusBadGateway)
-		s.writeMetric(in, slot, p.Name(), model, 0, start, tokenUsage{}, "", 0, "upstream call failed: "+err.Error())
+		s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "upstream call failed: "+err.Error())
 		return
 	}
 
@@ -473,7 +481,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
 			rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
-		s.writeMetric(in, slot, p.Name(), model, resp.StatusCode, start, tok, "", 0, note)
+		s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tok, "", 0, note)
 		return
 	}
 
@@ -482,7 +490,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 
 	if allowFailover {
 		if d := fd.OnResponse(resp.StatusCode, resp.Header, errBody); d.Failover {
-			s.writeMetric(in, slot, p.Name(), model, resp.StatusCode, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary")
+			s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary")
 			s.activateOverflow(d.ResetAt, d.Claim, d.Reason)
 			s.logger.Printf("req=%s failover route=%s model=%q status=%d claim=%s reason=%q -> replaying to secondary",
 				rid, p.Name(), model, resp.StatusCode, d.Claim, d.Reason)
@@ -495,7 +503,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(errBody)
-	s.writeMetric(in, slot, p.Name(), model, resp.StatusCode, start, tokenUsage{}, "", 0, "upstream error; no failover")
+	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, "", 0, "upstream error; no failover")
 }
 
 func copyResponseHeaders(dst http.Header, src http.Header) {
@@ -615,13 +623,14 @@ func requestModel(body []byte) string {
 	return ""
 }
 
-func (s *Server) writeMetric(in *http.Request, slot, route, model string, status int, start time.Time, tok tokenUsage, claim string, reset int64, note string) {
+func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedModel string, status int, start time.Time, tok tokenUsage, claim string, reset int64, note string) {
+
 	price := s.cfg.Pricing[model]
 	equiv := (float64(tok.input)/1_000_000)*price.InputPerMTok + (float64(tok.output)/1_000_000)*price.OutputPerMTok
 	rid := requestIDFrom(in.Context())
 	err := s.metrics.Write(metrics.Event{
 		Time: time.Now(), RequestID: rid, SessionID: in.Header.Get("x-claude-code-session-id"), AgentID: in.Header.Get("x-claude-code-agent-id"),
-		Slot: slot, Route: route, Model: model, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),
+		Slot: slot, Route: route, Model: model, RequestedModel: requestedModel, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),
 		InputTokens: tok.input, OutputTokens: tok.output, APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note,
 	})
 	if err != nil {

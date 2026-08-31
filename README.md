@@ -38,6 +38,12 @@ Claude Burst writes to two files under `~/.config/claude-burst/`, and both are m
 
 ### `metrics.jsonl` — structured, one line per request
 
+(Also note the model fields: `model` is what **served** the request and drives cost;
+`requested_model` is what Claude Code asked for. They differ exactly when a remapping
+provider — Bedrock's modelMap, or openai-compatible fixed/consistent failover — was
+involved. Pricing uses the served model, so a request GLM served is never costed at
+Claude Opus rates.)
+
 - timestamp and a short request id (also present in `claude-burst.log`, so a line in one file can always be matched to the other)
 - Claude Code session and agent identifiers
 - selected route (`anthropic` or `bedrock`)
