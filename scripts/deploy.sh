@@ -69,6 +69,9 @@ HEALTH_TIMEOUT=15
 log() { echo "[deploy] $*"; }
 fail() { echo "[deploy] FAILED: $*" >&2; exit 1; }
 
+# shellcheck source=./health-diagnostics.sh
+source "$ROOT/scripts/health-diagnostics.sh"
+
 # The gateway serves HTTPS-only in transparent mode and HTTP-only in
 # base-url mode (cmd/claude-burst/main.go picks the scheme from
 # cfg.Intercept.Transparent() at startup). A plain-http check against an
@@ -180,6 +183,7 @@ fi
 
 # --- 6. Rollback: new binary didn't come up healthy ---
 echo "[deploy] FAILED: new gateway did not become healthy within ${HEALTH_TIMEOUT}s -- rolling back" >&2
+dump_health_diagnostics "new binary, after kickstart"
 if [[ -f "$BACKUP_DIR/claude-burst-bin.latest.bak" ]]; then
   cp "$BACKUP_DIR/claude-burst-bin.latest.bak" "$TARGET"
   chmod 755 "$TARGET"
@@ -191,6 +195,7 @@ if [[ -f "$BACKUP_DIR/claude-burst-bin.latest.bak" ]]; then
     echo "[deploy] rolled back to previous binary, it is healthy, proxy re-enabled" >&2
     exit 0
   fi
+  dump_health_diagnostics "rollback binary, after kickstart"
 fi
 
 # Both the new binary and the rollback (or there was no backup to roll back
@@ -203,5 +208,6 @@ if [[ "$TRANSPARENT" -eq 1 ]]; then
 else
   echo "[deploy] leaving proxy disabled (Claude Code -> direct Anthropic) so Claude access is not lost." >&2
 fi
-echo "[deploy] Investigate $HOME/.config/claude-burst/claude-burst.log and Console.app crash reports." >&2
+echo "[deploy] Investigate $HOME/.config/claude-burst/claude-burst.log, Console.app crash reports, and" >&2
+echo "         $HOME/.config/claude-burst/health-check-failures.log (captured automatically, above)." >&2
 exit 1

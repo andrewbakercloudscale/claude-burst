@@ -20,6 +20,9 @@ LOG="$HOME/.config/claude-burst/watchdog.log"
 LABEL="ninja.andrewbaker.claude-burst"
 mkdir -p "$HOME/.config/claude-burst"
 
+# shellcheck source=./health-diagnostics.sh
+source "$DIR/health-diagnostics.sh"
+
 echo "$(date '+%Y-%m-%d %H:%M:%S') watchdog armed, checking in ${DELAY}s" >> "$LOG"
 sleep "$DELAY"
 
@@ -48,6 +51,7 @@ if [[ "$healthy" -eq 1 ]]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') OK: gateway healthy after ${DELAY}s, leaving enabled" >> "$LOG"
   osascript -e 'display notification "Gateway healthy after check. Staying enabled." with title "claude-burst"' >/dev/null 2>&1 || true
 else
+  dump_health_diagnostics "watchdog, ${DELAY}s after enable" >> "$LOG" 2>&1
   "$DIR/rollback.sh" >> "$LOG" 2>&1
   echo "$(date '+%Y-%m-%d %H:%M:%S') ROLLED BACK: config restored, gateway stopped" >> "$LOG"
   osascript -e 'display notification "Gateway unhealthy -- auto rolled back. Restart Claude Code." with title "claude-burst"' >/dev/null 2>&1 || true

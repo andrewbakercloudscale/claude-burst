@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -171,7 +173,23 @@ func serve(args []string) {
 		_ = caPEM
 	}
 
-	logger.Printf("claude-burst %s listening on %s (%s)", version, cfg.Listen, scheme)
+	// net.Listen is split out from Serve (below) rather than calling the
+	// combined ListenAndServe[TLS] deliberately: that call is blocking, so
+	// there was previously no way to distinguish "the bind itself failed or
+	// was slow" from "the process is up and listening, but something
+	// downstream (the network, pf) is why a client still can't reach it" --
+	// exactly the ambiguity that made an intermittent, hard-to-reproduce
+	// connectivity gap to 127.0.0.1:7777 impossible to root-cause from logs
+	// alone (2026-08-31). The log line below now means what it says: the
+	// listener is bound and the kernel will accept connections on this
+	// socket from this timestamp on, not "about to try."
+	bindStart := time.Now()
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		logger.Printf("FATAL: failed to bind %s after %s: %v", cfg.Listen, time.Since(bindStart), err)
+		fatal(fmt.Errorf("bind %s: %w", cfg.Listen, err))
+	}
+	logger.Printf("claude-burst %s bound %s (%s) in %s -- accepting connections now", version, cfg.Listen, scheme, time.Since(bindStart))
 	fmt.Printf("claude-burst %s listening on %s://%s\n", version, scheme, cfg.Listen)
 	fmt.Printf("primary: %s (%s)\nsecondary: %s (%s)\n", cfg.Primary.Provider, cfg.Primary.BaseURL, cfg.Secondary.Provider, cfg.Secondary.BaseURL)
 	if cfg.Intercept.Transparent() {
@@ -202,11 +220,12 @@ func serve(args []string) {
 	// and present as Remote Control dropping repeatedly for no visible reason.
 	server := &http.Server{Addr: cfg.Listen, Handler: srv, TLSConfig: tlsConfig}
 	if tlsConfig != nil {
-		err = server.ListenAndServeTLS("", "") // certificates come from TLSConfig
+		err = server.ServeTLS(ln, "", "") // certificates come from TLSConfig; ln is already bound above
 	} else {
-		err = server.ListenAndServe()
+		err = server.Serve(ln)
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Printf("FATAL: server stopped accepting on %s after being bound %s: %v", cfg.Listen, time.Since(bindStart), err)
 		fatal(err)
 	}
 }
