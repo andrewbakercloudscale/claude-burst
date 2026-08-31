@@ -7,6 +7,20 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
+)
+
+// metrics.jsonl had no rotation at all before this and grew forever for as
+// long as the gateway ran. Not (yet) exposed via config.json -- see the
+// same-shaped constants next to claude-burst.log's rotation in
+// cmd/claude-burst/main.go for why these are hardcoded rather than
+// threaded through Writer's constructor: metrics.New has exactly one real
+// caller, and every other reference is a test building a Writer directly,
+// so a config-driven signature would only add ceremony no caller needs yet.
+const (
+	maxBytes   = 10 * 1024 * 1024
+	maxBackups = 5
 )
 
 type Event struct {
@@ -41,6 +55,13 @@ func New(path string) *Writer { return &Writer{path: path} }
 func (w *Writer) Write(e Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if err := rotate.RotateIfOversized(w.path, maxBytes, maxBackups); err != nil {
+		// A rotation failure (e.g. a permissions problem) must not block the
+		// metrics write itself -- an oversized-but-growing file is still a
+		// far better outcome than silently losing every metrics event from
+		// here on, which is what returning early would do.
+		fmt.Fprintf(os.Stderr, "claude-burst: metrics rotation failed for %s: %v\n", w.path, err)
+	}
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
