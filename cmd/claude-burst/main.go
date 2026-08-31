@@ -355,31 +355,52 @@ func baseURLForProvider(cfg config.Config, provider string) (baseURL, failoverSt
 	}
 }
 
+// keychainTarget resolves which Keychain service, env var, and display
+// label `keychain-set --provider <provider>` should use, given an optional
+// explicit --service override. Pure and side-effect-free so the
+// vendor-collision class of bug this replaced (see the doc comment below)
+// has a real regression test rather than only living in a shell transcript.
+//
+// Earlier this derived a non-bedrock provider's default service by sniffing
+// cfg.Secondary.KeychainService whenever the active secondary happened to
+// be openai-compatible, on the theory that a customized service name must
+// belong to whichever provider is currently configured. That reasoning only
+// held back when "together" was the only possible openai-compatible
+// provider; with several, it actively overwrote one provider's stored key
+// with another's the first time it was exercised for real (2026-08-31, see
+// commit history) -- and even fixing the guard to compare labels couldn't
+// save it, because a genuinely custom service name (one not shaped
+// "claude-burst-<label>") has no label to derive in the first place. An
+// explicit --service flag replaces the guesswork: no config is consulted,
+// so storing several providers' keys side by side and swapping which one is
+// active is just independent config edits, never a Keychain write that can
+// clobber a different provider's entry.
+func keychainTarget(provider, explicitService, bedrockDefaultService string) (service, envVar, label string) {
+	if provider == "bedrock" {
+		service = explicitService
+		if service == "" {
+			service = bedrockDefaultService // cfg.KeychainService -- a real, documented config.json field, unlike the openai-compatible case below
+		}
+		return service, "AWS_BEARER_TOKEN_BEDROCK", "Bedrock"
+	}
+	service = explicitService
+	if service == "" {
+		service = "claude-burst-" + provider
+	}
+	return service, router.EnvVarForProvider(provider), provider
+}
+
 func keychainSet(args []string) {
 	cfg, err := config.Load()
 	if err != nil {
 		fatal(err)
 	}
 	fs := flag.NewFlagSet("keychain-set", flag.ExitOnError)
-	provider := fs.String("provider", "bedrock", "which secret to store: bedrock, or the vendor label of an openai-compatible secondary (e.g. together, openrouter) -- matches whatever --secondary-keychain-service named it, default claude-burst-<label>")
+	provider := fs.String("provider", "bedrock", "which secret to store: bedrock, or the vendor label of an openai-compatible secondary (e.g. together, openrouter)")
+	serviceFlag := fs.String("service", "", "Keychain service name to store under (default claude-burst-<provider>, or cfg.keychain_service for bedrock) -- set explicitly to reuse a customized name; never inferred from the currently-configured secondary")
 	_ = fs.Parse(args)
 
-	var service, envVar, label string
-	if *provider == "bedrock" {
-		service, envVar, label = cfg.KeychainService, "AWS_BEARER_TOKEN_BEDROCK", "Bedrock"
-	} else {
-		// Not a hardcoded vendor: any openai-compatible secondary works the
-		// same way, following the "claude-burst-<label>" / "<LABEL>_API_KEY"
-		// convention that internal/router.EnvVarForProvider also implements
-		// (in the opposite direction, deriving the label back from whatever
-		// keychain service name is actually configured).
-		service = "claude-burst-" + *provider
-		if cfg.Secondary.Provider == "openai-compatible" && cfg.Secondary.KeychainService != "" {
-			service = cfg.Secondary.KeychainService
-		}
-		envVar = router.EnvVarForProvider(*provider)
-		label = *provider
-	}
+	service, envVar, label := keychainTarget(*provider, *serviceFlag, cfg.KeychainService)
 
 	key := os.Getenv(envVar)
 	if key == "" {
