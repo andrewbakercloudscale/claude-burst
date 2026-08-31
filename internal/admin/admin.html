@@ -161,9 +161,11 @@
     <span id="routeBadge"></span>
     <span class="spacer"></span>
     <span class="updated" id="updated"></span>
+    <button id="refreshBtn" style="margin-left:10px">Refresh</button>
   </header>
 
   <div class="grid" id="cards"></div>
+  <div id="bailout"></div>
 
   <section>
     <h2>Configuration <span class="hint">saved to config.json; the gateway reads it at startup</span></h2>
@@ -292,6 +294,23 @@ function renderCards(s) {
     ? `<span class="badge warn"><span class="dot"></span>OVERFLOW → SECONDARY</span>`
     : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
   $("ver").textContent = "v" + s.version + " · " + s.gateway;
+
+  // The machine-wide redirect (pf + /etc/hosts) needs root to remove and is
+  // never touched automatically -- this is the one command that always gets
+  // this Mac back to a known-good state, so it stays visible rather than
+  // being something you have to go find in scripts/ or ask for while every
+  // request to api.anthropic.com is failing.
+  if (s.intercept.bailout_cmd) {
+    const broken = modeTransparent && s.intercept.hosts_entry && !s.intercept.ca_trusted;
+    if (broken) {
+      note($("bailout"), "bad",
+        `Redirect is active but the CA is untrusted -- every request to ${s.intercept.host || "api.anthropic.com"} on this Mac is currently broken. Run:\n${s.intercept.bailout_cmd}`);
+    } else {
+      $("bailout").innerHTML = `<div class="note" style="background:var(--panel-2);color:var(--faint);border:1px solid var(--border)">Bail-out (undoes the machine-wide redirect, needs root):\n<code>${esc(s.intercept.bailout_cmd)}</code></div>`;
+    }
+  } else {
+    $("bailout").innerHTML = "";
+  }
 }
 
 function renderRequests(rows) {
@@ -408,8 +427,17 @@ $("revert").onclick = async () => {
   } catch (e) { note($("actNote"), "bad", e.message); }
 };
 
+$("refreshBtn").onclick = () => {
+  $("refreshBtn").disabled = true;
+  refresh().finally(() => { $("refreshBtn").disabled = false; });
+};
+
+// No auto-refresh: rebuilding the responses/requests lists on a timer
+// collapsed any <details> the user had expanded to read a header dump,
+// mid-read, with no way to tell it was about to happen. Refresh is
+// manual now (button above); actions that change state (save, force,
+// reset, restart, revert) still refresh themselves right after.
 refresh();
-setInterval(refresh, 5000);
 </script>
 </body>
 </html>

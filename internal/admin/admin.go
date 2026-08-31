@@ -48,11 +48,17 @@ type Server struct {
 	// extraHost is an optional friendly hostname accepted in addition to the
 	// loopback names. See config.AdminHostname for the trade-off it makes.
 	extraHost string
+	// rootHelper is the resolved path to transparent-root.sh, computed once
+	// by the caller (cmd/claude-burst/main.go's rootHelperPath) rather than
+	// re-derived here -- that search-the-likely-locations logic already
+	// lives in exactly one place, and the dashboard's bail-out command needs
+	// to be a path that actually exists, same as the CLI's own messages.
+	rootHelper string
 }
 
-func New(gateway *router.Server, metricsPath, version, extraHost string) *Server {
+func New(gateway *router.Server, metricsPath, version, extraHost, rootHelper string) *Server {
 	return &Server{gateway: gateway, metricsPath: metricsPath, version: version,
-		extraHost: strings.ToLower(extraHost)}
+		extraHost: strings.ToLower(extraHost), rootHelper: rootHelper}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -163,6 +169,13 @@ type interceptInfo struct {
 	HostsEntry  bool   `json:"hosts_entry"`
 	RemoteCtrl  bool   `json:"remote_control_expected"`
 	SettingsURL string `json:"settings_base_url"`
+	// BailoutCmd is the ready-to-run command that undoes the machine-wide
+	// redirect (pf + /etc/hosts). Only meaningful in transparent mode, and
+	// only ever needs root -- the dashboard can't run it itself, but it can
+	// make sure the one command that gets this Mac back to a known-good
+	// state is always visible rather than something you have to go dig out
+	// of scripts/ or ask for while every request is failing.
+	BailoutCmd string `json:"bailout_cmd,omitempty"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +215,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		if h, err := os.ReadFile("/etc/hosts"); err == nil {
 			ii.HostsEntry = strings.Contains(string(h), "# BEGIN claude-burst hosts")
 		}
+		ii.BailoutCmd = "sudo " + s.rootHelper + " remove"
 	}
 	// Claude Code disables Remote Control whenever ANTHROPIC_BASE_URL names a
 	// host other than api.anthropic.com; an unset value is the default.
