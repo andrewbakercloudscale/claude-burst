@@ -1,12 +1,12 @@
 # Claude Burst
 
-**Claude Max as included capacity. Amazon Bedrock as paid overflow.**
+**Claude Max as included capacity. A metered secondary as paid overflow.**
 
-Claude Burst is a Mac-only local gateway for Claude Code. It keeps your normal Claude Pro/Max subscription login as the primary credential, observes Anthropic's authoritative subscription rate-limit headers, and only switches inference to Amazon Bedrock when Anthropic says the subscription allowance is actually exhausted. When the reset timestamp arrives, it automatically returns to the subscription.
+Claude Burst is a Mac-only local gateway for Claude Code. It keeps your normal Claude Pro/Max subscription login as the primary credential, observes Anthropic's authoritative subscription rate-limit headers, and only switches inference to a configured secondary when Anthropic says the subscription allowance is actually exhausted. The secondary can be Amazon Bedrock, any OpenAI-compatible chat-completions endpoint (e.g. Together AI serving GLM — see [OpenAI-compatible secondary](#openai-compatible-secondary-eg-together-ai--glm) below), or a direct Anthropic API key. When the reset timestamp arrives, it automatically returns to the subscription.
 
 This is an experimental MVP. Test it on a non-critical development account before any broader rollout.
 
-**No Claude subscription?** Claude Burst also supports a direct, metered Anthropic API key as the primary route instead of subscription passthrough (see [No-subscription setup](#no-subscription-setup-metered-api-key-primary) below). In that mode there's no included allowance to burst from, so failover to Bedrock is triggered by sustained failures instead of subscription-exhaustion headers — both routes are metered, so a single transient error doesn't flip traffic to a second paid provider.
+**No Claude subscription?** Claude Burst also supports a direct, metered Anthropic API key as the primary route instead of subscription passthrough (see [No-subscription setup](#no-subscription-setup-metered-api-key-primary) below). In that mode there's no included allowance to burst from, so failover to the secondary is triggered by sustained failures instead of subscription-exhaustion headers — both routes are metered, so a single transient error doesn't flip traffic to a second paid provider.
 
 ## Why this exists
 
@@ -14,7 +14,7 @@ Anthropic exposes materially different commercial models for access to the same 
 
 - Claude Max is a fixed monthly subscription with rolling usage limits.
 - Claude API is metered by token.
-- Amazon Bedrock provides metered access to Claude through AWS.
+- Amazon Bedrock, and OpenAI-compatible inference providers such as Together AI, offer metered access to Claude-family or comparable models outside Anthropic's own billing.
 
 Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BASE_URL` with an existing claude.ai subscription login. Setting only the base URL keeps the subscription credential active and the subscription's usage limits and billing continue to apply. Claude Burst uses that supported gateway mechanism and respects the subscription limit rather than trying to evade it.
 
@@ -75,10 +75,9 @@ A metrics-write failure (disk full, permissions, etc.) is logged but never fails
 - macOS on Apple Silicon or Intel
 - Go 1.23+ (there's no prebuilt binary in the repo; `install.sh` builds one locally)
 - Either: Claude Code already installed and logged into the intended Pro/Max account (subscription mode), **or** a metered Anthropic API key (no-subscription mode)
-- Amazon Bedrock access to the Claude models you want to use, for the Bedrock secondary
-- A Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`
+- A credential for whichever secondary you pick: Amazon Bedrock access plus a Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`, **or** an API key for an OpenAI-compatible endpoint such as Together AI (see [OpenAI-compatible secondary](#openai-compatible-secondary-eg-together-ai--glm) below), **or** none at all if you're running with `--secondary none`
 
-The MVP uses Amazon Bedrock's Anthropic-compatible Messages API with a Bedrock API key because that preserves the Anthropic request/stream format and keeps the router small. IAM/SigV4/SSO credential support is a sensible next step.
+The secondary is a pluggable slot (`internal/router/provider.go`), not a hardcoded vendor. The install example below uses Bedrock because it needs the fewest moving parts to try first — Bedrock and the two Anthropic-passthrough providers all speak Anthropic's Messages format natively — but it is one option, not a requirement.
 
 ## Install
 
@@ -92,10 +91,12 @@ export AWS_BEARER_TOKEN_BEDROCK='your-bedrock-api-key'
 ./install.sh
 ```
 
+Using Together AI / GLM (or another OpenAI-compatible endpoint) as the secondary instead? Skip the `AWS_*` exports above and see [OpenAI-compatible secondary](#openai-compatible-secondary-eg-together-ai--glm) below for the equivalent quickstart.
+
 The installer:
 
 - builds `claude-burst` locally (`go build`) and installs it into `~/.local/bin/claude-burst`
-- stores the Bedrock key in macOS Keychain when `AWS_BEARER_TOKEN_BEDROCK` is present
+- stores the secondary's credential in macOS Keychain when one is present (`AWS_BEARER_TOKEN_BEDROCK` for Bedrock; `claude-burst keychain-set --provider <name>` for others, see [Commands](#commands))
 - writes the initial configuration
 - updates `~/.claude/settings.json` with only `ANTHROPIC_BASE_URL=http://127.0.0.1:7777`
 - does **not** add an Anthropic credential of its own — in subscription mode this keeps the saved Max login active; in no-subscription mode, Claude Code's own `ANTHROPIC_API_KEY` (set separately, see below) is what gets forwarded
