@@ -367,6 +367,25 @@ async function refresh() {
       fetch("/api/requests?limit=50").then(r => r.json()),
       fetch("/api/responses").then(r => r.json()),
     ]);
+
+    // config.json failed to load: /api/state still answers (200, not an
+    // HTTP error) but every routing/usage field is a zero value and must
+    // not be trusted. Recent requests/responses don't depend on config at
+    // all, so still render those -- often the most useful thing to look at
+    // while working out what broke. This is deliberately a normal render
+    // path, not the exception handler below: the gateway IS reachable,
+    // config.json specifically is what's broken, and those need different
+    // guidance.
+    if (s.config_error) {
+      $("cards").innerHTML = "";
+      note($("bailout"), "bad",
+        `config.json failed to load, so routing/usage state can't be shown: ${s.config_error}\n\nFix ~/.config/claude-burst/config.json, then click Refresh. Recent requests below still reflect real traffic.`);
+      renderRequests(reqs);
+      renderResponses(resps);
+      $("updated").textContent = "config error — " + new Date().toLocaleTimeString();
+      return;
+    }
+
     renderCards(s);
     renderRequests(reqs);
     renderResponses(resps);
@@ -411,10 +430,45 @@ $("reset").onclick = async () => {
 $("restart").onclick = async () => {
   if (!confirm("Restart the gateway?\n\nIn-flight requests will be dropped. If it is managed by launchd it comes straight back; if you started it by hand, it will simply stop.")) return;
   try {
-    note($("actNote"), "warn", (await post("/api/restart")).ok);
-    setTimeout(refresh, 2500);
-  } catch (e) { note($("actNote"), "bad", e.message); }
+    note($("actNote"), "warn", (await post("/api/restart")).ok + " — waiting for it to come back...");
+  } catch (e) { note($("actNote"), "bad", e.message); return; }
+  awaitGatewayBack();
 };
+
+// Polls for the gateway to actually come back after a restart, rather than
+// a single delayed refresh that either works or leaves the page looking
+// normal-but-stale if the new process never started. Distinguishes the two
+// concrete failure shapes: the admin server itself not answering (process
+// never came back at all -- most likely, since gateway and admin share one
+// process) vs. it answering but reporting a broken config (the config_error
+// path refresh() already renders). Either way this always ends by leaving
+// the page in a state that says something true, not a stale "restarting..."
+// that outlives the actual attempt.
+async function awaitGatewayBack() {
+  const attempts = 12, delayMs = 1500; // ~18s: launchd restarts are normally sub-second
+  for (let i = 0; i < attempts; i++) {
+    await new Promise(r => setTimeout(r, delayMs));
+    try {
+      const r = await fetch("/api/state");
+      if (r.ok) {
+        await refresh();
+        const s = await fetch("/api/state").then(r => r.json()).catch(() => null);
+        if (s && s.config_error) {
+          note($("actNote"), "bad", "Gateway restarted, but config.json failed to load: " + s.config_error);
+        } else {
+          note($("actNote"), "ok", "Gateway is back.");
+        }
+        return;
+      }
+    } catch (e) { /* not back yet -- keep polling */ }
+  }
+  note($("actNote"), "bad",
+    `Gateway did not come back within ${Math.round(attempts * delayMs / 1000)}s. From a terminal, check:\n` +
+    `launchctl list ninja.andrewbaker.claude-burst\n` +
+    `tail -40 ~/.config/claude-burst/launchd.err.log\n` +
+    `If it's not managed by launchd, it simply stopped -- run: claude-burst serve`);
+  $("updated").textContent = "gateway unreachable — restart did not come back";
+}
 
 $("revert").onclick = async () => {
   if (!confirm("Revert to normal Claude?\n\nRemoves ANTHROPIC_BASE_URL from settings.json and the local CA from the trust bundle. Nothing else in settings.json is touched.\n\nYou will need to restart Claude Code.")) return;
