@@ -174,6 +174,21 @@ state_set() {
   mv "$tmp" "$STATE_FILE" && chmod 644 "$STATE_FILE"
 }
 
+# Probe a local gateway port that may be serving EITHER plain HTTP (base-url
+# mode) or HTTPS (transparent mode, once the gateway has been restarted into
+# it). Getting this wrong is not cosmetic: an http-only probe reports a healthy
+# TLS gateway as dead and aborts the install, while the reverse would install a
+# machine-wide redirect in front of a gateway that cannot answer it.
+#
+# -k because the gateway presents our own local CA, which curl does not read
+# from NODE_EXTRA_CA_CERTS. We are checking liveness, not trust.
+probe_gateway() {
+  local port="$1"
+  curl -skf -m 5 "https://127.0.0.1:$port/healthz" >/dev/null 2>&1 && { echo https; return 0; }
+  curl -sf  -m 5 "http://127.0.0.1:$port/healthz"  >/dev/null 2>&1 && { echo http;  return 0; }
+  return 1
+}
+
 quiet_pf() { grep -vE 'ALTQ|Use of -f option|present in the main ruleset|See /etc/pf.conf' | sed 's/^/  /'; }
 
 flush_dns() {
@@ -200,10 +215,22 @@ do_install() {
   # The gateway must already be listening. Installing the redirect first is
   # how a live session gets broken: /etc/hosts starts sending every process on
   # this Mac to a port with nothing behind it.
-  if ! curl -sf -m 3 "http://127.0.0.1:$gport/healthz" >/dev/null 2>&1; then
+  local scheme
+  if ! scheme=$(probe_gateway "$gport"); then
     die "gateway is not responding on 127.0.0.1:$gport -- start it before installing the redirect"
   fi
-  echo "gateway healthy on 127.0.0.1:$gport"
+  echo "gateway healthy on 127.0.0.1:$gport (serving $scheme)"
+
+  # Refuse to proceed against a gateway still in base-url mode. Installing the
+  # redirect now would point every process on this Mac at an HTTPS endpoint
+  # that answers plain HTTP, and the damage lasts until someone notices.
+  if [[ "$scheme" != "https" ]]; then
+    die "the gateway is serving plain HTTP, so it has not been restarted into transparent mode yet.
+       Run these first, then re-run this command:
+         claude-burst configure --intercept-mode transparent
+         claude-burst enable
+         launchctl kickstart -k gui/\$UID/ninja.andrewbaker.claude-burst"
+  fi
 
   # Resolve BEFORE the hosts entry exists: afterwards every resolver on the
   # machine answers 127.0.0.1, so this is the only chance to record a real
@@ -250,7 +277,7 @@ EOF
 
   # Verify the redirect works BEFORE pointing DNS at it. If this fails there is
   # still nothing redirecting, so the machine is untouched in any way that matters.
-  if ! curl -sf -m 5 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then
+  if ! probe_gateway "$port" >/dev/null; then
     echo "  redirect verification FAILED -- rolling back before touching /etc/hosts" >&2
     do_remove
     die "pf redirect did not take effect; nothing was changed in /etc/hosts"
