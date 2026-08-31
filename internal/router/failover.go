@@ -1,11 +1,14 @@
 package router
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -171,7 +174,40 @@ func (d *meteredFailureDetector) OnResponse(status int, h http.Header, body []by
 }
 
 func (d *meteredFailureDetector) OnError(err error) FailoverDecision {
+	if isLocalConnectivityFailure(err) {
+		// A DNS resolution failure or "no route to host"/"network
+		// unreachable" doesn't mean Anthropic is having trouble -- it means
+		// THIS MACHINE has no path to the internet at all, which the
+		// secondary would be equally unreachable through. Counting these
+		// toward the metered window means walking out of WiFi range floods
+		// the primary with failures that all look identical to a genuine
+		// Anthropic outage, and the resulting overflow window (defaulting to
+		// unknown_reset_seconds, since a transport error carries no reset
+		// header to read) then keeps preferring a secondary that was never
+		// actually the problem for minutes after connectivity returns.
+		// Reproduced live: 2026-08-31.
+		return FailoverDecision{}
+	}
 	return d.recordFailure("transport error: "+err.Error(), nil)
+}
+
+// isLocalConnectivityFailure reports whether err specifically indicates this
+// machine has no network path to attempt a connection at all, as opposed to
+// a connection that was attempted and failed for a reason that could
+// plausibly be Anthropic's side: connection refused (something answered and
+// said no), a timeout on an already-established connection, and TLS/HTTP
+// errors are all left counting as before, since ruling those out reliably
+// isn't possible without guessing. This only carves out the unambiguous
+// cases -- DNS resolution failure, and the two "unreachable" syscall errors
+// a dial reports when the local network stack itself has no route -- rather
+// than trying to classify every transport error, which would trade one kind
+// of wrong guess for another.
+func isLocalConnectivityFailure(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 func (d *meteredFailureDetector) recordFailure(detail string, h http.Header) FailoverDecision {
