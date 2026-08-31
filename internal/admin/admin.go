@@ -45,10 +45,14 @@ type Server struct {
 	gateway     *router.Server
 	metricsPath string
 	version     string
+	// extraHost is an optional friendly hostname accepted in addition to the
+	// loopback names. See config.AdminHostname for the trade-off it makes.
+	extraHost string
 }
 
-func New(gateway *router.Server, metricsPath, version string) *Server {
-	return &Server{gateway: gateway, metricsPath: metricsPath, version: version}
+func New(gateway *router.Server, metricsPath, version, extraHost string) *Server {
+	return &Server{gateway: gateway, metricsPath: metricsPath, version: version,
+		extraHost: strings.ToLower(extraHost)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -75,9 +79,10 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
-		switch strings.ToLower(host) {
-		case "127.0.0.1", "localhost", "::1", "[::1]":
-		default:
+		host = strings.ToLower(host)
+		allowed := host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]" ||
+			(s.extraHost != "" && host == s.extraHost)
+		if !allowed {
 			http.Error(w, "admin UI only accepts loopback Host headers (got "+r.Host+")", http.StatusForbidden)
 			return
 		}

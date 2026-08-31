@@ -116,6 +116,18 @@ type Config struct {
 	// the intercepted hostname, and admin routes must not be reachable there.
 	// Empty disables the panel entirely.
 	AdminListen string `json:"admin_listen,omitempty"`
+
+	// AdminHostname is an optional friendly name for the admin UI, e.g.
+	// "cloudscale-claudeburst.test", paired with an /etc/hosts entry pointing
+	// it at 127.0.0.1.
+	//
+	// It is accepted in addition to the loopback names, never instead of them.
+	// Note the trade: the Host-header check is a DNS-rebinding defence, and a
+	// hostname a hostile page can simply guess and navigate to weakens it. What
+	// still holds is that mutations require a custom header (so a cross-origin
+	// page needs a preflight this server never answers) and no CORS headers are
+	// ever returned (so responses cannot be read cross-origin).
+	AdminHostname string `json:"admin_hostname,omitempty"`
 }
 
 func Default() Config {
