@@ -199,12 +199,29 @@ if [[ -f "$BACKUP_DIR/claude-burst-bin.latest.bak" ]]; then
 fi
 
 # Both the new binary and the rollback (or there was no backup to roll back
-# to) failed to come up healthy. What's actually safe to claim here depends
-# entirely on intercept mode -- see the top-of-file note.
+# to) failed the health check. What's actually safe to claim here depends
+# entirely on intercept mode -- see the top-of-file note -- and, in
+# transparent mode, on whether disable() actually ran (DISABLED_FOR_SWAP):
+# it never does there by design (see step 3), so CA trust was never
+# disturbed by THIS script. An unconditional "everything is broken, run
+# this now" here would itself be inaccurate -- the health check's own
+# direct-127.0.0.1:7777 probe has an intermittent, still-unexplained
+# false-negative gap (see health-diagnostics.sh), so a failed health check
+# in transparent mode is not on its own proof of a real outage the way it
+# would be if disable() HAD run. Verify before treating this as an
+# emergency, not after.
 if [[ "$TRANSPARENT" -eq 1 ]]; then
-  echo "[deploy] gateway is down and the machine-wide pf redirect + /etc/hosts entry are STILL ACTIVE -- this is not a 'disabled, direct to Anthropic' state, every request to api.anthropic.com on this Mac is currently broken. Run now:" >&2
-  echo "           sudo $ROOT/scripts/transparent-root.sh remove" >&2
-  echo "         or: bash $ROOT/scripts/rollback.sh   (also restores config/CA backups)" >&2
+  if [[ "$DISABLED_FOR_SWAP" -eq 1 ]]; then
+    echo "[deploy] gateway is down and the machine-wide pf redirect + /etc/hosts entry are STILL ACTIVE -- this is not a 'disabled, direct to Anthropic' state, every request to api.anthropic.com on this Mac is currently broken. Run now:" >&2
+    echo "           sudo $ROOT/scripts/transparent-root.sh remove" >&2
+    echo "         or: bash $ROOT/scripts/rollback.sh   (also restores config/CA backups)" >&2
+  else
+    INTERCEPT_HOST="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('intercept',{}).get('host','api.anthropic.com'))" 2>/dev/null || echo "api.anthropic.com")"
+    echo "[deploy] health check failed, but CA trust was never touched (transparent mode skips disable/enable around the swap) -- this may be the health check's own known intermittent false-negative, not a real outage. Verify directly before assuming anything is broken:" >&2
+    echo "           curl -sk https://127.0.0.1:7777/healthz                          # direct -- the check that just failed" >&2
+    echo "           curl -s --cacert \$NODE_EXTRA_CA_CERTS https://$INTERCEPT_HOST/healthz   # the REAL traffic path Claude Code actually uses" >&2
+    echo "         If the second one succeeds, the gateway is fine. If both genuinely fail, then: sudo $ROOT/scripts/transparent-root.sh remove" >&2
+  fi
 else
   echo "[deploy] leaving proxy disabled (Claude Code -> direct Anthropic) so Claude access is not lost." >&2
 fi
