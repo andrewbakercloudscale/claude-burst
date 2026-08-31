@@ -33,7 +33,7 @@ dump_health_diagnostics() {
     if command -v python3 >/dev/null 2>&1 && [[ -f "$HOME/.config/claude-burst/config.json" ]]; then
       local doh_host
       doh_host="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('intercept',{}).get('host','api.anthropic.com'))" 2>/dev/null || echo "api.anthropic.com")"
-      curl -sk -m 3 -o /dev/null -w 'https://%{url_effective} -> HTTP %{http_code} in %{time_total}s\n' "https://$doh_host/healthz" 2>&1
+      curl -sk -m 3 -o /dev/null -w '%{url_effective} -> HTTP %{http_code} in %{time_total}s\n' "https://$doh_host/healthz" 2>&1
     fi
     echo "-- lsof -iTCP:7777 --"
     lsof -nP -iTCP:7777 2>&1
