@@ -213,8 +213,9 @@ func configure(args []string) {
 	primary := fs.String("primary", "", "primary provider: oauth-passthrough | anthropic-api-key")
 	failoverStrategy := fs.String("failover-strategy", "", "override primary failover_strategy: subscription-limit | metered-failures | subscription-limit+metered-failures | none")
 	secondary := fs.String("secondary", "", "secondary provider: bedrock | openai-compatible | none")
-	secondaryBaseURL := fs.String("secondary-base-url", "", "base URL for an openai-compatible secondary, e.g. https://api.together.xyz/v1")
-	secondaryModel := fs.String("secondary-model", "", "target model for an openai-compatible secondary, e.g. zai-org/GLM-5.3")
+	secondaryBaseURL := fs.String("secondary-base-url", "", "base URL for an openai-compatible secondary, e.g. https://api.together.xyz/v1 or https://openrouter.ai/api/v1")
+	secondaryModel := fs.String("secondary-model", "", "target model for an openai-compatible secondary, e.g. zai-org/GLM-5.3 or z-ai/glm-5.3")
+	secondaryKeychainService := fs.String("secondary-keychain-service", "", "keychain service name for an openai-compatible secondary, e.g. claude-burst-openrouter (default claude-burst-together, for backward compatibility) -- also fixes the API-key env var keychain-set reads, e.g. claude-burst-openrouter -> OPENROUTER_API_KEY")
 	minFailures := fs.Int("metered-min-failures", 0, "consecutive-window failures before failing over in anthropic-api-key mode")
 	windowSeconds := fs.Int("metered-window-seconds", 0, "sliding window in seconds for metered failover")
 	interceptMode := fs.String("intercept-mode", "", "how Claude Code reaches the gateway: base-url (default) | transparent")
@@ -281,9 +282,16 @@ func configure(args []string) {
 			if base == "" || model == "" {
 				fatal(fmt.Errorf("--secondary openai-compatible requires --secondary-base-url and --secondary-model"))
 			}
+			ks := *secondaryKeychainService
+			if ks == "" {
+				ks = cfg.Secondary.KeychainService // allow re-running configure without repeating it
+			}
+			if ks == "" {
+				ks = "claude-burst-together" // backward-compatible default; not a hardcoded vendor requirement
+			}
 			cfg.Secondary = config.RouteConfig{
 				Provider: "openai-compatible", BaseURL: strings.TrimRight(base, "/"), Model: model,
-				KeychainService: "claude-burst-together",
+				KeychainService: ks,
 			}
 		default:
 			// baseURLForProvider always derives the base URL from the
@@ -353,20 +361,24 @@ func keychainSet(args []string) {
 		fatal(err)
 	}
 	fs := flag.NewFlagSet("keychain-set", flag.ExitOnError)
-	provider := fs.String("provider", "bedrock", "which secret to store: bedrock | together")
+	provider := fs.String("provider", "bedrock", "which secret to store: bedrock, or the vendor label of an openai-compatible secondary (e.g. together, openrouter) -- matches whatever --secondary-keychain-service named it, default claude-burst-<label>")
 	_ = fs.Parse(args)
 
 	var service, envVar, label string
-	switch *provider {
-	case "bedrock":
+	if *provider == "bedrock" {
 		service, envVar, label = cfg.KeychainService, "AWS_BEARER_TOKEN_BEDROCK", "Bedrock"
-	case "together":
-		service, envVar, label = "claude-burst-together", "TOGETHER_API_KEY", "Together AI"
+	} else {
+		// Not a hardcoded vendor: any openai-compatible secondary works the
+		// same way, following the "claude-burst-<label>" / "<LABEL>_API_KEY"
+		// convention that internal/router.EnvVarForProvider also implements
+		// (in the opposite direction, deriving the label back from whatever
+		// keychain service name is actually configured).
+		service = "claude-burst-" + *provider
 		if cfg.Secondary.Provider == "openai-compatible" && cfg.Secondary.KeychainService != "" {
 			service = cfg.Secondary.KeychainService
 		}
-	default:
-		fatal(fmt.Errorf("--provider must be bedrock or together, got %q", *provider))
+		envVar = router.EnvVarForProvider(*provider)
+		label = *provider
 	}
 
 	key := os.Getenv(envVar)

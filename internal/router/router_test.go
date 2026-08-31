@@ -576,7 +576,10 @@ func TestMeteredFailoverReplaysAfterSustainedFailures(t *testing.T) {
 // the client correctly translated into Anthropic's Messages format, not
 // relayed raw.
 func TestOpenAICompatibleFailoverTranslatesResponse(t *testing.T) {
-	t.Setenv("TOGETHER_API_KEY", "test-together-key")
+	// The env var is now derived from the configured keychain service
+	// ("claude-burst-together-test" -> TOGETHER_TEST_API_KEY), not
+	// hardcoded to TOGETHER_API_KEY -- see openAICompatibleIdentity.
+	t.Setenv("TOGETHER_TEST_API_KEY", "test-together-key")
 
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
