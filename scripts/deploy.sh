@@ -128,8 +128,23 @@ fi
 # that logic already lives, and a second implementation is exactly the kind
 # of drift this repo has been bitten by before.
 TRANSPARENT=0
-if [[ -x "$TARGET" ]] && "$TARGET" status 2>/dev/null | grep -q '^intercept: transparent'; then
-  TRANSPARENT=1
+if [[ -x "$TARGET" ]]; then
+  # Captured into a variable rather than piped straight into grep: under
+  # `pipefail` (set above), a pipeline's exit status is its LAST non-zero
+  # command, so if `status` itself ever exits non-zero for any reason --
+  # even while printing the right thing -- the `if` sees that failure and
+  # not grep's match, and silently falls through to TRANSPARENT=0. Twice
+  # in a row on 2026-08-31 this branch ran the base-url disable/enable
+  # dance on a transparent-mode machine (self-corrected by the time this
+  # script exits, via the normal enable() at the end -- but the whole
+  # point of skipping that dance here is to never touch CA trust during
+  # the swap in the first place). This form can't have that failure mode:
+  # STATUS_OUT is set unconditionally by `||:`, and only string-matched
+  # after, with no pipeline exit status left to be poisoned by.
+  STATUS_OUT="$("$TARGET" status 2>/dev/null || :)"
+  if [[ "$STATUS_OUT" == *$'\n'"intercept: transparent"* || "$STATUS_OUT" == "intercept: transparent"* ]]; then
+    TRANSPARENT=1
+  fi
 fi
 
 # --- 3. Fail-safe: point Claude Code straight at Anthropic before the risky part ---

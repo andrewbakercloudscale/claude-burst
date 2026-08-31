@@ -4,11 +4,19 @@
 # subscription-limit signals, so there's no safe way to force a real request
 # through the secondary path without an actual exhausted subscription).
 #
-#   1. gateway   - /healthz responds
-#   2. Anthropic - reachable, and a real call if ANTHROPIC_API_KEY is set
-#   3. Together  - a real minimal chat-completions call using the key in
-#                  macOS Keychain (service claude-burst-together), matching
-#                  whatever config.json's secondary.model is set to
+#   1. gateway    - /healthz responds
+#   2. Anthropic  - reachable, and a real call if ANTHROPIC_API_KEY is set
+#   3. Together   - a real minimal chat-completions call using the key in
+#                   macOS Keychain (service claude-burst-together), matching
+#                   whatever config.json's secondary.model is set to
+#   4. OpenRouter - same shape, service claude-burst-openrouter -- but a
+#                   WARN rather than a FAIL if that key isn't stored, unlike
+#                   Together above. keychain-set can hold several providers'
+#                   keys side by side (see README's Credential storage and
+#                   naming section) without any of them being the currently
+#                   configured secondary, and this machine's isn't
+#                   OpenRouter -- Together still is, so its check stays a
+#                   hard failure the way it always has been.
 #
 # Exit code is nonzero if any check fails.
 set -uo pipefail
@@ -75,6 +83,28 @@ else
     pass "Together AI reachable and authenticated for model $MODEL (real call, HTTP 200)"
   else
     bad "Together AI call failed for model $MODEL (HTTP $resp): $(cat /tmp/claude-burst-together-test.json 2>/dev/null | head -c 300)"
+  fi
+fi
+
+echo "== OpenRouter (openai-compatible secondary alternative) =="
+OPENROUTER_KEY="${OPENROUTER_API_KEY:-}"
+if [[ -z "$OPENROUTER_KEY" ]]; then
+  OPENROUTER_KEY="$(security find-generic-password -a "$(whoami)" -s claude-burst-openrouter -w 2>/dev/null || true)"
+fi
+
+if [[ -z "$OPENROUTER_KEY" ]]; then
+  warn "no OpenRouter key found (env OPENROUTER_API_KEY or Keychain service claude-burst-openrouter) -- optional, not the active secondary on this machine; run: claude-burst keychain-set --provider openrouter"
+else
+  OR_MODEL="${OPENROUTER_MODEL:-z-ai/glm-5.3}"
+  resp=$(curl -s -m 15 -o /tmp/claude-burst-openrouter-test.json -w '%{http_code}' \
+    https://openrouter.ai/api/v1/chat/completions \
+    -H "Authorization: Bearer $OPENROUTER_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"$OR_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+  if [[ "$resp" == "200" ]]; then
+    pass "OpenRouter reachable and authenticated for model $OR_MODEL (real call, HTTP 200)"
+  else
+    bad "OpenRouter call failed for model $OR_MODEL (HTTP $resp): $(cat /tmp/claude-burst-openrouter-test.json 2>/dev/null | head -c 300)"
   fi
 fi
 
