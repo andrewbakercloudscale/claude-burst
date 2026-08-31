@@ -654,6 +654,104 @@ func TestOpenAICompatibleFailoverTranslatesResponse(t *testing.T) {
 	}
 }
 
+// TestOpenAICompatibleIdentityDerivation locks in the "claude-burst-<label>"
+// / "<LABEL>_API_KEY" convention buildProvider relies on for every
+// openai-compatible secondary -- not just Together AI, which is what this
+// generalization replaced a hardcoded name/env-var pair for. Together's
+// case is included specifically to prove backward compatibility: an
+// existing config that only ever set (or defaulted to)
+// "claude-burst-together" must derive the exact identity it had before.
+func TestOpenAICompatibleIdentityDerivation(t *testing.T) {
+	cases := []struct {
+		keychainService string
+		wantLabel       string
+		wantEnvVar      string
+	}{
+		{"claude-burst-together", "together", "TOGETHER_API_KEY"},
+		{"claude-burst-openrouter", "openrouter", "OPENROUTER_API_KEY"},
+		{"claude-burst-my-custom-vendor", "my-custom-vendor", "MY_CUSTOM_VENDOR_API_KEY"},
+		{"", "openai-compatible", "OPENAI_COMPATIBLE_API_KEY"},
+	}
+	for _, c := range cases {
+		label, envVar := openAICompatibleIdentity(c.keychainService)
+		if label != c.wantLabel || envVar != c.wantEnvVar {
+			t.Errorf("openAICompatibleIdentity(%q) = (%q, %q), want (%q, %q)",
+				c.keychainService, label, envVar, c.wantLabel, c.wantEnvVar)
+		}
+	}
+}
+
+// TestOpenAICompatibleSecondaryOpenRouter is the OpenRouter analog of
+// TestOpenAICompatibleFailoverTranslatesResponse: same failover/translation
+// path, but configured the way a real OpenRouter secondary would be (its
+// own keychain service, its own env var, no model_map) to prove the
+// generalized identity derivation actually drives a real request end to
+// end -- not just the identity-string unit test above.
+func TestOpenAICompatibleSecondaryOpenRouter(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.Header().Set("anthropic-ratelimit-unified-representative-claim", "five_hour")
+		w.Header().Set("anthropic-ratelimit-unified-reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"limit"}}`))
+	}))
+	defer primary.Close()
+
+	openrouterCalled := false
+	openrouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		openrouterCalled = true
+		if got := r.Header.Get("Authorization"); got != "Bearer test-openrouter-key" {
+			t.Fatalf("bad auth %q -- env var should have been OPENROUTER_API_KEY, not TOGETHER_API_KEY", got)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		var oaiReq map[string]any
+		if err := json.Unmarshal(b, &oaiReq); err != nil {
+			t.Fatalf("outbound body not JSON: %v", err)
+		}
+		if oaiReq["model"] != "z-ai/glm-5.3" {
+			t.Fatalf("model not passed through: %v", oaiReq["model"])
+		}
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hi from OpenRouter"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3}}`))
+	}))
+	defer openrouter.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primary.URL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{Provider: "openai-compatible", BaseURL: openrouter.URL, Model: "z-ai/glm-5.3", KeychainService: "claude-burst-openrouter"}
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer oauth-token")
+	s.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !openrouterCalled {
+		t.Fatal("OpenRouter was not called")
+	}
+
+	var anthResp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &anthResp); err != nil {
+		t.Fatalf("client did not receive valid JSON: %v\nbody=%s", err, rr.Body.String())
+	}
+	if anthResp["type"] != "message" || anthResp["role"] != "assistant" {
+		t.Fatalf("response is not Anthropic-shaped: %v", anthResp)
+	}
+}
+
 // TestResponseHeaderTimeoutBoundsFullyHungConnection verifies the fix for a
 // gap the metered-failure detector would otherwise have: a fully hung
 // upstream connection previously never produced a Go error at all (client
