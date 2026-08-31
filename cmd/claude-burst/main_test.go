@@ -83,68 +83,10 @@ func TestBaseURLForProviderRejectsUnknownName(t *testing.T) {
 	}
 }
 
-// clearBaseURL must remove the gateway's own value and nothing else. The old
-// implementation only matched a "http://127.0.0.1:" prefix, so a non-loopback
-// --listen left the key stranded and Claude Code stayed pointed at a gateway
-// the user had just disabled.
-func TestClearBaseURL(t *testing.T) {
-	cases := []struct {
-		name    string
-		env     map[string]any
-		listen  string
-		want    bool
-		leftKey bool // ANTHROPIC_BASE_URL still present afterwards
-	}{
-		{"loopback default", map[string]any{"ANTHROPIC_BASE_URL": "http://127.0.0.1:7777"}, "127.0.0.1:7777", true, false},
-		{"non-loopback listen", map[string]any{"ANTHROPIC_BASE_URL": "http://192.168.1.9:7777"}, "192.168.1.9:7777", true, false},
-		{"https listen", map[string]any{"ANTHROPIC_BASE_URL": "https://127.0.0.1:443"}, "127.0.0.1:443", true, false},
-		{"someone else's proxy is left alone", map[string]any{"ANTHROPIC_BASE_URL": "https://corp-gateway.example.com"}, "127.0.0.1:7777", false, true},
-		{"no key", map[string]any{"OTHER": "x"}, "127.0.0.1:7777", false, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			root := map[string]any{"env": tc.env}
-			if got := clearBaseURL(root, tc.listen); got != tc.want {
-				t.Fatalf("clearBaseURL = %v, want %v", got, tc.want)
-			}
-			env, _ := root["env"].(map[string]any)
-			_, present := env["ANTHROPIC_BASE_URL"]
-			if present != tc.leftKey {
-				t.Errorf("key present = %v, want %v", present, tc.leftKey)
-			}
-		})
-	}
-}
-
-// Unrelated env vars and top-level settings must survive; this file holds the
-// user's hooks, statusLine and permissions.
-func TestClearBaseURLPreservesEverythingElse(t *testing.T) {
-	root := map[string]any{
-		"model": "opus[1m]",
-		"hooks": map[string]any{"Stop": "something"},
-		"env":   map[string]any{"ANTHROPIC_BASE_URL": "http://127.0.0.1:7777", "NODE_EXTRA_CA_CERTS": "/path/to.pem"},
-	}
-	if !clearBaseURL(root, "127.0.0.1:7777") {
-		t.Fatal("expected removal")
-	}
-	if root["model"] != "opus[1m]" || root["hooks"] == nil {
-		t.Error("unrelated top-level settings were lost")
-	}
-	env := root["env"].(map[string]any)
-	if env["NODE_EXTRA_CA_CERTS"] != "/path/to.pem" {
-		t.Error("unrelated env var was lost")
-	}
-}
-
-// When the gateway's key was the only one, the empty env block is dropped
-// rather than left behind as `"env": {}`.
-func TestClearBaseURLDropsEmptyEnvBlock(t *testing.T) {
-	root := map[string]any{"env": map[string]any{"ANTHROPIC_BASE_URL": "http://127.0.0.1:7777"}}
-	clearBaseURL(root, "127.0.0.1:7777")
-	if _, present := root["env"]; present {
-		t.Error("empty env block should have been removed")
-	}
-}
+// clearBaseURL's tests moved to internal/claudesettings/settings_test.go:
+// main.go no longer has its own copy of this logic (see
+// internal/claudesettings's package doc -- it was already meant to be the
+// one place this lived, and now actually is).
 
 func TestPortOf(t *testing.T) {
 	for in, want := range map[string]string{

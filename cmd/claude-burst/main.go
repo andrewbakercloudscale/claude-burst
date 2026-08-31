@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/admin"
+	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
@@ -532,91 +532,29 @@ func stats(args []string) {
 	fmt.Println(s.String())
 }
 
-// settingsPath returns ~/.claude/settings.json.
-func settingsPath() string {
-	h, err := os.UserHomeDir()
-	if err != nil {
-		fatal(err)
-	}
-	return filepath.Join(h, ".claude", "settings.json")
-}
-
-// readSettings parses settings.json into a generic map so unknown keys survive
-// a round trip. Note that Go marshals map keys in sorted order, so rewriting
-// this file reorders it -- harmless, but it is why the file looks churned
-// after an enable.
-func readSettings(p string) map[string]any {
-	root := map[string]any{}
-	b, err := os.ReadFile(p)
-	if os.IsNotExist(err) {
-		return root
-	}
-	if err != nil {
-		fatal(err)
-	}
-	if len(b) > 0 {
-		if err := json.Unmarshal(b, &root); err != nil {
-			fatal(fmt.Errorf("refusing to edit invalid %s: %w", p, err))
-		}
-	}
-	return root
-}
-
-func writeSettings(p string, root map[string]any) {
-	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
-		fatal(err)
-	}
-	b, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		fatal(err)
-	}
-	if err := os.WriteFile(p, append(b, '\n'), 0600); err != nil {
-		fatal(err)
-	}
-}
-
-// clearBaseURL removes our ANTHROPIC_BASE_URL if it points at this gateway,
-// leaving any value the user set deliberately. Matching the configured listen
-// address as well as the loopback prefix matters: with a non-loopback --listen
-// the old prefix-only check left the key stranded, silently keeping Claude
-// Code pointed at a gateway the user had just disabled.
-func clearBaseURL(root map[string]any, listen string) bool {
-	env, _ := root["env"].(map[string]any)
-	if env == nil {
-		return false
-	}
-	v, ok := env["ANTHROPIC_BASE_URL"].(string)
-	if !ok {
-		return false
-	}
-	ours := v == "http://"+listen || v == "https://"+listen || strings.HasPrefix(v, "http://127.0.0.1:")
-	if !ours {
-		return false
-	}
-	delete(env, "ANTHROPIC_BASE_URL")
-	if len(env) == 0 {
-		delete(root, "env")
-	} else {
-		root["env"] = env
-	}
-	return true
-}
-
 func enable(args []string) {
 	rejectArgs("enable", args)
 	cfg, err := config.Load()
 	if err != nil {
 		fatal(err)
 	}
-	p := settingsPath()
-	root := readSettings(p)
+	p, err := claudesettings.Path()
+	if err != nil {
+		fatal(err)
+	}
+	root, err := claudesettings.Read(p)
+	if err != nil {
+		fatal(err)
+	}
 
 	if cfg.Intercept.Transparent() {
 		// Transparent mode's entire purpose is that this variable stays unset:
 		// Claude Code disables Remote Control whenever it names another host.
 		// Setting it here would silently defeat the feature.
-		if clearBaseURL(root, cfg.Listen) {
-			writeSettings(p, root)
+		if claudesettings.ClearBaseURL(root, cfg.Listen) {
+			if err := claudesettings.Write(p, root); err != nil {
+				fatal(err)
+			}
 			fmt.Printf("removed ANTHROPIC_BASE_URL from %s (transparent mode needs it unset)\n", p)
 		} else {
 			fmt.Printf("ANTHROPIC_BASE_URL already unset in %s\n", p)
@@ -647,17 +585,14 @@ Then restart Claude Code. Verify with: claude-burst status
 		return
 	}
 
-	env, _ := root["env"].(map[string]any)
-	if env == nil {
-		env = map[string]any{}
-	}
-	env["ANTHROPIC_BASE_URL"] = "http://" + cfg.Listen
 	// Important: do NOT set a gateway API credential here. In
 	// oauth-passthrough mode this preserves the saved Max OAuth
 	// subscription; in anthropic-api-key mode, Claude Code's own
 	// ANTHROPIC_API_KEY (set separately) is what gets forwarded unchanged.
-	root["env"] = env
-	writeSettings(p, root)
+	claudesettings.SetBaseURL(root, "http://"+cfg.Listen)
+	if err := claudesettings.Write(p, root); err != nil {
+		fatal(err)
+	}
 	fmt.Printf("enabled Claude Burst in %s\nRestart Claude Code.\n", p)
 }
 
@@ -667,14 +602,22 @@ func disable(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	p := settingsPath()
+	p, err := claudesettings.Path()
+	if err != nil {
+		fatal(err)
+	}
 	if _, err := os.Stat(p); os.IsNotExist(err) && !cfg.Intercept.Transparent() {
 		fmt.Println("already disabled")
 		return
 	}
-	root := readSettings(p)
-	if clearBaseURL(root, cfg.Listen) {
-		writeSettings(p, root)
+	root, err := claudesettings.Read(p)
+	if err != nil {
+		fatal(err)
+	}
+	if claudesettings.ClearBaseURL(root, cfg.Listen) {
+		if err := claudesettings.Write(p, root); err != nil {
+			fatal(err)
+		}
 	}
 
 	if cfg.Intercept.Transparent() {
