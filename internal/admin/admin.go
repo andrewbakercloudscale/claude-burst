@@ -304,7 +304,7 @@ func (s *Server) handleForce(w http.ResponseWriter, r *http.Request) {
 	}
 	until := s.gateway.ForceOverflow(time.Duration(req.Minutes)*time.Minute, "forced from the admin UI")
 	writeJSON(w, map[string]string{
-		"ok": fmt.Sprintf("inference now goes to %s (%s) until %s. Clear it any time with Clear overflow.",
+		"ok": fmt.Sprintf("inference now goes to %s (%s) until %s. Clear it any time with Back to primary.",
 			cfg.Secondary.Provider, cfg.Secondary.Model, until.Format("15:04:05")),
 	})
 }
