@@ -250,8 +250,15 @@ func TestHandleForceRejectsWhenNoSecondaryConfigured(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 
+	// The gateway must be built with the SAME no-secondary config as disk,
+	// not config.Default() on its own: Default()'s BedrockBaseURL is
+	// non-empty, so ResolveRoutes (called inside router.New) auto-fills a
+	// bedrock secondary -- which would make the running gateway actually
+	// have a secondary, the opposite of what this test means to exercise,
+	// now that handleForce validates against the live gateway (see
+	// router.Server.HasSecondary) rather than a freshly re-read config file.
 	gdir := t.TempDir()
-	gw, err := router.New(config.Default(), filepath.Join(gdir, "state.json"), filepath.Join(gdir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	gw, err := router.New(cfg, filepath.Join(gdir, "state.json"), filepath.Join(gdir, "metrics.jsonl"), log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

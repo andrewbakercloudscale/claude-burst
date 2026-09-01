@@ -276,13 +276,23 @@ type forceRequest struct {
 func (s *Server) handleForce(w http.ResponseWriter, r *http.Request) {
 	var req forceRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	// Validate against the RUNNING gateway's actual secondary, not a
+	// freshly re-read config.json. The gateway only builds its Provider set
+	// once, at startup (see router.New/buildProvider), so config.json can
+	// say a secondary exists while the live process still has none --
+	// typically because a secondary was added (or removed) without
+	// restarting claude-burst. Checking disk here let this button report
+	// "ok" and arm the overflow window while the next real request had
+	// nowhere to go, failing on every retry until the gateway was
+	// restarted. See router.Server.HasSecondary's doc comment.
+	if !s.gateway.HasSecondary() {
+		http.Error(w, "no secondary provider is configured on the running gateway, so there is nothing to fail over to "+
+			"(if you just added or changed the secondary in config, restart the gateway first -- it only reads config at startup)", http.StatusBadRequest)
+		return
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if cfg.Secondary.Provider == "" || cfg.Secondary.Provider == config.ProviderNone {
-		http.Error(w, "no secondary provider is configured, so there is nothing to fail over to", http.StatusBadRequest)
 		return
 	}
 	if req.Minutes <= 0 {
