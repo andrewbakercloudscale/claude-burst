@@ -316,13 +316,14 @@ function renderCards(s) {
 function renderRequests(rows) {
   if (!rows.length) { $("requests").innerHTML = `<div class="empty">No requests yet.</div>`; return; }
   $("requests").innerHTML = `<table><thead><tr>
-      <th>Time</th><th>Slot</th><th>Model</th><th>Status</th>
+      <th>Time</th><th>Slot</th><th>Destination</th><th>Model</th><th>Status</th>
       <th class="num">ms</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th><th>Note</th>
     </tr></thead><tbody>${rows.map(e => {
       const slot = e.slot || (e.route === "anthropic" ? "primary" : "secondary");
       return `<tr>
         <td class="mono">${esc(new Date(e.time).toLocaleTimeString())}</td>
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
+        <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
         <td class="mono">${esc(e.model || "—")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--faint)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
         <td class="mono st-${String(e.http_status)[0]}">${esc(e.http_status)}</td>
         <td class="num">${num(e.duration_ms)}</td>
@@ -332,6 +333,14 @@ function renderRequests(rows) {
         <td>${esc(e.note || "")}</td>
       </tr>`;
     }).join("")}</tbody></table>`;
+}
+
+// destHost trims a full destination URL down to just its host, which is the
+// part that actually answers "primary or secondary" at a glance -- the full
+// URL is still available in the title attribute on hover.
+function destHost(url) {
+  if (!url) return "—";
+  try { return new URL(url).host; } catch { return url; }
 }
 
 function renderResponses(rows) {
@@ -351,6 +360,7 @@ function renderResponses(rows) {
         <span class="pill ${r.slot === "primary" ? "p" : "s"}">${esc(r.slot || "?")}</span>
         <span class="mono st-${String(r.status)[0]}">${esc(r.status)}</span>
         <span class="mono">${esc(r.method)} ${esc(r.path)}</span>
+        <span class="mono" style="color:var(--faint)" title="${esc(r.destination || "")}">&rarr; ${esc(destHost(r.destination))}</span>
         ${r.model && r.slot === "secondary" ? `<span class="mono" style="color:var(--muted)">${esc(r.model)}</span>` : ""}
         <span class="spacer"></span>
         <span class="pill">${keys.length} hdr${flagged ? " · " + flagged + " rate-limit" : ""}</span>

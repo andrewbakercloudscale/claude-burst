@@ -88,6 +88,28 @@ func TestSummarizeFallsBackToRouteForLegacyEvents(t *testing.T) {
 // regression this refactor is meant to prevent: once "anthropic-api-key" is
 // a valid route value, those requests must not silently vanish from
 // `claude-burst stats`.
+// TestRecentPreservesDestination guards the "which backend did this actually
+// hit" field round-tripping through the JSON encoding Recent() reads back --
+// a typo'd struct tag here would silently blank the field the admin UI
+// relies on to show a real destination URL instead of just the slot label.
+func TestRecentPreservesDestination(t *testing.T) {
+	dir := t.TempDir()
+	w := New(filepath.Join(dir, "metrics.jsonl"))
+	if err := w.Write(Event{Time: time.Now(), Slot: "secondary", Route: "together", Destination: "https://api.together.xyz/v1/chat/completions"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := Recent(filepath.Join(dir, "metrics.jsonl"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if got := events[0].Destination; got != "https://api.together.xyz/v1/chat/completions" {
+		t.Fatalf("destination = %q", got)
+	}
+}
+
 func TestSummarizeCountsAnthropicAPIKeyRouteUnderSlot(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "metrics.jsonl")
