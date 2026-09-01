@@ -399,6 +399,18 @@ async function refresh() {
     renderCards(s);
     renderRequests(reqs);
     renderResponses(resps);
+    // The "Force -> secondary" confirmation names a wall-clock expiry
+    // ("until 15:48:19") and otherwise just sits in actNote forever -- there
+    // is no auto-refresh (see the no-timer note below), so a window that
+    // expires on its own (or gets cleared from elsewhere) left that message
+    // claiming SECONDARY long after the live Routing card above had already
+    // gone back to PRIMARY. Only clear it once the claim it made is actually
+    // stale, so the message set moments ago by this exact click -- when
+    // s.overflow is still true -- survives the refresh() that click triggers.
+    if ($("actNote").dataset.overflowClaim === "1" && !s.overflow) {
+      $("actNote").innerHTML = "";
+      delete $("actNote").dataset.overflowClaim;
+    }
     // Never clobber something the user is halfway through typing.
     if (!dirty) {
       $("secModel").value = s.secondary.model || "";
@@ -428,17 +440,23 @@ $("force").onclick = async () => {
   try {
     const r = await post("/api/force", {minutes: parseInt($("forceMins").value, 10)});
     note($("actNote"), "warn", r.ok);
+    // Marks this note as a claim about the overflow window being active, so
+    // refresh() knows to clear it once that stops being true -- see the
+    // comment above that check.
+    $("actNote").dataset.overflowClaim = "1";
     refresh();
   } catch (e) { note($("actNote"), "bad", e.message); }
 };
 
 $("reset").onclick = async () => {
+  delete $("actNote").dataset.overflowClaim;
   try { note($("actNote"), "ok", (await post("/api/reset")).ok); refresh(); }
   catch (e) { note($("actNote"), "bad", e.message); }
 };
 
 $("restart").onclick = async () => {
   if (!confirm("Restart the gateway?\n\nIn-flight requests will be dropped. If it is managed by launchd it comes straight back; if you started it by hand, it will simply stop.")) return;
+  delete $("actNote").dataset.overflowClaim;
   try {
     note($("actNote"), "warn", (await post("/api/restart")).ok + " — waiting for it to come back...");
   } catch (e) { note($("actNote"), "bad", e.message); return; }
@@ -482,6 +500,7 @@ async function awaitGatewayBack() {
 
 $("revert").onclick = async () => {
   if (!confirm("Revert to normal Claude?\n\nRemoves ANTHROPIC_BASE_URL from settings.json and the local CA from the trust bundle. Nothing else in settings.json is touched.\n\nYou will need to restart Claude Code.")) return;
+  delete $("actNote").dataset.overflowClaim;
   try {
     const r = await post("/api/revert");
     let msg = r.steps.map(s => "• " + s).join("\n");
