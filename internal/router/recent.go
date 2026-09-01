@@ -29,6 +29,10 @@ type RecentResponse struct {
 	Status     int               `json:"status"`
 	DurationMS int64             `json:"duration_ms"`
 	Headers    map[string]string `json:"headers"`
+	// Destination is the actual outbound URL (scheme+host+path, no query)
+	// this hop was sent to -- what actually answers "did this go to
+	// primary or secondary", independent of the Slot label.
+	Destination string `json:"destination,omitempty"`
 }
 
 // headerAllowlist is matched case-insensitively as a prefix. Anything not

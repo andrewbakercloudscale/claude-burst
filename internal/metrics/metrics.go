@@ -34,7 +34,11 @@ type Event struct {
 	// RequestedModel is what Claude Code asked for; Model is what served the
 	// request. They differ only when a remapping provider (Bedrock modelMap,
 	// openai-compatible fixed/mapped failover) was involved.
-	RequestedModel   string  `json:"requested_model,omitempty"`
+	RequestedModel string `json:"requested_model,omitempty"`
+	// Destination is the actual outbound URL (scheme+host+path, no query)
+	// this request was sent to -- what actually answers "did this go to
+	// primary or secondary", independent of the Slot label.
+	Destination      string  `json:"destination,omitempty"`
 	HTTPStatus       int     `json:"http_status"`
 	DurationMS       int64   `json:"duration_ms"`
 	InputTokens      int64   `json:"input_tokens,omitempty"`

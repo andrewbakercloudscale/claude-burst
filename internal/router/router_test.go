@@ -700,6 +700,66 @@ func TestOpenAICompatibleFailoverTranslatesResponse(t *testing.T) {
 	}
 }
 
+// TestCountTokensNeverRoutesToSecondaryDuringOverflow guards against a real
+// bug: /v1/messages/count_tokens matched isInference's plain prefix check, so
+// during an overflow window it was sent to the openai-compatible secondary
+// like any other inference call. The OpenAI translator has no concept of a
+// count-only request -- it mistranslates the body into a full chat
+// completion, so a token-count call silently became a real (paid-for)
+// generation, then hung until the response-header timeout and 502'd because
+// the reply never resembled a count response. This path must always go to
+// primary, overflow or not, and never trigger failover itself.
+func TestCountTokensNeverRoutesToSecondaryDuringOverflow(t *testing.T) {
+	primaryCalled := false
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalled = true
+		if r.URL.Path != "/v1/messages/count_tokens" {
+			t.Fatalf("unexpected path on primary: %s", r.URL.Path)
+		}
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"input_tokens":42}`))
+	}))
+	defer primary.Close()
+
+	secondaryCalled := false
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryCalled = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer secondary.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primary.URL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{Provider: "openai-compatible", BaseURL: secondary.URL, Model: "zai-org/GLM-5.3", KeychainService: "claude-burst-together-test"}
+	t.Setenv("TOGETHER_TEST_API_KEY", "test-together-key")
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an active overflow window, same as a genuine subscription
+	// exhaustion or a forced test would leave behind.
+	s.ForceOverflow(time.Hour, "test: simulating an active overflow window")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages/count_tokens",
+		strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer oauth-token")
+	s.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !primaryCalled {
+		t.Fatal("count_tokens should have been sent to primary despite the active overflow window")
+	}
+	if secondaryCalled {
+		t.Fatal("count_tokens must never be sent to the secondary -- it has no equivalent endpoint there")
+	}
+}
+
 // TestopenAICompatibleIdentityDerivation locks in the "claude-burst-<label>"
 // / "<LABEL>_API_KEY" convention buildProvider relies on for every
 // openai-compatible secondary -- not just Together AI, which is what this

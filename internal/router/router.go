@@ -426,6 +426,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /v1/messages/count_tokens is Anthropic-specific: no equivalent request
+	// shape exists on an openai-compatible secondary's wire protocol. Routing
+	// it there (as isInference below would, during an overflow window) makes
+	// the OpenAI translator mistranslate the count-only body into a full
+	// chat-completion request -- paying for a real generation just to answer
+	// "how many tokens is this" -- and it hangs until the response-header
+	// timeout before 502ing, since the translated reply never resembles a
+	// count response. So this always goes to primary, overflow or not, and
+	// never fails over: there is nowhere correct to fail over to.
+	if r.URL.Path == "/v1/messages/count_tokens" {
+		s.forward(w, r, body, "primary", s.primary, s.primaryDetector, false, "")
+		return
+	}
+
 	if !isInference(r.URL.Path) {
 		s.forward(w, r, body, "primary", s.primary, s.primaryDetector, s.secondary != nil, "")
 		return
@@ -441,7 +455,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			// see HasSecondary's doc comment for how the two can drift apart.
 			s.logger.Printf("req=%s error stage=route reason=overflow_active_no_secondary", rid)
 			http.Error(w, "gateway is in a forced/overflow window but has no secondary provider configured on this running process -- configure a secondary and restart the gateway, or clear the overflow window", http.StatusBadGateway)
-			s.writeMetric(r, "secondary", "none", "", "", 0, time.Now(), tokenUsage{}, "", 0, "overflow active but no live secondary provider")
+			s.writeMetric(r, "secondary", "none", "", "", 0, time.Now(), tokenUsage{}, "", 0, "overflow active but no live secondary provider", "")
 			return
 		}
 		s.forward(w, r, body, "secondary", s.secondary, nil, false, "overflow window active")
@@ -479,9 +493,17 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		s.logger.Printf("req=%s error stage=%s route=%s requested_model=%q err=%v", rid, stage, p.Name(), reqModel, err)
 		http.Error(w, err.Error(), status)
-		s.writeMetric(in, slot, p.Name(), reqModel, reqModel, 0, start, tokenUsage{}, "", 0, stage+" failed: "+err.Error())
+		s.writeMetric(in, slot, p.Name(), reqModel, reqModel, 0, start, tokenUsage{}, "", 0, stage+" failed: "+err.Error(), "")
 		return
 	}
+
+	// The actual outbound URL this hop is sent to -- scheme+host+path, no
+	// query -- so metrics.jsonl and the admin UI can show which real backend
+	// served a request rather than just the configured slot name, which is
+	// what the "still going to primary?" confusion in practice turns out to
+	// be: the slot label was right, but nothing showed the URL to check it
+	// against.
+	destination := req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
 
 	// The model that actually served, for metrics and the admin view. Falls
 	// back to the requested model for passthrough providers, which serve with
@@ -497,12 +519,13 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			Time: start, RequestID: rid, Method: in.Method, Path: in.URL.Path,
 			Slot: slot, Route: p.Name(), Model: serveModel, Status: resp.StatusCode,
 			DurationMS: time.Since(start).Milliseconds(), Headers: filterHeaders(resp.Header),
+			Destination: destination,
 		})
 	}
 	if err != nil {
 		if allowFailover {
 			if d := fd.OnError(err); d.Failover {
-				s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary")
+				s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary", destination)
 				s.activateOverflow(d.ResetAt, d.Claim, d.Reason)
 				s.logger.Printf("req=%s failover route=%s claim=%s reason=%q (transport error: %v) -> replaying to secondary", rid, p.Name(), d.Claim, d.Reason, err)
 				s.forward(w, in, body, "secondary", s.secondary, nil, false, d.Reason)
@@ -511,7 +534,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		s.logger.Printf("req=%s error stage=upstream_call route=%s err=%v", rid, p.Name(), err)
 		http.Error(w, p.Name()+" upstream error: "+err.Error(), http.StatusBadGateway)
-		s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "upstream call failed: "+err.Error())
+		s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "upstream call failed: "+err.Error(), destination)
 		return
 	}
 
@@ -534,7 +557,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
 			rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
-		s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tok, "", 0, note)
+		s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tok, "", 0, note, destination)
 		return
 	}
 
@@ -543,7 +566,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 
 	if allowFailover {
 		if d := fd.OnResponse(resp.StatusCode, resp.Header, errBody); d.Failover {
-			s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary")
+			s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary", destination)
 			s.activateOverflow(d.ResetAt, d.Claim, d.Reason)
 			s.logger.Printf("req=%s failover route=%s model=%q status=%d claim=%s reason=%q -> replaying to secondary",
 				rid, p.Name(), model, resp.StatusCode, d.Claim, d.Reason)
@@ -556,7 +579,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(errBody)
-	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, "", 0, "upstream error; no failover")
+	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, "", 0, "upstream error; no failover", destination)
 }
 
 func copyResponseHeaders(dst http.Header, src http.Header) {
@@ -676,7 +699,7 @@ func requestModel(body []byte) string {
 	return ""
 }
 
-func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedModel string, status int, start time.Time, tok tokenUsage, claim string, reset int64, note string) {
+func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedModel string, status int, start time.Time, tok tokenUsage, claim string, reset int64, note, destination string) {
 
 	price := s.cfg.Pricing[model]
 	equiv := (float64(tok.input)/1_000_000)*price.InputPerMTok + (float64(tok.output)/1_000_000)*price.OutputPerMTok
@@ -684,7 +707,7 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 	err := s.metrics.Write(metrics.Event{
 		Time: time.Now(), RequestID: rid, SessionID: in.Header.Get("x-claude-code-session-id"), AgentID: in.Header.Get("x-claude-code-agent-id"),
 		Slot: slot, Route: route, Model: model, RequestedModel: requestedModel, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),
-		InputTokens: tok.input, OutputTokens: tok.output, APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note,
+		InputTokens: tok.input, OutputTokens: tok.output, APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note, Destination: destination,
 	})
 	if err != nil {
 		// The request has already been served to Claude Code by this point;
