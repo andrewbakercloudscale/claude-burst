@@ -432,6 +432,52 @@ func TestNoSecondaryConfigured_NeverFailsOver(t *testing.T) {
 	if s.inOverflow(time.Now()) {
 		t.Fatal("overflow must never activate when no secondary is configured")
 	}
+	if s.HasSecondary() {
+		t.Fatal("HasSecondary must report false when no secondary is configured")
+	}
+}
+
+// TestForcedOverflowWithNilSecondaryReturns502NotPanic guards the router
+// half of the fix for a real bug: admin's "Force -> secondary" used to
+// validate against a freshly re-read config.json rather than this process's
+// actual s.secondary, so ForceOverflow could be armed (directly, or via
+// state.json surviving a restart into a config with the secondary removed)
+// while s.secondary was nil. Routing "secondary" straight into forward()
+// with a nil Provider panics on the first interface method call; ServeHTTP's
+// recover() turns that into an opaque 500 with no indication of what went
+// wrong, and the overflow window then keeps every retry broken until
+// something clears it. This must instead be a clear, diagnosable error.
+func TestForcedOverflowWithNilSecondaryReturns502NotPanic(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message"}`))
+	}))
+	defer primary.Close()
+
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = primary.URL
+	cfg.BedrockBaseURL = "" // explicitly no secondary
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.HasSecondary() {
+		t.Fatal("expected no secondary provider to be configured")
+	}
+
+	s.ForceOverflow(0, "test: simulating a config/gateway drift")
+	if !s.inOverflow(time.Now()) {
+		t.Fatal("ForceOverflow should have armed the overflow window")
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	s.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected a clean 502 when overflow is active but no secondary is configured, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
 }
 
 func TestUnknownProviderNameRejected(t *testing.T) {

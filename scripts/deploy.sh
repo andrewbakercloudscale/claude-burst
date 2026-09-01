@@ -5,6 +5,12 @@
 #
 # Order of operations, and why:
 #   1. Back up the current binary and config (rollback material).
+#   1.5. Run `go test ./...` against the working tree, BEFORE building --
+#      a build that compiles can still contain a broken failover path (the
+#      admin/router seam has no compile-time link between them, so a wiring
+#      bug there is invisible to `go build`; internal/integration's
+#      failover_e2e_test.go exists specifically to catch it). Failing tests
+#      abort the deploy here with nothing touched yet, same as a failed build.
 #   2. Build the new binary to a TEMP file and smoke-test it there --
 #      nothing live is touched yet, so a bad build changes nothing.
 #   3. In base-url mode only: `claude-burst disable` -- points Claude Code
@@ -104,6 +110,21 @@ else
   log "no existing binary at $TARGET -- nothing to back up (first install?)"
 fi
 bash "$ROOT/scripts/backup-config.sh"
+
+# --- 1.5. Run the test suite -- must pass before a single byte gets built ---
+# Includes internal/integration's end-to-end failover tests: real HTTP
+# listeners for the gateway and admin panel, fake primary/secondary
+# upstreams, driven exactly the way Claude Code and the dashboard's buttons
+# do. Those exist because a real "Force -> secondary" bug (admin validating
+# against config.json while the running gateway's actual secondary Provider
+# is built once at startup, so the two can drift apart) compiled fine, built
+# fine, and passed both packages' own unit tests -- it only shows up when
+# admin and router are driven together over the wire.
+log "running test suite..."
+if ! (cd "$ROOT" && go test ./... -race); then
+  fail "test suite failed -- nothing was built, gateway untouched, still enabled"
+fi
+log "tests passed"
 
 # --- 2. Build to a temp file and smoke-test BEFORE going near anything live ---
 TMPBIN="$INSTALL_DIR/.claude-burst.new.$$"

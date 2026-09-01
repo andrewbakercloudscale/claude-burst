@@ -267,6 +267,18 @@ func (s *Server) Status() State {
 	return s.state
 }
 
+// HasSecondary reports whether THIS running gateway process actually has a
+// secondary Provider built, as opposed to what config.json on disk currently
+// says. The two can disagree: config is only read at process start (see
+// handleConfig's own "restart it for this to take effect"), so a secondary
+// added or removed on disk after startup, without a restart, does not change
+// s.secondary. Callers that need to know whether failing over to the
+// secondary will actually do anything -- notably admin's "Force -> secondary"
+// button -- must check this, not a freshly re-loaded config file.
+func (s *Server) HasSecondary() bool {
+	return s.secondary != nil
+}
+
 func (s *Server) ClearOverflow() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -420,6 +432,18 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.inOverflow(time.Now()) {
+		if s.secondary == nil {
+			// An overflow window is armed (forced from the admin UI, or left
+			// over in state.json from before a restart) but this process has
+			// no secondary Provider built -- routing "secondary" would pass a
+			// nil Provider into forward(), which panics on the first method
+			// call. Surface a clear, actionable error instead of a bare 500;
+			// see HasSecondary's doc comment for how the two can drift apart.
+			s.logger.Printf("req=%s error stage=route reason=overflow_active_no_secondary", rid)
+			http.Error(w, "gateway is in a forced/overflow window but has no secondary provider configured on this running process -- configure a secondary and restart the gateway, or clear the overflow window", http.StatusBadGateway)
+			s.writeMetric(r, "secondary", "none", "", "", 0, time.Now(), tokenUsage{}, "", 0, "overflow active but no live secondary provider")
+			return
+		}
 		s.forward(w, r, body, "secondary", s.secondary, nil, false, "overflow window active")
 		return
 	}
