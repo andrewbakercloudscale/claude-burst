@@ -280,6 +280,34 @@ func TestUpstreamErrorNoFailoverIsLogged(t *testing.T) {
 	}
 }
 
+// TestTransportErrorLogsNetworkSnapshot verifies that a real transport-level
+// failure (connection refused -- not an HTTP status error) logs a
+// network-snapshot line, giving a post-mortem local interface state and an
+// independent control DNS lookup alongside the raw dial error. Added after
+// the 2026-09-03 incident where primary and secondary failed roughly a
+// minute apart and the log gave no way to tell whether that was one
+// continuous network outage or two unrelated failures.
+func TestTransportErrorLogsNetworkSnapshot(t *testing.T) {
+	// Nothing listens on this port; the dial itself fails rather than
+	// returning any HTTP response, exercising the transport-error branch.
+	s, logBuf := newTestServer(t, "http://127.0.0.1:1", "")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	s.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	got := logBuf.String()
+	if !strings.Contains(got, "network-snapshot route=anthropic") {
+		t.Fatalf("missing network-snapshot log line, got:\n%s", got)
+	}
+	if !strings.Contains(got, "local_ifaces=") || !strings.Contains(got, "control_dns=") {
+		t.Fatalf("network-snapshot line missing expected fields, got:\n%s", got)
+	}
+}
+
 // TestMetricsWriteFailureDoesNotBreakRequest verifies that if metrics.jsonl
 // cannot be written (disk full, permissions, path taken by a directory), the
 // gateway still serves the request successfully to Claude Code and logs the

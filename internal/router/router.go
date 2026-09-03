@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -526,6 +527,12 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		})
 	}
 	if err != nil {
+		// Logged on every transport-level failure, not just the ones that
+		// exhaust failover: on 2026-09-03 primary timed out mid-connection and
+		// secondary's DNS lookup failed outright ~90s later, and the log gave
+		// no way to tell whether that was one continuous network outage or two
+		// unrelated failures. This snapshot answers that next time.
+		s.logger.Printf("req=%s %s", rid, networkSnapshot(p.Name(), err))
 		if allowFailover {
 			if d := fd.OnError(err); d.Failover {
 				s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary", destination)
@@ -583,6 +590,50 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(errBody)
 	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, "", 0, "upstream error; no failover", destination)
+}
+
+// networkSnapshot captures a point-in-time read of local network health at
+// the moment an upstream call failed at the transport layer (dial/DNS/i-o
+// timeout -- never an HTTP-level error, which already carries its own status
+// code and needs no further diagnosis). It exists to answer one question a
+// bare "dial tcp: i/o timeout" or "no such host" line cannot: was this route
+// specifically broken, or was the machine's network itself down for
+// everything at that instant?
+//
+//   - local_ifaces: non-loopback addresses currently bound. Empty means the
+//     network interface itself is down -- the most total failure possible,
+//     and distinguishable from "this one host is unreachable".
+//   - control_dns: a lookup of a hostname unrelated to any configured
+//     provider or DoH endpoint, through the plain system resolver (bypassing
+//     DoH entirely, unlike interceptResolver). If this also fails, DNS is
+//     broken machine-wide, not just for the provider that just errored.
+func networkSnapshot(route string, triggerErr error) string {
+	var ifaces []string
+	if addrs, ierr := net.InterfaceAddrs(); ierr == nil {
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.IsLoopback() {
+				continue
+			}
+			ifaces = append(ifaces, ipnet.IP.String())
+		}
+	}
+	ifaceState := "NONE (network interface appears down)"
+	if len(ifaces) > 0 {
+		ifaceState = strings.Join(ifaces, ",")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	dnsStart := time.Now()
+	_, dnsErr := net.DefaultResolver.LookupHost(ctx, "www.apple.com")
+	dnsState := fmt.Sprintf("ok (%s)", time.Since(dnsStart).Round(time.Millisecond))
+	if dnsErr != nil {
+		dnsState = fmt.Sprintf("FAILED (%s): %v", time.Since(dnsStart).Round(time.Millisecond), dnsErr)
+	}
+
+	return fmt.Sprintf("network-snapshot route=%s trigger_err=%q local_ifaces=%s control_dns=%s",
+		route, triggerErr, ifaceState, dnsState)
 }
 
 func copyResponseHeaders(dst http.Header, src http.Header) {
