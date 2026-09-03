@@ -224,6 +224,7 @@
         <button class="primary" id="reset">↩ Back to primary</button>
         <button class="warn" id="restart">⟳ Restart gateway</button>
         <button class="success" id="testConn">⇌ Test connection</button>
+        <button id="viewLog">▤ View log file</button>
         <button class="danger" id="revert">↺ Revert to normal Claude</button>
       </div>
       <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now — the config above can look correct while requests quietly go straight to Anthropic instead.</div>
@@ -541,6 +542,8 @@ $("testConn").onclick = async () => {
     $("testConn").disabled = false;
   }
 };
+
+$("viewLog").onclick = () => window.open("/api/log", "_blank");
 
 $("revert").onclick = async () => {
   if (!confirm("Revert to normal Claude?\n\nRemoves ANTHROPIC_BASE_URL from settings.json and the local CA from the trust bundle. Nothing else in settings.json is touched.\n\nYou will need to restart Claude Code.")) return;
