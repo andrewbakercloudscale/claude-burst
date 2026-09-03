@@ -47,6 +47,27 @@ if [[ -x "$ROOT_HELPER" ]]; then
   fi
 fi
 
+# STEP 1b: undo the System keychain CA trust added by
+# trust-ca-systemwide.sh (see INVESTIGATION-TLS-STORM.md for why that
+# exists -- without it, the redirect above breaks TLS for every OTHER app
+# on this Mac that happens to reach api.anthropic.com, not just Claude
+# Code CLI). Same sudo-or-print pattern as the block above, and only nags
+# if the cert is actually present.
+UNTRUST_HELPER="$DIR/untrust-ca-systemwide.sh"
+if [[ -x "$UNTRUST_HELPER" ]]; then
+  if [[ $EUID -eq 0 ]]; then
+    "$UNTRUST_HELPER"
+  elif sudo -n true 2>/dev/null; then
+    sudo -n "$UNTRUST_HELPER"
+  elif security find-certificate -c "claude-burst local CA" /Library/Keychains/System.keychain >/dev/null 2>&1; then
+    echo "WARNING: the System keychain still trusts claude-burst's local CA and this" >&2
+    echo "         rollback cannot remove it without root. Run NOW:" >&2
+    echo "           sudo $UNTRUST_HELPER" >&2
+  else
+    echo "no system-wide CA trust present (nothing root-owned to undo)"
+  fi
+fi
+
 restored=0
 if [[ -f "$BACKUP_DIR/settings.json.latest.bak" ]]; then
   cp "$BACKUP_DIR/settings.json.latest.bak" "$SETTINGS"
