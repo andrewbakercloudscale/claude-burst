@@ -190,6 +190,10 @@ func serve(args []string) {
 		fatal(fmt.Errorf("bind %s: %w", cfg.Listen, err))
 	}
 	logger.Printf("claude-burst %s bound %s (%s) in %s -- accepting connections now", version, cfg.Listen, scheme, time.Since(bindStart))
+	if os.Getenv("CLAUDE_BURST_LOG_TLS_PEERS") != "" {
+		ln = &peerLoggingListener{Listener: ln, logger: logger}
+		logger.Print("peer-log: diagnostic peer attribution ENABLED via CLAUDE_BURST_LOG_TLS_PEERS (lsof per connection)")
+	}
 	fmt.Printf("claude-burst %s listening on %s://%s\n", version, scheme, cfg.Listen)
 	fmt.Printf("primary: %s (%s)\nsecondary: %s (%s)\n", cfg.Primary.Provider, cfg.Primary.BaseURL, cfg.Secondary.Provider, cfg.Secondary.BaseURL)
 	if cfg.Intercept.Transparent() {
