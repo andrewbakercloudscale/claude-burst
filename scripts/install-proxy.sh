@@ -39,6 +39,14 @@ if [[ ! -f "$PLIST" ]]; then
   echo "no LaunchAgent plist at $PLIST -- run ./install.sh from the repo root first" >&2
   exit 1
 fi
+# `launchctl disable` is persistent -- it survives bootout/bootstrap and
+# outlives the process that set it, so a prior rollback that disabled this
+# service (the original stock script this repo's rollback.sh replaced did)
+# leaves bootstrap failing with a bare "Input/output error" and no mention
+# of "disabled" anywhere in the message. Re-enable is idempotent and a
+# no-op when the service was never disabled.
+launchctl enable "gui/$UID/$LABEL" >/dev/null 2>&1 || true
+
 # bootout first: harmless if it's not loaded, and avoids "service already
 # bootstrapped" if a previous rollback left it half-registered.
 launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
