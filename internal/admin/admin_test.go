@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -236,6 +237,45 @@ func TestHandleStateHealthyPath(t *testing.T) {
 // reports OK without making any network call: there is no separate "real
 // traffic path" to test independent of ANTHROPIC_BASE_URL, which /api/state
 // already reports.
+// TestHandleLog_ServesTailWhenOversized verifies the size cap actually
+// truncates: a log bigger than logTailBytes must return roughly that much
+// content (plus the truncation banner), not the whole file, since the
+// gateway's log can now grow to 200MB under rotation and this endpoint
+// feeds a browser tab.
+func TestHandleLog_ServesTailWhenOversized(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "claude-burst")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	big := make([]byte, logTailBytes*2)
+	for i := range big {
+		big[i] = 'x'
+	}
+	if err := os.WriteFile(filepath.Join(dir, "claude-burst.log"), big, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newTestServer(t)
+	t.Setenv("HOME", home) // newTestServer reset HOME to its own temp dir; point it back
+	req := httptest.NewRequest(http.MethodGet, "http://x/api/log", nil)
+	req.Host = "127.0.0.1"
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if rr.Body.Len() >= len(big) {
+		t.Fatalf("expected a truncated response, got %d bytes for a %d-byte log", rr.Body.Len(), len(big))
+	}
+	if !strings.Contains(rr.Body.String(), "showing the last") {
+		t.Fatalf("expected a truncation banner, got: %.200s", rr.Body.String())
+	}
+}
+
 func TestHandleTestConnection_BaseURLModeShortCircuits(t *testing.T) {
 	s := newTestServer(t)
 	writeConfig(t, os.Getenv("HOME")) // config.Default() -> base-url mode

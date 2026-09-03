@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/requests", s.readOnly(s.handleRequests))
 	mux.HandleFunc("/api/responses", s.readOnly(s.handleResponses))
 	mux.HandleFunc("/api/test-connection", s.readOnly(s.handleTestConnection))
+	mux.HandleFunc("/api/log", s.readOnly(s.handleLog))
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))
 	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
@@ -339,6 +340,48 @@ func gatewayPort(listen string) string {
 		return port
 	}
 	return listen
+}
+
+// logTailBytes caps how much of claude-burst.log a single /api/log request
+// serves. Under rotation the file can now grow to 200MB (see main.go's
+// logMaxBytes/logMaxBackups) -- loading that whole thing into a browser tab
+// would hang it, so this always serves just the tail, which is what anyone
+// debugging a live issue actually wants: recent lines, not the full history.
+const logTailBytes = 512 * 1024
+
+// handleLog serves the tail of the gateway's own text log as plain text, so
+// "what's actually happening" is one click from the dashboard instead of a
+// terminal command against a path you have to already know
+// (~/.config/claude-burst/claude-burst.log).
+func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
+	path, err := config.LogPath()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("could not open %s: %v", path, err), http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if st.Size() > logTailBytes {
+		if _, err := f.Seek(-logTailBytes, io.SeekEnd); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "(showing the last %dKB of %s -- %d bytes total; older lines are in claude-burst.log.1, .2, ... via rotation)\n\n",
+			logTailBytes/1024, path, st.Size())
+	}
+	_, _ = io.Copy(w, f)
 }
 
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
