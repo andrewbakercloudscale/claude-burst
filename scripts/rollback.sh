@@ -72,4 +72,79 @@ fi
 launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
 pkill -f '/claude-burst serve' >/dev/null 2>&1 || true
 echo "stopped claude-burst gateway (if it was running)"
-echo "rollback complete -- restart Claude Code"
+
+# STEP 2: belt-and-suspenders cleanup for routing overrides that would
+# survive the settings.json restore above if this machine was never backed
+# up (backup-config.sh never ran). Safe no-op when these keys are absent --
+# added after a stale, out-of-repo copy of this script skipped straight to
+# "rollback complete" without ever checking whether traffic could actually
+# reach Anthropic again.
+if [[ -f "$SETTINGS" ]]; then
+  python3 - "$SETTINGS" <<'PY'
+import json, sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text())
+except Exception as e:
+    print(f"could not parse {p}: {e}", file=sys.stderr)
+    raise SystemExit(0)
+
+env = data.get("env")
+remove = {
+    "ANTHROPIC_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "all_proxy",
+}
+removed = [k for k in list(env or {}) if k in remove]
+if removed:
+    for k in removed:
+        env.pop(k, None)
+    if not env:
+        data.pop("env", None)
+    p.write_text(json.dumps(data, indent=2) + "\n")
+    print("removed leftover routing overrides from settings.json: " + ", ".join(removed))
+PY
+fi
+
+for VAR in ANTHROPIC_BASE_URL HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+  launchctl unsetenv "$VAR" >/dev/null 2>&1 || true
+done
+
+# A macOS-level HTTP(S) proxy pointed at this Mac is the other way traffic
+# can stay stuck even after a clean hosts/pf rollback. Only ever touches a
+# proxy explicitly set to 127.0.0.1/localhost.
+networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | while IFS= read -r SERVICE; do
+  SERVICE="${SERVICE#\*}"
+  [[ -z "$SERVICE" ]] && continue
+  for TYPE in web secureweb; do
+    INFO="$(networksetup -get${TYPE}proxy "$SERVICE" 2>/dev/null || true)"
+    SERVER="$(echo "$INFO" | awk '/Server:/ {print $2}')"
+    ENABLED="$(echo "$INFO" | awk '/Enabled:/ {print $2}')"
+    if [[ "$ENABLED" == "Yes" && ( "$SERVER" == "127.0.0.1" || "$SERVER" == "localhost" ) ]]; then
+      echo "disabling localhost $TYPE proxy on: $SERVICE"
+      networksetup -set${TYPE}proxystate "$SERVICE" off
+    fi
+  done
+done
+
+# STEP 3: verify, don't just assert. The stale script this replaces printed
+# "Rollback complete" unconditionally -- it never actually checked whether
+# Anthropic was reachable again, which is exactly how it "worked" and didn't.
+echo
+echo "verifying direct connectivity to Anthropic..."
+RESULT="$(curl --connect-timeout 8 -sS -o /dev/null -w '%{http_code}|%{remote_ip}' https://api.anthropic.com/ 2>/dev/null)" || RESULT="000|"
+HTTP="${RESULT%%|*}"
+REMOTE="${RESULT#*|}"
+
+if [[ "$HTTP" != "000" && -n "$REMOTE" && "$REMOTE" != 127.* ]]; then
+  echo "verified: api.anthropic.com reachable directly (HTTP $HTTP via $REMOTE)"
+  echo "rollback complete -- restart Claude Code"
+else
+  echo "WARNING: could not verify direct connectivity (HTTP ${HTTP:-000}, remote ${REMOTE:-none})" >&2
+  echo "  settings/gateway were rolled back, but something is still in the way. Check:" >&2
+  echo "    grep -n anthropic /etc/hosts" >&2
+  echo "    sudo scripts/transparent-root.sh status" >&2
+  echo "    env | grep -Ei 'proxy|anthropic'" >&2
+  exit 2
+fi
