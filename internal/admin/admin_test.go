@@ -232,6 +232,83 @@ func TestHandleStateHealthyPath(t *testing.T) {
 	}
 }
 
+// TestHandleTestConnection_BaseURLModeShortCircuits verifies base-url mode
+// reports OK without making any network call: there is no separate "real
+// traffic path" to test independent of ANTHROPIC_BASE_URL, which /api/state
+// already reports.
+func TestHandleTestConnection_BaseURLModeShortCircuits(t *testing.T) {
+	s := newTestServer(t)
+	writeConfig(t, os.Getenv("HOME")) // config.Default() -> base-url mode
+
+	req := httptest.NewRequest(http.MethodGet, "http://x/api/test-connection", nil)
+	req.Host = "127.0.0.1"
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+
+	var resp testConnectionResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON: %v (body=%s)", err, rr.Body.String())
+	}
+	if !resp.OK || resp.Mode != "base-url" {
+		t.Fatalf("got %+v, want ok=true mode=base-url", resp)
+	}
+}
+
+// TestHandleTestConnection_TransparentModeUnreachableHostReportsFailure is a
+// regression test for the actual 2026-09-03 incident this endpoint exists to
+// catch: in transparent mode, if the intercepted hostname doesn't actually
+// lead back to this gateway, the dashboard must say so rather than silently
+// looking idle. Using a hostname that cannot resolve at all exercises the
+// "could not reach it" branch of that same failure family (the "reached it,
+// but it wasn't us" branch needs a real TLS listener on the exact intercept
+// host:port, which isn't worth faking here) -- both branches report ok=false
+// with an actionable detail, which is what the dashboard renders.
+func TestHandleTestConnectionTransparentModeUnreachableHostReportsFailure(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "claude-burst")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Intercept.Mode = config.InterceptTransparent
+	cfg.Intercept.Host = "this-host-does-not-resolve.invalid"
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Set HOME after writing config.json, and build the gateway/admin Server
+	// directly (not via newTestServer, which allocates and switches HOME to
+	// its own separate temp dir) -- same pattern as
+	// TestHandleForceRejectsWhenNoSecondaryConfigured, for the same reason.
+	t.Setenv("HOME", home)
+
+	gdir := t.TempDir()
+	gw, err := router.New(cfg, filepath.Join(gdir, "state.json"), filepath.Join(gdir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(gw, filepath.Join(gdir, "metrics.jsonl"), "v", "", "/path/to/transparent-root.sh")
+
+	req := httptest.NewRequest(http.MethodGet, "http://x/api/test-connection", nil)
+	req.Host = "127.0.0.1"
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+
+	var resp testConnectionResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response was not valid JSON: %v (body=%s)", err, rr.Body.String())
+	}
+	if resp.OK {
+		t.Fatalf("an unresolvable intercept host must report ok=false, got %+v", resp)
+	}
+	if resp.Mode != "transparent" || resp.Detail == "" {
+		t.Fatalf("expected a transparent-mode failure with a non-empty detail, got %+v", resp)
+	}
+}
+
 // TestHandleForceRejectsWhenNoSecondaryConfigured verifies force-secondary
 // fails with a clear error rather than silently no-op'ing (or worse,
 // activating an overflow window with nowhere to actually send traffic) when

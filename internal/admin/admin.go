@@ -19,6 +19,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -67,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/state", s.readOnly(s.handleState))
 	mux.HandleFunc("/api/requests", s.readOnly(s.handleRequests))
 	mux.HandleFunc("/api/responses", s.readOnly(s.handleResponses))
+	mux.HandleFunc("/api/test-connection", s.readOnly(s.handleTestConnection))
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))
 	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
@@ -221,7 +223,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			ii.CATrusted = tlsca.HasBlock(string(b))
 		}
 		if h, err := os.ReadFile("/etc/hosts"); err == nil {
-			ii.HostsEntry = strings.Contains(string(h), "# BEGIN claude-burst hosts")
+			ii.HostsEntry = config.HostsRedirectActive(h, cfg.Intercept.Host)
 		}
 		ii.BailoutCmd = "sudo " + s.rootHelper + " remove"
 	}
@@ -264,9 +266,84 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.gateway.RecentResponses())
 }
 
+type testConnectionResponse struct {
+	OK     bool   `json:"ok"`
+	Mode   string `json:"mode"`
+	Detail string `json:"detail"`
+}
+
+// handleTestConnection answers the question the dashboard could not
+// otherwise answer on its own: is Claude Code's REAL traffic actually
+// reaching this gateway right now? Everything else in /api/state (CA
+// trusted, hosts entry present) describes configuration, not live behavior --
+// on 2026-09-03 the hosts-entry check even had a bug that reported "yes"
+// for an empty marker block, and independent of that bug, config being
+// correct on disk still doesn't prove Claude Code's actual requests are
+// landing here rather than sailing past to the real Anthropic. This runs
+// the same "real traffic path" probe deploy.sh and watchdog.sh already use
+// via gateway_healthy() in health-diagnostics.sh -- hit the intercepted
+// hostname over plain HTTPS, exactly as Claude Code itself would, and check
+// whether the body is actually THIS gateway's (it stamps its own "overflow"
+// field into /healthz) rather than Anthropic's real one.
+func (s *Server) handleTestConnection(w http.ResponseWriter, r *http.Request) {
+	cfg, err := config.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !cfg.Intercept.Transparent() {
+		// base-url mode: Claude Code reaches this gateway because
+		// ANTHROPIC_BASE_URL in settings.json names it directly, not via
+		// DNS -- there is no separate "real path" to test independent of
+		// that URL being correct, which /api/state already reports.
+		writeJSON(w, testConnectionResponse{
+			OK: true, Mode: "base-url",
+			Detail: "base-url mode: Claude Code reaches this gateway via ANTHROPIC_BASE_URL in settings.json, not DNS -- there's no separate live path to test.",
+		})
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := "https://" + cfg.Intercept.Host + "/healthz"
+	resp, err := client.Get(url)
+	if err != nil {
+		writeJSON(w, testConnectionResponse{
+			OK: false, Mode: "transparent",
+			Detail: fmt.Sprintf("could not reach %s at all: %v", url, err),
+		})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	if strings.Contains(string(body), `"overflow"`) {
+		writeJSON(w, testConnectionResponse{
+			OK: true, Mode: "transparent",
+			Detail: fmt.Sprintf("confirmed: %s currently resolves to THIS gateway (HTTP %d) -- real Claude Code traffic is passing through it.", url, resp.StatusCode),
+		})
+		return
+	}
+	writeJSON(w, testConnectionResponse{
+		OK: false, Mode: "transparent",
+		Detail: fmt.Sprintf("%s answered (HTTP %d) but NOT from this gateway -- the machine-wide redirect is not installed, so real Claude Code traffic is going straight to Anthropic, bypassing burst entirely. Run: sudo %s install --host %s --gateway-port %s",
+			url, resp.StatusCode, s.rootHelper, cfg.Intercept.Host, gatewayPort(cfg.Listen)),
+	})
+}
+
+// gatewayPort extracts the port from a "host:port" listen address, falling
+// back to the address itself if it doesn't parse -- only used to compose a
+// copy-pasteable install command in the test-connection failure message.
+func gatewayPort(listen string) string {
+	if _, port, err := net.SplitHostPort(listen); err == nil {
+		return port
+	}
+	return listen
+}
+
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	s.gateway.ClearOverflow()
-	writeJSON(w, map[string]string{"ok": "overflow cleared; the next request tries the primary"})
+	writeJSON(w, map[string]string{"ok": "back to primary — the next request will use it"})
 }
 
 type forceRequest struct {
@@ -423,7 +500,7 @@ func (s *Server) handleRevert(w http.ResponseWriter, r *http.Request) {
 	// not have. Say so loudly: while a hosts redirect points at a gateway the
 	// user is trying to turn off, Anthropic is unreachable for EVERY process
 	// on this Mac, not just Claude Code.
-	if h, err := os.ReadFile("/etc/hosts"); err == nil && strings.Contains(string(h), "# BEGIN claude-burst hosts") {
+	if h, err := os.ReadFile("/etc/hosts"); err == nil && config.HostsRedirectActive(h, cfg.Intercept.Host) {
 		out.NeedsRoot = true
 		out.RootCommand = "sudo scripts/transparent-root.sh remove"
 		out.Warning = "An /etc/hosts redirect is still installed. Until you run the command above, traffic to " +

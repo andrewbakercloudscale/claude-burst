@@ -161,7 +161,7 @@
     <span id="routeBadge"></span>
     <span class="spacer"></span>
     <span class="updated" id="updated"></span>
-    <button id="refreshBtn" style="margin-left:10px">Refresh</button>
+    <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
 
   <div class="grid" id="cards"></div>
@@ -213,8 +213,10 @@
         <button id="force">Force → secondary</button>
         <button id="reset">Back to primary</button>
         <button id="restart">Restart gateway</button>
+        <button id="testConn">Test connection</button>
         <button class="danger" id="revert">Revert to normal Claude</button>
       </div>
+      <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now — the config above can look correct while requests quietly go straight to Anthropic instead.</div>
       <div id="actNote"></div>
     </div>
   </section>
@@ -497,6 +499,19 @@ async function awaitGatewayBack() {
     `If it's not managed by launchd, it simply stopped -- run: claude-burst serve`);
   $("updated").textContent = "gateway unreachable — restart did not come back";
 }
+
+$("testConn").onclick = async () => {
+  $("testConn").disabled = true;
+  note($("actNote"), "warn", "testing…");
+  try {
+    const r = await fetch("/api/test-connection").then(r => r.json());
+    note($("actNote"), r.ok ? "ok" : "bad", r.detail);
+  } catch (e) {
+    note($("actNote"), "bad", "test failed: " + e.message);
+  } finally {
+    $("testConn").disabled = false;
+  }
+};
 
 $("revert").onclick = async () => {
   if (!confirm("Revert to normal Claude?\n\nRemoves ANTHROPIC_BASE_URL from settings.json and the local CA from the trust bundle. Nothing else in settings.json is touched.\n\nYou will need to restart Claude Code.")) return;
