@@ -500,7 +500,7 @@ func reportIntercept(cfg config.Config) {
 	fmt.Printf("  CA in trust bundle: %s (%s)\n", ok(berr == nil && tlsca.HasBlock(string(bundle))), cfg.Intercept.CABundle)
 
 	hosts, herr := os.ReadFile("/etc/hosts")
-	hostsEntry := herr == nil && strings.Contains(string(hosts), "# BEGIN claude-burst hosts")
+	hostsEntry := herr == nil && config.HostsRedirectActive(hosts, cfg.Intercept.Host)
 	fmt.Printf("  /etc/hosts entry:   %s\n", ok(hostsEntry))
 
 	if _, _, err := tlsca.LoadOrCreate(cfg.Intercept.CADir, cfg.Intercept.Host); err != nil {
