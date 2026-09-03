@@ -53,7 +53,13 @@
   }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 22px 64px; }
 
-  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
+  header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 22px;
+    position: sticky; top: 0; z-index: 10; background: var(--bg);
+    padding: 10px 0; margin-left: -22px; margin-right: -22px; padding-left: 22px; padding-right: 22px;
+    border-bottom: 1px solid transparent;
+  }
+  header.scrolled { border-bottom-color: var(--border); }
   h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
   .ver { color: var(--faint); font: 12px var(--mono); }
   .spacer { flex: 1; }
@@ -106,6 +112,10 @@
   button.primary:hover { filter: brightness(1.08); }
   button.danger { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 30%, transparent); color: var(--bad); }
   button.danger:hover { border-color: var(--bad); }
+  button.success { background: var(--ok-bg); border-color: color-mix(in srgb, var(--ok) 30%, transparent); color: var(--ok); }
+  button.success:hover { border-color: var(--ok); }
+  button.warn { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 30%, transparent); color: var(--warn); }
+  button.warn:hover { border-color: var(--warn); }
   button:disabled { opacity: .5; cursor: not-allowed; }
 
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -191,7 +201,7 @@
             <option value="transparent">transparent (keeps Remote Control)</option>
           </select>
         </div>
-        <button class="primary" id="save">Save</button>
+        <button class="primary" id="save">✓ Save</button>
       </div>
       <div id="cfgNote"></div>
     </div>
@@ -210,11 +220,11 @@
             <option value="240">4 hours</option>
           </select>
         </div>
-        <button id="force">Force → secondary</button>
-        <button id="reset">Back to primary</button>
-        <button id="restart">Restart gateway</button>
-        <button id="testConn">Test connection</button>
-        <button class="danger" id="revert">Revert to normal Claude</button>
+        <button class="warn" id="force">⇉ Force → secondary</button>
+        <button class="primary" id="reset">↩ Back to primary</button>
+        <button class="warn" id="restart">⟳ Restart gateway</button>
+        <button class="success" id="testConn">⇌ Test connection</button>
+        <button class="danger" id="revert">↺ Revert to normal Claude</button>
       </div>
       <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now — the config above can look correct while requests quietly go straight to Anthropic instead.</div>
       <div id="actNote"></div>
@@ -326,7 +336,7 @@ function renderRequests(rows) {
         <td class="mono">${esc(new Date(e.time).toLocaleTimeString())}</td>
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
-        <td class="mono">${esc(e.model || "—")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--faint)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
+        <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "—")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--faint)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
         <td class="mono st-${String(e.http_status)[0]}">${esc(e.http_status)}</td>
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
@@ -343,6 +353,25 @@ function renderRequests(rows) {
 function destHost(url) {
   if (!url) return "—";
   try { return new URL(url).host; } catch { return url; }
+}
+
+// controlPlaneLabel names the non-inference calls that dominate this table
+// (session heartbeats, event batches, worker updates) and never carry a
+// model, since "—" alone doesn't say why. Falls back to null (renders as
+// "—") for anything not recognized, rather than guessing.
+function controlPlaneLabel(destination) {
+  if (!destination) return null;
+  let path;
+  try { path = new URL(destination).pathname; } catch { return null; }
+  if (/\/worker\/heartbeat$/.test(path)) return "Heartbeat";
+  if (/\/worker\/events\/stream$/.test(path)) return "Events (stream)";
+  if (/\/worker\/events$/.test(path)) return "Events";
+  if (/\/worker\/internal-events$/.test(path)) return "Internal events";
+  if (/\/worker$/.test(path)) return "Worker update";
+  if (/event_logging/.test(path)) return "Event logging";
+  if (/\/healthz$/.test(path)) return "Health check";
+  if (/\/count_tokens$/.test(path)) return "Count tokens";
+  return null;
 }
 
 function renderResponses(rows) {
@@ -529,6 +558,15 @@ $("refreshBtn").onclick = () => {
   $("refreshBtn").disabled = true;
   refresh().finally(() => { $("refreshBtn").disabled = false; });
 };
+
+// Header is sticky (stays top-right visible while scrolling past the long
+// requests/responses tables); this just adds a hairline border once content
+// has actually scrolled under it, so the sticky bar doesn't float with a
+// hard edge over nothing when the page is at the top.
+const headerEl = document.querySelector("header");
+window.addEventListener("scroll", () => {
+  headerEl.classList.toggle("scrolled", window.scrollY > 0);
+}, {passive: true});
 
 // No auto-refresh: rebuilding the responses/requests lists on a timer
 // collapsed any <details> the user had expanded to read a header dump,
