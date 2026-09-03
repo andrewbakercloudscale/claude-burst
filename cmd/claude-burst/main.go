@@ -28,8 +28,12 @@ const version = "0.2.0"
 // claude-burst.log had no rotation before this and grew forever for as long
 // as the gateway ran, which for a LaunchAgent means indefinitely. Not (yet)
 // configurable via config.json -- generous defaults for a single-machine
-// personal gateway (current + logMaxBackups old files, ~60MB total), and a
-// config field is cheap to add later if tuning this turns out to matter.
+// personal gateway (current + logMaxBackups old files, 200MB total circular
+// budget -- oldest file is discarded as soon as a new one would exceed it,
+// per rotate.shiftBackups), and a config field is cheap to add later if
+// tuning this turns out to matter. Bumped from 10MB/5 backups (60MB total)
+// once router.go started logging a network-snapshot line on every transport
+// error, which pushed real incident windows past the old budget.
 // metrics.jsonl has the same fix, with its own same-shaped constants next
 // to its Writer in internal/metrics -- that package owns its own rotation
 // rather than taking these as parameters, since it has exactly one real
@@ -37,7 +41,7 @@ const version = "0.2.0"
 // Writer directly.
 const (
 	logMaxBytes   = 10 * 1024 * 1024
-	logMaxBackups = 5
+	logMaxBackups = 19 // 20 files * 10MB = 200MB total
 )
 
 func main() {
