@@ -490,3 +490,43 @@ func TestOpenAICompatibleProviderConsistentFailoverFallsBackForUnmappedModel(t *
 		t.Fatalf("unmapped Claude model must fall back to the fixed model, got %v", v["model"])
 	}
 }
+
+// The transcript Claude Code writes takes its per-turn input token count from
+// the streamed usage blocks, so a message_delta that reports only
+// output_tokens leaves message_start's placeholder 0 standing and the turn is
+// recorded as having consumed no input at all. Assert the real prompt count
+// reaches the client, not just the Server's own metrics.
+func TestTranslateStreamingReportsInputTokensInMessageDelta(t *testing.T) {
+	stream := synthOAISSE(
+		`{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":38250,"completion_tokens":104}}`,
+	)
+	rr := httptest.NewRecorder()
+	tok, err := translateOpenAIStream(rr, strings.NewReader(stream), "claude-opus-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.input != 38250 || tok.output != 104 {
+		t.Fatalf("returned usage = %+v, want input=38250 output=104", tok)
+	}
+
+	var delta map[string]any
+	for _, e := range parseAnthropicSSE(t, rr.Body.String()) {
+		if e["__event"] == "message_delta" {
+			delta = e
+		}
+	}
+	if delta == nil {
+		t.Fatal("no message_delta emitted")
+	}
+	usage, ok := delta["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("message_delta has no usage block: %v", delta)
+	}
+	if usage["input_tokens"] != float64(38250) {
+		t.Fatalf("message_delta usage.input_tokens = %v, want 38250", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(104) {
+		t.Fatalf("message_delta usage.output_tokens = %v, want 104", usage["output_tokens"])
+	}
+}

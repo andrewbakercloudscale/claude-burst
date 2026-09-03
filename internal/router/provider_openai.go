@@ -535,10 +535,22 @@ func translateOpenAIStream(w http.ResponseWriter, body io.Reader, model string) 
 	for _, idx := range openIndices {
 		writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
 	}
+	// input_tokens has to be repeated here even though message_start already
+	// carried a usage block. OpenAI only reports prompt_tokens in the FINAL
+	// chunk, so message_start -- which must be written before any content can
+	// stream -- can only ever say 0. The client keeps the message_start value
+	// unless a later event overrides it, so omitting input_tokens here (as
+	// this did until 2026-09-03) makes every secondary-served turn land in
+	// ~/.claude/projects/*.jsonl with "input_tokens": 0. The gateway's own
+	// metrics.jsonl had the real figure all along, so the two disagreed and
+	// anything reading the transcript -- the ccusage panel's per-turn table,
+	// most visibly -- showed a whole overflow window's turns as 0 tokens at
+	// $0.00. Anthropic's real API also sends input_tokens in message_delta,
+	// so this matches the protocol rather than working around the client.
 	writeEvent("message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
-		"usage": map[string]any{"output_tokens": tok.output},
+		"usage": map[string]any{"input_tokens": tok.input, "output_tokens": tok.output},
 	})
 	writeEvent("message_stop", map[string]any{"type": "message_stop"})
 	return tok, nil
