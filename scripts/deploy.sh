@@ -190,17 +190,16 @@ log "installed new binary at $TARGET"
 log "restarting gateway..."
 launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
 
-# Best-effort, transparent mode only, and deliberately AFTER the restart:
-# the states suspected of breaking direct connections to the gateway port
-# are the ones left behind by the process that just died. Skipped without
-# comment-free silence if we cannot get root -- see flush_anchor_states.
-if [[ "$TRANSPARENT" -eq 1 ]]; then
-  if flush_anchor_states "claude-burst"; then
-    log "flushed the pf anchor's stale states"
-  else
-    log "skipped the pf state flush (needs root) -- harmless; the health check does not use the direct port. To test it: sudo $ROOT/scripts/transparent-root.sh flush-port-states"
-  fi
-fi
+# NO pf state flush here. It was wired in on 2026-09-03 while stale anchor
+# states were the leading suspect for direct connections to the gateway port
+# being dropped, and then measured: 0/10 probes before the flush, 1/10 after
+# -- indistinguishable from the port's own ~10% baseline. Source port makes no
+# difference either (0/10 from three different ranges), so it is not a state
+# collision at all; only the destination port matters. Leaving a flush here
+# would be a step that looks like a mitigation and does nothing, which is the
+# shape of every gate in this repo that has ever failed quietly.
+# flush_anchor_states() is kept in health-diagnostics.sh for transparent-root.sh's
+# flush-port-states, which is where testing that hypothesis belongs.
 
 if wait_healthy; then
   log "new gateway is healthy"
