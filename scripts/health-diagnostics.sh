@@ -94,6 +94,55 @@ flush_anchor_states() {
   return 1
 }
 
+# launchagent_disabled: true if launchd's own database has the gateway's
+# LaunchAgent marked disabled (from `launchctl disable` -- e.g. the external,
+# non-repo rollback.sh some machines still have calls this; this repo's own
+# rollback.sh never does).
+launchagent_disabled() {
+  local svc_label="${LABEL:-ninja.andrewbaker.claude-burst}"
+  launchctl print-disabled "gui/$UID" 2>/dev/null | grep -q "\"$svc_label\" => disabled"
+}
+
+# launchagent_loaded: true if the LaunchAgent is currently loaded into
+# launchd at all (bootstrapped), independent of whether it's disabled.
+launchagent_loaded() {
+  local svc_label="${LABEL:-ninja.andrewbaker.claude-burst}"
+  launchctl print "gui/$UID/$svc_label" >/dev/null 2>&1
+}
+
+# ensure_launchagent_loaded recovers from the one failure mode that looks
+# exactly like a broken build but isn't: the LaunchAgent disabled or
+# unloaded entirely in launchd's own database. `launchctl kickstart -k`
+# against a service in that state fails outright with no such service, and
+# every symptom downstream -- the new binary AND an identical rollback
+# binary both failing the same health check -- looks exactly like "the new
+# build is broken", because kickstart never had anything to restart either
+# time. Confirmed live 2026-09-03: a deploy rolled back a good build over
+# exactly this, having been left disabled by an earlier rollback.sh run.
+#
+# Returns 0 if the agent was already loaded (nothing to do) or recovery
+# succeeded; 1 if recovery was attempted but did not stick, so the caller's
+# own kickstart/health-check failure can be reported for what it actually
+# is instead of blamed on the build.
+ensure_launchagent_loaded() {
+  local svc_label="${LABEL:-ninja.andrewbaker.claude-burst}"
+  local plist="$HOME/Library/LaunchAgents/$svc_label.plist"
+  if launchagent_loaded; then
+    return 0
+  fi
+  echo "[deploy] $svc_label is not loaded in launchd -- this is not a build problem; checking why before assuming one" >&2
+  if launchagent_disabled; then
+    echo "[deploy] $svc_label is marked disabled in launchd's own database (most likely a prior rollback called \`launchctl disable\`) -- re-enabling" >&2
+    launchctl enable "gui/$UID/$svc_label" >&2
+  fi
+  if [[ ! -f "$plist" ]]; then
+    echo "[deploy] no plist found at $plist -- cannot load it automatically" >&2
+    return 1
+  fi
+  launchctl bootstrap "gui/$UID" "$plist" >&2
+  launchagent_loaded
+}
+
 dump_health_diagnostics() {
   local label="${1:-health check}"
   local out="$HOME/.config/claude-burst/health-check-failures.log"
@@ -114,6 +163,9 @@ dump_health_diagnostics() {
     lsof -nP -iTCP:7777 2>&1
     echo "-- launchctl list $svc_label --"
     launchctl list "$svc_label" 2>&1
+    echo "-- launchagent loaded / disabled --"
+    if launchagent_loaded; then echo "loaded: yes"; else echo "loaded: NO -- kickstart cannot restart what isn't loaded"; fi
+    if launchagent_disabled; then echo "disabled in launchd's database: YES -- this is very likely the real cause, not the binary"; else echo "disabled in launchd's database: no"; fi
     echo "-- claude-burst.log, last 15 lines (bind timing is logged explicitly since 2026-08-31) --"
     tail -15 "$HOME/.config/claude-burst/claude-burst.log" 2>&1
     echo "-- launchd.err.log, last 10 lines --"

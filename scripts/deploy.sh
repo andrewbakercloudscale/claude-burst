@@ -188,6 +188,11 @@ log "installed new binary at $TARGET"
 
 # --- 5. Restart and verify ---
 log "restarting gateway..."
+# Recovers from the LaunchAgent being disabled/unloaded in launchd's own
+# database (e.g. by a prior rollback run) BEFORE the health check below can
+# misattribute that to a broken build -- see ensure_launchagent_loaded's
+# doc comment in health-diagnostics.sh for the 2026-09-03 incident this fixes.
+ensure_launchagent_loaded || log "WARNING: could not load $LABEL into launchd automatically -- the health check below will fail for that reason, not because of this build"
 launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
 
 # NO pf state flush here. It was wired in on 2026-09-03 while stale anchor
@@ -217,6 +222,7 @@ dump_health_diagnostics "new binary, after kickstart"
 if [[ -f "$BACKUP_DIR/claude-burst-bin.latest.bak" ]]; then
   cp "$BACKUP_DIR/claude-burst-bin.latest.bak" "$TARGET"
   chmod 755 "$TARGET"
+  ensure_launchagent_loaded || true
   launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
   if wait_healthy; then
     if [[ "$DISABLED_FOR_SWAP" -eq 1 ]]; then
@@ -226,6 +232,21 @@ if [[ -f "$BACKUP_DIR/claude-burst-bin.latest.bak" ]]; then
     exit 0
   fi
   dump_health_diagnostics "rollback binary, after kickstart"
+fi
+
+# If the LaunchAgent is STILL not loaded after ensure_launchagent_loaded's
+# recovery attempts (e.g. no plist found, or `launchctl enable` didn't take),
+# say so directly and stop -- this is a launchd problem, not a build problem,
+# and neither the "rolling back" message above nor the transparent-mode
+# guessing below is the right diagnosis for it. Confirmed live 2026-09-03: a
+# disabled LaunchAgent made a good build and its own rollback both fail this
+# exact health check, and got blamed on the (unrelated) transparent-mode
+# false-negative note below instead.
+if ! launchagent_loaded; then
+  echo "[deploy] $LABEL is still not loaded in launchd -- that is why the health check failed, not the binary. Check:" >&2
+  echo "           launchctl print-disabled \"gui/\$UID\" | grep $LABEL" >&2
+  echo "           launchctl enable \"gui/\$UID/$LABEL\" && launchctl bootstrap \"gui/\$UID\" \"$HOME/Library/LaunchAgents/$LABEL.plist\"" >&2
+  exit 1
 fi
 
 # Both the new binary and the rollback (or there was no backup to roll back
