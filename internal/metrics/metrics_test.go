@@ -125,3 +125,73 @@ func TestSummarizeCountsAnthropicAPIKeyRouteUnderSlot(t *testing.T) {
 		t.Fatalf("anthropic-api-key route requests must still be counted via Slot: got %+v", s)
 	}
 }
+
+// TestSummarizeFlagsUnpricedAndKeepsTotalHonest is a regression test for a
+// silent-$0 bug: because the router indexed the pricing map with a bare
+// lookup, a served model with no pricing entry priced at $0/Mtok, so an
+// entire overflow window reported api_equivalent_usd=0 and `stats` showed
+// no secondary spend at all. The number looked fine, which is what stopped
+// anyone looking. Summarize must therefore separate "unpriced" from
+// "free", and String() must refuse to present a partial figure as a total.
+func TestSummarizeFlagsUnpricedAndKeepsTotalHonest(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "metrics.jsonl")
+	w := New(p)
+	// One priced request, and two unpriced ones on the same model.
+	if err := w.Write(Event{Slot: "primary", Route: "anthropic", Model: "claude-opus-5",
+		InputTokens: 1_000_000, OutputTokens: 0, APIEquivalentUSD: 5}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := w.Write(Event{Slot: "secondary", Route: "together", Model: "vendor/some-model",
+			InputTokens: 500_000, PricingUnknown: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s, err := Summarize(p, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.UnpricedRequests != 2 {
+		t.Fatalf("UnpricedRequests = %d, want 2", s.UnpricedRequests)
+	}
+	if got := s.UnpricedModels["vendor/some-model"]; got != 2 {
+		t.Fatalf("UnpricedModels[vendor/some-model] = %d, want 2", got)
+	}
+	// The priced total must still be exactly the priced subset -- the point
+	// is to disclose the gap, not to guess a number to fill it with.
+	if s.APIEquivalentUSD != 5 {
+		t.Fatalf("APIEquivalentUSD = %v, want 5 (priced subset only)", s.APIEquivalentUSD)
+	}
+	out := s.String()
+	if !strings.Contains(out, "INCOMPLETE") {
+		t.Fatalf("String() must flag an incomplete total, got: %s", out)
+	}
+	if !strings.Contains(out, "vendor/some-model") {
+		t.Fatalf("String() must name the unpriced model so it can be fixed, got: %s", out)
+	}
+}
+
+// TestSummarizeCleanRunSaysNothingAboutPricing guards the other direction:
+// when every request is priced, the summary must stay exactly as it was --
+// a warning that fires on healthy data is a warning people learn to ignore.
+func TestSummarizeCleanRunSaysNothingAboutPricing(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "metrics.jsonl")
+	w := New(p)
+	if err := w.Write(Event{Slot: "primary", Route: "anthropic", Model: "claude-opus-5",
+		InputTokens: 1_000_000, APIEquivalentUSD: 5}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Summarize(p, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.UnpricedRequests != 0 {
+		t.Fatalf("UnpricedRequests = %d, want 0", s.UnpricedRequests)
+	}
+	if strings.Contains(s.String(), "INCOMPLETE") {
+		t.Fatalf("clean summary must not be flagged, got: %s", s.String())
+	}
+}

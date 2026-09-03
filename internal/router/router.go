@@ -67,6 +67,9 @@ type Server struct {
 	mu                sync.RWMutex
 	recent            recentRing
 	logger            *log.Logger
+	// warnedUnpriced deduplicates the "no pricing entry" warning per served
+	// model. Without it a whole overflow window logs one line per request.
+	warnedUnpriced sync.Map
 }
 
 func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (*Server, error) {
@@ -701,13 +704,31 @@ func requestModel(body []byte) string {
 
 func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedModel string, status int, start time.Time, tok tokenUsage, claim string, reset int64, note, destination string) {
 
-	price := s.cfg.Pricing[model]
+	// Two-value lookup, not a bare index. A missing key yields the zero
+	// ModelPrice, so indexing alone silently prices an unknown model at
+	// $0/Mtok -- which is exactly what happened once the served model
+	// started being recorded correctly: the secondary's real model id is
+	// not in the default pricing table, so every overflow request recorded
+	// api_equivalent_usd=0 and `stats` reported no secondary spend at all.
+	// A zero that means "not priced" must not look like a zero that means
+	// "free".
+	price, priced := s.cfg.Pricing[model]
 	equiv := (float64(tok.input)/1_000_000)*price.InputPerMTok + (float64(tok.output)/1_000_000)*price.OutputPerMTok
+	// Only tokens make a missing price a problem. Events with no token
+	// counts (failover notes, upstream errors, control-plane passthrough)
+	// legitimately cost nothing and must not be flagged.
+	unpriced := !priced && (tok.input > 0 || tok.output > 0)
+	if unpriced {
+		if _, seen := s.warnedUnpriced.LoadOrStore(model, true); !seen {
+			s.logger.Printf("warn stage=pricing model=%q no pricing entry; cost for this model is not being counted -- add it to `pricing` in config.json", model)
+		}
+	}
 	rid := requestIDFrom(in.Context())
 	err := s.metrics.Write(metrics.Event{
 		Time: time.Now(), RequestID: rid, SessionID: in.Header.Get("x-claude-code-session-id"), AgentID: in.Header.Get("x-claude-code-agent-id"),
 		Slot: slot, Route: route, Model: model, RequestedModel: requestedModel, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),
 		InputTokens: tok.input, OutputTokens: tok.output, APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note, Destination: destination,
+		PricingUnknown: unpriced,
 	})
 	if err != nil {
 		// The request has already been served to Claude Code by this point;

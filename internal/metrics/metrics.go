@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +49,12 @@ type Event struct {
 	LimitClaim       string  `json:"limit_claim,omitempty"`
 	ResetAt          int64   `json:"reset_at,omitempty"`
 	Note             string  `json:"note,omitempty"`
+	// PricingUnknown marks an event whose served Model had no entry in the
+	// configured pricing table while it did report tokens. Without it a
+	// zero APIEquivalentUSD is indistinguishable from a genuinely free
+	// request, so an unpriced secondary reports as $0.00 spend rather than
+	// as unknown spend -- reassuring, and wrong. See writeMetric.
+	PricingUnknown bool `json:"pricing_unknown,omitempty"`
 }
 
 type Writer struct {
@@ -86,6 +94,13 @@ type Summary struct {
 	InputTokens       int64
 	OutputTokens      int64
 	APIEquivalentUSD  float64
+	// UnpricedRequests counts events that reported tokens but whose served
+	// model had no pricing entry, and UnpricedModels names those models with
+	// a per-model count. APIEquivalentUSD therefore covers only the priced
+	// subset: when UnpricedRequests is non-zero it is a lower bound, not a
+	// total, and String() says so rather than presenting it as complete.
+	UnpricedRequests int
+	UnpricedModels   map[string]int
 }
 
 func Summarize(path string, since time.Time) (Summary, error) {
@@ -124,13 +139,37 @@ func Summarize(path string, since time.Time) (Summary, error) {
 		s.InputTokens += e.InputTokens
 		s.OutputTokens += e.OutputTokens
 		s.APIEquivalentUSD += e.APIEquivalentUSD
+		if e.PricingUnknown {
+			s.UnpricedRequests++
+			if s.UnpricedModels == nil {
+				s.UnpricedModels = map[string]int{}
+			}
+			s.UnpricedModels[e.Model]++
+		}
 	}
 	return s, sc.Err()
 }
 
 func (s Summary) String() string {
-	return fmt.Sprintf("requests=%d primary=%d secondary=%d input_tokens=%d output_tokens=%d api_equivalent_usd=$%.2f",
+	out := fmt.Sprintf("requests=%d primary=%d secondary=%d input_tokens=%d output_tokens=%d api_equivalent_usd=$%.2f",
 		s.Requests, s.PrimaryRequests, s.SecondaryRequests, s.InputTokens, s.OutputTokens, s.APIEquivalentUSD)
+	if s.UnpricedRequests == 0 {
+		return out
+	}
+	// Say the total is incomplete rather than letting a confident-looking
+	// dollar figure stand for spend it does not actually include, and name
+	// the models so the gap is one config edit away from closed.
+	models := make([]string, 0, len(s.UnpricedModels))
+	for m := range s.UnpricedModels {
+		models = append(models, m)
+	}
+	sort.Strings(models)
+	parts := make([]string, 0, len(models))
+	for _, m := range models {
+		parts = append(parts, fmt.Sprintf("%s x%d", m, s.UnpricedModels[m]))
+	}
+	return out + fmt.Sprintf(" (INCOMPLETE: %d request(s) had no pricing entry, so their cost is missing from the total above -- add `pricing` entries in config.json for: %s)",
+		s.UnpricedRequests, strings.Join(parts, ", "))
 }
 
 // Recent returns up to limit of the most recent events, newest first.

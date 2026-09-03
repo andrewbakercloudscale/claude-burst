@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
 
 // newTestServer builds a Server wired to httptest primary/bedrock upstreams
@@ -940,5 +941,97 @@ func TestSlowTrickleStreamStillSucceeds(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "[DONE]") {
 		t.Fatalf("full trickled body was not relayed: %s", rr.Body.String())
+	}
+}
+
+// TestWriteMetricFlagsUnpricedModel is the router half of the silent-$0
+// regression. writeMetric used to index cfg.Pricing with a bare lookup, so
+// a served model absent from the table priced at $0/Mtok and the event was
+// indistinguishable from a genuinely free one. That is precisely what
+// happened once the served model started being recorded correctly: the
+// secondary's own model id is not in the default pricing table, so overflow
+// requests recorded api_equivalent_usd=0 and `stats` showed no secondary
+// spend at all.
+//
+// Three cases matter, and the last two are the ones a naive fix breaks:
+// an unpriced model WITH tokens must be flagged; a priced model must not
+// be; and an unpriced event with NO tokens (failover notes, upstream
+// errors, control-plane passthrough) must not be either, or the flag fires
+// constantly on events that legitimately cost nothing.
+func TestWriteMetricFlagsUnpricedModel(t *testing.T) {
+	readEvents := func(t *testing.T, path string) []metrics.Event {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []metrics.Event
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			if line == "" {
+				continue
+			}
+			var e metrics.Event
+			if err := json.Unmarshal([]byte(line), &e); err != nil {
+				t.Fatalf("bad metrics line %q: %v", line, err)
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+
+	cases := []struct {
+		name       string
+		model      string
+		tok        tokenUsage
+		wantFlag   bool
+		wantWarnIn bool
+	}{
+		{"unpriced model with tokens", "vendor/some-model", tokenUsage{input: 1000, output: 10}, true, true},
+		{"priced model with tokens", "claude-sonnet-5", tokenUsage{input: 1000, output: 10}, false, false},
+		{"unpriced model, no tokens", "vendor/some-model", tokenUsage{}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			metricsPath := filepath.Join(dir, "metrics.jsonl")
+			var logBuf bytes.Buffer
+			s, err := New(config.Default(), filepath.Join(dir, "state.json"), metricsPath, log.New(&logBuf, "", 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+			s.writeMetric(req, "secondary", "together", tc.model, tc.model, 200, time.Now(), tc.tok, "", 0, "", "")
+
+			ev := readEvents(t, metricsPath)
+			if len(ev) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(ev))
+			}
+			if ev[0].PricingUnknown != tc.wantFlag {
+				t.Fatalf("PricingUnknown = %v, want %v (model=%q tokens in=%d out=%d)",
+					ev[0].PricingUnknown, tc.wantFlag, tc.model, tc.tok.input, tc.tok.output)
+			}
+			if warned := strings.Contains(logBuf.String(), "stage=pricing"); warned != tc.wantWarnIn {
+				t.Fatalf("pricing warning logged = %v, want %v; log:\n%s", warned, tc.wantWarnIn, logBuf.String())
+			}
+		})
+	}
+}
+
+// TestWriteMetricWarnsOncePerModel guards the log against an overflow
+// window turning into one warning line per request -- a warning that
+// repeats hundreds of times is one people filter out.
+func TestWriteMetricWarnsOncePerModel(t *testing.T) {
+	dir := t.TempDir()
+	var logBuf bytes.Buffer
+	s, err := New(config.Default(), filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(&logBuf, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	for i := 0; i < 5; i++ {
+		s.writeMetric(req, "secondary", "together", "vendor/some-model", "vendor/some-model", 200, time.Now(), tokenUsage{input: 1000}, "", 0, "", "")
+	}
+	if n := strings.Count(logBuf.String(), "stage=pricing"); n != 1 {
+		t.Fatalf("expected exactly 1 pricing warning across 5 unpriced requests, got %d; log:\n%s", n, logBuf.String())
 	}
 }
