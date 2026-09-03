@@ -3,17 +3,35 @@
 # the order ROLLBACK.md requires:
 #   1. back up first
 #   2. the gateway must be healthy BEFORE anything points traffic at it
-#   3. claude-burst enable (CA trust + settings.json)
-#   4. the machine-wide switch (/etc/hosts + pf) goes last
-#   5. arm the watchdog immediately after
+#   3. claude-burst enable (CA trust for Claude Code CLI + settings.json)
+#   4. the machine-wide redirect (/etc/hosts + pf) goes last
+#   5. machine-wide CA trust (System keychain), so the redirect it just
+#      installed doesn't silently break every OTHER app that happens to
+#      talk to api.anthropic.com
+#   6. arm the watchdog immediately after
 #
-# The machine-wide step (transparent-root.sh install) needs root and is not
-# silently escalated: same reasoning as `claude-burst enable` itself printing
-# it as a manual step rather than running it -- a change that affects every
-# process on this Mac should happen with the person at the keyboard watching
-# it happen. If sudo credentials aren't already cached, this prints the exact
-# command and stops rather than hanging on a password prompt with nothing
-# attached to answer it.
+# Both machine-wide root steps (4 and 5) are spelled out explicitly rather
+# than folded into one another or silently chained, and neither is
+# silently escalated: same reasoning as `claude-burst enable` itself
+# printing its remaining step rather than running it -- a change that
+# affects every process on this Mac should happen with the person at the
+# keyboard watching it happen, and knowing specifically what changed. If
+# sudo credentials aren't already cached, this prints the exact commands
+# and stops rather than hanging on a password prompt with nothing attached
+# to answer it.
+#
+# Why step 5 exists at all: root-caused 2026-09-03 (see
+# INVESTIGATION-TLS-STORM.md). Step 3's CA trust only covers Claude Code
+# CLI (via NODE_EXTRA_CA_CERTS) -- Claude Desktop and everything else on
+# this Mac has never heard of this CA, so step 4's redirect makes THEM
+# fail TLS handshakes against a certificate they don't trust the moment
+# their own traffic touches api.anthropic.com. Claude Desktop's own
+# auto-updater checks that host roughly hourly; without step 5 that
+# produces the TLS handshake-error storm this investigation chased for
+# days, and at least once broke Claude Desktop's Cowork/MCP-filesystem
+# startup outright. Step 5 is what step 4 needs to actually be silent
+# rather than merely working for the one process that has its own CA
+# bundle.
 #
 # Usage: scripts/install-proxy.sh
 set -uo pipefail
@@ -23,6 +41,7 @@ LABEL="ninja.andrewbaker.claude-burst"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 BIN="$HOME/.local/bin/claude-burst"
 ROOT_HELPER="$DIR/transparent-root.sh"
+TRUST_HELPER="$DIR/trust-ca-systemwide.sh"
 
 source "$DIR/health-diagnostics.sh"
 
@@ -72,7 +91,10 @@ echo "== 3. claude-burst enable (CA trust + settings.json) =="
 "$BIN" enable
 
 echo
-echo "== 4. machine-wide redirect (needs root) =="
+gateway_port="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json'))['listen'].split(':')[-1])" 2>/dev/null || echo 7777)"
+echo "== 4. machine-wide redirect: /etc/hosts + pf (needs root) =="
+echo "changing: adds '127.0.0.1 api.anthropic.com' to /etc/hosts, loads a pf anchor"
+echo "redirecting 127.0.0.1:443 -> 127.0.0.1:$gateway_port"
 if [[ $EUID -eq 0 ]]; then
   "$ROOT_HELPER" install
 elif sudo -n true 2>/dev/null; then
@@ -80,14 +102,37 @@ elif sudo -n true 2>/dev/null; then
 else
   echo "WARNING: cannot run the machine-wide step without a password. Run NOW:" >&2
   echo "    sudo $ROOT_HELPER install" >&2
+  echo "Then (see step 5 below) run:" >&2
+  echo "    sudo $TRUST_HELPER" >&2
   echo "Then arm the watchdog yourself:" >&2
   echo "    nohup $DIR/watchdog.sh & disown" >&2
-  echo "(gateway is up and settings.json/CA are already done -- only this last step is left)" >&2
+  echo "(gateway is up and settings.json/CA for Claude Code CLI are already done -- these two root steps are what's left)" >&2
   exit 2
 fi
 
 echo
-echo "== 5. arming the watchdog =="
+echo "== 5. machine-wide CA trust: System keychain (needs root) =="
+echo "changing: imports $HOME/.config/claude-burst/ca/ca-cert.pem into"
+echo "  /Library/Keychains/System.keychain as a trusted root (CN: claude-burst local CA)"
+echo "why: step 4's redirect now catches traffic from every app on this Mac, not just"
+echo "  Claude Code CLI -- without this, anything else that happens to reach"
+echo "  api.anthropic.com (Claude Desktop's auto-updater, for one) fails its TLS"
+echo "  handshake against a certificate it doesn't trust. See INVESTIGATION-TLS-STORM.md."
+if [[ $EUID -eq 0 ]]; then
+  "$TRUST_HELPER"
+elif sudo -n true 2>/dev/null; then
+  sudo -n "$TRUST_HELPER"
+else
+  echo "WARNING: cannot run this without a password. Run NOW:" >&2
+  echo "    sudo $TRUST_HELPER" >&2
+  echo "Then arm the watchdog yourself:" >&2
+  echo "    nohup $DIR/watchdog.sh & disown" >&2
+  echo "(the redirect from step 4 is already live -- this is the last step)" >&2
+  exit 2
+fi
+
+echo
+echo "== 6. arming the watchdog =="
 nohup "$DIR/watchdog.sh" >/dev/null 2>&1 &
 disown
 echo "watchdog armed -- auto-rolls back via rollback.sh if the gateway isn't healthy 60s from now"

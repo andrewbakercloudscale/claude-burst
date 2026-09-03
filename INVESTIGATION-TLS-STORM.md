@@ -1,6 +1,7 @@
 # Open investigation: TLS handshake storm + port-7777 timeout
 
-Status: **OPEN**. Session paused 2026-08-31 ~20:10 SAST at owner's request. Pick up from here.
+Status: TLS handshake storm **ROOT-CAUSED AND FIXED 2026-09-03** (see update at the bottom).
+Issue #1 (port-7777 timeout) is still **OPEN**.
 
 ## Issue #1 (original): direct 127.0.0.1:7777 timeout right after restart
 
@@ -27,7 +28,7 @@ Tracked at https://github.com/andrewbakercloudscale/claude-burst/issues/1
   success/failure (`net.Listen` split from `Serve`) to help distinguish "slow to bind" from
   "bound fine, external layer is the problem".
 
-## Related finding: TLS handshake-error storm (2026-08-31 session, still open)
+## Related finding: TLS handshake-error storm (2026-08-31 session, ROOT-CAUSED 2026-09-03)
 
 `launchd.err.log` repeatedly logs:
 ```
@@ -122,3 +123,53 @@ Two consequences for the investigation:
 
 The `dtrace` one-liner below is still the definitive answer and still needs root; the above
 only narrows where to point it and when to run it.
+
+## Update 2026-09-03: root-caused, and fixed
+
+`dtrace`'s `syscall` provider turned out to be fully blocked by SIP on this machine --
+`probe description syscall::connect:entry does not match any probes. System Integrity
+Protection is on` -- so the one-liner above was never runnable here. An earlier untargeted
+`lsof`-polling attempt also failed, separately, because "the loopback TLS-reject-and-close
+cycle is almost certainly faster than shell-loop polling resolution."
+
+Built a different approach instead: `cmd/claude-burst/peerlog.go`, an opt-in
+(`CLAUDE_BURST_LOG_TLS_PEERS=1`) listener wrapper that identifies the calling process via a
+port-scoped `lsof` lookup *synchronously inside `Accept()`*, before the connection can reach
+the TLS handshake that would otherwise close it first. An async version (`go
+l.identify(...)`) still lost the race against the fastest-failing connections in a real
+burst; making it synchronous (accepting serialized connection acceptance during the capture
+window -- fine for a low-traffic diagnostic run, never enabled otherwise) removed the race
+by construction.
+
+Running it caught several benign connections (`curl` health-checks, Claude Code CLI itself
+-- both succeeding, since they trust the gateway's CA), but the actual match came from
+**correlating timestamps against Claude Desktop's own log** (`~/Library/Logs/Claude/main.log`)
+rather than from a caught failure directly: its `[updater]` component has logged `Auto-update
+error: A TLS error caused the secure connection to fail` roughly **hourly since 2026-08-31
+20:19:22** -- matching this investigation's own "re-triggered roughly once an hour" finding
+exactly, and matching a live-captured storm burst (`2026-09-03 16:05:20`) to the second.
+
+**Root cause:** Claude Desktop's own auto-updater checks `api.anthropic.com` periodically.
+Transparent mode's `/etc/hosts` redirect catches that traffic like any other, sending it to
+the gateway -- whose certificate only `claude-burst enable` trusts, and only for Claude Code
+CLI (via `NODE_EXTRA_CA_CERTS`). Claude Desktop has never heard of this CA, so its TLS client
+rejects the gateway's certificate every time, producing exactly the "unknown certificate"
+storm. Claude.app itself was independently confirmed live (via `lsof` on its own PIDs) to
+never touch the redirect for its real traffic -- its connections go straight from the LAN
+interface to Anthropic's real IPs -- so this is specifically the updater's background check,
+not the app's normal operation. It is not only noise: a live MCP-filesystem startup failure
+for Claude Desktop's Cowork feature (`Couldn't start ... Connection closed`, 2026-09-03
+15:05:30) landed in the middle of a storm burst, strongly suggesting that startup path also
+touches `api.anthropic.com` and was collateral damage from the same untrusted-certificate
+rejection.
+
+**Fix, not a workaround:** `scripts/trust-ca-systemwide.sh` imports the gateway's CA into the
+macOS System keychain as a trusted root, so any process's TLS stack accepts it -- not just
+Claude Code CLI's. This is what transparent mode's redirect actually needed to be silent for
+machine-wide traffic, which was always the design intent (see ROLLBACK.md: transparent mode
+already accepts machine-wide blast radius as its known cost). `scripts/untrust-ca-systemwide.sh`
+undoes it. Both are now wired into `install-proxy.sh` (step 5) and `rollback.sh` (step 1b)
+respectively, as explicit, clearly-labeled root steps -- never silently escalated, same as
+every other machine-wide change in this repo.
+
+Issue #1 (the direct `:7777` timeout) is unrelated and remains open.
