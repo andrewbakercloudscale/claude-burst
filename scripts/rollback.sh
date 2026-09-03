@@ -18,21 +18,36 @@ CONFIG="$HOME/.config/claude-burst/config.json"
 # one that refuses to run.
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Acquire root once, upfront, for the two helper steps below. A NOPASSWD
+# sudoers entry (or an already-cached credential) satisfies this silently --
+# that's what lets watchdog.sh call this script unattended. Otherwise, only
+# prompt for the password when there's an actual terminal to prompt on: an
+# unattended caller has no tty and must never block waiting for input, but a
+# human running this by hand needs the same interactive `sudo -v` prompt the
+# old out-of-repo rollback.sh used. Skipping straight to "print what to run
+# and continue" here is what made this script silently no-op the /etc/hosts
+# and CA-trust cleanup on a machine with no NOPASSWD rule configured.
+HAVE_ROOT=0
+if [[ $EUID -eq 0 ]]; then
+  HAVE_ROOT=1
+elif sudo -n true 2>/dev/null; then
+  HAVE_ROOT=1
+elif [[ -t 0 ]]; then
+  echo "claude-burst rollback needs sudo to remove /etc/hosts, pf, and CA trust state." >&2
+  sudo -v && HAVE_ROOT=1
+fi
+
 # STEP 1, BEFORE ANYTHING ELSE: undo the machine-wide transparent-mode changes.
 #
 # While /etc/hosts redirects api.anthropic.com at a port with nothing behind
 # it, EVERY process on this Mac that talks to Anthropic fails -- not just this
 # session. That is the widest-blast-radius state the tool can create, so it is
 # the first thing undone, before any step that could itself fail.
-#
-# Needs root. Unattended callers (watchdog.sh) require a sudoers NOPASSWD entry
-# for this exact path; without one this prints what to run and continues rather
-# than aborting the rest of the rollback.
 ROOT_HELPER="$DIR/transparent-root.sh"
 if [[ -x "$ROOT_HELPER" ]]; then
   if [[ $EUID -eq 0 ]]; then
     "$ROOT_HELPER" remove
-  elif sudo -n true 2>/dev/null; then
+  elif [[ "$HAVE_ROOT" -eq 1 ]]; then
     sudo -n "$ROOT_HELPER" remove
   else
     # Only nag if something is actually installed; the common case is a
@@ -57,7 +72,7 @@ UNTRUST_HELPER="$DIR/untrust-ca-systemwide.sh"
 if [[ -x "$UNTRUST_HELPER" ]]; then
   if [[ $EUID -eq 0 ]]; then
     "$UNTRUST_HELPER"
-  elif sudo -n true 2>/dev/null; then
+  elif [[ "$HAVE_ROOT" -eq 1 ]]; then
     sudo -n "$UNTRUST_HELPER"
   elif security find-certificate -c "claude-burst local CA" /Library/Keychains/System.keychain >/dev/null 2>&1; then
     echo "WARNING: the System keychain still trusts claude-burst's local CA and this" >&2
