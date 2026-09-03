@@ -33,17 +33,15 @@ if ! launchctl list "$LABEL" >/dev/null 2>&1; then
   healthy=0
 fi
 
-# The gateway serves HTTPS-only in transparent mode, HTTP-only in base-url
-# mode; -k because it presents our own local CA, which curl doesn't read
-# from NODE_EXTRA_CA_CERTS -- this is a liveness check, not a trust check.
-# An http-only probe here always reports a healthy transparent-mode gateway
-# as dead, which means this watchdog would auto-rollback a perfectly good
-# gateway ~$DELAY seconds after every single enable -- confirmed as the
-# actual failure mode in production on 2026-08-31 (same bug in deploy.sh's
-# check). See transparent-root.sh's probe_gateway for the original fix.
-if ! curl -skf -m 3 https://127.0.0.1:7777/healthz >/dev/null 2>&1 \
-  && ! curl -sf -m 3 http://127.0.0.1:7777/healthz >/dev/null 2>&1; then
-  echo "$(date '+%Y-%m-%d %H:%M:%S') FAIL: /healthz not responding" >> "$LOG"
+# Shared with deploy.sh (gateway_healthy in health-diagnostics.sh) rather than
+# duplicated, because this exact check has now been wrong twice in the same
+# place: an http-only probe reported a healthy transparent-mode gateway as
+# dead (2026-08-31), and a direct-127.0.0.1:7777-only probe did the same
+# whenever that port's SYNs are being dropped (2026-09-03, issue #1). This
+# script auto-runs rollback.sh unattended, so a false negative here is not a
+# failed check -- it is an unnecessary production rollback.
+if ! gateway_healthy; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') FAIL: /healthz not responding on any path" >> "$LOG"
   healthy=0
 fi
 

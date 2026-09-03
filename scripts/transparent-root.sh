@@ -26,6 +26,13 @@
 #        transparent-root.sh --self-test     # no root; exercises the text edits
 set -uo pipefail
 
+# zsh expands $0 inside a function to the FUNCTION's name, not the script's,
+# so every "undo with: sudo $SELF remove" hint printed from inside do_install /
+# do_reload_anchor / do_remove named a shell function nobody can run --
+# observed live as "run 'sudo do_reload_anchor diagnose-port'". Captured once
+# here at top level, where $0 is still the script path.
+SELF="$0"
+
 HOST_DEFAULT="api.anthropic.com"
 PORT_DEFAULT=443
 GATEWAY_PORT_DEFAULT=7777
@@ -48,7 +55,7 @@ TAG_RDR="pf-rdr"
 TAG_LOAD="pf-load"
 
 die() { echo "error: $*" >&2; exit 1; }
-need_root() { [[ $EUID -eq 0 ]] || die "must run as root: sudo $0 $*"; }
+need_root() { [[ $EUID -eq 0 ]] || die "must run as root: sudo $SELF $*"; }
 
 # --- text-editing helper -----------------------------------------------------
 #
@@ -164,6 +171,205 @@ edit_file() {
   rm -f "$tmp"
 }
 
+# --- pf anchor ---------------------------------------------------------------
+
+# The `no rdr` line is not decoration and not a second redirect. Direct
+# connections to the gateway port are dropped -- SYNs never arrive -- while
+# the gateway is healthy and the pf-redirected path reaches the SAME socket
+# in milliseconds. Measured 2026-09-03: `netstat -L` showed the listen queue
+# empty (0/0/4096), `curl https://127.0.0.1:7777/healthz` timed out at the
+# connect phase, and `curl https://api.anthropic.com/healthz` returned 200 in
+# 28ms at the same instant. A plain listener on another loopback port answered
+# in 5ms, so it is specific to the redirect TARGET port, and pf is the only
+# thing in that path. The rule states explicitly that traffic already addressed
+# to the gateway port is not to be translated.
+#
+# It is safe whether or not it turns out to be the cure: it matches traffic the
+# rdr rule below cannot (disjoint destination ports), so it can never alter
+# what the redirect does. If direct probes still fail after this loads, the
+# hypothesis is wrong and the rule is inert -- see `diagnose-port`, and note
+# that deploy.sh/watchdog.sh no longer depend on the direct probe either way.
+write_anchor() {
+  local port="$1" gport="$2"
+  mkdir -p "$(dirname "$PF_ANCHOR_FILE")"
+  cat > "$PF_ANCHOR_FILE" <<EOF
+# Managed by claude-burst (transparent intercept mode). Remove with:
+#   sudo transparent-root.sh remove
+no rdr on lo0 inet proto tcp from any to 127.0.0.1 port $gport
+rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port $port -> 127.0.0.1 port $gport
+EOF
+  chmod 644 "$PF_ANCHOR_FILE"
+  echo "  wrote $PF_ANCHOR_FILE"
+}
+
+# Rewrite the anchor from recorded state and reload it, validating the whole
+# ruleset with a dry run FIRST. A rejected ruleset is the one outcome that
+# must never happen here: pfctl -f loads all-or-nothing, so a syntax error
+# would take the redirect down with it and every request on this Mac to the
+# intercepted host would break.
+do_reload_anchor() {
+  need_root reload-anchor
+  local port gport
+  port="$(state_get port)";  : "${port:=$PORT_DEFAULT}"
+  gport="$(state_get gateway_port)"; : "${gport:=$GATEWAY_PORT_DEFAULT}"
+
+  [[ -f "$PF_ANCHOR_FILE" ]] && cp -p "$PF_ANCHOR_FILE" "$PF_ANCHOR_FILE.bak"
+  echo "== rewriting anchor (port $port -> $gport) =="
+  write_anchor "$port" "$gport"
+
+  echo "== validating ruleset (dry run) =="
+  # NOT `pfctl -n -f ... | quiet_pf`: under `pipefail` a pipeline reports the
+  # LAST command's status, so the `if` would test grep/sed and never pfctl --
+  # a rejected ruleset would sail through as valid. Capture pfctl's own exit
+  # status, then print. (deploy.sh documents the same trap biting a `status |
+  # grep` check.)
+  local dry rc
+  dry="$(pfctl -n -f "$PF_CONF" 2>&1)"; rc=$?
+  printf '%s\n' "$dry" | quiet_pf
+  if [[ $rc -ne 0 ]]; then
+    if [[ -f "$PF_ANCHOR_FILE.bak" ]]; then
+      cp -p "$PF_ANCHOR_FILE.bak" "$PF_ANCHOR_FILE"
+      echo "  restored the previous anchor; nothing was loaded"
+    fi
+    die "pf rejected the ruleset -- nothing changed"
+  fi
+  echo "  ruleset OK"
+
+  echo "== loading =="
+  local loaded lrc
+  loaded="$(pfctl -f "$PF_CONF" 2>&1)"; lrc=$?
+  printf '%s\n' "$loaded" | quiet_pf
+  if [[ $lrc -ne 0 ]]; then
+    if [[ -f "$PF_ANCHOR_FILE.bak" ]]; then
+      cp -p "$PF_ANCHOR_FILE.bak" "$PF_ANCHOR_FILE"
+      pfctl -f "$PF_CONF" >/dev/null 2>&1
+      echo "  restored the previous anchor" >&2
+    fi
+    die "pfctl -f failed (exit $lrc) after a clean dry run"
+  fi
+
+  # Stale states are the leading suspect (see probe_direct_retry), and a
+  # ruleset reload leaves them in place. Flush only OUR anchor's -- machine-
+  # wide `pfctl -F states` would tear down every tracked connection on the Mac.
+  echo "== flushing this anchor's states =="
+  pfctl -a "$ANCHOR_NAME" -F states 2>&1 | quiet_pf
+
+  echo "== verifying =="
+  local direct real
+  probe_direct_retry "$gport" 20 && direct=OK || direct=FAIL
+  gateway_body_has_overflow && real=OK || real=FAIL
+  echo "  direct 127.0.0.1:$gport : $direct"
+  echo "  real path (port $port)  : $real"
+  if [[ "$real" != "OK" ]]; then
+    echo "  the REAL path is broken -- restoring the previous anchor" >&2
+    if [[ -f "$PF_ANCHOR_FILE.bak" ]]; then
+      cp -p "$PF_ANCHOR_FILE.bak" "$PF_ANCHOR_FILE"
+      pfctl -f "$PF_CONF" 2>&1 | quiet_pf
+      echo "  restored." >&2
+    fi
+    die "reload made things worse; previous anchor is back"
+  fi
+  if [[ "$direct" == "OK" ]]; then
+    echo
+    echo "direct connections to the gateway port work again."
+  else
+    echo
+    echo "direct connections still fail, so the exemption was not the cause."
+    echo "The rule is inert and harmless; run 'sudo $SELF diagnose-port' for evidence."
+  fi
+}
+
+# A SINGLE probe cannot verify anything on this port. Measured 2026-09-03,
+# with the gateway healthy throughout: 10 direct probes 2s apart returned
+# 1 success and 9 connect-phase timeouts, and the successes connected in
+# 56-113ms against 5ms for a plain listener on another loopback port. So a
+# one-shot check reports FAIL ~90% of the time whatever the truth is -- which
+# is exactly how the first run of reload-anchor "disproved" its own fix.
+# Retry, and report how many attempts it actually took, so the result is a
+# measurement rather than a coin toss.
+probe_direct_retry() {
+  local gport="$1" budget="${2:-20}" waited=0 attempts=0
+  while (( waited < budget )); do
+    attempts=$((attempts + 1))
+    if curl -skf -m 2 "https://127.0.0.1:$gport/healthz" >/dev/null 2>&1; then
+      echo "  direct probe succeeded on attempt $attempts (${waited}s in)"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "  direct probe failed every attempt ($attempts) over ${budget}s"
+  return 1
+}
+
+gateway_body_has_overflow() {
+  local host="$(state_get host)"; : "${host:=$HOST_DEFAULT}"
+  case "$(curl -sk -m 3 "https://$host/healthz" 2>/dev/null)" in
+    *'"overflow"'*) return 0 ;;
+  esac
+  return 1
+}
+
+# Tests the stale-state hypothesis on its own, without touching the ruleset.
+# The state table carries entries that should not exist for a rule that only
+# ever redirects :443 -> :7777 -- observed 2026-09-03:
+#   ALL tcp 127.0.0.1:7777 -> 127.0.0.1:443   TIME_WAIT
+#   ALL tcp 127.0.0.1:7777 <- 127.0.0.1:7777  TIME_WAIT
+# The second has the gateway port on BOTH sides. If a direct SYN to :7777 is
+# being matched against a leftover state like these and reverse-translated
+# back to :443 -- where nothing listens -- that is both the drop and the
+# intermittency, since it depends on which states happen to be alive.
+do_flush_port_states() {
+  need_root flush-port-states
+  local gport; gport="$(state_get gateway_port)"; : "${gport:=$GATEWAY_PORT_DEFAULT}"
+  echo "before: $(pfctl -s state 2>/dev/null | grep -c -- "$gport") states mention $gport"
+  echo "== probing before flush =="
+  probe_direct_retry "$gport" 6 || true
+  echo "== flushing anchor states =="
+  pfctl -a "$ANCHOR_NAME" -F states 2>&1 | quiet_pf
+  echo "after:  $(pfctl -s state 2>/dev/null | grep -c -- "$gport") states mention $gport"
+  echo "== probing after flush =="
+  if probe_direct_retry "$gport" 20; then
+    echo
+    echo "RESULT: direct connects recover after flushing the anchor's states."
+  else
+    echo
+    echo "RESULT: still failing, so the anchor's own states are not the cause."
+    echo "        Next: the entries may live in the MAIN table rather than the"
+    echo "        anchor. Machine-wide 'pfctl -F states' would prove it, but it"
+    echo "        drops every tracked connection on this Mac -- do that only"
+    echo "        deliberately, not from a script."
+  fi
+}
+
+# Read-only. Captures the pf rules and state table at the moment direct
+# connections to the gateway port are failing -- the evidence issue #1 has
+# been missing, because it needs root and so could never be gathered by the
+# unattended scripts that kept tripping over the symptom.
+do_diagnose_port() {
+  need_root diagnose-port
+  local gport port
+  gport="$(state_get gateway_port)"; : "${gport:=$GATEWAY_PORT_DEFAULT}"
+  port="$(state_get port)"; : "${port:=$PORT_DEFAULT}"
+
+  echo "== probes =="
+  curl -sk -m 3 -o /dev/null -w "  direct https://127.0.0.1:$gport/healthz -> code=%{http_code} connect=%{time_connect} total=%{time_total}\n" "https://127.0.0.1:$gport/healthz"
+  gateway_body_has_overflow && echo "  real path (:$port) -> serving our /healthz" || echo "  real path (:$port) -> NOT serving our /healthz"
+  echo
+  echo "== listen queue (empty means the socket is not the problem) =="
+  netstat -L -an 2>/dev/null | grep -E "$gport" || echo "  (no listener found on $gport)"
+  echo
+  echo "== anchor rules =="
+  pfctl -a "$ANCHOR_NAME" -s nat 2>&1 | sed 's/^/  /'
+  echo
+  echo "== pf states mentioning the gateway port =="
+  pfctl -s state 2>/dev/null | grep -- "$gport" | head -40 | sed 's/^/  /' || true
+  echo "  (total states: $(pfctl -s state 2>/dev/null | wc -l | tr -d ' '))"
+  echo
+  echo "== pf info =="
+  pfctl -s info 2>/dev/null | head -6 | sed 's/^/  /'
+}
+
 # --- state -------------------------------------------------------------------
 
 state_get() { [[ -f "$STATE_FILE" ]] && grep -E "^$1=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2- }
@@ -248,14 +454,11 @@ do_install() {
   state_set host "$host"
   state_set upstream "$upstream"
   state_set gateway_port "$gport"
+  state_set port "$port"
 
   echo "== pf anchor =="
   mkdir -p "$(dirname "$PF_ANCHOR_FILE")"
-  cat > "$PF_ANCHOR_FILE" <<EOF
-# Managed by claude-burst (transparent intercept mode). Remove with:
-#   sudo transparent-root.sh remove
-rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port $port -> 127.0.0.1 port $gport
-EOF
+  write_anchor "$port" "$gport"
   chmod 644 "$PF_ANCHOR_FILE"
   echo "  wrote $PF_ANCHOR_FILE"
 
@@ -292,7 +495,7 @@ EOF
   flush_dns
 
   echo
-  echo "installed. undo with: sudo $0 remove"
+  echo "installed. undo with: sudo $SELF remove"
 }
 
 do_remove() {
@@ -366,7 +569,7 @@ do_status() {
   elif block_present "$HOSTS_FILE" "$TAG_HOSTS"; then
     # The dangerous state: DNS still redirects but nothing listens.
     echo "  live rdr rule : MISSING -- hosts still redirects, so traffic to $host will be REFUSED"
-    echo "                  fix with: sudo $0 remove"
+    echo "                  fix with: sudo $SELF remove"
   else
     echo "  live rdr rule : none (consistent with the hosts entry being absent)"
   fi
@@ -484,7 +687,7 @@ do_admin_host() {
   setup_helper
   local name="${1:-}"
   if [[ -z "$name" ]]; then
-    die "usage: sudo $0 admin-host <name>   (e.g. cloudscale-claudeburst.test)"
+    die "usage: sudo $SELF admin-host <name>   (e.g. cloudscale-claudeburst.test)"
   fi
   if [[ "$name" != *.* ]]; then
     echo "note: '$name' has no dot, so browsers may treat it as a search term."
@@ -499,7 +702,7 @@ do_admin_host() {
   echo "  claude-burst configure --admin-hostname $name"
   echo "  launchctl kickstart -k gui/\$UID/ninja.andrewbaker.claude-burst"
   echo
-  echo "Undo with: sudo $0 admin-host-remove"
+  echo "Undo with: sudo $SELF admin-host-remove"
 }
 
 do_admin_host_remove() {
@@ -521,15 +724,21 @@ case "${1:-}" in
   admin-host-remove) do_admin_host_remove ;;
   remove)      do_remove ;;
   status)      do_status ;;
+  reload-anchor) do_reload_anchor ;;
+  flush-port-states) do_flush_port_states ;;
+  diagnose-port) do_diagnose_port ;;
   --self-test) self_test ;;
   *)
     cat <<EOF
-usage: sudo $0 install [--host H] [--port P] [--gateway-port G]
-       sudo $0 remove
-       sudo $0 status
-       sudo $0 admin-host <name>     # friendly URL for the admin UI
-       sudo $0 admin-host-remove
-            $0 --self-test
+usage: sudo $SELF install [--host H] [--port P] [--gateway-port G]
+       sudo $SELF remove
+       sudo $SELF status
+       sudo $SELF admin-host <name>     # friendly URL for the admin UI
+       sudo $SELF admin-host-remove
+       sudo $SELF reload-anchor         # rewrite + reload the pf anchor (dry-run first)
+       sudo $SELF diagnose-port         # read-only: why direct gateway-port connects fail
+       sudo $SELF flush-port-states     # test the stale-pf-state hypothesis
+            $SELF --self-test
 
 install and remove require root. remove is idempotent and safe to run at any
 time, including when nothing was ever installed.
