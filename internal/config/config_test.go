@@ -89,3 +89,31 @@ func TestSecondaryNoneSurvivesResolveRoutes(t *testing.T) {
 		t.Errorf("legacy bedrock_base_url resurrected the secondary: got %q", cfg2.Secondary.Provider)
 	}
 }
+
+// TestHostsRedirectActive_EmptyMarkerBlockIsNotActive is a regression test
+// for a real incident (2026-09-03): transparent-root.sh's own `remove`
+// deletes the whole marker block, so an empty-but-present block only ever
+// happens by hand -- and the old check (a bare substring match on the BEGIN
+// marker) reported the redirect as active regardless, while an hour of real
+// Claude Code traffic had quietly gone direct to Anthropic with no gateway
+// involved at all.
+func TestHostsRedirectActive_EmptyMarkerBlockIsNotActive(t *testing.T) {
+	hosts := "127.0.0.1 localhost\n# BEGIN claude-burst hosts\n# END claude-burst hosts\n"
+	if HostsRedirectActive([]byte(hosts), "api.anthropic.com") {
+		t.Fatal("an empty marker block must not report the redirect as active")
+	}
+}
+
+func TestHostsRedirectActive_RealRedirectIsActive(t *testing.T) {
+	hosts := "127.0.0.1 localhost\n# BEGIN claude-burst hosts\n127.0.0.1 api.anthropic.com\n# END claude-burst hosts\n"
+	if !HostsRedirectActive([]byte(hosts), "api.anthropic.com") {
+		t.Fatal("a real loopback redirect line must report the redirect as active")
+	}
+}
+
+func TestHostsRedirectActive_OtherHostsEntriesDontCount(t *testing.T) {
+	hosts := "127.0.0.1 localhost\n127.0.0.1 some-other-host.test\n"
+	if HostsRedirectActive([]byte(hosts), "api.anthropic.com") {
+		t.Fatal("a loopback entry for an unrelated host must not count as the redirect being active")
+	}
+}

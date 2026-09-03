@@ -9,6 +9,38 @@ import (
 	"strings"
 )
 
+// HostsRedirectActive reports whether /etc/hosts contains a live loopback
+// redirect for host, as opposed to merely the claude-burst marker block
+// existing. transparent-root.sh's own `remove` deletes the whole block,
+// markers included -- an empty-but-present block only happens by hand -- so
+// checking for the marker string alone (as this used to) reports "installed"
+// for a host that actually resolves straight to the real Anthropic IP. That
+// gap left claude-burst's own status output and admin UI claiming the
+// redirect was active while an hour of real Claude Code traffic had quietly
+// gone direct, no gateway involved at all -- confirmed live 2026-09-03.
+func HostsRedirectActive(hostsContent []byte, host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, line := range strings.Split(string(hostsContent), "\n") {
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = line[:idx]
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		ip := fields[0]
+		if ip != "127.0.0.1" && ip != "::1" {
+			continue
+		}
+		for _, h := range fields[1:] {
+			if strings.ToLower(h) == host {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type ModelPrice struct {
 	InputPerMTok  float64 `json:"input_per_mtok"`
 	OutputPerMTok float64 `json:"output_per_mtok"`
@@ -38,6 +70,18 @@ type RouteConfig struct {
 type MeteredFailoverConfig struct {
 	WindowSeconds int `json:"window_seconds,omitempty"`
 	MinFailures   int `json:"min_failures,omitempty"`
+	// TransportErrorMinFailures is the number of pure transport-level
+	// failures (dial/connect/timeout -- Anthropic could not be reached at
+	// all) needed within WindowSeconds before failing over. Deliberately
+	// separate from, and defaulting lower than, MinFailures: an HTTP error
+	// response means Anthropic answered and could be a transient blip worth
+	// a few tries before routing to a second, paid provider; a transport
+	// failure means the connection couldn't even be established, which is a
+	// much stronger "Anthropic is down" signal -- most noticeable as a
+	// broken session right when Claude Code starts up. Local-connectivity
+	// failures (DNS failure, no route to host) never reach this counter at
+	// all; see isLocalConnectivityFailure.
+	TransportErrorMinFailures int `json:"transport_error_min_failures,omitempty"`
 }
 
 // Intercept modes -- how Claude Code is persuaded to send its traffic here.
@@ -190,6 +234,9 @@ func (c *Config) ResolveRoutes() {
 	}
 	if c.MeteredFailover.MinFailures <= 0 {
 		c.MeteredFailover.MinFailures = 3
+	}
+	if c.MeteredFailover.TransportErrorMinFailures <= 0 {
+		c.MeteredFailover.TransportErrorMinFailures = 1
 	}
 	if c.ResponseHeaderTimeoutSeconds <= 0 {
 		c.ResponseHeaderTimeoutSeconds = 60

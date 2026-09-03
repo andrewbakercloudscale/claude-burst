@@ -228,7 +228,7 @@ func buildDetector(strategy string, mf config.MeteredFailoverConfig) (FailoverDe
 	case "", "subscription-limit":
 		return subscriptionLimitDetector{}, nil
 	case "metered-failures":
-		return newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures), nil
+		return newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures, mf.TransportErrorMinFailures), nil
 	case "subscription-limit+metered-failures":
 		return newCombinedDetector(mf), nil
 	case "none":

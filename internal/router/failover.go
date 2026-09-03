@@ -104,7 +104,7 @@ type combinedDetector struct {
 }
 
 func newCombinedDetector(mf config.MeteredFailoverConfig) *combinedDetector {
-	return &combinedDetector{metered: newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures)}
+	return &combinedDetector{metered: newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures, mf.TransportErrorMinFailures)}
 }
 
 func (d *combinedDetector) OnResponse(status int, h http.Header, body []byte) FailoverDecision {
@@ -137,40 +137,53 @@ func (noFailoverDetector) OnSuccess()                     {}
 
 // meteredFailureDetector is for primary providers with no subscription-style
 // quota signal (e.g. anthropic-api-key), where every request -- on the
-// primary AND the secondary -- is metered and costs money. A single
-// transient 429/5xx should not immediately move traffic to a second paid
-// provider, so this only fires after minFailures failures inside a trailing
-// windowSeconds window, and any success resets the count. Safe for
-// concurrent use.
+// primary AND the secondary -- is metered and costs money.
+//
+// Two separate thresholds, not one, because an HTTP error response and a
+// transport error are different strength signals. A single transient 429/5xx
+// means Anthropic answered and could be a passing blip, so that only fires
+// after minFailures failures inside a trailing windowSeconds window. A
+// transport error -- Anthropic could not even be reached -- is a much
+// stronger signal and defaults to firing on the very first one
+// (transportMinFailures), so a real outage (most noticeable as a broken
+// session right when Claude Code starts up) doesn't sit there retrying
+// against a dead primary before routing anywhere useful. Any success resets
+// both counts. Safe for concurrent use.
 type meteredFailureDetector struct {
-	mu            sync.Mutex
-	windowSeconds int
-	minFailures   int
-	failures      []time.Time
-	now           func() time.Time
+	mu                   sync.Mutex
+	windowSeconds        int
+	minFailures          int
+	transportMinFailures int
+	failures             []time.Time
+	transportFailures    []time.Time
+	now                  func() time.Time
 }
 
-func newMeteredFailureDetector(windowSeconds, minFailures int) *meteredFailureDetector {
+func newMeteredFailureDetector(windowSeconds, minFailures, transportMinFailures int) *meteredFailureDetector {
 	if windowSeconds <= 0 {
 		windowSeconds = 60
 	}
 	if minFailures <= 0 {
 		minFailures = 3
 	}
-	return &meteredFailureDetector{windowSeconds: windowSeconds, minFailures: minFailures, now: time.Now}
+	if transportMinFailures <= 0 {
+		transportMinFailures = 1
+	}
+	return &meteredFailureDetector{windowSeconds: windowSeconds, minFailures: minFailures, transportMinFailures: transportMinFailures, now: time.Now}
 }
 
 func (d *meteredFailureDetector) OnSuccess() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.failures = nil
+	d.transportFailures = nil
 }
 
 func (d *meteredFailureDetector) OnResponse(status int, h http.Header, body []byte) FailoverDecision {
 	if !isMeteredFailureStatus(status) {
 		return FailoverDecision{}
 	}
-	return d.recordFailure(fmt.Sprintf("status %d", status), h)
+	return d.recordFailure(&d.failures, d.minFailures, fmt.Sprintf("status %d", status), h)
 }
 
 func (d *meteredFailureDetector) OnError(err error) FailoverDecision {
@@ -188,7 +201,7 @@ func (d *meteredFailureDetector) OnError(err error) FailoverDecision {
 		// Reproduced live: 2026-08-31.
 		return FailoverDecision{}
 	}
-	return d.recordFailure("transport error: "+err.Error(), nil)
+	return d.recordFailure(&d.transportFailures, d.transportMinFailures, "transport error: "+err.Error(), nil)
 }
 
 // isLocalConnectivityFailure reports whether err specifically indicates this
@@ -210,20 +223,20 @@ func isLocalConnectivityFailure(err error) bool {
 	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
-func (d *meteredFailureDetector) recordFailure(detail string, h http.Header) FailoverDecision {
+func (d *meteredFailureDetector) recordFailure(bucket *[]time.Time, threshold int, detail string, h http.Header) FailoverDecision {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	now := d.now()
 	cutoff := now.Add(-time.Duration(d.windowSeconds) * time.Second)
-	kept := d.failures[:0]
-	for _, t := range d.failures {
+	kept := (*bucket)[:0]
+	for _, t := range *bucket {
 		if t.After(cutoff) {
 			kept = append(kept, t)
 		}
 	}
 	kept = append(kept, now)
-	d.failures = kept
-	if len(d.failures) < d.minFailures {
+	*bucket = kept
+	if len(*bucket) < threshold {
 		return FailoverDecision{}
 	}
 	var reset int64
@@ -234,7 +247,7 @@ func (d *meteredFailureDetector) recordFailure(detail string, h http.Header) Fai
 		Failover: true,
 		ResetAt:  reset,
 		Claim:    "metered_sustained_failures",
-		Reason:   fmt.Sprintf("%d failures within %ds (latest: %s)", len(d.failures), d.windowSeconds, detail),
+		Reason:   fmt.Sprintf("%d failures within %ds (latest: %s)", len(*bucket), d.windowSeconds, detail),
 	}
 }
 
