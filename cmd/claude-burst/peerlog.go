@@ -39,11 +39,17 @@ func (l *peerLoggingListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return conn, err
 	}
-	// Async: lsof takes a few ms, and Accept() must return immediately so
-	// the listener keeps accepting the next connection. The connection
-	// itself is untouched by this -- identify() only inspects the process
-	// table, never conn's data.
-	go l.identify(conn.RemoteAddr().String())
+	// Synchronous, deliberately: an earlier async version (go
+	// l.identify(...)) still lost the race for the fastest-failing
+	// connections in a real burst -- lsof's fork/exec overhead was enough
+	// for the connection to already be torn down by the time it ran, even
+	// though identify() started immediately. Blocking Accept() here until
+	// identify() returns guarantees the connection cannot reach the TLS
+	// handshake (and therefore cannot be closed) until we already know who
+	// opened it. The cost -- serialized acceptance while lsof runs -- is
+	// fine for a diagnostic-only, opt-in, low-traffic capture window; this
+	// is never enabled in normal operation.
+	l.identify(conn.RemoteAddr().String())
 	return conn, nil
 }
 
