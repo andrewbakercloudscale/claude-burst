@@ -190,6 +190,18 @@ log "installed new binary at $TARGET"
 log "restarting gateway..."
 launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
 
+# Best-effort, transparent mode only, and deliberately AFTER the restart:
+# the states suspected of breaking direct connections to the gateway port
+# are the ones left behind by the process that just died. Skipped without
+# comment-free silence if we cannot get root -- see flush_anchor_states.
+if [[ "$TRANSPARENT" -eq 1 ]]; then
+  if flush_anchor_states "claude-burst"; then
+    log "flushed the pf anchor's stale states"
+  else
+    log "skipped the pf state flush (needs root) -- harmless; the health check does not use the direct port. To test it: sudo $ROOT/scripts/transparent-root.sh flush-port-states"
+  fi
+fi
+
 if wait_healthy; then
   log "new gateway is healthy"
   if [[ "$DISABLED_FOR_SWAP" -eq 1 ]]; then

@@ -57,6 +57,43 @@ gateway_healthy() {
   return 1
 }
 
+# flush_anchor_states: drop the pf states belonging to one anchor, if we can
+# do it without prompting. Returns 0 if the flush ran, 1 if it was skipped.
+#
+# Why: direct connections to the gateway port are intermittently dropped
+# after a restart while the gateway is healthy, and the anchor's state table
+# carries entries that should not exist for a rule that only ever redirects
+# :443 -> :7777 -- including one with the gateway port on BOTH sides. The
+# working theory is that a new direct SYN matches a leftover state and is
+# reverse-translated back to :443, where nothing listens.
+#
+# THE THEORY IS NOT CONFIRMED. Run `sudo transparent-root.sh flush-port-states`
+# to test it properly; this call is a best-effort cleanup, not a fix, and
+# nothing in the deploy depends on it -- gateway_healthy() stopped relying on
+# the direct probe precisely so it would not have to.
+#
+# Never prompts and never fails a caller: pfctl needs root, deploy.sh
+# deliberately runs unprivileged (transparent-root.sh exists for exactly that
+# split), and a password prompt between installing a new binary and
+# restarting it is the last thing a deploy should stop on. `sudo -n` either
+# works because credentials are already cached or fails instantly.
+#
+# Scoped to the one anchor on purpose. Machine-wide `pfctl -F states` drops
+# every tracked connection on the host.
+flush_anchor_states() {
+  local anchor="${1:-claude-burst}"
+  command -v pfctl >/dev/null 2>&1 || return 1
+  if [ "$(id -u)" = "0" ]; then
+    pfctl -a "$anchor" -F states >/dev/null 2>&1
+    return 0
+  fi
+  if sudo -n true >/dev/null 2>&1; then
+    sudo -n pfctl -a "$anchor" -F states >/dev/null 2>&1
+    return 0
+  fi
+  return 1
+}
+
 dump_health_diagnostics() {
   local label="${1:-health check}"
   local out="$HOME/.config/claude-burst/health-check-failures.log"
