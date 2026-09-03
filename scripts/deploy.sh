@@ -71,6 +71,10 @@ TARGET="$INSTALL_DIR/claude-burst"
 BACKUP_DIR="${CLAUDE_BURST_BACKUP_DIR:-$HOME/.config/claude-burst/backups}"
 TS="$(date +%Y%m%d-%H%M%S)"
 HEALTH_TIMEOUT=15
+# Declared up here, not just at its real assignment below step 2, because
+# wait_healthy reads it and `set -u` turns an unbound read into an abort --
+# which under this script means aborting mid-swap, the one place it must not.
+TRANSPARENT=0
 
 log() { echo "[deploy] $*"; }
 fail() { echo "[deploy] FAILED: $*" >&2; exit 1; }
@@ -78,19 +82,14 @@ fail() { echo "[deploy] FAILED: $*" >&2; exit 1; }
 # shellcheck source=./health-diagnostics.sh
 source "$ROOT/scripts/health-diagnostics.sh"
 
-# The gateway serves HTTPS-only in transparent mode and HTTP-only in
-# base-url mode (cmd/claude-burst/main.go picks the scheme from
-# cfg.Intercept.Transparent() at startup). A plain-http check against an
-# https-only listener never succeeds regardless of build health -- that
-# false negative is exactly what turned a healthy transparent-mode deploy
-# into a false "rollback" here on 2026-08-31. Try both schemes so this
-# works unmodified in either mode; -k is fine, this only proves the process
-# is up and answering, not that its cert is trusted.
+# Liveness polling wraps the shared gateway_healthy() from
+# health-diagnostics.sh -- see its comment for why probing 127.0.0.1:7777
+# alone rolled back a healthy build on 2026-09-03. Kept as a loop here because
+# a just-restarted gateway legitimately needs a moment to bind.
 wait_healthy() {
   local waited=0
   while (( waited < HEALTH_TIMEOUT )); do
-    if curl -sf -m 3 -k "https://127.0.0.1:7777/healthz" >/dev/null 2>&1 \
-      || curl -sf -m 3 "http://127.0.0.1:7777/healthz" >/dev/null 2>&1; then
+    if gateway_healthy; then
       return 0
     fi
     sleep 1
@@ -151,7 +150,6 @@ fi
 # rather than re-parsing config.json here in bash: it's the single place
 # that logic already lives, and a second implementation is exactly the kind
 # of drift this repo has been bitten by before.
-TRANSPARENT=0
 if [[ -x "$TARGET" ]]; then
   # Captured into a variable rather than piped straight into grep: under
   # `pipefail` (set above), a pipeline's exit status is its LAST non-zero

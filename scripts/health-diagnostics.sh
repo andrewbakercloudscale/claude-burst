@@ -19,6 +19,44 @@
 #
 # Usage: dump_health_diagnostics "<label describing what just failed>"
 
+# gateway_healthy: the ONE liveness check, shared by deploy.sh and watchdog.sh.
+#
+# Both used to probe only 127.0.0.1:7777 directly, and both were wrong in the
+# same way. Direct connections to the gateway port intermittently have their
+# SYNs dropped while the gateway is perfectly healthy -- measured 2026-09-03
+# with the listen queue empty (netstat -L: 0/0/4096) and the pf-redirected
+# path answering the SAME socket in 28ms at the same instant. See
+# https://github.com/andrewbakercloudscale/claude-burst/issues/1; the cause is
+# still unconfirmed, but the consequence was not theoretical: deploy.sh rolled
+# back a healthy build, and watchdog.sh will auto-run rollback.sh -- unattended
+# -- on the same false negative.
+#
+# So: direct first (fast, and the only option in base-url mode or before the
+# redirect is installed), then the real traffic path as a fallback.
+#
+# The fallback is mode-agnostic and cannot produce a false POSITIVE, which is
+# why it greps the body instead of trusting a status code. In transparent mode
+# the hostname resolves to 127.0.0.1 and only our gateway can answer with the
+# "overflow" field. In base-url mode there is no /etc/hosts entry, so the
+# request reaches the real Anthropic -- whose /healthz does not return our JSON
+# and therefore does not match. A gateway that is genuinely down fails both.
+gateway_healthz_body() {
+  local host="api.anthropic.com"
+  if command -v python3 >/dev/null 2>&1 && [ -f "$HOME/.config/claude-burst/config.json" ]; then
+    host="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('intercept',{}).get('host','api.anthropic.com'))" 2>/dev/null || echo "api.anthropic.com")"
+  fi
+  curl -sk -m 3 "https://$host/healthz" 2>/dev/null
+}
+
+gateway_healthy() {
+  curl -skf -m 3 "https://127.0.0.1:7777/healthz" >/dev/null 2>&1 && return 0
+  curl -sf  -m 3 "http://127.0.0.1:7777/healthz"  >/dev/null 2>&1 && return 0
+  case "$(gateway_healthz_body)" in
+    *'"overflow"'*) return 0 ;;
+  esac
+  return 1
+}
+
 dump_health_diagnostics() {
   local label="${1:-health check}"
   local out="$HOME/.config/claude-burst/health-check-failures.log"
