@@ -287,6 +287,22 @@ do_reload_anchor() {
 # is exactly how the first run of reload-anchor "disproved" its own fix.
 # Retry, and report how many attempts it actually took, so the result is a
 # measurement rather than a coin toss.
+# Counts successes over n probes. An intermittent fault needs a rate, not a
+# yes/no: a single probe against a port measured at ~10% reliability says
+# nothing, and "first success within a budget" -- which probe_direct_retry
+# reports -- says almost as little when the budget spans several attempts.
+probe_rate() {
+  local gport="$1" n="${2:-10}" i=0 ok=0
+  while (( i < n )); do
+    i=$((i + 1))
+    if curl -skf -m 2 "https://127.0.0.1:$gport/healthz" >/dev/null 2>&1; then
+      ok=$((ok + 1))
+    fi
+    sleep 1
+  done
+  echo "$ok"
+}
+
 probe_direct_retry() {
   local gport="$1" budget="${2:-20}" waited=0 attempts=0
   while (( waited < budget )); do
@@ -322,23 +338,51 @@ gateway_body_has_overflow() {
 do_flush_port_states() {
   need_root flush-port-states
   local gport; gport="$(state_get gateway_port)"; : "${gport:=$GATEWAY_PORT_DEFAULT}"
-  echo "before: $(pfctl -s state 2>/dev/null | grep -c -- "$gport") states mention $gport"
-  echo "== probing before flush =="
-  probe_direct_retry "$gport" 6 || true
+  local n=10
+
+  echo "== before flush =="
+  echo "  $(pfctl -s state 2>/dev/null | grep -c -- "$gport") states mention $gport"
+  local before; before=$(probe_rate "$gport" "$n")
+  echo "  direct probes: $before/$n succeeded"
+
+  # The symptom is intermittent, so a run that never reproduces it cannot
+  # say anything about the cure -- and must not pretend to. The first
+  # version of this check looked only at the AFTER probe, so a run where
+  # the port was already working printed "direct connects recover after
+  # flushing" having tested nothing. Reproduce first, or report nothing.
+  if (( before >= n - 1 )); then
+    echo
+    echo "INCONCLUSIVE: the port is working right now ($before/$n), so there is"
+    echo "              nothing for a flush to fix. Re-run when it is actually"
+    echo "              failing -- typically just after a gateway restart:"
+    echo "                launchctl kickstart -k gui/\$UID/ninja.andrewbaker.claude-burst"
+    echo "              then this command immediately afterwards."
+    return 0
+  fi
+
   echo "== flushing anchor states =="
   pfctl -a "$ANCHOR_NAME" -F states 2>&1 | quiet_pf
-  echo "after:  $(pfctl -s state 2>/dev/null | grep -c -- "$gport") states mention $gport"
-  echo "== probing after flush =="
-  if probe_direct_retry "$gport" 20; then
-    echo
-    echo "RESULT: direct connects recover after flushing the anchor's states."
+  echo "  $(pfctl -s state 2>/dev/null | grep -c -- "$gport") states now mention $gport"
+
+  echo "== after flush =="
+  local after; after=$(probe_rate "$gport" "$n")
+  echo "  direct probes: $after/$n succeeded"
+
+  echo
+  if (( after >= n - 1 && before < n / 2 )); then
+    echo "SUPPORTS the hypothesis: $before/$n before, $after/$n after."
+    echo "  Stale anchor states are implicated. deploy.sh already flushes them"
+    echo "  after a restart (best-effort, needs cached sudo)."
+  elif (( after > before )); then
+    echo "WEAK: improved from $before/$n to $after/$n, but not to a clean pass."
+    echo "  Could be the flush, could be the intermittency. Repeat before"
+    echo "  concluding anything."
   else
-    echo
-    echo "RESULT: still failing, so the anchor's own states are not the cause."
-    echo "        Next: the entries may live in the MAIN table rather than the"
-    echo "        anchor. Machine-wide 'pfctl -F states' would prove it, but it"
-    echo "        drops every tracked connection on this Mac -- do that only"
-    echo "        deliberately, not from a script."
+    echo "DOES NOT SUPPORT: $before/$n before, $after/$n after."
+    echo "  The anchor's own states are not the cause. The entries may live in"
+    echo "  the MAIN table instead; machine-wide 'pfctl -F states' would prove"
+    echo "  it, but it drops every tracked connection on this Mac -- do that"
+    echo "  deliberately, not from a script."
   fi
 }
 
