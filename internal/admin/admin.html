@@ -152,7 +152,21 @@
   .hdrs .v { word-break: break-all; }
   .hl { color: var(--accent); font-weight: 600; }
 
+  /* Applied to the Install section only while Claude Burst is not in the
+     traffic path. The panel is always present (it is also how you switch
+     modes), so without this it looks identical whether everything is fine
+     or nothing is reaching the gateway. */
+  section.alert { border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+  section.alert > h2 { background: var(--bad-bg); color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 25%, transparent); }
+  section.alert > h2 .hint { color: var(--bad); opacity: .8; }
+
   .note { padding: 11px 13px; border-radius: 8px; font-size: 12.5px; margin-top: 13px; white-space: pre-wrap; }
+  /* A note's 13px top margin is for the control it hangs off. These two sit
+     in the page flow instead, directly above the next block, so they need
+     the spacing on the other side as well -- without it the banner's edge
+     ends up flush against the cards below it. */
+  #inuse .note { margin-top: 0; margin-bottom: 16px; }
+  #bailout .note { margin-bottom: 18px; }
   .note.ok  { background: var(--ok-bg);   color: var(--ok); }
   .note.warn{ background: var(--warn-bg); color: var(--warn); }
   .note.bad { background: var(--bad-bg);  color: var(--bad); }
@@ -174,7 +188,26 @@
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
 
-  <div id="inuse"></div>
+  <section id="installSection">
+    <h2>
+      <span id="installTitle">Install</span>
+      <span class="hint" id="installHint">opens a Terminal window and runs the install there, so you can watch every command</span>
+    </h2>
+    <div class="body">
+      <div id="inuse"></div>
+      <div class="row">
+        <button class="primary" id="installBaseUrl">⤓ Install — base-url</button>
+        <button class="primary" id="installTransparent">⤓ Install — transparent proxy</button>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        <b>base-url</b> writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password, nothing machine-wide — but Claude Code turns off Remote Control while that variable names a non-Anthropic host.<br>
+        <b>transparent proxy</b> keeps Remote Control by redirecting at the DNS layer instead. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac.<br>
+        Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
+      </div>
+      <div id="installNote"></div>
+    </div>
+  </section>
+
   <div class="grid" id="cards"></div>
   <div id="bailout"></div>
 
@@ -205,22 +238,6 @@
         <button class="primary" id="save">✓ Save</button>
       </div>
       <div id="cfgNote"></div>
-    </div>
-  </section>
-
-  <section>
-    <h2>Install <span class="hint">opens a Terminal window and runs the install there, so you can watch every command</span></h2>
-    <div class="body">
-      <div class="row">
-        <button class="primary" id="installBaseUrl">⤓ Install — base-url</button>
-        <button class="primary" id="installTransparent">⤓ Install — transparent proxy</button>
-      </div>
-      <div class="hint" style="margin-top:8px">
-        <b>base-url</b> writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password, nothing machine-wide — but Claude Code turns off Remote Control while that variable names a non-Anthropic host.<br>
-        <b>transparent proxy</b> keeps Remote Control by redirecting at the DNS layer instead. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac.<br>
-        Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
-      </div>
-      <div id="installNote"></div>
     </div>
   </section>
 
@@ -330,13 +347,24 @@ function renderCards(s) {
       ? `<span class="badge warn"><span class="dot"></span>OVERFLOW \u2192 SECONDARY</span>`
       : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
 
+  // The verdict and the fix are one panel at the top of the page. They
+  // started as two blocks with a screenful of cards between them, which
+  // meant the message had to say "use Install below" and you had to go
+  // find it -- the diagnosis pointing at a remedy is weaker than the
+  // diagnosis being printed on the remedy.
+  const installSection = $("installSection");
   if (s.intercept.active) {
+    installSection.classList.remove("alert");
+    $("installTitle").textContent = "Install";
+    $("installHint").textContent = "already in use \u2014 these re-run the install, or switch between modes";
     $("inuse").innerHTML = "";
   } else {
+    installSection.classList.add("alert");
+    $("installTitle").textContent = "Claude Burst is NOT in use";
+    $("installHint").textContent = "the buttons below put it in the path";
     note($("inuse"), "bad",
-      "Claude Burst is NOT in use \u2014 " + s.intercept.inactive_reason +
-      "\n\nEverything below still describes the gateway, but Claude Code is not sending it anything. " +
-      "Use Install below to put it in the path.");
+      s.intercept.inactive_reason +
+      "\n\nEverything further down this page still describes the gateway, but Claude Code is not sending it anything.");
   }
   $("ver").textContent = "v" + s.version + " · " + s.gateway;
 
@@ -457,6 +485,8 @@ async function refresh() {
       // even know which mode to judge. Clear it rather than leave the
       // previous render's verdict standing over unrelated new text.
       $("inuse").innerHTML = "";
+      $("installSection").classList.remove("alert");
+      $("installTitle").textContent = "Install";
       note($("bailout"), "bad",
         `config.json failed to load, so routing/usage state can't be shown: ${s.config_error}\n\nFix ~/.config/claude-burst/config.json, then click Refresh. Recent requests below still reflect real traffic.`);
       renderRequests(reqs);
