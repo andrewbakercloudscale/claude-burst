@@ -174,6 +174,7 @@
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
 
+  <div id="inuse"></div>
   <div class="grid" id="cards"></div>
   <div id="bailout"></div>
 
@@ -204,6 +205,22 @@
         <button class="primary" id="save">✓ Save</button>
       </div>
       <div id="cfgNote"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Install <span class="hint">opens a Terminal window and runs the install there, so you can watch every command</span></h2>
+    <div class="body">
+      <div class="row">
+        <button class="primary" id="installBaseUrl">⤓ Install — base-url</button>
+        <button class="primary" id="installTransparent">⤓ Install — transparent proxy</button>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        <b>base-url</b> writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password, nothing machine-wide — but Claude Code turns off Remote Control while that variable names a non-Anthropic host.<br>
+        <b>transparent proxy</b> keeps Remote Control by redirecting at the DNS layer instead. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac.<br>
+        Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
+      </div>
+      <div id="installNote"></div>
     </div>
   </section>
 
@@ -303,9 +320,24 @@ function renderCards(s) {
       <div class="sub">${num(s.totals.Requests)} requests · ${num(s.totals.PrimaryRequests)} primary · ${num(s.totals.SecondaryRequests)} secondary</div>
     </div>`;
 
-  $("routeBadge").innerHTML = s.overflow
-    ? `<span class="badge warn"><span class="dot"></span>OVERFLOW → SECONDARY</span>`
-    : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
+  // Which provider is selected only matters if traffic reaches the gateway
+  // at all. When it does not, that is the headline -- a green PRIMARY badge
+  // over a gateway nothing is talking to is the exact thing that made this
+  // dashboard look healthy while every request went straight to Anthropic.
+  $("routeBadge").innerHTML = !s.intercept.active
+    ? `<span class="badge bad"><span class="dot"></span>NOT IN USE</span>`
+    : s.overflow
+      ? `<span class="badge warn"><span class="dot"></span>OVERFLOW \u2192 SECONDARY</span>`
+      : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
+
+  if (s.intercept.active) {
+    $("inuse").innerHTML = "";
+  } else {
+    note($("inuse"), "bad",
+      "Claude Burst is NOT in use \u2014 " + s.intercept.inactive_reason +
+      "\n\nEverything below still describes the gateway, but Claude Code is not sending it anything. " +
+      "Use Install below to put it in the path.");
+  }
   $("ver").textContent = "v" + s.version + " · " + s.gateway;
 
   // The machine-wide redirect (pf + /etc/hosts) needs root to remove and is
@@ -420,6 +452,11 @@ async function refresh() {
     // guidance.
     if (s.config_error) {
       $("cards").innerHTML = "";
+      // The in-use banner is a claim about settings.json and /etc/hosts that
+      // this response cannot support: with config.json unreadable we don't
+      // even know which mode to judge. Clear it rather than leave the
+      // previous render's verdict standing over unrelated new text.
+      $("inuse").innerHTML = "";
       note($("bailout"), "bad",
         `config.json failed to load, so routing/usage state can't be shown: ${s.config_error}\n\nFix ~/.config/claude-burst/config.json, then click Refresh. Recent requests below still reflect real traffic.`);
       renderRequests(reqs);
@@ -544,6 +581,29 @@ $("testConn").onclick = async () => {
 };
 
 $("viewLog").onclick = () => window.open("/api/log", "_blank");
+
+// The install itself runs in a Terminal window, not here -- see
+// internal/admin/install.go for why. This click only generates the script
+// and asks macOS to open it; everything the user needs to see (and the sudo
+// prompt, for transparent mode) happens over there.
+async function runInstall(mode, btn) {
+  const machineWide = mode === "transparent";
+  const warning = machineWide
+    ? "Install transparent proxy mode?\n\nA Terminal window will open and ask for your password. It changes /etc/hosts, loads a pf rule, and trusts the local CA system-wide — this affects EVERY process on this Mac, not just Claude Code.\n\nUndo any time with: sudo transparent-root.sh remove"
+    : "Install base-url mode?\n\nA Terminal window will open. It backs up your settings, then points Claude Code at this gateway via ANTHROPIC_BASE_URL. No password needed.\n\nNote: Claude Code disables Remote Control while this is on.";
+  if (!confirm(warning)) return;
+  btn.disabled = true;
+  try {
+    const r = await post("/api/install", {mode});
+    note($("installNote"), "ok", r.detail + "\n\nScript: " + r.script);
+  } catch (e) {
+    note($("installNote"), "bad", e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("installBaseUrl").onclick = () => runInstall("base-url", $("installBaseUrl"));
+$("installTransparent").onclick = () => runInstall("transparent", $("installTransparent"));
 
 $("revert").onclick = async () => {
   if (!confirm("Revert to normal Claude?\n\nRemoves ANTHROPIC_BASE_URL from settings.json and the local CA from the trust bundle. Nothing else in settings.json is touched.\n\nYou will need to restart Claude Code.")) return;
