@@ -69,6 +69,15 @@ PFCTL="${CLAUDE_BURST_PFCTL:-pfctl}"
 # it fix itself?" should be answerable with `tail`, not with sudo.
 LOG="${CLAUDE_BURST_PF_HEAL_LOG:-/var/log/claude-burst-pf.log}"
 FAIL_COUNT_FILE="$STATE_DIR/pf-heal.failures"
+# Proof of life for readers who are not root. `launchctl print system/<label>`
+# is denied to an unprivileged process (exit 113 -- verified), so the gateway
+# and the dashboard cannot ask launchd whether this daemon is running, and the
+# LOG cannot answer either: a healthy cycle deliberately writes nothing, so an
+# untouched log is indistinguishable from a daemon that was never loaded.
+# Without this file the dashboard could only report that a plist exists, which
+# is precisely the read-the-configuration mistake that let the original outage
+# run for hours. World-readable, one timestamp, rewritten every cycle.
+HEARTBEAT_FILE="$STATE_DIR/pf-heal.heartbeat"
 LOG_MAX_BYTES=1048576
 
 # Consecutive failed repair cycles before giving up and removing the redirect.
@@ -131,11 +140,21 @@ set_failures() {
 }
 clear_failures() { rm -f "$FAIL_COUNT_FILE" 2>/dev/null || true; }
 
+# Written FIRST in every cycle, before any decision. A heartbeat that only
+# appeared on the paths that did something would go stale exactly when the
+# daemon is working perfectly, and read as dead.
+beat() {
+  mkdir -p "$STATE_DIR" 2>/dev/null && chmod 755 "$STATE_DIR" 2>/dev/null
+  date +%s > "$HEARTBEAT_FILE" 2>/dev/null || return 0
+  chmod 644 "$HEARTBEAT_FILE" 2>/dev/null || true
+}
+
 # --- one cycle ---------------------------------------------------------------
 # The whole cycle is one function so --self-test can run it repeatedly against
 # fakes. It returns the status the daemon exits with.
 cycle() {
 rotate_log
+beat
 
 # --- 1. Is transparent mode even supposed to be installed? -------------------
 # The hosts block is the authority, not the state file: `remove` deletes both,
@@ -236,6 +255,7 @@ self_test() {
   HOSTS_FILE="$tmp/hosts"
   STATE_DIR="$tmp/state"
   FAIL_COUNT_FILE="$STATE_DIR/pf-heal.failures"
+  HEARTBEAT_FILE="$STATE_DIR/pf-heal.heartbeat"
   LOG="$tmp/pf.log"
   PFCTL="$tmp/pfctl"
   ROOT_HELPER="$tmp/helper.sh"
@@ -288,6 +308,17 @@ STUB
   }
 
   echo "== pf-heal self-test =="
+
+  # 0. The heartbeat must be written on EVERY cycle, including the ones that
+  #    decide to do nothing -- otherwise it goes stale exactly when the daemon
+  #    is healthiest, and the dashboard reports a working guard as dead.
+  rm -f "$HOSTS_FILE" "$tmp/rdr" "$HEARTBEAT_FILE"
+  cycle >/dev/null 2>&1
+  if [[ -s "$HEARTBEAT_FILE" ]]; then
+    echo "  ok   heartbeat written on a no-op cycle"
+  else
+    echo "  FAIL: no heartbeat after a cycle that did nothing"; fails=$((fails + 1))
+  fi
 
   # 1. Nothing installed: never touch anything. This is the branch that keeps
   #    a rollback rolled back.

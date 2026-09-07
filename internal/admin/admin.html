@@ -229,6 +229,26 @@
   <div class="grid" id="cards"></div>
   <div id="bailout"></div>
 
+  <!-- Transparent mode only. The pf rdr rule is the one piece of this that
+       other software on the Mac can take away, and on 2026-09-07 it did --
+       for hours, with every indicator on this page green. Its guard, and
+       what that guard has caught, belong on the page rather than in a
+       script you have to already know exists. -->
+  <section id="pfHealSection" hidden>
+    <h2>pf redirect guard <span class="hint">root daemon; reloads the rdr rule if something drops it</span></h2>
+    <div class="body">
+      <div id="pfHealStatus"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="armPfHeal">⤓ Arm the guard</button>
+        <button id="viewPfLog">▤ View guard log</button>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        Runs as root every 2 minutes. It does nothing while the rule is loaded, and nothing at all when no <code>/etc/hosts</code> redirect is installed — so a rollback stays rolled back. If the rule goes missing it reloads it; if four repairs in a row fail it removes the redirect entirely, because a Mac that reaches Anthropic directly beats one that cannot reach it at all.
+      </div>
+      <div id="pfHealNote"></div>
+    </div>
+  </section>
+
   <section>
     <h2>Configuration <span class="hint">saved to config.json; the gateway reads it at startup</span></h2>
     <div class="body">
@@ -431,6 +451,7 @@ function renderCards(s) {
       s.intercept.inactive_reason +
       "\n\nEverything further down this page still describes the gateway, but Claude Code is not sending it anything.");
   }
+  renderPFHeal(s);
   $("ver").textContent = "v" + s.version + " · " + s.gateway;
 
   // The machine-wide redirect (pf + /etc/hosts) needs root to remove and is
@@ -546,6 +567,51 @@ function renderLiveAlert(s, verdict) {
   box.appendChild(btn);
 }
 
+// renderPFHeal leads with liveness, not installation. "A plist exists" is the
+// same kind of claim as "the hosts entry is present" -- configuration, not
+// behaviour -- and believing that kind of claim is what let the original
+// outage run. The daemon writes a heartbeat every cycle; that is what this
+// reads, and it is also all an unprivileged process CAN read, since launchd
+// refuses to answer us about system daemons at all.
+function renderPFHeal(s) {
+  const sec = $("pfHealSection");
+  const ph = s.intercept.pf_heal;
+  if (s.intercept.mode !== "transparent" || !ph) { sec.hidden = true; return; }
+  sec.hidden = false;
+
+  const age = ph.last_check_seconds;
+  const ago = age < 0 ? "" : age < 90 ? `${age}s ago`
+            : age < 5400 ? `${Math.round(age / 60)} min ago`
+            : `${Math.round(age / 3600)} h ago`;
+
+  let cls, headline;
+  if (ph.running) {
+    cls = "ok"; headline = `ARMED — last checked ${ago}`;
+  } else if (ph.installed) {
+    cls = "bad";
+    headline = "INSTALLED BUT NOT RUNNING" + (ago ? ` — last checked ${ago}` : " — it has never reported in");
+  } else {
+    // Only an outright problem while the redirect is actually installed;
+    // otherwise there is no rule to guard yet and saying so in red would
+    // train you to ignore this row.
+    cls = s.intercept.hosts_entry ? "bad" : "warn";
+    headline = "NOT ARMED — the pf rdr rule has no guard";
+  }
+
+  sec.classList.toggle("alert", cls === "bad");
+  let body = headline;
+  if (ph.events && ph.events.length) {
+    body += "\n\nWhat it has caught:\n" + ph.events.map(e => "  " + e).join("\n");
+  } else if (ph.running) {
+    body += "\n\nNothing to report — the rdr rule has not been lost since this was armed.";
+  }
+  if (!ph.running && ph.install_cmd) {
+    body += "\n\nArm it with the button below, or from a terminal:\n" + ph.install_cmd;
+  }
+  note($("pfHealStatus"), cls, body);
+  $("armPfHeal").textContent = ph.installed ? "⤓ Reinstall the guard" : "⤓ Arm the guard";
+}
+
 function renderRequests(rows) {
   if (!rows.length) { $("requests").innerHTML = `<div class="empty">No requests yet.</div>`; return; }
   $("requests").innerHTML = `<table><thead><tr>
@@ -652,6 +718,7 @@ async function refresh() {
       // verdict still on screen is about a configuration we can no longer
       // describe.
       $("liveAlert").innerHTML = "";
+      $("pfHealSection").hidden = true;
       liveVerdict = undefined;
       lastState = null;
       // Same reasoning for the panel: it is hidden on the strength of a
@@ -800,6 +867,21 @@ $("testConn").onclick = async () => {
 };
 
 $("viewLog").onclick = () => window.open("/api/log", "_blank");
+$("viewPfLog").onclick = () => window.open("/api/pf-heal-log", "_blank");
+
+// Same reasoning as Install and Revert: the privileged step happens in a
+// Terminal window with the user watching, not silently from an
+// unauthenticated loopback page.
+$("armPfHeal").onclick = async () => {
+  if (!confirm("Arm the pf redirect guard?\n\nA Terminal window will open and ask for your password. It installs a root LaunchDaemon that checks the pf rdr rule every 2 minutes, reloads it if something has dropped it, and removes the redirect entirely if it cannot repair it.\n\nRemove it later with: sudo scripts/install-pf-heal.sh uninstall")) return;
+  $("armPfHeal").disabled = true;
+  try {
+    const r = await post("/api/pf-heal-install");
+    note($("pfHealNote"), "ok", r.detail + (r.script ? "\n\nScript: " + r.script : ""));
+  } catch (e) {
+    note($("pfHealNote"), "bad", e.message);
+  } finally { $("armPfHeal").disabled = false; }
+};
 
 // The install itself runs in a Terminal window, not here -- see
 // internal/admin/install.go for why. This click only generates the script
