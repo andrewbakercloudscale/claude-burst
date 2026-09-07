@@ -182,9 +182,16 @@
   <header>
     <h1>Claude Burst</h1>
     <span class="ver" id="ver"></span>
+    <span id="activeBadge"></span>
     <span id="routeBadge"></span>
     <span class="spacer"></span>
     <span class="updated" id="updated"></span>
+    <!-- Shown only while Claude Burst is actually in the traffic path, where
+         the Install panel below is hidden: with nothing to fix, a permanent
+         Install panel above every card reads as an unfinished setup. It is
+         still the only way to switch modes or re-run an install, so this
+         reveals it on demand rather than the panel going away. -->
+    <button id="installRevealBtn" style="margin-left:10px" hidden>⤓ Reinstall</button>
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
 
@@ -287,6 +294,17 @@ const KEY_HEADERS = /^(anthropic-ratelimit|retry-after|x-should-retry)/;
 let dirty = false;
 ["secModel","strategy","mode"].forEach(id => $(id).addEventListener("input", () => dirty = true));
 
+// Sticky across refreshes: an install writes its result into the panel, and
+// every install path calls refresh(), so without this the panel -- and the
+// message it just wrote -- would collapse the moment you used it.
+let installRevealed = false;
+$("installRevealBtn").onclick = () => {
+  installRevealed = true;
+  $("installSection").hidden = false;
+  $("installRevealBtn").hidden = true;
+  $("installSection").scrollIntoView({behavior: "smooth", block: "nearest"});
+};
+
 function note(el, cls, msg) { el.innerHTML = `<div class="note ${cls}">${esc(msg)}</div>`; }
 
 // A bare wall-clock time is only unambiguous for today. Both tables here
@@ -359,12 +377,19 @@ function renderCards(s) {
       <div class="sub">${num(s.totals.Requests)} requests · ${num(s.totals.PrimaryRequests)} primary · ${num(s.totals.SecondaryRequests)} secondary</div>
     </div>`;
 
-  // Which provider is selected only matters if traffic reaches the gateway
-  // at all. When it does not, that is the headline -- a green PRIMARY badge
-  // over a gateway nothing is talking to is the exact thing that made this
-  // dashboard look healthy while every request went straight to Anthropic.
+  // Two separate facts, so two separate bubbles: whether Claude Code's traffic
+  // reaches this gateway at all (and by which mechanism -- the two modes are
+  // installed and broken in completely different ways, so "active" alone is
+  // not actionable), and which provider it is being routed to once it does.
+  $("activeBadge").innerHTML = s.intercept.active
+    ? `<span class="badge ok"><span class="dot"></span>ACTIVE \u00b7 ${modeTransparent ? "TRANSPARENT PROXY" : "BASE-URL"}</span>`
+    : `<span class="badge bad"><span class="dot"></span>NOT ACTIVE \u00b7 ${modeTransparent ? "TRANSPARENT PROXY" : "BASE-URL"}</span>`;
+  // Routing is only a meaningful claim about live traffic when there is live
+  // traffic -- a green PRIMARY badge over a gateway nothing is talking to is
+  // the exact thing that made this dashboard look healthy while every request
+  // went straight to Anthropic.
   $("routeBadge").innerHTML = !s.intercept.active
-    ? `<span class="badge bad"><span class="dot"></span>NOT IN USE</span>`
+    ? ""
     : s.overflow
       ? `<span class="badge warn"><span class="dot"></span>OVERFLOW \u2192 SECONDARY</span>`
       : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
@@ -380,7 +405,18 @@ function renderCards(s) {
     $("installTitle").textContent = "Install";
     $("installHint").textContent = "already in use \u2014 these re-run the install, or switch between modes";
     $("inuse").innerHTML = "";
+    // Nothing to install, so the panel collapses behind its reveal link --
+    // unless this render is the one right after a click on that link, or on
+    // an install button, in which case the note it just wrote would vanish
+    // with it.
+    if (!installRevealed) {
+      installSection.hidden = true;
+      $("installRevealBtn").hidden = false;
+    }
   } else {
+    installSection.hidden = false;
+    $("installRevealBtn").hidden = true;
+    installRevealed = false;
     installSection.classList.add("alert");
     $("installTitle").textContent = "Claude Burst is NOT in use";
     $("installHint").textContent = "the buttons below put it in the path";
@@ -507,6 +543,13 @@ async function refresh() {
       // even know which mode to judge. Clear it rather than leave the
       // previous render's verdict standing over unrelated new text.
       $("inuse").innerHTML = "";
+      $("activeBadge").innerHTML = "";
+      $("routeBadge").innerHTML = "";
+      // Same reasoning for the panel: it is hidden on the strength of a
+      // verdict this response cannot give, so show it rather than hide the
+      // one control that might be the way out.
+      $("installSection").hidden = false;
+      $("installRevealBtn").hidden = true;
       $("installSection").classList.remove("alert");
       $("installTitle").textContent = "Install";
       note($("bailout"), "bad",
@@ -540,6 +583,11 @@ async function refresh() {
     }
     $("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
+    // The badges are a claim about this instant, and nothing answered, so
+    // leaving a green ACTIVE bubble up would be the dashboard asserting
+    // health from a response it never got.
+    $("activeBadge").innerHTML = "";
+    $("routeBadge").innerHTML = "";
     $("updated").textContent = "gateway unreachable — " + e.message;
   }
 }
