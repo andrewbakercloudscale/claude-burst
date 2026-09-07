@@ -76,6 +76,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/revert", s.mutating(s.handleRevert))
 	mux.HandleFunc("/api/restart", s.mutating(s.handleRestart))
 	mux.HandleFunc("/api/install", s.mutating(s.handleInstall))
+	mux.HandleFunc("/api/pf-heal-log", s.readOnly(s.handlePFHealLog))
+	mux.HandleFunc("/api/pf-heal-install", s.mutating(s.handlePFHealInstall))
 	return s.guard(mux)
 }
 
@@ -196,6 +198,10 @@ type interceptInfo struct {
 	// InactiveReason names the specific missing piece, because "not active"
 	// with three possible causes is a prompt to go guessing.
 	InactiveReason string `json:"inactive_reason,omitempty"`
+	// PFHeal reports the root daemon that guards the pf rdr rule. Only
+	// meaningful in transparent mode, and only populated there -- base-url
+	// mode has no pf rule to lose.
+	PFHeal *pfHealInfo `json:"pf_heal,omitempty"`
 	// BailoutCmd is the ready-to-run command that undoes the machine-wide
 	// redirect (pf + /etc/hosts). Only meaningful in transparent mode, and
 	// only ever needs root -- the dashboard can't run it itself, but it can
@@ -243,6 +249,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			ii.HostsEntry = config.HostsRedirectActive(h, cfg.Intercept.Host)
 		}
 		ii.BailoutCmd = "sudo " + s.rootHelper + " remove"
+		dir, _ := s.scriptsDir()
+		ph := pfHealStatus(dir)
+		ii.PFHeal = &ph
 	}
 	// Claude Code disables Remote Control whenever ANTHROPIC_BASE_URL names a
 	// host other than api.anthropic.com; an unset value is the default.

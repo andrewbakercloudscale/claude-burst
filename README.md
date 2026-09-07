@@ -380,7 +380,9 @@ Other pf-owning software (VPN and endpoint-security clients, in this case Zscale
 CrowdStrike) reloads pf on network change and on wake; a `load anchor` line does not
 guarantee the rule stays loaded.
 
-So arm the healer. `install-proxy.sh` does it for you; on an existing install:
+So arm the healer. The dashboard's **pf redirect guard** panel says whether it is armed,
+when it last checked, and what it has caught — and arms it for you. `install-proxy.sh`
+also does it during a transparent install. By hand:
 
 ```bash
 sudo scripts/install-pf-heal.sh          # root LaunchDaemon, every 2 minutes

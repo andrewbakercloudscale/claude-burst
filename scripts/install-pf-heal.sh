@@ -35,6 +35,7 @@ PLIST="/Library/LaunchDaemons/$LABEL.plist"
 LIBEXEC="/usr/local/libexec/claude-burst"
 SCRIPT="$LIBEXEC/pf-heal.sh"
 LOG="/var/log/claude-burst-pf.log"
+HEARTBEAT="/etc/claude-burst/pf-heal.heartbeat"
 # POSIX form, not zsh's ${0:A:h}: this is recovery-adjacent tooling and should
 # work under `bash` too -- same reasoning as rollback.sh and deploy.sh.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,11 +51,30 @@ need_root() {
 
 status() {
   echo "== pf self-heal daemon =="
-  if launchctl print "system/$LABEL" >/dev/null 2>&1; then
-    echo "  daemon        : LOADED ($LABEL)"
+  # `launchctl print system/<label>` is denied to a non-root caller (exit 113,
+  # for every system daemon, not just ours), so asking launchd and reporting
+  # the answer would print "not loaded" to anyone who forgot the sudo -- a
+  # gate that reports failure when it merely could not look. The heartbeat is
+  # what an unprivileged reader can actually verify, so it decides, and
+  # launchd is consulted only when we are root and its answer means something.
+  local beat age=""
+  if [[ -f "$HEARTBEAT" ]]; then
+    beat=$(cat "$HEARTBEAT" 2>/dev/null || echo 0)
+    age=$(( $(date +%s) - beat ))
+  fi
+  if [[ -n "$age" ]] && (( age < 600 )); then
+    echo "  daemon        : RUNNING (last check ${age}s ago)"
+  elif [[ -f "$PLIST" ]]; then
+    echo "  daemon        : INSTALLED BUT NOT RUNNING${age:+ (last check ${age}s ago)}"
+    echo "                  reload with: sudo $0"
   else
-    echo "  daemon        : not loaded"
+    echo "  daemon        : not installed"
     echo "                  install with: sudo $0"
+  fi
+  if [[ $EUID -eq 0 ]]; then
+    launchctl print "system/$LABEL" >/dev/null 2>&1 \
+      && echo "  launchd       : loaded" \
+      || echo "  launchd       : NOT loaded"
   fi
   [[ -x "$SCRIPT" ]] && echo "  script        : $SCRIPT" || echo "  script        : absent"
   if [[ -f "$SCRIPT" ]] && ! diff -q "$ROOT/scripts/pf-heal.sh" "$SCRIPT" >/dev/null 2>&1; then
@@ -76,6 +96,9 @@ uninstall() {
   launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
   rm -f "$PLIST"
   rm -rf "$LIBEXEC"
+  # Without this, status() reads a heartbeat from a daemon that no longer
+  # exists and reports RUNNING for the next ten minutes.
+  rm -f "$HEARTBEAT" /etc/claude-burst/pf-heal.failures
   echo "Removed the pf self-heal LaunchDaemon ($LABEL) and $LIBEXEC."
   echo "Kept $LOG so the history of what it caught survives the uninstall."
 }
