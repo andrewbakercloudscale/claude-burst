@@ -42,8 +42,14 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 BIN="$HOME/.local/bin/claude-burst"
 ROOT_HELPER="$DIR/transparent-root.sh"
 TRUST_HELPER="$DIR/trust-ca-systemwide.sh"
+ROLLED_BACK_MARKER="${CLAUDE_BURST_ROLLED_BACK_MARKER:-$HOME/.config/claude-burst/rolled-back}"
 
 source "$DIR/health-diagnostics.sh"
+
+# Clear the "a human rolled this back" marker rollback.sh leaves behind, so
+# the self-heal watchdog starts minding the gateway again. Done first: every
+# path below assumes the gateway is meant to be running.
+rm -f "$ROLLED_BACK_MARKER" "$ROLLED_BACK_MARKER.noted"
 
 echo "== 1. backing up current config =="
 "$DIR/backup-config.sh"

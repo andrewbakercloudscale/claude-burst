@@ -32,6 +32,7 @@ set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="$HOME/.config/claude-burst/self-heal.log"
 STATE_FILE="$HOME/.config/claude-burst/self-heal-state.json"
+ROLLED_BACK_MARKER="${CLAUDE_BURST_ROLLED_BACK_MARKER:-$HOME/.config/claude-burst/rolled-back}"
 LABEL="ninja.andrewbaker.claude-burst"
 ADMIN_URL="http://127.0.0.1:7788"
 # Re-notify about a missing redirect at most this often, so a laptop left in
@@ -61,6 +62,22 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 notify() {
   osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "claude-burst"' -e 'end run' "$1" >/dev/null 2>&1 || true
 }
+
+# --- 0. Did a human deliberately roll back? Then stay out of the way. ---
+# Reloading the gateway after rollback.sh stopped it is not self-healing, it
+# is undoing someone's decision -- observed 2026-09-07, 90 seconds after a
+# rollback. install-proxy.sh removes this marker, so a reinstall re-arms this
+# watchdog without anyone having to remember it exists.
+if [[ -f "$ROLLED_BACK_MARKER" ]]; then
+  # Logged only on the cycle that first sees it: this runs every ~2 minutes
+  # and a machine left rolled back for a week must not write 5,000 lines.
+  if [[ ! -f "$ROLLED_BACK_MARKER.noted" ]]; then
+    log "rolled back by hand ($(cat "$ROLLED_BACK_MARKER" 2>/dev/null)) -- standing down until reinstall"
+    : > "$ROLLED_BACK_MARKER.noted"
+  fi
+  exit 0
+fi
+rm -f "$ROLLED_BACK_MARKER.noted"
 
 # --- 1. Is the gateway's own LaunchAgent even loaded? Reload if not. ---
 # No root needed for this half: enable/bootstrap on a LaunchAgent is entirely
