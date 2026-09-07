@@ -289,6 +289,28 @@ let dirty = false;
 
 function note(el, cls, msg) { el.innerHTML = `<div class="note ${cls}">${esc(msg)}</div>`; }
 
+// A bare wall-clock time is only unambiguous for today. Both tables here
+// outlive a day -- metrics.jsonl is the whole history, and the response
+// ring survives until the gateway restarts -- so after an overnight gap
+// (or a restart-less week) "07:28:58" silently reads as this morning when
+// it was Tuesday. Show the date only when it is not today, so the common
+// case stays as narrow as it is now, and add the year only when THAT
+// differs too, so an old row can never be read as the wrong September.
+function stamp(t) {
+  // Checked before Date parses it: new Date(null) is epoch 0, a perfectly
+  // valid date, so a missing timestamp would render as "01 Jan 1970"
+  // rather than as the blank it is.
+  if (t === null || t === undefined || t === "") return "";
+  const d = new Date(t);
+  if (isNaN(d.getTime())) return String(t);
+  const time = d.toLocaleTimeString();
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return time;
+  const opts = {month: "short", day: "numeric"};
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(undefined, opts) + " " + time;
+}
+
 function money(n) { return "$" + (n || 0).toFixed(2); }
 function num(n) { return (n || 0).toLocaleString(); }
 
@@ -394,7 +416,7 @@ function renderRequests(rows) {
     </tr></thead><tbody>${rows.map(e => {
       const slot = e.slot || (e.route === "anthropic" ? "primary" : "secondary");
       return `<tr>
-        <td class="mono">${esc(new Date(e.time).toLocaleTimeString())}</td>
+        <td class="mono">${esc(stamp(e.time))}</td>
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
         <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "—")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--faint)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
@@ -448,7 +470,7 @@ function renderResponses(rows) {
     const flagged = keys.filter(k => KEY_HEADERS.test(k)).length;
     return `<details class="resp">
       <summary>
-        <span class="mono">${esc(new Date(r.time).toLocaleTimeString())}</span>
+        <span class="mono">${esc(stamp(r.time))}</span>
         <span class="pill ${r.slot === "primary" ? "p" : "s"}">${esc(r.slot || "?")}</span>
         <span class="mono st-${String(r.status)[0]}">${esc(r.status)}</span>
         <span class="mono">${esc(r.method)} ${esc(r.path)}</span>
