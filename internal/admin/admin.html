@@ -192,8 +192,19 @@
          still the only way to switch modes or re-run an install, so this
          reveals it on demand rather than the panel going away. -->
     <button id="installRevealBtn" style="margin-left:10px" hidden>⤓ Reinstall</button>
+    <!-- Revert lives in the header, not down in Actions, because the moment
+         you need it is the moment every request on this Mac is failing --
+         and on 2026-09-07 that meant scrolling past four cards and a config
+         panel to find it while a session was down. Always visible, next to
+         Reinstall: install and undo are the same decision. -->
+    <button class="danger" id="revertTop" style="margin-left:10px">↺ Revert to normal Claude</button>
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
+
+  <!-- Filled in by the live probe below, so a broken intercept states itself
+       at the top of the page with the fix attached, rather than only in the
+       reply to a Test connection button nobody clicked. -->
+  <div id="liveAlert"></div>
 
   <section id="installSection">
     <h2>
@@ -266,7 +277,6 @@
         <button class="warn" id="restart">⟳ Restart gateway</button>
         <button class="success" id="testConn">⇌ Test connection</button>
         <button id="viewLog">▤ View log file</button>
-        <button class="danger" id="revert">↺ Revert to normal Claude</button>
       </div>
       <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now — the config above can look correct while requests quietly go straight to Anthropic instead.</div>
       <div id="actNote"></div>
@@ -381,18 +391,15 @@ function renderCards(s) {
   // reaches this gateway at all (and by which mechanism -- the two modes are
   // installed and broken in completely different ways, so "active" alone is
   // not actionable), and which provider it is being routed to once it does.
-  $("activeBadge").innerHTML = s.intercept.active
-    ? `<span class="badge ok"><span class="dot"></span>ACTIVE \u00b7 ${modeTransparent ? "TRANSPARENT PROXY" : "BASE-URL"}</span>`
-    : `<span class="badge bad"><span class="dot"></span>NOT ACTIVE \u00b7 ${modeTransparent ? "TRANSPARENT PROXY" : "BASE-URL"}</span>`;
-  // Routing is only a meaningful claim about live traffic when there is live
-  // traffic -- a green PRIMARY badge over a gateway nothing is talking to is
-  // the exact thing that made this dashboard look healthy while every request
-  // went straight to Anthropic.
-  $("routeBadge").innerHTML = !s.intercept.active
-    ? ""
-    : s.overflow
-      ? `<span class="badge warn"><span class="dot"></span>OVERFLOW \u2192 SECONDARY</span>`
-      : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
+  //
+  // s.intercept.active is a claim about CONFIGURATION -- hosts entry present,
+  // CA in the bundle. It says nothing about the pf rdr rule, and nothing about
+  // whether a packet actually arrives. On 2026-09-07 the pf rule went missing
+  // while both of those stayed true, and this badge sat on green ACTIVE while
+  // every request on the Mac got "connection refused". So the config verdict is
+  // only ever the STARTING state here; the live probe (see liveCheck) resolves
+  // it to ACTIVE or FAILED a moment later.
+  renderActiveBadge(s, undefined);
 
   // The verdict and the fix are one panel at the top of the page. They
   // started as two blocks with a screenful of cards between them, which
@@ -442,6 +449,101 @@ function renderCards(s) {
   } else {
     $("bailout").innerHTML = "";
   }
+}
+
+// The most recent /api/state, so the Test connection button can redraw the
+// header badges from the same verdict the automatic probe uses.
+let lastState = null;
+
+// The live probe's verdict for the current render, or undefined while it is
+// still in flight. Kept outside renderCards so a refresh() that redraws the
+// cards does not throw away a verdict that is still true.
+let liveVerdict = undefined;
+
+// renderActiveBadge draws both header bubbles from one place, because they are
+// answers to the same question and had drifted into two conditionals.
+//
+//   verdict undefined -> CHECKING (probe in flight)
+//   verdict.ok        -> ACTIVE
+//   !verdict.ok       -> FAILED if the config says it should be working
+//                        (something broke), NOT ACTIVE if it was never
+//                        installed (nothing to break). The distinction is the
+//                        whole point: "not active" is a setup step, "failed"
+//                        is an outage with a revert button attached.
+function renderActiveBadge(s, verdict) {
+  const mode = s.intercept.mode === "transparent" ? "TRANSPARENT PROXY" : "BASE-URL";
+  let cls, label;
+  if (verdict === undefined) {
+    cls = "warn"; label = "CHECKING";
+  } else if (verdict.ok) {
+    cls = "ok"; label = "ACTIVE";
+  } else {
+    cls = "bad"; label = s.intercept.active ? "FAILED" : "NOT ACTIVE";
+  }
+  $("activeBadge").innerHTML =
+    `<span class="badge ${cls}"><span class="dot"></span>${label} \u00b7 ${mode}</span>`;
+
+  // Routing is only a meaningful claim about live traffic when there is live
+  // traffic -- a green PRIMARY badge over a gateway nothing is talking to is
+  // the exact thing that made this dashboard look healthy while every request
+  // went straight to Anthropic. So it appears only once the probe has actually
+  // confirmed the path.
+  $("routeBadge").innerHTML = !(verdict && verdict.ok)
+    ? ""
+    : s.overflow
+      ? `<span class="badge warn"><span class="dot"></span>OVERFLOW \u2192 SECONDARY</span>`
+      : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
+}
+
+// liveCheck runs the same probe as the Test connection button, automatically,
+// every time the dashboard renders. It is cheap: in the healthy case the
+// request is answered by this very process over loopback, and in the broken
+// case it either fails to connect immediately or gets an unauthenticated 404
+// from the real api.anthropic.com. No tokens, no billing, either way.
+//
+// It is deliberately NOT awaited by refresh(): the probe has a 5s server-side
+// timeout, and blocking the whole page on it would mean the one situation
+// where you need the dashboard fastest is the one where it takes longest to
+// paint. The page renders immediately showing CHECKING, and this resolves it.
+async function liveCheck(s) {
+  liveVerdict = undefined;
+  renderActiveBadge(s, undefined);
+  $("liveAlert").innerHTML = "";
+  let verdict;
+  try {
+    verdict = await fetch("/api/test-connection").then(r => r.json());
+  } catch (e) {
+    verdict = {ok: false, detail: "the admin server did not answer the connection test: " + e.message};
+  }
+  liveVerdict = verdict;
+  renderActiveBadge(s, verdict);
+  renderLiveAlert(s, verdict);
+}
+
+// renderLiveAlert puts the diagnosis and the remedy in the same box at the top
+// of the page. The remedy is the Revert button itself rather than a sentence
+// naming one -- the previous version printed a sudo command to copy, which is
+// what a person is least able to do calmly while their Mac cannot reach
+// Anthropic at all.
+function renderLiveAlert(s, verdict) {
+  // Only for the FAILED case -- installed, but traffic is not arriving.
+  // "Never installed" is not an outage, it is a setup step, and the Install
+  // panel right below already says so at length; a second red box repeating
+  // it above would make the two states look identical, which is the exact
+  // distinction this alert exists to draw.
+  if (verdict.ok || !s.intercept.active) { $("liveAlert").innerHTML = ""; return; }
+  const el = $("liveAlert");
+  el.innerHTML = `<div class="note bad" id="liveAlertNote"></div>`;
+  const box = $("liveAlertNote");
+  box.textContent = "Claude Burst says it is installed, but its traffic is NOT reaching this gateway:\n\n" +
+    (verdict.detail || "the connection test failed");
+  const btn = document.createElement("button");
+  btn.className = "danger";
+  btn.style.marginTop = "10px";
+  btn.textContent = "\u21ba Revert to normal Claude";
+  btn.onclick = () => runRevert(btn);
+  box.appendChild(document.createElement("br"));
+  box.appendChild(btn);
 }
 
 function renderRequests(rows) {
@@ -545,6 +647,13 @@ async function refresh() {
       $("inuse").innerHTML = "";
       $("activeBadge").innerHTML = "";
       $("routeBadge").innerHTML = "";
+      // Same reasoning for the live-probe alert and its cached state: with
+      // config.json unreadable we don't know the intercept mode, so any
+      // verdict still on screen is about a configuration we can no longer
+      // describe.
+      $("liveAlert").innerHTML = "";
+      liveVerdict = undefined;
+      lastState = null;
       // Same reasoning for the panel: it is hidden on the strength of a
       // verdict this response cannot give, so show it rather than hide the
       // one control that might be the way out.
@@ -560,7 +669,11 @@ async function refresh() {
       return;
     }
 
+    lastState = s;
     renderCards(s);
+    // Not awaited on purpose -- see liveCheck's comment. The page below is
+    // already correct; only the two header badges are pending.
+    liveCheck(s);
     renderRequests(reqs);
     renderResponses(resps);
     // The "Force -> secondary" confirmation names a wall-clock expiry
@@ -588,6 +701,9 @@ async function refresh() {
     // health from a response it never got.
     $("activeBadge").innerHTML = "";
     $("routeBadge").innerHTML = "";
+    $("liveAlert").innerHTML = "";
+    liveVerdict = undefined;
+    lastState = null;
     $("updated").textContent = "gateway unreachable — " + e.message;
   }
 }
@@ -673,6 +789,9 @@ $("testConn").onclick = async () => {
   try {
     const r = await fetch("/api/test-connection").then(r => r.json());
     note($("actNote"), r.ok ? "ok" : "bad", r.detail);
+    // Same verdict the header badges are drawn from, so an explicit test and
+    // the automatic one can never disagree on the page at the same time.
+    if (lastState) { liveVerdict = r; renderActiveBadge(lastState, r); renderLiveAlert(lastState, r); }
   } catch (e) {
     note($("actNote"), "bad", "test failed: " + e.message);
   } finally {
@@ -705,17 +824,30 @@ async function runInstall(mode, btn) {
 $("installBaseUrl").onclick = () => runInstall("base-url", $("installBaseUrl"));
 $("installTransparent").onclick = () => runInstall("transparent", $("installTransparent"));
 
-$("revert").onclick = async () => {
-  if (!confirm("Revert to normal Claude?\n\nRemoves ANTHROPIC_BASE_URL from settings.json and the local CA from the trust bundle. Nothing else in settings.json is touched.\n\nYou will need to restart Claude Code.")) return;
+// Like Install, Revert runs in a Terminal window rather than in this process
+// -- see internal/admin/revert.go. The half that matters most (/etc/hosts, the
+// pf rule, the System-keychain CA) needs root, and a button that silently
+// escalated from an unauthenticated loopback page would be worse than one that
+// asks. So this click only generates the script and asks macOS to open it.
+async function runRevert(btn) {
+  if (!confirm("Revert to normal Claude?\n\nA Terminal window will open and run scripts/rollback.sh. It asks for your password, because it removes the /etc/hosts redirect, the pf rule and the System-keychain CA trust — all machine-wide.\n\nIt also restores ~/.claude/settings.json and config.json from the most recent backup, so changes made to settings.json since then are rolled back too.\n\nIt verifies api.anthropic.com is reachable directly before reporting success. Restart Claude Code afterwards.")) return;
   delete $("actNote").dataset.overflowClaim;
+  const prev = btn.disabled;
+  btn.disabled = true;
   try {
     const r = await post("/api/revert");
-    let msg = r.steps.map(s => "• " + s).join("\n");
-    if (r.needs_root) msg += "\n\n⚠ " + r.warning + "\n\nRun: " + r.root_command;
-    note($("actNote"), r.needs_root ? "warn" : "ok", msg);
-    refresh();
+    // The in-process fallback (no scripts/ directory) is the only path that
+    // reports steps; the normal path narrates itself in the Terminal window.
+    let msg = r.detail || "";
+    if (r.steps && r.steps.length) msg = r.steps.map(s => "• " + s).join("\n");
+    if (r.warning) msg += "\n\n⚠ " + r.warning + (r.root_command ? "\n\nRun: " + r.root_command : "");
+    if (r.script) msg += "\n\nScript: " + r.script;
+    note($("actNote"), r.warning ? "warn" : "ok", msg);
+    $("actNote").scrollIntoView({behavior: "smooth", block: "nearest"});
   } catch (e) { note($("actNote"), "bad", e.message); }
-};
+  finally { btn.disabled = prev; }
+}
+$("revertTop").onclick = () => runRevert($("revertTop"));
 
 $("refreshBtn").onclick = () => {
   $("refreshBtn").disabled = true;

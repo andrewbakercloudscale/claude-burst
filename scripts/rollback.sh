@@ -9,6 +9,7 @@ BACKUP_DIR="${CLAUDE_BURST_BACKUP_DIR:-$HOME/.config/claude-burst/backups}"
 LABEL="ninja.andrewbaker.claude-burst"
 SETTINGS="$HOME/.claude/settings.json"
 CONFIG="$HOME/.config/claude-burst/config.json"
+ROLLED_BACK_MARKER="${CLAUDE_BURST_ROLLED_BACK_MARKER:-$HOME/.config/claude-burst/rolled-back}"
 
 # Resolve this script's directory. Written the POSIX way rather than with zsh's
 # ${0:A:h}: these scripts are recovery tooling, and someone reaching for them in
@@ -105,9 +106,21 @@ if [[ "$restored" -eq 0 ]]; then
   echo "no backups found in $BACKUP_DIR -- run scripts/backup-config.sh before making changes next time" >&2
 fi
 
+# Written BEFORE the gateway is stopped, not after. self-heal-watchdog.sh
+# runs every ~2 minutes and reloads the gateway LaunchAgent the instant it
+# finds it unloaded -- which, on 2026-09-07, meant it booted the gateway
+# straight back up 90 seconds after this script had deliberately stopped it.
+# Nothing was harmed that time (hosts and pf were already gone, so nothing
+# routed to it), but a rollback that an unattended watchdog silently undoes
+# is not a rollback. The marker says "a human chose this state"; the watchdog
+# honours it, and install-proxy.sh clears it when the gateway is wanted again.
+mkdir -p "$(dirname "$ROLLED_BACK_MARKER")" 2>/dev/null
+date '+%Y-%m-%d %H:%M:%S rolled back by scripts/rollback.sh' > "$ROLLED_BACK_MARKER"
+
 launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
 pkill -f '/claude-burst serve' >/dev/null 2>&1 || true
 echo "stopped claude-burst gateway (if it was running)"
+echo "  marked $ROLLED_BACK_MARKER so the self-heal watchdog leaves it stopped"
 
 # STEP 2: belt-and-suspenders cleanup for routing overrides that would
 # survive the settings.json restore above if this machine was never backed

@@ -268,6 +268,12 @@ echo
 # The gateway only reads config at startup, so the mode written above is not
 # live until it restarts -- and 'enable' must not run until something is
 # actually listening (see the header comment).
+# Clear the "a human rolled this back" marker scripts/rollback.sh leaves
+# behind, so the self-heal watchdog starts minding the gateway again. The
+# transparent path gets this from install-proxy.sh; base-url does its own
+# steps, so it needs its own line rather than inheriting the omission.
+rm -f "$HOME/.config/claude-burst/rolled-back" "$HOME/.config/claude-burst/rolled-back.noted"
+
 echo "== 3. restarting the gateway and waiting for it to be healthy =="
 if [[ -f "$PLIST" ]]; then
   launchctl enable "gui/$UID/$LABEL" >/dev/null 2>&1 || true
@@ -301,11 +307,12 @@ echo "install complete -- restart Claude Code, then click Test connection in the
 	return b.String(), nil
 }
 
-// writeInstallScript puts the script somewhere stable and predictable
-// rather than in a random temp path: the response names this file, and a
-// name the user can find again is the difference between "re-run it" and
-// "click the button again and hope".
-func writeInstallScript(mode, body string) (string, error) {
+// writeGeneratedScript puts a generated script somewhere stable and
+// predictable rather than in a random temp path: the response names this
+// file, and a name the user can find again is the difference between
+// "re-run it" and "click the button again and hope". Shared with the Revert
+// button (revert.go), which needs exactly the same properties.
+func writeGeneratedScript(name, body string) (string, error) {
 	dir, err := config.ConfigDir()
 	if err != nil {
 		return "", err
@@ -313,13 +320,17 @@ func writeInstallScript(mode, body string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "install-"+mode+".command")
+	path := filepath.Join(dir, name+".command")
 	// 0700: `open -a Terminal` only RUNS a file that is executable --
 	// otherwise Terminal opens it as a document and nothing happens.
 	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func writeInstallScript(mode, body string) (string, error) {
+	return writeGeneratedScript("install-"+mode, body)
 }
 
 // shellQuote wraps a string in single quotes for zsh, escaping any single
