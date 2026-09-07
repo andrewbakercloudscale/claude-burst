@@ -618,6 +618,16 @@ do_status() {
     echo "  live rdr rule : none (consistent with the hosts entry being absent)"
   fi
   echo "  state file    : $STATE_FILE$([[ -f "$STATE_FILE" ]] || echo ' (absent)')"
+  # Whether the rdr rule has a guard is part of the redirect's status, not a
+  # separate topic: this Mac loses that rule to other pf-owning software, and
+  # a healer nobody armed is indistinguishable from one that works right up
+  # until the morning it is needed.
+  if launchctl print system/ninja.andrewbaker.claude-burst-pfheal >/dev/null 2>&1; then
+    echo "  rdr self-heal : ARMED (checks every 2 min; log /var/log/claude-burst-pf.log)"
+  else
+    echo "  rdr self-heal : not installed -- the rdr rule above has no guard"
+    echo "                  arm it with: sudo $(dirname "$SELF")/install-pf-heal.sh"
+  fi
   if block_present "$HOSTS_FILE" "$TAG_ADMIN"; then
     echo "  admin hostname: $(grep -A1 "^$BEGIN $TAG_ADMIN\$" "$HOSTS_FILE" | tail -1)"
   fi

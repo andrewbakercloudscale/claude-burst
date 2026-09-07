@@ -144,6 +144,22 @@ disown
 echo "watchdog armed -- auto-rolls back via rollback.sh if the gateway isn't healthy 60s from now"
 
 echo
+echo "== 7. arming the pf self-heal daemon =="
+# Different job from step 6's watchdog, which only watches the first 60
+# seconds and then exits. This one is permanent, and it guards the piece
+# nothing else can: the pf rdr rule, which other pf-owning software on this
+# Mac has already dropped once (2026-09-07) while /etc/hosts stayed -- the
+# state that refuses every connection to the intercepted host, machine-wide.
+# Root is already cached here from step 4, so this is the natural place.
+if sudo -n "$DIR/install-pf-heal.sh" >/dev/null 2>&1; then
+  echo "pf self-heal daemon armed -- log: /var/log/claude-burst-pf.log"
+else
+  echo "WARNING: could not arm the pf self-heal daemon. The redirect is live but" >&2
+  echo "         its rdr rule is unguarded. Run:" >&2
+  echo "    sudo $DIR/install-pf-heal.sh" >&2
+fi
+
+echo
 echo "install complete -- restart Claude Code"
 echo "verify any time with: claude-burst status"
 echo "check the redirect specifically with: sudo scripts/transparent-root.sh status"

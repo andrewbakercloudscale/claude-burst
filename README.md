@@ -369,6 +369,41 @@ sudo scripts/transparent-root.sh status      # pf rule actually loaded?
 Watch for `live rdr rule : MISSING` while the hosts entry is present. That is the bad
 state — DNS redirects but nothing listens — and the fix is `remove`.
 
+### Guarding the pf rule
+
+The rdr rule is the one part of this that something else on your Mac can take away.
+On 2026-09-07 it vanished from the loaded ruleset while `/etc/hosts` stayed, and every
+process on the machine got `connection refused` for `api.anthropic.com` for hours. The
+anchor file and the `pf.conf` reference were both still perfectly intact — only the
+*loaded* ruleset had lost the rule — so every check that read configuration said OK.
+Other pf-owning software (VPN and endpoint-security clients, in this case Zscaler and
+CrowdStrike) reloads pf on network change and on wake; a `load anchor` line does not
+guarantee the rule stays loaded.
+
+So arm the healer. `install-proxy.sh` does it for you; on an existing install:
+
+```bash
+sudo scripts/install-pf-heal.sh          # root LaunchDaemon, every 2 minutes
+scripts/install-pf-heal.sh status        # armed? what has it caught?
+tail -f /var/log/claude-burst-pf.log     # world-readable, no sudo needed
+```
+
+Each cycle it does nothing at all unless the hosts block is present *and* the rdr rule
+is gone. Then it logs the outage, runs `transparent-root.sh reload-anchor`, and
+notifies you. If four consecutive repairs fail it **removes the redirect** and says so:
+with it gone, everything reaches Anthropic directly and burst is merely out of the path,
+which beats a Mac that cannot reach Anthropic at all.
+
+It needs root — reloading a pf anchor does — which is why it is a LaunchDaemon rather
+than part of the existing user-level `self-heal-watchdog.sh`. That watchdog detected this
+exact failure three times and could only post a notification.
+
+Drive every branch of its decision tree without root, and without breaking anything:
+
+```bash
+scripts/pf-heal.sh --self-test
+```
+
 See [ROLLBACK.md](ROLLBACK.md) for undoing every part of this independently.
 
 ## Forcing the secondary, and the admin UI
