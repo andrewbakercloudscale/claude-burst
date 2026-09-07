@@ -391,3 +391,57 @@ func TestHandleForceRejectsWhenNoSecondaryConfigured(t *testing.T) {
 		t.Fatalf("status=%d, want 400 when no secondary is configured (body=%s)", rr.Code, rr.Body.String())
 	}
 }
+
+// TestInterceptActive covers the distinction the dashboard was missing:
+// "configured" and "actually in the traffic path" are different questions,
+// and reporting the first as if it were the second is what let a green
+// PRIMARY badge sit over a gateway nothing was talking to.
+func TestInterceptActive(t *testing.T) {
+	baseURL := config.Default()
+	baseURL.Listen = "127.0.0.1:7777"
+	baseURL.Intercept.Mode = config.InterceptBaseURL
+
+	transparent := config.Default()
+	transparent.Listen = "127.0.0.1:7777"
+	transparent.Intercept.Mode = "transparent"
+	transparent.Intercept.Host = "api.anthropic.com"
+
+	cases := []struct {
+		name       string
+		cfg        config.Config
+		ii         interceptInfo
+		wantActive bool
+		wantReason string // substring
+	}{
+		{"base-url enabled", baseURL,
+			interceptInfo{SettingsURL: "http://127.0.0.1:7777"}, true, ""},
+		{"base-url configured but never enabled", baseURL,
+			interceptInfo{}, false, "ANTHROPIC_BASE_URL is not set"},
+		{"base-url pointing somewhere else", baseURL,
+			interceptInfo{SettingsURL: "http://127.0.0.1:9999"}, false, "not this gateway"},
+		{"transparent fully installed", transparent,
+			interceptInfo{Host: "api.anthropic.com", HostsEntry: true, CATrusted: true}, true, ""},
+		{"transparent configured but not installed", transparent,
+			interceptInfo{Host: "api.anthropic.com"}, false, "not installed"},
+		{"transparent missing hosts entry", transparent,
+			interceptInfo{Host: "api.anthropic.com", CATrusted: true}, false, "/etc/hosts redirect is missing"},
+		// Worse than inactive: traffic arrives and is rejected. Must not
+		// report active just because the redirect is in place.
+		{"transparent redirect without CA trust", transparent,
+			interceptInfo{Host: "api.anthropic.com", HostsEntry: true}, false, "fail TLS"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			active, reason := interceptActive(c.cfg, c.ii)
+			if active != c.wantActive {
+				t.Errorf("active = %v, want %v (reason %q)", active, c.wantActive, reason)
+			}
+			if c.wantReason != "" && !strings.Contains(reason, c.wantReason) {
+				t.Errorf("reason %q does not mention %q", reason, c.wantReason)
+			}
+			if c.wantActive && reason != "" {
+				t.Errorf("active but still gave a reason: %q", reason)
+			}
+		})
+	}
+}

@@ -75,6 +75,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/revert", s.mutating(s.handleRevert))
 	mux.HandleFunc("/api/restart", s.mutating(s.handleRestart))
+	mux.HandleFunc("/api/install", s.mutating(s.handleInstall))
 	return s.guard(mux)
 }
 
@@ -180,6 +181,21 @@ type interceptInfo struct {
 	HostsEntry  bool   `json:"hosts_entry"`
 	RemoteCtrl  bool   `json:"remote_control_expected"`
 	SettingsURL string `json:"settings_base_url"`
+	// Active answers a different question from every field above it: not
+	// "is Claude Burst configured?" but "is Claude Code's traffic actually
+	// going through it right now?" Those came apart in practice -- the
+	// dashboard reported a healthy PRIMARY route, with a gateway version
+	// and a live request table, while nothing had ever been enabled and
+	// every real request went straight to Anthropic. Everything on the page
+	// was true; none of it answered the question the user had.
+	//
+	// This is the cheap local answer (what is on disk). The expensive live
+	// one is /api/test-connection, which actually puts a request down the
+	// wire -- see its doc comment for why config-on-disk still isn't proof.
+	Active bool `json:"active"`
+	// InactiveReason names the specific missing piece, because "not active"
+	// with three possible causes is a prompt to go guessing.
+	InactiveReason string `json:"inactive_reason,omitempty"`
 	// BailoutCmd is the ready-to-run command that undoes the machine-wide
 	// redirect (pf + /etc/hosts). Only meaningful in transparent mode, and
 	// only ever needs root -- the dashboard can't run it itself, but it can
@@ -231,6 +247,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	// Claude Code disables Remote Control whenever ANTHROPIC_BASE_URL names a
 	// host other than api.anthropic.com; an unset value is the default.
 	ii.RemoteCtrl = settingsURL == ""
+	ii.Active, ii.InactiveReason = interceptActive(cfg, ii)
 
 	resp := stateResponse{
 		Version: s.version, Route: route, Overflow: overflow,
@@ -243,6 +260,48 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Until = time.Unix(st.OverflowUntil, 0).Format(time.RFC3339)
 	}
 	writeJSON(w, resp)
+}
+
+// interceptActive reports whether Claude Code's traffic is actually being
+// routed through this gateway, and if not, which piece is missing.
+//
+// The two modes fail in completely different places, which is why this
+// cannot be one boolean read off config.json:
+//
+//   - base-url: settings.json must name this gateway in ANTHROPIC_BASE_URL.
+//     Writing the mode into config.json does nothing on its own; `enable`
+//     is what puts it in the path.
+//   - transparent: settings.json must NOT name it (that is the whole point
+//     -- it keeps Remote Control), so the evidence is elsewhere: the
+//     /etc/hosts redirect sends the hostname to loopback, and the local CA
+//     is trusted so the TLS handshake against it succeeds. With the hosts
+//     entry but no CA trust, traffic arrives here and is REJECTED, which is
+//     worse than not intercepting at all -- so that counts as inactive, and
+//     says so.
+//
+// Deliberately a disk-only check with no network call: /api/state is
+// fetched on every page load and every Refresh, and a probe with a timeout
+// on that path would make the whole dashboard hang whenever the network is
+// the thing that is broken.
+func interceptActive(cfg config.Config, ii interceptInfo) (bool, string) {
+	if cfg.Intercept.Transparent() {
+		switch {
+		case !ii.HostsEntry && !ii.CATrusted:
+			return false, "transparent mode is configured but not installed: no /etc/hosts redirect and the local CA is not trusted. Claude Code is talking to Anthropic directly."
+		case !ii.HostsEntry:
+			return false, "the /etc/hosts redirect is missing, so nothing sends " + ii.Host + " to this gateway. Claude Code is talking to Anthropic directly."
+		case !ii.CATrusted:
+			return false, "the redirect is installed but the local CA is not trusted, so requests reach this gateway and then fail TLS. This is worse than not intercepting -- fix or remove the redirect."
+		}
+		return true, ""
+	}
+	if ii.SettingsURL == "" {
+		return false, "ANTHROPIC_BASE_URL is not set in settings.json, so Claude Code is talking to Anthropic directly."
+	}
+	if !strings.Contains(ii.SettingsURL, cfg.Listen) {
+		return false, "ANTHROPIC_BASE_URL points at " + ii.SettingsURL + ", which is not this gateway (" + cfg.Listen + ")."
+	}
+	return true, ""
 }
 
 func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
