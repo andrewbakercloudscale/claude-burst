@@ -560,6 +560,18 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		// no way to tell whether that was one continuous network outage or two
 		// unrelated failures. This snapshot answers that next time.
 		s.logger.Printf("req=%s %s", rid, networkSnapshot(p.Name(), err))
+		// The client's own context is what Prepare was given, so if it is
+		// done, this request died because the CALLER went away -- not because
+		// the upstream failed. Checked here as well as in the detector
+		// because this is the authoritative signal (the detector only sees a
+		// wrapped error string away from it), and because the consequence
+		// here is concrete: replaying to the secondary would spend money on a
+		// paid provider generating a response that nobody is left to read.
+		if in.Context().Err() != nil {
+			s.logger.Printf("req=%s client_gone route=%s err=%v (no failover, not replayed)", rid, p.Name(), err)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "client cancelled: "+err.Error(), destination)
+			return
+		}
 		if allowFailover {
 			if d := fd.OnError(err); d.Failover {
 				s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary", destination)
