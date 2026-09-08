@@ -289,13 +289,48 @@
   </section>
 
   <section>
+    <h2>Secondary provider <span class="hint">where inference goes when the primary is out &mdash; endpoint, model and API key</span></h2>
+    <div class="body">
+      <div id="secStatus"></div>
+      <div class="row">
+        <div>
+          <label for="secProvider">Provider</label>
+          <select id="secProvider">
+            <option value="openai-compatible">openai-compatible — GLM, OpenRouter, Together, any /v1 endpoint</option>
+            <option value="bedrock">bedrock — Claude models via AWS</option>
+            <option value="none">none — no failover target at all</option>
+          </select>
+        </div>
+        <div class="secField">
+          <label for="secBaseUrl">Base URL</label>
+          <input id="secBaseUrl" style="min-width:300px" placeholder="https://api.z.ai/api/coding/paas/v4">
+        </div>
+        <div class="secField" id="secModelField">
+          <label for="secModel">Model</label>
+          <input id="secModel" placeholder="glm-4.6">
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="secField">
+          <label for="secKeychain">Keychain service</label>
+          <input id="secKeychain" placeholder="claude-burst-zai">
+        </div>
+        <div class="secField">
+          <label for="secApiKey">API key</label>
+          <input id="secApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="leave blank to keep the stored key">
+        </div>
+        <button class="primary" id="saveSecondary">✓ Save secondary</button>
+      </div>
+      <div class="hint" style="margin-top:8px" id="secKeyHint"></div>
+      <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json — which only stores the service name. It is never sent back to this page, so the field stays blank even when a key is stored.</div>
+      <div id="secNote"></div>
+    </div>
+  </section>
+
+  <section>
     <h2>Configuration <span class="hint">saved to config.json; the gateway reads it at startup</span></h2>
     <div class="body">
       <div class="row">
-        <div>
-          <label for="secModel">Secondary model</label>
-          <input id="secModel" placeholder="zai-org/GLM-5.3">
-        </div>
         <div>
           <label for="strategy">Failover strategy</label>
           <select id="strategy">
@@ -361,7 +396,56 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const KEY_HEADERS = /^(anthropic-ratelimit|retry-after|x-should-retry)/;
 
 let dirty = false;
-["secModel","strategy","mode"].forEach(id => $(id).addEventListener("input", () => dirty = true));
+["strategy","mode"].forEach(id => $(id).addEventListener("input", () => dirty = true));
+
+// The secondary form gets its own dirty flag rather than sharing `dirty`.
+// One shared flag means typing a base URL down here also freezes the
+// intercept-mode dropdown above, so a refresh() during a half-finished edit
+// leaves that dropdown showing whatever was on screen before rather than
+// what config.json actually says -- a stale value in a control nobody was
+// editing is exactly the sort of quietly-wrong reading this page exists to
+// prevent.
+let secDirty = false;
+["secProvider","secBaseUrl","secModel","secKeychain","secApiKey"].forEach(
+  id => $(id).addEventListener("input", () => secDirty = true));
+$("secProvider").addEventListener("change", () => { secDirty = true; applySecProvider(); });
+
+// "none" has no endpoint, model or credential, and bedrock's target model
+// comes from the config.json model_map rather than a single field -- so the
+// form shows only the controls that mean something for the chosen provider
+// instead of leaving dead inputs that silently do nothing when saved.
+function applySecProvider() {
+  const p = $("secProvider").value;
+  const showAll = p !== "none";
+  document.querySelectorAll(".secField").forEach(el => { el.hidden = !showAll; });
+  $("secModelField").hidden = p !== "openai-compatible";
+  $("secKeyHint").textContent = p === "bedrock"
+    ? "Bedrock reads AWS_BEARER_TOKEN_BEDROCK, or the Keychain service named above. Its per-model targets come from model_map in config.json, not from this form."
+    : (p === "none" ? "" : "The env var is derived from the service name: claude-burst-openrouter → $OPENROUTER_API_KEY. Either source works; the key box writes the Keychain one.");
+}
+
+// Populates the form from /api/state. Never touches it while secDirty --
+// same rule the Configuration section follows, for the same reason.
+function renderSecondary(s) {
+  const sec = s.secondary || {};
+  const el = $("secStatus");
+  if (sec.provider === "none" || !sec.provider) {
+    note(el, "warn", "No secondary provider is configured. When the primary runs out, requests just fail — there is nowhere to fail over to.");
+  } else if (sec.key_env_var && !sec.key_present) {
+    note(el, "bad", `Secondary is ${sec.provider} (${sec.base_url}) but NO API KEY was found: nothing in the Keychain under "${sec.keychain_service}", and $${sec.key_env_var} is unset. It will fail the first time it is used.`);
+  } else {
+    const keyBit = sec.key_env_var ? ` — key found (Keychain "${sec.keychain_service}" or $${sec.key_env_var})` : "";
+    note(el, "ok", `Secondary is ${sec.provider} (${sec.base_url})${sec.model ? " → " + sec.model : ""}${keyBit}.`);
+  }
+  if (secDirty) return;
+  $("secProvider").value = sec.provider && sec.provider !== "none" ? sec.provider : (sec.provider === "none" ? "none" : "openai-compatible");
+  $("secBaseUrl").value = sec.base_url || "";
+  $("secModel").value = sec.model || "";
+  $("secKeychain").value = sec.keychain_service || "";
+  // Never prefilled and never cleared by a refresh: it holds nothing the
+  // server sent, and blanking a half-typed secret mid-edit is its own bug.
+  applySecProvider();
+}
 
 // Sticky across refreshes: an install writes its result into the panel, and
 // every install path calls refresh(), so without this the panel -- and the
@@ -800,6 +884,10 @@ async function refresh() {
       // verdict still on screen is about a configuration we can no longer
       // describe.
       $("liveAlert").innerHTML = "";
+      // Same reasoning as the badges: the secondary verdict ("key found",
+      // "nothing to fail over to") is read out of a config we could not
+      // parse, so any of it still on screen describes nothing.
+      $("secStatus").innerHTML = "";
       $("guardsSection").hidden = true;
       liveVerdict = undefined;
       lastState = null;
@@ -839,10 +927,10 @@ async function refresh() {
     }
     // Never clobber something the user is halfway through typing.
     if (!dirty) {
-      $("secModel").value = s.secondary.model || "";
       $("strategy").value = s.primary.strategy || "subscription-limit";
       $("mode").value = s.intercept.mode || "base-url";
     }
+    renderSecondary(s);
     $("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     // The badges are a claim about this instant, and nothing answered, so
@@ -851,16 +939,40 @@ async function refresh() {
     $("activeBadge").innerHTML = "";
     $("routeBadge").innerHTML = "";
     $("liveAlert").innerHTML = "";
+    $("secStatus").innerHTML = "";
     liveVerdict = undefined;
     lastState = null;
     $("updated").textContent = "gateway unreachable — " + e.message;
   }
 }
 
+$("saveSecondary").onclick = async () => {
+  const provider = $("secProvider").value;
+  if (provider === "none" && !confirm("Remove the secondary provider?\n\nOverflow will have nowhere to go: when the primary runs out, requests fail instead of failing over.")) return;
+  const btn = $("saveSecondary");
+  btn.disabled = true;
+  try {
+    const r = await post("/api/secondary", {
+      provider,
+      base_url: $("secBaseUrl").value.trim(),
+      model: $("secModel").value.trim(),
+      keychain_service: $("secKeychain").value.trim(),
+      api_key: $("secApiKey").value,
+    });
+    secDirty = false;
+    // The key is now in the Keychain; keeping it in a DOM node afterwards
+    // only widens where it can be read from.
+    $("secApiKey").value = "";
+    const lines = [r.ok, r.warning, r.restart].filter(Boolean).join("\n\n");
+    note($("secNote"), r.warning ? "warn" : "ok", lines);
+    refresh();
+  } catch (e) { note($("secNote"), "bad", e.message); }
+  finally { btn.disabled = false; }
+};
+
 $("save").onclick = async () => {
   try {
     const r = await post("/api/config", {
-      secondary_model: $("secModel").value.trim(),
       failover_strategy: $("strategy").value,
       intercept_mode: $("mode").value,
     });
@@ -1047,6 +1159,7 @@ window.addEventListener("scroll", () => {
 // mid-read, with no way to tell it was about to happen. Refresh is
 // manual now (button above); actions that change state (save, force,
 // reset, restart, revert) still refresh themselves right after.
+applySecProvider();
 refresh();
 </script>
 </body>

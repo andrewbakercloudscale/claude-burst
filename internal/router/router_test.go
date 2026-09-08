@@ -653,7 +653,7 @@ func TestMeteredFailoverReplaysAfterSustainedFailures(t *testing.T) {
 func TestOpenAICompatibleFailoverTranslatesResponse(t *testing.T) {
 	// The env var is now derived from the configured keychain service
 	// ("claude-burst-together-test" -> TOGETHER_TEST_API_KEY), not
-	// hardcoded to TOGETHER_API_KEY -- see openAICompatibleIdentity.
+	// hardcoded to TOGETHER_API_KEY -- see OpenAICompatibleIdentity.
 	t.Setenv("TOGETHER_TEST_API_KEY", "test-together-key")
 
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -789,7 +789,7 @@ func TestCountTokensNeverRoutesToSecondaryDuringOverflow(t *testing.T) {
 	}
 }
 
-// TestopenAICompatibleIdentityDerivation locks in the "claude-burst-<label>"
+// TestOpenAICompatibleIdentityDerivation locks in the "claude-burst-<label>"
 // / "<LABEL>_API_KEY" convention buildProvider relies on for every
 // openai-compatible secondary -- not just Together AI, which is what this
 // generalization replaced a hardcoded name/env-var pair for. Together's
@@ -808,9 +808,9 @@ func TestOpenAICompatibleIdentityDerivation(t *testing.T) {
 		{"", "openai-compatible", "OPENAI_COMPATIBLE_API_KEY"},
 	}
 	for _, c := range cases {
-		label, envVar := openAICompatibleIdentity(c.keychainService)
+		label, envVar := OpenAICompatibleIdentity(c.keychainService)
 		if label != c.wantLabel || envVar != c.wantEnvVar {
-			t.Errorf("openAICompatibleIdentity(%q) = (%q, %q), want (%q, %q)",
+			t.Errorf("OpenAICompatibleIdentity(%q) = (%q, %q), want (%q, %q)",
 				c.keychainService, label, envVar, c.wantLabel, c.wantEnvVar)
 		}
 	}

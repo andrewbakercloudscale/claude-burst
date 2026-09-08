@@ -330,7 +330,14 @@ func configure(args []string) {
 				fatal(fmt.Errorf("--secondary openai-compatible requires --secondary-base-url and --secondary-model"))
 			}
 			ks := *secondaryKeychainService
-			if ks == "" {
+			if ks == "" && cfg.Secondary.Provider == "openai-compatible" {
+				// Only carried forward when the slot was ALREADY
+				// openai-compatible. Inheriting it from any secondary hands
+				// this provider the previous vendor's credential name --
+				// switching from bedrock derived "claude-burst-bedrock",
+				// i.e. $BEDROCK_API_KEY -- which is the vendor collision
+				// keychainTarget's doc comment below describes, one slot
+				// further along.
 				ks = cfg.Secondary.KeychainService // allow re-running configure without repeating it
 			}
 			if ks == "" {
