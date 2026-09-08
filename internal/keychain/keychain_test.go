@@ -1,6 +1,9 @@
 package keychain
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestLoadUsesCallerSpecifiedEnvVar is a regression test: Load used to
 // hardcode checking AWS_BEARER_TOKEN_BEDROCK regardless of which service was
@@ -37,5 +40,39 @@ func TestLoadDoesNotCrossContaminateBetweenEnvVars(t *testing.T) {
 	_, err := Load(noSuchService, "TOGETHER_API_KEY")
 	if err == nil {
 		t.Fatal("expected an error when TOGETHER_API_KEY is unset, even though AWS_BEARER_TOKEN_BEDROCK is set")
+	}
+}
+
+// TestParseKeychainDate pins the parse of `security`'s hex date attribute,
+// and that it comes back as local time. A silent failure here degrades to
+// "no timestamp" -- exactly the uninformative state the field was added to
+// remove -- so it needs a test rather than a glance.
+func TestParseKeychainDate(t *testing.T) {
+	// Real `security find-generic-password` output, trimmed.
+	out := []byte("keychain: \"/Users/x/Library/Keychains/login.keychain-db\"\n" +
+		"    \"acct\"<blob>=\"x\"\n" +
+		"    \"mdat\"<timedate>=0x32303236303930383132333033345A00  \"20260908123034Z\\000\"\n" +
+		"    \"svce\"<blob>=\"claude-burst-together\"\n")
+	got := parseKeychainDate(out)
+	if got.IsZero() {
+		t.Fatal("failed to parse the mdat attribute")
+	}
+	if !got.Equal(time.Date(2026, 9, 8, 12, 30, 34, 0, time.UTC)) {
+		t.Errorf("parsed %v, want 2026-09-08 12:30:34 UTC", got.UTC())
+	}
+	// Keychain records UTC; this dashboard shows local time everywhere, and
+	// a UTC timestamp beside local ones reads as hours stale.
+	if got.Location() != time.Local {
+		t.Errorf("returned location %v, want local", got.Location())
+	}
+}
+
+// TestParseKeychainDateGarbage: no date attribute, or an unparseable one,
+// must degrade to zero rather than to a wrong time or a panic.
+func TestParseKeychainDateGarbage(t *testing.T) {
+	for _, in := range []string{"", "no attributes here", `"mdat"<timedate>=0xZZZZ`, `"mdat"<timedate>=0x4142`} {
+		if got := parseKeychainDate([]byte(in)); !got.IsZero() {
+			t.Errorf("parseKeychainDate(%q) = %v, want zero", in, got)
+		}
 	}
 }

@@ -66,13 +66,13 @@ type Server struct {
 	// service name could silently replace the key a live secondary is
 	// running on.
 	storeKey func(service, value string) error
-	hasKey   func(service, envVar string) bool
+	keyInfo  func(service, envVar string) keychain.Info
 }
 
 func New(gateway *router.Server, metricsPath, version, extraHost, rootHelper string) *Server {
 	return &Server{gateway: gateway, metricsPath: metricsPath, version: version,
 		extraHost: strings.ToLower(extraHost), rootHelper: rootHelper,
-		storeKey: keychain.Store, hasKey: keychain.Has}
+		storeKey: keychain.Store, keyInfo: keychain.Describe}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -204,6 +204,17 @@ type routeInfo struct {
 	KeychainService string `json:"keychain_service,omitempty"`
 	KeyEnvVar       string `json:"key_env_var,omitempty"`
 	KeyPresent      bool   `json:"key_present,omitempty"`
+	// KeySource is "keychain" or "environment". A green "key found" that
+	// cannot tell the two apart is not evidence a save landed: an
+	// unrelated env var answers identically, and the Keychain write could
+	// have gone nowhere.
+	KeySource string `json:"key_source,omitempty"`
+	// KeyUpdated is when the Keychain entry was last written, RFC3339 with
+	// this machine's offset. It is the page's only proof that the key you
+	// just saved is the key it can see -- the value itself is never sent,
+	// so without a timestamp "key found" is indistinguishable from "key
+	// found, from six weeks ago, your save silently failed".
+	KeyUpdated string `json:"key_updated,omitempty"`
 }
 
 // credentialNames returns the Keychain service and env var a route slot's
@@ -329,7 +340,11 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Model: cfg.Secondary.Model, Strategy: cfg.Secondary.FailoverStrategy}
 	secondary.KeychainService, secondary.KeyEnvVar = credentialNames(cfg.Secondary, cfg.KeychainService)
 	if secondary.KeyEnvVar != "" {
-		secondary.KeyPresent = s.hasKey(secondary.KeychainService, secondary.KeyEnvVar)
+		info := s.keyInfo(secondary.KeychainService, secondary.KeyEnvVar)
+		secondary.KeyPresent, secondary.KeySource = info.Present, info.Source
+		if !info.Modified.IsZero() {
+			secondary.KeyUpdated = info.Modified.Format(time.RFC3339)
+		}
 	}
 
 	resp := stateResponse{
@@ -829,7 +844,7 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 		if rc.Model != "" {
 			resp.OK += " → " + rc.Model
 		}
-		if envVar != "" && !s.hasKey(service, envVar) {
+		if envVar != "" && !s.keyInfo(service, envVar).Present {
 			resp.Warning = fmt.Sprintf("no API key found for this provider: nothing is stored in the Keychain under %q and $%s is unset. "+
 				"The secondary is configured but will fail the moment it is used — paste the key above and save again.", service, envVar)
 		}
