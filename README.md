@@ -43,11 +43,16 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 8. Future inference requests use the secondary until the reset time plus a small safety grace period.
 9. The first request after that time goes back to Anthropic Max automatically.
 
+One exception to step 8: `/v1/messages/count_tokens` always goes to the primary, overflow
+or not, and never fails over. It is Anthropic-specific and has no equivalent request shape
+on an OpenAI-compatible endpoint, so there is nowhere correct to send it — translating it
+would bill a full generation to answer "how many tokens is this".
+
 Claude Burst does not rotate Max accounts, suppress quota signals, fabricate headers, or attempt to extend the Max allowance. The subscription limit remains authoritative.
 
 ## What is logged
 
-Claude Burst writes to two files under `~/.config/claude-burst/`, and both are metadata-only: **prompts, source code, tool inputs and model outputs are never written to disk.** The proxy necessarily handles the request body in memory so it can replay a rejected request to the secondary, but it does not persist it.
+Claude Burst writes to two files under `~/.config/claude-burst/` — both rotate, so the pair is really up to 20 `claude-burst.log[.N]` files and 6 `metrics.jsonl[.N]` files — and both are metadata-only: **prompts, source code, tool inputs and model outputs are never written to disk.** The proxy necessarily handles the request body in memory so it can replay a rejected request to the secondary, but it does not persist it.
 
 ### `metrics.jsonl` — structured, one line per request
 
@@ -59,12 +64,13 @@ Claude Opus rates.)
 
 - timestamp and a short request id (also present in `claude-burst.log`, so a line in one file can always be matched to the other)
 - Claude Code session and agent identifiers
-- selected route (`anthropic` or `bedrock`)
+- the slot (`primary` or `secondary`) and the route that served it — `anthropic` for oauth-passthrough, `anthropic-api-key`, `bedrock`, or an openai-compatible secondary's vendor label (`together`, `openrouter`, whatever `keychain_service` names)
+- `destination`: the actual outbound URL (scheme, host and path; no query). The slot label says which slot was *chosen*; this says where the request physically went, which is what settles "did that really go to the secondary?"
 - model
 - HTTP status
 - latency
 - input/output token usage where exposed in the SSE stream
-- estimated API-equivalent cost using the prices in `config.json`
+- estimated API-equivalent cost using the prices in `config.json`. A model with **no** `pricing` entry costs `0` — so the event also carries `pricing_unknown: true`, and `stats` counts it separately, because a zero meaning "not priced" must not read as a zero meaning "free". Third-party secondary models are not in the default pricing table: add yours to `pricing` or its spend will not be counted
 - subscription limit claim and reset timestamp when failover occurs
 - a short note on what happened (e.g. "subscription limit detected; request replayed to Bedrock", "keychain load failed: ...")
 
@@ -184,6 +190,7 @@ claude-burst configure --primary anthropic-api-key --secondary bedrock
 claude-burst configure --secondary none
 claude-burst keychain-set                    # Bedrock: reads AWS_BEARER_TOKEN_BEDROCK
 claude-burst keychain-set --provider together # OpenAI-compatible: reads TOGETHER_API_KEY
+claude-burst keychain-set --provider together --service my-service   # store under a custom service name
 claude-burst enable
 claude-burst disable
 claude-burst status
@@ -225,9 +232,9 @@ Configuration lives at `~/.config/claude-burst/config.json`. Legacy flat fields 
 }
 ```
 
-- `primary.provider` / `secondary.provider`: `oauth-passthrough` (subscription OAuth passthrough), `anthropic-api-key` (metered, no-subscription), or `bedrock`. Neither slot is tied to a specific vendor — either can hold either provider.
-- `primary.failover_strategy`: `subscription-limit` (only Anthropic's own subscription-exhaustion headers trigger failover — a bare 429 never does), `metered-failures` (a sliding-window failure count triggers failover, since every route is metered and a single blip shouldn't move traffic), `subscription-limit+metered-failures` (both: genuine subscription exhaustion fails over immediately as above, *and* a sustained run of 429/5xx responses or transport errors/timeouts — an Anthropic outage, not plan exhaustion — fails over once `metered_failover.min_failures` are seen inside the window), or `none` (never fail over). A subscription (`oauth-passthrough`) primary defaults to `subscription-limit` alone, which by design does **not** react to a bare 500 or a timeout — set `subscription-limit+metered-failures` (`claude-burst configure --failover-strategy subscription-limit+metered-failures`) if you also want overflow on an Anthropic outage.
-- `metered_failover.window_seconds` / `min_failures`: for `metered-failures`, how many upstream failures (429/5xx/transport errors) inside a trailing window before failing over. Other 4xx errors (bad key, malformed request) never count — routing to the secondary wouldn't fix them.
+- `primary.provider` / `secondary.provider`: `oauth-passthrough` (subscription OAuth passthrough), `anthropic-api-key` (metered, no-subscription), `bedrock`, or `openai-compatible`. Neither slot is tied to a specific vendor — either can hold any of them, though `configure --primary` only accepts the first three, so a non-Anthropic primary means editing `config.json`. `none` is valid for the secondary only.
+- `primary.failover_strategy`: `subscription-limit` (only Anthropic's own subscription-exhaustion headers trigger failover — a bare 429 never does), `metered-failures` (a sliding-window failure count triggers failover, since every route is metered and a single blip shouldn't move traffic), `subscription-limit+metered-failures` (both: genuine subscription exhaustion fails over immediately as above, *and* a sustained run of 429/5xx responses or transport errors/timeouts — an Anthropic outage, not plan exhaustion — fails over once the relevant `metered_failover` threshold is reached, which is a different number for HTTP failures than for transport failures; see below), or `none` (never fail over). A subscription (`oauth-passthrough`) primary defaults to `subscription-limit` alone, which by design does **not** react to a bare 500 or a timeout — set `subscription-limit+metered-failures` (`claude-burst configure --failover-strategy subscription-limit+metered-failures`) if you also want overflow on an Anthropic outage.
+- `metered_failover.window_seconds` / `min_failures` / `transport_error_min_failures`: for the metered strategies, how many upstream failures inside a trailing window before failing over. **Two counters, not one**, because the two signals differ in strength. An HTTP failure (429 or 5xx) means Anthropic answered and could be a passing blip, so it takes `min_failures` (default 3) within `window_seconds` (default 60). A transport failure — Anthropic could not be reached at all — takes `transport_error_min_failures`, which defaults to **1**, so a real outage does not sit retrying against a dead primary. Any success resets both. Other 4xx errors (bad key, malformed request) never count, since routing to the secondary wouldn't fix them; neither do failures that are unambiguously *this machine's* fault — DNS resolution failure, "network unreachable", "no route to host" — because the secondary is equally unreachable through a dead local network, and counting them turns walking out of WiFi range into a paid overflow window.
 - `response_header_timeout_seconds`: bounds how long the gateway waits for a response to *start* before treating the upstream as failed (doesn't affect how long an already-started stream can run).
 
 Model IDs change over time. Keep `model_map` aligned with the Claude models enabled in your Bedrock account.
@@ -238,9 +245,9 @@ Model IDs change over time. Keep `model_map` aligned with the Claude models enab
 
 Claude Code's Anthropic endpoint can send beta features that a third-party/cloud endpoint may not support. Claude Burst strips only the OAuth-specific `oauth-*` beta value before Bedrock and leaves the remaining Claude Code beta capabilities intact. If Bedrock rejects a feature that Anthropic accepts, the response is returned to Claude Code rather than silently weakening the request.
 
-### 2. Bedrock API key authentication only in v0.1
+### 2. Bedrock API key authentication only (as of v0.2.0)
 
-The first release reads `AWS_BEARER_TOKEN_BEDROCK` and stores it in macOS Keychain. It does not yet implement AWS SSO, role assumption, `awsAuthRefresh`, or SigV4 signing. Those should be added before a large enterprise rollout.
+The gateway reads `AWS_BEARER_TOKEN_BEDROCK` and stores it in macOS Keychain. It does not yet implement AWS SSO, role assumption, `awsAuthRefresh`, or SigV4 signing. Those should be added before a large enterprise rollout.
 
 ### 3. No failover on ordinary throttling
 
@@ -334,7 +341,7 @@ claude-burst keychain-set --provider openrouter   # reads OPENROUTER_API_KEY
 
 ### Credential storage and naming
 
-`claude-burst keychain-set --provider <label>` stores whatever `<label>_API_KEY` is set in the environment (uppercased, hyphens become underscores) into a macOS Keychain service named `claude-burst-<label>` by default — `--provider together` reads `TOGETHER_API_KEY` into `claude-burst-together`, `--provider openrouter` reads `OPENROUTER_API_KEY` into `claude-burst-openrouter`, and so on for any other vendor. Nothing here is a hardcoded allowlist; `<label>` can be anything. At request time, the gateway derives the same identity back out of whichever keychain service `secondary.keychain_service` actually names, so the two directions always agree without a second place to keep in sync (`internal/router.EnvVarForProvider` / `openAICompatibleIdentity`). Use `--secondary-keychain-service` on `configure` if you want a service name other than the `claude-burst-<label>` default (for example, to run two different OpenAI-compatible secondaries side by side under distinct names).
+`claude-burst keychain-set --provider <label>` stores whatever `<label>_API_KEY` is set in the environment (uppercased, hyphens become underscores) into a macOS Keychain service named `claude-burst-<label>` by default — `--provider together` reads `TOGETHER_API_KEY` into `claude-burst-together`, `--provider openrouter` reads `OPENROUTER_API_KEY` into `claude-burst-openrouter`, and so on for any other vendor. Nothing here is a hardcoded allowlist; `<label>` can be anything. At request time, the gateway derives the same identity back out of whichever keychain service `secondary.keychain_service` actually names, so the two directions always agree without a second place to keep in sync (`internal/router.EnvVarForProvider` / `openAICompatibleIdentity`). Use `--secondary-keychain-service` on `configure` if you want a service name other than the `claude-burst-<label>` default (for example, to run two different OpenAI-compatible secondaries side by side under distinct names), and the matching `--service` on `keychain-set` to store the key under that same name. `keychain-set` never infers the service from whichever secondary happens to be configured: it used to, and the first time two OpenAI-compatible providers existed side by side it overwrote one provider's stored key with the other's. Storing several providers' keys and swapping which is active is now just independent config edits.
 
 **Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected**, in favor of the above. It would have required reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`) — exactly the pattern this README's design principles (and the source blog post) call out as why other third-party tools have been blocked by Anthropic. Not planned.
 
@@ -509,8 +516,18 @@ A local control panel runs alongside the gateway on `127.0.0.1:7788` (disable wi
 `claude-burst configure --admin-listen off`). It shows routing state, usage, the last 50
 requests, and the last 20 upstream responses **with their headers** — the
 `anthropic-ratelimit-*` ones are what actually decide failover, so overflow behaviour
-becomes debuggable rather than mysterious. It can also force/clear overflow, change the
-secondary model and failover strategy, and revert Claude Code to the stock endpoint.
+becomes debuggable rather than mysterious. It also says whether burst is in the path at
+all — and **Test connection** proves it live rather than reading config off disk, which is
+not the same question.
+
+What the buttons do: force or clear overflow; change the secondary model, failover strategy
+and intercept mode; restart the gateway (config is only read at startup); install either
+mode; arm either guard and read its log; read the gateway's own log. Anything needing root
+or affecting the whole machine is **not** done in-process — the button writes a script and
+opens it in Terminal, where you answer the sudo prompt and watch every command. That
+includes **Revert**, which runs `scripts/rollback.sh`: it undoes the machine-wide redirect
+too, not just Claude Code's endpoint, because a revert button that cannot undo the widest
+change it is offered for is not a revert button.
 
 It binds loopback and has no login, which is not by itself safe: a malicious page can point
 a hostname it controls at `127.0.0.1` and drive the UI from your own browser. Two defences
