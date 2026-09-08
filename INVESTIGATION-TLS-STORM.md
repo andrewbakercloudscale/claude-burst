@@ -385,10 +385,49 @@ the role.
   that the port move forced is kept: `cfg.Listen` is a real setting and every prober now reads
   it, which was independently worth doing.
 
+### Measured 2026-09-08: pf fails to INSERT STATE
+
+`scripts/diagnose-direct-port.sh` (read-only) snapshots pf's counters around a burst of
+failing probes. 20 direct probes, 10 real-path probes as control:
+
+```
+counter                 before       after     delta
+match                 29333280    29337527     +4247
+state-mismatch             338         338        +0
+state-insert             11810       12100      +290   <-- the drop reason
+```
+
+Every filter and block drop reason stayed at **zero**. `state-insert` is pf's
+state-insertion-*failure* counter, and +290 is about 14 per probe — one per SYN
+retransmission across each 3-second attempt.
+
+Two candidate fixes died on this output before costing anything:
+
+- **A security product blocklisting the port.** Already disproved by the port move; the
+  counters confirm it, since a filter drop would have moved a block counter.
+- **An explicit filter `pass` rule.** Nothing is blocking — no block rules exist in the
+  main ruleset or in `com.apple` — so a plain `pass` has nothing to override. Worse, our
+  anchor is referenced by `rdr-anchor` only, with no filter `anchor` line, so the rule would
+  have been loaded and never evaluated: a fix that looks applied and does nothing.
+- **State *mismatch*.** Predicted, and flatly wrong: that counter did not move at all.
+
 ### Still open
 
-Why the `no rdr` exemption fails. Worth capturing `sudo pfctl -a claude-burst -sr` and
-`sudo pfctl -s state | grep <gateway port>` during a failing direct probe — the states with
-the gateway port on both sides are the thread to pull. A candidate fix is an explicit
-`pass on lo0 ... to 127.0.0.1 port <gateway>` in the anchor ahead of the rdr, rather than
-relying on `no rdr` alone.
+Why state insertion fails. The anomalous state is visible in the same capture and has the
+gateway port on **both** sides:
+
+```
+ALL tcp 127.0.0.1:17777 -> 127.0.0.1:443     TIME_WAIT:TIME_WAIT
+ALL tcp 127.0.0.1:17777 <- 127.0.0.1:17777   TIME_WAIT:TIME_WAIT
+```
+
+The refined candidate — untested, and the fourth on this issue, so it gets an experiment
+rather than a commit — is a filter rule that explicitly does NOT create state, which would
+need a filter `anchor "claude-burst"` line in `/etc/pf.conf` that does not currently exist:
+
+```
+pass quick on lo0 inet proto tcp from any to 127.0.0.1 port <gateway> no state
+```
+
+Note this is *not* the plain `pass` ruled out above: the point is `no state`, bypassing the
+insertion that is failing, rather than overriding a block that does not exist.

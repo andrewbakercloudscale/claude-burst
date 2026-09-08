@@ -434,8 +434,21 @@ curl -sk https://api.anthropic.com/healthz   # does the REAL path answer from th
 ```
 
 Use the last one rather than a direct probe of the gateway port: while the redirect is
-installed the gateway port does not accept direct connections at all (see Verify above).
+installed the gateway port very nearly never accepts direct connections (see Verify above).
 The admin dashboard's **Test connection** button runs exactly this check.
+
+If you want to see *why* for yourself, `scripts/diagnose-direct-port.sh` snapshots pf's
+loaded rules, states and drop counters around a burst of failing probes and names the
+counter that moved. It is read-only — every `pfctl` call is a `-s` show — so it is safe to
+run mid-incident:
+
+```bash
+sudo scripts/diagnose-direct-port.sh          # writes a timestamped log you can attach to a bug
+```
+
+On this machine it shows `state-insert` climbing by ~14 per probe while every filter and
+block counter stays at zero: pf is failing to *insert state* for these connections, not
+filtering them. See `INVESTIGATION-TLS-STORM.md`.
 
 Watch for `live rdr rule : MISSING` while the hosts entry is present. That is the bad
 state — DNS redirects but nothing listens — and the fix is `remove`.
