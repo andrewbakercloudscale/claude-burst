@@ -187,6 +187,15 @@ chmod 755 "$TARGET"
 log "installed new binary at $TARGET"
 
 # --- 5. Restart and verify ---
+# Deploying restarts the gateway, which is the same deliberate "I want this
+# running" that rollback.sh's marker denies. Leaving the marker would bring the
+# gateway back with its self-heal watchdog permanently stood down: running, but
+# unguarded, with nothing anywhere saying so.
+if [[ -f "$HOME/.config/claude-burst/rolled-back" ]]; then
+  rm -f "$HOME/.config/claude-burst/rolled-back" "$HOME/.config/claude-burst/rolled-back.noted"
+  log "cleared the rolled-back marker -- the self-heal watchdog will mind the gateway again"
+fi
+
 log "restarting gateway..."
 # Recovers from the LaunchAgent being disabled/unloaded in launchd's own
 # database (e.g. by a prior rollback run) BEFORE the health check below can
