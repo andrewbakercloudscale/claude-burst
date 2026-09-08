@@ -1063,3 +1063,201 @@ func TestWriteMetricWarnsOncePerModel(t *testing.T) {
 		t.Fatalf("expected exactly 1 pricing warning across 5 unpriced requests, got %d; log:\n%s", n, logBuf.String())
 	}
 }
+
+// TestControlPlaneNeverFailsOverToSecondary is a regression test for a bug
+// found in this machine's own logs on 2026-09-03: 30 control-plane requests
+// (24 to /v1/code/sessions/<id>/worker/events/stream, 6 to
+// /api/claude_code/settings) were replayed to an openai-compatible secondary,
+// which rejected every one with "request body is not valid JSON" -- they are
+// GETs with no body, and there is no chat-completions equivalent of a Remote
+// Control long-poll. The client got a 502 blaming the secondary for a request
+// it could never have served.
+//
+// The primary here returns a subscription-limit rejection, which is the
+// strongest possible failover signal: it fires on the FIRST response, with no
+// threshold to reach. If control-plane traffic can fail over at all, this
+// catches it.
+func TestControlPlaneNeverFailsOverToSecondary(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-key")
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.Header().Set("anthropic-ratelimit-unified-reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error"}}`))
+	}))
+	defer primary.Close()
+
+	secondaryCalled := false
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryCalled = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer secondary.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primary.URL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{Provider: "bedrock", BaseURL: secondary.URL, KeychainService: cfg.KeychainService, ModelMap: cfg.ModelMap}
+
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The two real paths from the logged incident, plus the heartbeat.
+	for _, path := range []string{
+		"/v1/code/sessions/cse_test/worker/events/stream",
+		"/api/claude_code/settings",
+		"/v1/code/sessions/cse_test/worker/heartbeat",
+	} {
+		rr := httptest.NewRecorder()
+		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://local"+path, nil))
+		if rr.Code != http.StatusTooManyRequests {
+			t.Fatalf("%s: expected the primary's own 429 passed through, got %d", path, rr.Code)
+		}
+		if secondaryCalled {
+			t.Fatalf("%s was replayed to the secondary; control-plane traffic must never fail over", path)
+		}
+		if s.inOverflow(time.Now()) {
+			t.Fatalf("%s armed an overflow window; only inference may do that", path)
+		}
+	}
+}
+
+// TestControlPlaneFailuresDoNotArmOverflowForInference is the expensive half
+// of the same bug. On this machine, a single dropped Remote Control heartbeat
+// ("connection reset by peer" on .../worker/heartbeat) reached the metered
+// threshold -- transport_error_min_failures defaults to 1 -- and armed an
+// overflow window, which then sent INFERENCE to a paid provider. A long-poll
+// losing its connection is not evidence that inference is failing, and must
+// not be able to spend money.
+func TestControlPlaneFailuresDoNotArmOverflowForInference(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-key")
+
+	inferenceServed := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Control-plane paths fail hard; inference succeeds. If control-plane
+		// outcomes are counted, the inference request below goes to the
+		// secondary instead of here.
+		if !strings.HasPrefix(r.URL.Path, "/v1/messages") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		inferenceServed++
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer primary.Close()
+
+	secondaryCalled := false
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer secondary.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "anthropic-api-key", BaseURL: primary.URL, FailoverStrategy: "metered-failures"}
+	cfg.Secondary = config.RouteConfig{Provider: "bedrock", BaseURL: secondary.URL, KeychainService: cfg.KeychainService, ModelMap: cfg.ModelMap}
+	// Deliberately the most trigger-happy setting: one failure is enough.
+	cfg.MeteredFailover = config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 1, TransportErrorMinFailures: 1}
+
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 5; i++ {
+		rr := httptest.NewRecorder()
+		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://local/v1/code/sessions/cse_test/worker/heartbeat", nil))
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("attempt %d: expected the primary's 500 passed through, got %d", i, rr.Code)
+		}
+	}
+	if s.inOverflow(time.Now()) {
+		t.Fatal("five failed heartbeats armed an overflow window; control-plane failures must not spend money")
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	s.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("inference should still be served by the primary, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if secondaryCalled {
+		t.Fatal("inference was routed to the paid secondary because of control-plane failures")
+	}
+	if inferenceServed != 1 {
+		t.Fatalf("expected the primary to serve 1 inference request, got %d", inferenceServed)
+	}
+}
+
+// TestControlPlaneSuccessDoesNotResetInferenceFailures guards the opposite
+// direction, which is why the detector is passed as nil rather than merely
+// having allowFailover set to false. forward() calls OnSuccess() whenever the
+// detector is non-nil, regardless of allowFailover -- so a control-plane
+// success would clear a genuine run of inference failures. Remote Control
+// long-polls constantly, so that would effectively disable metered failover
+// during exactly the outage it exists for: failures that cannot count and
+// successes that still reset is the worst of both.
+func TestControlPlaneSuccessDoesNotResetInferenceFailures(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-key")
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Inference always fails; control-plane always succeeds.
+		if strings.HasPrefix(r.URL.Path, "/v1/messages") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer primary.Close()
+
+	secondaryCalled := false
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryCalled = true
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer secondary.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "anthropic-api-key", BaseURL: primary.URL, FailoverStrategy: "metered-failures"}
+	cfg.Secondary = config.RouteConfig{Provider: "bedrock", BaseURL: secondary.URL, KeychainService: cfg.KeychainService, ModelMap: cfg.ModelMap}
+	cfg.MeteredFailover = config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 3}
+
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"model":"claude-sonnet-5","messages":[]}`
+	// Two failing inference requests, with a SUCCESSFUL long-poll between
+	// them. If that success reset the window, the third would not fail over.
+	for i := 0; i < 2; i++ {
+		rr := httptest.NewRecorder()
+		s.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(body)))
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("inference attempt %d: got %d", i, rr.Code)
+		}
+		rr = httptest.NewRecorder()
+		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://local/v1/code/sessions/cse_test/worker/events/stream", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("control-plane long-poll should have succeeded, got %d", rr.Code)
+		}
+	}
+
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(body)))
+	if !secondaryCalled {
+		t.Fatalf("3rd inference failure should have failed over despite the successful long-polls; got %d", rr.Code)
+	}
+	if !s.inOverflow(time.Now()) {
+		t.Fatal("overflow should be armed by three inference failures inside the window")
+	}
+}
