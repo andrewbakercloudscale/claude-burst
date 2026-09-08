@@ -20,16 +20,25 @@ import (
 // its replacement as a script you had to already know about would have repeated
 // the shape of the mistake at one remove.
 
-const (
-	pfHealLabel     = "ninja.andrewbaker.claude-burst-pfheal"
+const pfHealLabel = "ninja.andrewbaker.claude-burst-pfheal"
+
+// A cycle runs every 120s. Two missed cycles plus slack: long enough that a
+// wake-from-sleep gap is not reported as death, short enough that a genuinely
+// dead daemon is visible within minutes.
+const pfHealStaleAfter = 6 * time.Minute
+
+// Paths are vars, not consts, purely so tests can point them at fixtures.
+//
+// They started as consts and the test for "no daemon installed" asserted
+// against this machine's real state. It passed until the daemon was actually
+// armed here, then failed -- a test whose result depends on what happens to be
+// installed on the developer's Mac is not testing the code, and it would have
+// gone on flipping between pass and fail for reasons nothing in the repo
+// records.
+var (
 	pfHealPlist     = "/Library/LaunchDaemons/" + pfHealLabel + ".plist"
 	pfHealHeartbeat = "/etc/claude-burst/pf-heal.heartbeat"
 	pfHealLog       = "/var/log/claude-burst-pf.log"
-
-	// A cycle runs every 120s. Two missed cycles plus slack: long enough that
-	// a wake-from-sleep gap is not reported as death, short enough that a
-	// genuinely dead daemon is visible within minutes.
-	pfHealStaleAfter = 6 * time.Minute
 )
 
 // pfHealInfo is what the dashboard can honestly say about the daemon.

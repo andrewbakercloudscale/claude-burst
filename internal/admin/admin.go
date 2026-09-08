@@ -441,14 +441,27 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	// State the timezone, every time. The gateway logs in UTC (log.LUTC in
+	// main.go) while every timestamp the dashboard renders is local, and on
+	// 2026-09-08 that cost a real detour: the log's newest line read 06:11
+	// while the requests table read 08:11, which looks exactly like a logger
+	// that has silently stopped. It had not -- CEST is UTC+2. A header is
+	// cheaper than rewriting the format of a 10MB file, and unlike a comment
+	// in the source it is in front of the person actually reading the log.
+	now := time.Now()
+	_, offset := now.Zone()
+	fmt.Fprintf(w, "(timestamps below are UTC; local time here is UTC%+d, so the newest line should read about %s)\n",
+		offset/3600, now.UTC().Format("15:04"))
 	if st.Size() > logTailBytes {
 		if _, err := f.Seek(-logTailBytes, io.SeekEnd); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprintf(w, "(showing the last %dKB of %s -- %d bytes total; older lines are in claude-burst.log.1, .2, ... via rotation)\n\n",
+		fmt.Fprintf(w, "(showing the last %dKB of %s -- %d bytes total; older lines are in claude-burst.log.1, .2, ... via rotation)\n",
 			logTailBytes/1024, path, st.Size())
 	}
+	fmt.Fprintln(w)
 	_, _ = io.Copy(w, f)
 }
 

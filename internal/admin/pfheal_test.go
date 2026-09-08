@@ -3,8 +3,10 @@ package admin
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestPFHealEventsPicksConsequentialLines: the log carries a preamble and the
@@ -55,24 +57,75 @@ func TestPFHealEventsKeepsTheNewest(t *testing.T) {
 	}
 }
 
-// TestPFHealStatusWithoutDaemon: on a machine where none of this is installed
-// the dashboard must say "not armed", not crash and not claim it is running.
-// -1 is the sentinel the UI uses to mean "never reported in", so it has to
-// survive rather than read as an age of zero seconds.
-func TestPFHealStatusWithoutDaemon(t *testing.T) {
-	info := pfHealStatus("")
-	if info.Running {
-		t.Error("reported Running with no heartbeat on this machine")
-	}
-	if info.LastCheckSeconds >= 0 && !info.Running {
-		// A stale heartbeat is legitimate (a daemon that died); only an
-		// absent one must be -1.
-		if _, err := os.Stat(pfHealHeartbeat); os.IsNotExist(err) {
-			t.Errorf("no heartbeat file exists, so age should be -1, got %d", info.LastCheckSeconds)
+// TestPFHealStatusStates drives every state the guard row renders from, using
+// fixtures rather than whatever happens to be installed on this Mac.
+func TestPFHealStatusStates(t *testing.T) {
+	dir := t.TempDir()
+	plist := filepath.Join(dir, "daemon.plist")
+	beat := filepath.Join(dir, "heartbeat")
+	logf := filepath.Join(dir, "pf.log")
+
+	oldPlist, oldBeat, oldLog := pfHealPlist, pfHealHeartbeat, pfHealLog
+	pfHealPlist, pfHealHeartbeat, pfHealLog = plist, beat, logf
+	t.Cleanup(func() { pfHealPlist, pfHealHeartbeat, pfHealLog = oldPlist, oldBeat, oldLog })
+
+	writeBeat := func(age time.Duration) {
+		ts := strconv.FormatInt(time.Now().Add(-age).Unix(), 10)
+		if err := os.WriteFile(beat, []byte(ts+"\n"), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if info.LogPath == "" {
-		t.Error("LogPath should always be reported so the UI can name the file")
+
+	// 1. Nothing installed. -1 is the sentinel the UI reads as "never
+	// reported in"; a zero here would render as "last checked 0s ago".
+	got := pfHealStatus("")
+	if got.Installed || got.Running || got.LastCheckSeconds != -1 {
+		t.Errorf("clean machine: want not installed / not running / -1, got %+v", got)
+	}
+	if got.LogPath == "" {
+		t.Error("LogPath must always be set so the UI can name the file")
+	}
+
+	// 2. Armed and beating.
+	if err := os.WriteFile(plist, []byte("<plist/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeBeat(30 * time.Second)
+	got = pfHealStatus("/repo/scripts")
+	if !got.Installed || !got.Running {
+		t.Errorf("fresh heartbeat: want installed+running, got %+v", got)
+	}
+	if got.LastCheckSeconds < 25 || got.LastCheckSeconds > 40 {
+		t.Errorf("age should be about 30s, got %d", got.LastCheckSeconds)
+	}
+	if got.InstallCmd == "" {
+		t.Error("InstallCmd should be offered so the UI can print a copyable command")
+	}
+
+	// 3. Installed but dead -- the state that must not read as healthy. A
+	// stale heartbeat is the ONLY evidence available for this: launchd will
+	// not answer an unprivileged caller at all.
+	writeBeat(pfHealStaleAfter + time.Minute)
+	got = pfHealStatus("")
+	if !got.Installed {
+		t.Error("plist exists, so Installed should stay true")
+	}
+	if got.Running {
+		t.Errorf("heartbeat older than %v must not read as running (age %ds)", pfHealStaleAfter, got.LastCheckSeconds)
+	}
+
+	// 4. A heartbeat from the future (clock change) is not proof of life.
+	writeBeat(-time.Hour)
+	if pfHealStatus("").Running {
+		t.Error("a heartbeat an hour in the future must not read as running")
+	}
+
+	// 5. Garbage in the heartbeat must not panic or read as alive.
+	if err := os.WriteFile(beat, []byte("not-a-timestamp"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := pfHealStatus(""); got.Running || got.LastCheckSeconds != -1 {
+		t.Errorf("unparseable heartbeat: want not running / -1, got %+v", got)
 	}
 }
 
