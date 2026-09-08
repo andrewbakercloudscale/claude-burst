@@ -430,22 +430,49 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// /v1/messages/count_tokens is Anthropic-specific: no equivalent request
-	// shape exists on an openai-compatible secondary's wire protocol. Routing
-	// it there (as isInference below would, during an overflow window) makes
-	// the OpenAI translator mistranslate the count-only body into a full
-	// chat-completion request -- paying for a real generation just to answer
-	// "how many tokens is this" -- and it hangs until the response-header
-	// timeout before 502ing, since the translated reply never resembles a
-	// count response. So this always goes to primary, overflow or not, and
-	// never fails over: there is nowhere correct to fail over to.
+	// ONE RULE, applied twice below: a request that cannot fail over does not
+	// feed the failover detector either. Only /v1/messages can fail over, so
+	// only /v1/messages decides when to.
+	//
+	// Both halves of that were wrong before, and both were observed in real
+	// logs on this machine (2026-09-03):
+	//
+	//   - Control-plane paths passed allowFailover=true, so a run of failures
+	//     replayed them to the secondary -- which has no such endpoint. 30
+	//     requests to /v1/code/sessions/<id>/worker/events/stream and
+	//     /api/claude_code/settings were handed to the OpenAI translator,
+	//     which rejected each one with "request body is not valid JSON"
+	//     because they are GETs with no body. The client got a 502 blaming
+	//     the secondary for a request the secondary could never serve.
+	//   - Worse, their outcomes counted. A single dropped Remote Control
+	//     heartbeat ("connection reset by peer" on .../worker/heartbeat) was
+	//     enough to arm an overflow window -- transport_error_min_failures
+	//     defaults to 1 -- which then routed INFERENCE to a paid provider.
+	//     A long-poll losing its connection is not evidence that inference is
+	//     failing, and must not be able to spend money.
+	//
+	// The nil detector matters as much as allowFailover=false, and in the
+	// opposite direction. forward() calls OnSuccess() whenever fd != nil,
+	// regardless of allowFailover, so leaving the detector wired here would
+	// let Remote Control's constant successful long-polls RESET a genuine run
+	// of inference failures -- masking a real Anthropic outage rather than
+	// reacting to it. Failures that cannot count and successes that still
+	// reset is the worst of both. One signal source, both directions.
+	//
+	// count_tokens gets its own branch because isInference matches it
+	// (prefix /v1/messages) and it has an extra reason of its own: it is
+	// Anthropic-specific, with no equivalent shape on an openai-compatible
+	// secondary. Routing it there makes the translator turn a count-only body
+	// into a full chat-completion -- paying for a real generation to answer
+	// "how many tokens is this" -- and then hang until the response-header
+	// timeout before 502ing, since the reply never resembles a count.
 	if r.URL.Path == "/v1/messages/count_tokens" {
-		s.forward(w, r, body, "primary", s.primary, s.primaryDetector, false, "")
+		s.forward(w, r, body, "primary", s.primary, nil, false, "")
 		return
 	}
 
 	if !isInference(r.URL.Path) {
-		s.forward(w, r, body, "primary", s.primary, s.primaryDetector, s.secondary != nil, "")
+		s.forward(w, r, body, "primary", s.primary, nil, false, "")
 		return
 	}
 

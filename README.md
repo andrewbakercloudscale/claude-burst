@@ -43,10 +43,14 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 8. Future inference requests use the secondary until the reset time plus a small safety grace period.
 9. The first request after that time goes back to Anthropic Max automatically.
 
-One exception to step 8: `/v1/messages/count_tokens` always goes to the primary, overflow
-or not, and never fails over. It is Anthropic-specific and has no equivalent request shape
-on an OpenAI-compatible endpoint, so there is nowhere correct to send it — translating it
-would bill a full generation to answer "how many tokens is this".
+Only `/v1/messages` participates in any of this. Everything else — `count_tokens`, and
+Claude Code's control-plane traffic such as Remote Control's long-poll and settings fetch —
+always goes to the primary, never fails over, and does not feed the failover detector in
+either direction. There is nowhere correct to send those: an OpenAI-compatible endpoint has
+no equivalent of a Remote Control long-poll, and translating a `count_tokens` body would
+bill a full generation to answer "how many tokens is this". Just as importantly, a dropped
+long-poll is not evidence that inference is failing and must not be able to open a paid
+overflow window, and a healthy long-poll is not evidence that it has recovered.
 
 Claude Burst does not rotate Max accounts, suppress quota signals, fabricate headers, or attempt to extend the Max allowance. The subscription limit remains authoritative.
 
