@@ -474,6 +474,14 @@ func newSecondaryTestServer(t *testing.T) (*Server, string, map[string]string) {
 		}
 		return keychain.Info{Present: true, Source: "keychain", Modified: time.Unix(1757330000, 0)}
 	}
+	s.loadKey = func(service, envVar string) (string, error) {
+		if v, ok := stored[service]; ok {
+			return v, nil
+		}
+		return "", errors.New("key not found in " + envVar + " or macOS Keychain (service " + service + ")")
+	}
+	// Allowed by default; the tests that care about the gate override it.
+	s.authenticate = func(reason string) error { return nil }
 	return s, home, stored
 }
 
@@ -799,5 +807,155 @@ func TestStateReportsKeySourceAndAge(t *testing.T) {
 	}
 	if strings.HasSuffix(st.Secondary.KeyUpdated, "Z") && time.Local != time.UTC {
 		t.Errorf("key_updated %q is UTC, not local time", st.Secondary.KeyUpdated)
+	}
+}
+
+// TestSecondaryKeyRevealRequiresMutationGuard is the reason this endpoint is
+// a POST despite reading nothing. The custom header forces a CORS preflight
+// this server never answers, so a cross-origin page cannot reach it; a
+// read-only GET would have rested on the Host check alone. Getting this
+// wrong leaks a credential rather than flipping a setting, so it is pinned.
+func TestSecondaryKeyRevealRequiresMutationGuard(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	stored["claude-burst-zai"] = "sk-live-value"
+	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4",
+		"model":"glm-4.6","keychain_service":"claude-burst-zai"}`); rr.Code != http.StatusOK {
+		t.Fatalf("setup save failed: %s", rr.Body.String())
+	}
+
+	// GET must not work at all.
+	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/secondary-key", nil)
+	get.Host = "127.0.0.1"
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, get)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET status=%d, want 405", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "sk-live-value") {
+		t.Fatal("GET leaked the key")
+	}
+
+	// POST without the header must not work either.
+	noHdr := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	noHdr.Host = "127.0.0.1"
+	rr = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, noHdr)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("POST without %s: status=%d, want 403", mutationHeader, rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "sk-live-value") {
+		t.Fatal("unguarded POST leaked the key")
+	}
+
+	// A non-loopback Host must not work even with the header.
+	evil := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	evil.Host = "evil.example.com"
+	evil.Header.Set(mutationHeader, "1")
+	rr = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, evil)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("rebinding Host: status=%d, want 403", rr.Code)
+	}
+
+	// The properly guarded call returns it.
+	ok := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	ok.Host = "127.0.0.1"
+	ok.Header.Set(mutationHeader, "1")
+	rr = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, ok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("guarded POST status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp secondaryKeyResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Value != "sk-live-value" {
+		t.Errorf("value = %q, want the stored key", resp.Value)
+	}
+	if resp.Source != "keychain" {
+		t.Errorf("source = %q, want keychain", resp.Source)
+	}
+	if cc := rr.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store — a secret must not settle into a cache", cc)
+	}
+}
+
+// TestSecondaryKeyRevealWithoutKey must 404 rather than return an empty
+// string that the UI would render as a blank "revealed" box, which reads as
+// "the stored key is empty" rather than "there is no stored key".
+func TestSecondaryKeyRevealWithoutKey(t *testing.T) {
+	s, home, _ := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4","model":"glm-4.6"}`); rr.Code != http.StatusOK {
+		t.Fatalf("setup save failed: %s", rr.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	req.Host = "127.0.0.1"
+	req.Header.Set(mutationHeader, "1")
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404 (body=%s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestSecondaryKeyRevealDeniedByAuth is the half of the Touch ID gate that
+// matters. A gate exercised only in its allow direction proves nothing: the
+// failure that costs something here is the key being read and returned
+// anyway when the prompt was cancelled.
+func TestSecondaryKeyRevealDeniedByAuth(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	stored["claude-burst-zai"] = "sk-must-not-leak"
+	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4",
+		"model":"glm-4.6","keychain_service":"claude-burst-zai"}`); rr.Code != http.StatusOK {
+		t.Fatalf("setup save failed: %s", rr.Body.String())
+	}
+
+	// The key must not even be READ when the prompt is refused, so this
+	// fails the test rather than merely recording it.
+	s.loadKey = func(service, envVar string) (string, error) {
+		t.Error("the key was read despite authentication being denied")
+		return stored[service], nil
+	}
+	s.authenticate = func(reason string) error { return errors.New("User canceled authentication") }
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	req.Host = "127.0.0.1"
+	req.Header.Set(mutationHeader, "1")
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "sk-must-not-leak") {
+		t.Fatal("the key was returned despite authentication being denied")
+	}
+}
+
+// TestSecondaryKeyRevealPromptNamesTheProvider: the sheet's reason string is
+// the only place the user is told WHAT they are approving. A generic prompt
+// trains people to approve prompts.
+func TestSecondaryKeyRevealPromptNamesTheProvider(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	stored["claude-burst-zai"] = "sk-live"
+	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4",
+		"model":"glm-4.6","keychain_service":"claude-burst-zai"}`); rr.Code != http.StatusOK {
+		t.Fatalf("setup save failed: %s", rr.Body.String())
+	}
+	var got string
+	s.authenticate = func(reason string) error { got = reason; return nil }
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	req.Host = "127.0.0.1"
+	req.Header.Set(mutationHeader, "1")
+	s.Handler().ServeHTTP(httptest.NewRecorder(), req)
+
+	if !strings.Contains(got, "openai-compatible") || !strings.Contains(got, "API key") {
+		t.Errorf("prompt reason = %q, want it to name the provider and say it is an API key", got)
 	}
 }

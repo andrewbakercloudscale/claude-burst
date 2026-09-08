@@ -34,6 +34,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
+	"github.com/andrewbakercloudscale/claude-burst/internal/touchid"
 )
 
 //go:embed admin.html
@@ -67,12 +68,18 @@ type Server struct {
 	// running on.
 	storeKey func(service, value string) error
 	keyInfo  func(service, envVar string) keychain.Info
+	loadKey  func(service, envVar string) (string, error)
+	// authenticate gates the one endpoint that hands out a secret. A field
+	// so tests can drive both answers: a gate that is only ever exercised
+	// in its allow direction is not a gate.
+	authenticate func(reason string) error
 }
 
 func New(gateway *router.Server, metricsPath, version, extraHost, rootHelper string) *Server {
 	return &Server{gateway: gateway, metricsPath: metricsPath, version: version,
 		extraHost: strings.ToLower(extraHost), rootHelper: rootHelper,
-		storeKey: keychain.Store, keyInfo: keychain.Describe}
+		storeKey: keychain.Store, keyInfo: keychain.Describe, loadKey: keychain.Load,
+		authenticate: touchid.Authenticate}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -87,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
+	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
 	mux.HandleFunc("/api/revert", s.mutating(s.handleRevert))
 	mux.HandleFunc("/api/restart", s.mutating(s.handleRestart))
 	mux.HandleFunc("/api/install", s.mutating(s.handleInstall))
@@ -856,6 +864,71 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 	// just saved.
 	resp.Restart = "the gateway reads config at startup — restart it (button below) before this secondary can actually serve anything"
 	writeJSON(w, resp)
+}
+
+type secondaryKeyResponse struct {
+	Value string `json:"value"`
+	// Source is "keychain" or "environment" -- the same distinction
+	// /api/state draws, and it matters here too: an env-var value is not
+	// what a saved configuration is relying on, and editing the box would
+	// write a Keychain entry that the env var then keeps overriding.
+	Source string `json:"source"`
+}
+
+// handleSecondaryKey returns the secondary's API key in the clear, for the
+// dashboard's Show button.
+//
+// This is the one endpoint that hands out a secret, so it is deliberately
+// POST-and-mutation-guarded rather than a read-only GET, despite reading
+// nothing. The custom header forces a CORS preflight that this server never
+// answers, so a cross-origin page cannot reach it even if it gets past the
+// loopback Host check -- whereas a plain GET would need only the Host check
+// to hold. It is not a mutation; it is guarded like one because the cost of
+// being wrong is a leaked credential rather than a changed setting.
+//
+// Nothing here logs the value, and the response is marked no-store so it
+// does not settle into a disk cache.
+func (s *Server) handleSecondaryKey(w http.ResponseWriter, r *http.Request) {
+	cfg, err := config.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	service, envVar := credentialNames(cfg.Secondary, cfg.KeychainService)
+	if envVar == "" {
+		http.Error(w, "the configured secondary ("+cfg.Secondary.Provider+") has no API key of its own", http.StatusBadRequest)
+		return
+	}
+	// Touch ID (or the login password) before the key is even read, not
+	// after -- a denied prompt must not have fetched the secret at all.
+	//
+	// Deliberately fails CLOSED: no prompt, no key. That is only safe
+	// because the sheet accepts the login password as well as a
+	// fingerprint, so a Mac with no sensor, or a user who has enrolled no
+	// finger, still has a way through. Gating on biometrics alone would
+	// have locked someone out of their own credential.
+	//
+	// The gateway's own read of this key, on the failover path, does NOT
+	// come through here. Failover happens unattended; a prompt there would
+	// simply time out and take the secondary down with it.
+	if err := s.authenticate("reveal the " + cfg.Secondary.Provider + " API key stored for Claude Burst"); err != nil {
+		http.Error(w, "authentication was not completed, so the key was not read: "+err.Error(), http.StatusForbidden)
+		return
+	}
+
+	value, err := s.loadKey(service, envVar)
+	if err != nil {
+		// keychain.Load's error names the service and env var it looked in
+		// and never contains the value.
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	source := "keychain"
+	if os.Getenv(envVar) != "" {
+		source = "environment"
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, secondaryKeyResponse{Value: value, Source: source})
 }
 
 // handleRestart exits the process. launchd's KeepAlive brings it straight back

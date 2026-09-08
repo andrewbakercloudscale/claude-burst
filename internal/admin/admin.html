@@ -82,6 +82,40 @@
   }
   .card h3 { margin: 0 0 9px; font-size: 11px; font-weight: 600; text-transform: uppercase;
              letter-spacing: .07em; color: var(--faint); }
+
+  /* Card colour states. The rule these follow, and the one that keeps them
+     honest: the colour describes the CARD'S OWN HEADLINE, never the sub-line
+     underneath it. Colouring Remote Control by the intercept health in its
+     sub-line would put a green card over the word "Available" while the
+     detail beneath it read "CA trusted: NO", which is the dashboard telling
+     you two different things in one box.
+
+     Status cards (a verdict: Primary/Secondary, Available/Disabled) are
+     tinted and carry ok/warn/bad. Measurement cards (a number that is
+     neither good nor bad -- requests, spend) get an accent rule and no tint,
+     because tinting money green would assert an opinion about it that the
+     dashboard has no basis for. The two groups being visually distinct is
+     the actual information: which cards are telling you something is wrong,
+     and which are just counting.
+
+     Every colour here comes from the existing --ok/--warn/--bad pairs, whose
+     backgrounds already flip with the dark-mode block below, so a tinted
+     card is legible in both themes rather than only the one it was built in. */
+  .card { border-left: 3px solid var(--border); }
+  .card.c-ok   { background: var(--ok-bg);   border-color: color-mix(in srgb, var(--ok) 28%, transparent);   border-left-color: var(--ok); }
+  .card.c-warn { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 28%, transparent); border-left-color: var(--warn); }
+  .card.c-bad  { background: var(--bad-bg);  border-color: color-mix(in srgb, var(--bad) 28%, transparent);  border-left-color: var(--bad); }
+  .card.c-ok   .stat { color: var(--ok); }
+  .card.c-warn .stat { color: var(--warn); }
+  .card.c-bad  .stat { color: var(--bad); }
+  .card.c-ok   h3, .card.c-warn h3, .card.c-bad h3 { color: inherit; opacity: .75; }
+  .card.c-ok   h3 { color: var(--ok); }
+  .card.c-warn h3 { color: var(--warn); }
+  .card.c-bad  h3 { color: var(--bad); }
+  /* Measurement cards: an accent rule, no tint, and the stat keeps the
+     ordinary text colour so it does not read as a verdict. */
+  .card.c-info { border-left-color: var(--accent); }
+  .card.c-info h3 { color: var(--accent); }
   .stat { font-size: 25px; font-weight: 640; letter-spacing: -.02em; line-height: 1.1; }
   .stat small { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
   .sub { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
@@ -325,6 +359,7 @@
           <label for="secApiKey">API key</label>
           <input id="secApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="leave blank to keep the stored key">
         </div>
+        <button class="secField" id="showSecApiKey">👁 Show</button>
         <button class="primary" id="saveSecondary">✓ Save secondary</button>
       </div>
       <div class="hint" style="margin-top:8px" id="secKeyHint"></div>
@@ -418,7 +453,7 @@ let secDirty = false;
 // a hint that only updates on save is wrong for exactly as long as someone
 // is looking at it deciding what to type.
 $("secKeychain").addEventListener("input", applySecProvider);
-$("secProvider").addEventListener("change", () => { secDirty = true; applySecProvider(); });
+$("secProvider").addEventListener("change", () => { secDirty = true; hideSecApiKey(); applySecProvider(); });
 
 // "none" has no endpoint, model or credential, and bedrock's target model
 // comes from the config.json model_map rather than a single field -- so the
@@ -510,7 +545,12 @@ function renderSecondary(s) {
   const bad = none || missingKey;
   if (bad && !secWasBad) setSecondaryOpen(true);
   secWasBad = bad;
+  // A revealed key belongs to the secondary that was on screen when it was
+  // fetched. Leaving it visible across a change of provider would show one
+  // provider's credential under another's name.
+  if (revealed !== null && sec.provider !== revealedFor) hideSecApiKey();
   if (secDirty) return;
+  revealedFor = sec.provider;
   $("secProvider").value = sec.provider && sec.provider !== "none" ? sec.provider : (sec.provider === "none" ? "none" : "openai-compatible");
   $("secBaseUrl").value = sec.base_url || "";
   $("secModel").value = sec.model || "";
@@ -580,24 +620,35 @@ function renderCards(s) {
     interceptDetail = "ANTHROPIC_BASE_URL unset — the gateway is not enabled";
   }
 
+  // Routing is green on the primary and amber on the secondary, because
+  // those are not equivalent states: the primary is the subscription you
+  // have already paid for, the secondary is metered spend that keeps
+  // accruing until the window expires. Amber is "you are spending money
+  // now", not "something is broken" -- which is why it is not red.
+  const routingClass = s.overflow ? "c-warn" : "c-ok";
+  // Remote Control is coloured by ITS OWN headline only. Disabled is amber
+  // rather than red: it is a feature deliberately traded away by choosing
+  // base-url mode, not a fault.
+  const rcClass = rc ? "c-ok" : "c-warn";
+
   $("cards").innerHTML = `
-    <div class="card">
+    <div class="card ${routingClass}">
       <h3>Routing</h3>
       <div class="stat">${s.overflow ? "Secondary" : "Primary"}</div>
       <div class="sub">${esc(s.overflow ? (s.secondary.provider || "—") : (s.primary.provider || "—"))}${
         s.until ? " · until " + esc(s.until) : ""}</div>
     </div>
-    <div class="card">
+    <div class="card ${rcClass}">
       <h3>Remote Control</h3>
       <div class="stat">${rc ? "Available" : "Disabled"}</div>
       <div class="sub">${esc(interceptDetail)}</div>
     </div>
-    <div class="card">
+    <div class="card c-info">
       <h3>Last 24 hours</h3>
       <div class="stat">${num(s.today.Requests)} <small>requests</small></div>
       <div class="sub">${num(s.today.InputTokens)} in · ${num(s.today.OutputTokens)} out · ${money(s.today.APIEquivalentUSD)}</div>
     </div>
-    <div class="card">
+    <div class="card c-info">
       <h3>All time</h3>
       <div class="stat">${money(s.totals.APIEquivalentUSD)}</div>
       <div class="sub">${num(s.totals.Requests)} requests · ${num(s.totals.PrimaryRequests)} primary · ${num(s.totals.SecondaryRequests)} secondary</div>
@@ -1019,6 +1070,46 @@ async function refresh() {
   }
 }
 
+// Reveals the stored key in the box. Fetched on demand rather than sent
+// with /api/state: the page holds the secret only for as long as it is
+// actually being looked at, so a tab left open on this dashboard is not a
+// tab with a credential sitting in its DOM.
+//
+// revealed remembers the exact value that was shown, so Save can tell "I
+// looked at the key" from "I typed a new one" -- without it, revealing and
+// then saving would re-write the identical secret to the Keychain on every
+// save, which is a pointless write and a misleading "saved" message.
+let revealed = null;
+let revealedFor = null;
+function hideSecApiKey() {
+  revealed = null;
+  $("secApiKey").type = "password";
+  $("secApiKey").value = "";
+  $("showSecApiKey").textContent = "👁 Show";
+}
+$("showSecApiKey").onclick = async () => {
+  if (revealed !== null) { hideSecApiKey(); return; }
+  const btn = $("showSecApiKey");
+  btn.disabled = true;
+  try {
+    const r = await post("/api/secondary-key");
+    revealed = r.value;
+    $("secApiKey").type = "text";
+    $("secApiKey").value = r.value;
+    btn.textContent = "🙈 Hide";
+    if (r.source === "environment") {
+      note($("secNote"), "warn", `This key is coming from $${(lastState && lastState.secondary && lastState.secondary.key_env_var) || "the environment"}, not the Keychain. ` +
+        "It is not stored anywhere on disk and will be gone at next login unless something sets it again.");
+    }
+  } catch (e) { note($("secNote"), "bad", e.message); }
+  finally { btn.disabled = false; }
+};
+// Typing over a revealed key makes it a new key again, so the save path
+// stops treating it as unchanged.
+$("secApiKey").addEventListener("input", () => {
+  if (revealed !== null && $("secApiKey").value !== revealed) revealed = null;
+});
+
 $("saveSecondary").onclick = async () => {
   const provider = $("secProvider").value;
   if (provider === "none" && !confirm("Remove the secondary provider?\n\nOverflow will have nowhere to go: when the primary runs out, requests fail instead of failing over.")) return;
@@ -1030,12 +1121,14 @@ $("saveSecondary").onclick = async () => {
       base_url: $("secBaseUrl").value.trim(),
       model: $("secModel").value.trim(),
       keychain_service: $("secKeychain").value.trim(),
-      api_key: $("secApiKey").value,
+      // An untouched revealed key is not a new key: sending it would
+      // rewrite the identical secret and report it as a change.
+      api_key: revealed !== null && $("secApiKey").value === revealed ? "" : $("secApiKey").value,
     });
     secDirty = false;
     // The key is now in the Keychain; keeping it in a DOM node afterwards
     // only widens where it can be read from.
-    $("secApiKey").value = "";
+    hideSecApiKey();
     const lines = [r.ok, r.warning, r.restart].filter(Boolean).join("\n\n");
     note($("secNote"), r.warning ? "warn" : "ok", lines);
     refresh();
