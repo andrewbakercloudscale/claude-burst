@@ -46,6 +46,35 @@ ROLLED_BACK_MARKER="${CLAUDE_BURST_ROLLED_BACK_MARKER:-$HOME/.config/claude-burs
 
 source "$DIR/health-diagnostics.sh"
 
+# Acquire root ONCE, UP FRONT, before anything is changed.
+#
+# This used to be decided at step 4, with `sudo -n` alone: no cached
+# credentials meant printing the remaining commands and exiting 2. That is
+# right for an unattended caller, and wrong for the far more common case of a
+# person running this in a terminal -- it never prompts, so it silently
+# performs steps 1-3, stops at the root step, and leaves a half-install whose
+# only visible symptom is that nothing is redirected. Observed twice on
+# 2026-09-08, the second time after I told the user to run this exact command.
+#
+# rollback.sh already had the answer and it was never applied here: prompt when
+# there is a tty to prompt on, print-and-stop when there is not. Doing it here
+# rather than at step 4 also means a run that cannot finish changes NOTHING,
+# instead of discovering the problem after settings.json and the CA are done.
+HAVE_ROOT=0
+if [[ $EUID -eq 0 ]]; then
+  HAVE_ROOT=1
+elif sudo -n true 2>/dev/null; then
+  HAVE_ROOT=1
+elif [[ -t 0 ]]; then
+  echo "claude-burst transparent install needs sudo for /etc/hosts, pf, and System-keychain CA trust." >&2
+  sudo -v && HAVE_ROOT=1
+fi
+if [[ "$HAVE_ROOT" -ne 1 ]]; then
+  echo "WARNING: no sudo credentials and no terminal to prompt on -- nothing has been changed." >&2
+  echo "Run this again from a terminal, or pre-authorise with: sudo -v" >&2
+  exit 2
+fi
+
 # Clear the "a human rolled this back" marker rollback.sh leaves behind, so
 # the self-heal watchdog starts minding the gateway again. Done first: every
 # path below assumes the gateway is meant to be running.
@@ -101,20 +130,18 @@ gateway_port="$(python3 -c "import json;print(json.load(open('$HOME/.config/clau
 echo "== 4. machine-wide redirect: /etc/hosts + pf (needs root) =="
 echo "changing: adds '127.0.0.1 api.anthropic.com' to /etc/hosts, loads a pf anchor"
 echo "redirecting 127.0.0.1:443 -> 127.0.0.1:$gateway_port"
+# HAVE_ROOT was established at the top, before anything was changed, so this
+# cannot be the step that discovers we have no password.
 if [[ $EUID -eq 0 ]]; then
   "$ROOT_HELPER" install
-elif sudo -n true 2>/dev/null; then
-  sudo -n "$ROOT_HELPER" install
 else
-  echo "WARNING: cannot run the machine-wide step without a password. Run NOW:" >&2
-  echo "    sudo $ROOT_HELPER install" >&2
-  echo "Then (see step 5 below) run:" >&2
-  echo "    sudo $TRUST_HELPER" >&2
-  echo "Then arm the watchdog yourself:" >&2
-  echo "    nohup $DIR/watchdog.sh & disown" >&2
-  echo "(gateway is up and settings.json/CA for Claude Code CLI are already done -- these two root steps are what's left)" >&2
+  sudo -n "$ROOT_HELPER" install
+fi || {
+  echo "ERROR: the machine-wide redirect did not install. Nothing is redirected," >&2
+  echo "so Claude Code still reaches Anthropic directly -- the safe state." >&2
+  echo "Undo the rest with: $DIR/rollback.sh" >&2
   exit 2
-fi
+}
 
 echo
 echo "== 5. machine-wide CA trust: System keychain (needs root) =="
@@ -126,16 +153,14 @@ echo "  api.anthropic.com (Claude Desktop's auto-updater, for one) fails its TLS
 echo "  handshake against a certificate it doesn't trust. See INVESTIGATION-TLS-STORM.md."
 if [[ $EUID -eq 0 ]]; then
   "$TRUST_HELPER"
-elif sudo -n true 2>/dev/null; then
-  sudo -n "$TRUST_HELPER"
 else
-  echo "WARNING: cannot run this without a password. Run NOW:" >&2
+  sudo -n "$TRUST_HELPER"
+fi || {
+  echo "WARNING: system-wide CA trust failed. The redirect from step 4 IS live, so" >&2
+  echo "other apps reaching api.anthropic.com will fail TLS until this is fixed:" >&2
   echo "    sudo $TRUST_HELPER" >&2
-  echo "Then arm the watchdog yourself:" >&2
-  echo "    nohup $DIR/watchdog.sh & disown" >&2
-  echo "(the redirect from step 4 is already live -- this is the last step)" >&2
-  exit 2
-fi
+  echo "Or undo everything with: $DIR/rollback.sh" >&2
+}
 
 echo
 echo "== 6. arming the watchdog =="
