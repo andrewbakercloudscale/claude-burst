@@ -1,7 +1,10 @@
 # Open investigation: TLS handshake storm + port-7777 timeout
 
-Status: TLS handshake storm **ROOT-CAUSED AND FIXED 2026-09-03** (see update at the bottom).
-Issue #1 (port-7777 timeout) is still **OPEN**.
+Status: TLS handshake storm **ROOT-CAUSED 2026-09-03**, and the fix held for three days —
+but certificate rejections **came back on 2026-09-07**, at about a tenth of the old rate and
+apparently from a different client. See the 2026-09-08 update at the bottom before treating
+this as closed. Issue #1 (port-7777 timeout) is still **OPEN** (confirmed open on GitHub,
+2026-09-08).
 
 ## Issue #1 (original): direct 127.0.0.1:7777 timeout right after restart
 
@@ -21,9 +24,12 @@ Tracked at https://github.com/andrewbakercloudscale/claude-burst/issues/1
   with root — owner was about to run this when the session was paused.
 - Diagnostic tooling already in place: `scripts/health-diagnostics.sh` auto-captures curl
   verbose (both schemes), `lsof -iTCP:7777`, `launchctl list`, log tails to
-  `~/.config/claude-burst/health-check-failures.log` on every health-check failure. Has one
-  real capture from 2026-08-31T17:10:39Z. Does **not** capture pfctl output (needs a
-  password, can't run unattended).
+  `~/.config/claude-burst/health-check-failures.log` on every health-check failure. It now
+  holds **nine** captures spanning 2026-08-31T17:08:45Z to 2026-09-03T16:52Z — six of them
+  in matched new-binary/rollback-binary pairs, which is this issue's signature: the health
+  check failed, deploy.sh rolled a working build back, and the rollback binary then failed
+  the same check. Nobody has read them since the first one. Does **not** capture pfctl
+  output (needs a password, can't run unattended).
 - `cmd/claude-burst/main.go`'s `serve()` logs a confirmed, timestamped listener-bind
   success/failure (`net.Listen` split from `Serve`) to help distinguish "slow to bind" from
   "bound fine, external layer is the problem".
@@ -173,3 +179,65 @@ respectively, as explicit, clearly-labeled root steps -- never silently escalate
 every other machine-wide change in this repo.
 
 Issue #1 (the direct `:7777` timeout) is unrelated and remains open.
+
+## Update 2026-09-08: the storm came back, smaller, and probably from something else
+
+Counting `unknown certificate` rejections in `launchd.err.log` per day:
+
+```
+965   2026-08-31
+751   2026-09-01
+1395  2026-09-02
+747   2026-09-03   <- trust-ca-systemwide.sh landed
+  0   2026-09-04
+  0   2026-09-05
+  0   2026-09-06
+ 86   2026-09-07   <- first at 23:20:18
+ 34   2026-09-08   <- last at 07:05:35
+```
+
+So the fix was real: three clean days, from ~750/day to nothing. It is the recurrence that
+needs explaining, and the honest reading is that **it is not the same client**. Claude
+Desktop's own `~/Library/Logs/Claude/main.log` has logged no TLS-worded updater error since
+`2026-09-03 16:05:20` — the identification that root-caused this in the first place. Its
+later failures (through `2026-09-07 22:12:08`) say *"Could not connect to the server"*,
+which is the pf outage of that evening (connection refused, nothing listening), a different
+fault with a different signature. Meanwhile the gateway went on rejecting certificates from
+some client that leaves no trace in that log at all.
+
+**The most likely mechanism, and it is structural rather than mysterious.** The fix is a
+System-keychain trust that `scripts/rollback.sh` deliberately removes at step 1b, via
+`untrust-ca-systemwide.sh`, and that only `install-proxy.sh` step 5 puts back. So every
+rollback re-opens the exact hole this investigation closed, and any window in which the
+`/etc/hosts` redirect is installed while System trust is not reproduces the storm by
+construction. The evening of 2026-09-07 and the morning of 2026-09-08 contained several
+such cycles. That is the same shape as the state `interceptActive` already
+calls "worse than not intercepting" — traffic arrives and is rejected — one layer down,
+and nothing currently checks for it.
+
+**Verified good right now**, so this is a window problem and not a persistent regression:
+
+```
+$ security verify-cert -c ~/.config/claude-burst/ca/leaf-cert.pem -p ssl -s api.anthropic.com
+...certificate verification successful.        # rc=0
+```
+
+Note that presence and trust are different questions, and `trust-ca-systemwide.sh`'s own
+verification (line 49) asks the weaker one — `security find-certificate -c "claude-burst
+local CA"` succeeds for a certificate sitting in the keychain with no trust at all. Use
+`verify-cert` above, which exercises the decision a TLS client actually makes. (Checked:
+`dump-trust-settings -d` reporting `Number of trust settings : 0` is **not** the smoking gun
+it looks like — Zscaler, Capitec and Intune's roots all report 0 as well. That is what a
+default-trust root looks like.)
+
+**Next step, and it no longer needs root.** `dtrace` is still blocked by SIP, but the
+purpose-built replacement from the 2026-09-03 update is still in the binary and still the
+right tool:
+
+```bash
+CLAUDE_BURST_LOG_TLS_PEERS=1   # then restart the gateway and wait for a burst
+```
+
+It identifies the calling process synchronously inside `Accept()`, before the handshake that
+would otherwise close the connection first. Point it at the next recurrence and name the
+client, rather than inferring it from timestamps a second time.
