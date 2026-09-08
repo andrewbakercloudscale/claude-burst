@@ -214,12 +214,16 @@
     <div class="body">
       <div id="inuse"></div>
       <div class="row">
-        <button class="primary" id="installBaseUrl">⤓ Install — base-url</button>
-        <button class="primary" id="installTransparent">⤓ Install — transparent proxy</button>
+        <!-- Transparent first, and the only one styled primary. It is the mode
+             this is FOR: base-url makes Claude Code disable Remote Control,
+             which is the feature transparent mode exists to preserve. Listing
+             the fallback first read as a recommendation of it. -->
+        <button class="primary" id="installTransparent">⤓ Install — transparent proxy <small style="opacity:.75">(recommended)</small></button>
+        <button id="installBaseUrl">⤓ Install — base-url <small style="opacity:.75">(fallback)</small></button>
       </div>
       <div class="hint" style="margin-top:8px">
-        <b>base-url</b> writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password, nothing machine-wide — but Claude Code turns off Remote Control while that variable names a non-Anthropic host.<br>
-        <b>transparent proxy</b> keeps Remote Control by redirecting at the DNS layer instead. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac.<br>
+        <b>transparent proxy — recommended.</b> Redirects at the DNS layer, so Claude Code still believes it reached Anthropic and <b>Remote Control keeps working</b>. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac — which is why it comes with the two guards below.<br>
+        <b>base-url — fallback.</b> Writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password and nothing machine-wide, so it is the right choice when you cannot or would rather not touch system files — but Claude Code <b>turns Remote Control off</b> while that variable names a non-Anthropic host.<br>
         Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
       </div>
       <div id="installNote"></div>
@@ -234,16 +238,30 @@
        for hours, with every indicator on this page green. Its guard, and
        what that guard has caught, belong on the page rather than in a
        script you have to already know exists. -->
-  <section id="pfHealSection" hidden>
-    <h2>pf redirect guard <span class="hint">root daemon; reloads the rdr rule if something drops it</span></h2>
+  <section id="guardsSection">
+    <h2>Guards <span class="hint">the two things that keep this working while nobody is watching</span></h2>
     <div class="body">
-      <div id="pfHealStatus"></div>
-      <div class="row" style="margin-top:10px">
-        <button class="primary" id="armPfHeal">⤓ Arm the guard</button>
-        <button id="viewPfLog">▤ View guard log</button>
+      <!-- Gateway watchdog: shown in both modes. A dead gateway breaks
+           base-url mode too; it just breaks it for one user rather than
+           for every process on the Mac. -->
+      <h3 style="margin:0 0 6px;font-size:13px">Gateway watchdog <span class="hint" style="font-weight:400">restarts the gateway if its process dies — no password needed</span></h3>
+      <div id="selfHealStatus"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="armSelfHeal">⤓ Arm the watchdog</button>
+        <button id="viewSelfHealLog">▤ View watchdog log</button>
       </div>
-      <div class="hint" style="margin-top:8px">
-        Runs as root every 2 minutes. It does nothing while the rule is loaded, and nothing at all when no <code>/etc/hosts</code> redirect is installed — so a rollback stays rolled back. If the rule goes missing it reloads it; if four repairs in a row fail it removes the redirect entirely, because a Mac that reaches Anthropic directly beats one that cannot reach it at all.
+
+      <div id="pfHealBlock" hidden>
+        <h3 style="margin:22px 0 6px;font-size:13px">pf redirect guard <span class="hint" style="font-weight:400">root daemon; keeps traffic actually reaching the gateway</span></h3>
+        <div id="pfHealStatus"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="primary" id="armPfHeal">⤓ Arm the guard</button>
+          <button id="viewPfLog">▤ View guard log</button>
+        </div>
+      </div>
+
+      <div class="hint" style="margin-top:12px">
+        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks the gateway is actually running — having a pid, not merely being registered with launchd, which keeps answering for a job whose process has died. The <b>pf guard</b> checks the real path end to end: that <code>api.anthropic.com</code> answers, <i>and answers from this gateway</i>. Neither touches anything while no <code>/etc/hosts</code> redirect is installed, so a rollback stays rolled back. If the guard cannot repair the path after four tries it removes the redirect entirely, because a Mac that reaches Anthropic directly beats one that cannot reach it at all.
       </div>
       <div id="pfHealNote"></div>
     </div>
@@ -269,8 +287,8 @@
         <div>
           <label for="mode">Intercept mode</label>
           <select id="mode">
-            <option value="base-url">base-url (no Remote Control)</option>
-            <option value="transparent">transparent (keeps Remote Control)</option>
+            <option value="transparent">transparent — recommended (keeps Remote Control)</option>
+            <option value="base-url">base-url — fallback (no Remote Control)</option>
           </select>
         </div>
         <button class="primary" id="save">✓ Save</button>
@@ -451,7 +469,7 @@ function renderCards(s) {
       s.intercept.inactive_reason +
       "\n\nEverything further down this page still describes the gateway, but Claude Code is not sending it anything.");
   }
-  renderPFHeal(s);
+  renderGuards(s);
   $("ver").textContent = "v" + s.version + " · " + s.gateway;
 
   // The machine-wide redirect (pf + /etc/hosts) needs root to remove and is
@@ -573,12 +591,30 @@ function renderLiveAlert(s, verdict) {
 // outage run. The daemon writes a heartbeat every cycle; that is what this
 // reads, and it is also all an unprivileged process CAN read, since launchd
 // refuses to answer us about system daemons at all.
-function renderPFHeal(s) {
-  const sec = $("pfHealSection");
+function renderGuards(s) {
+  renderGuard("selfHeal", s, s.intercept.self_heal, "watchdog",
+    "the gateway has no watchdog — if its process dies, nothing restarts it");
   const ph = s.intercept.pf_heal;
-  if (s.intercept.mode !== "transparent" || !ph) { sec.hidden = true; return; }
-  sec.hidden = false;
+  const showPf = s.intercept.mode === "transparent" && ph;
+  $("pfHealBlock").hidden = !showPf;
+  if (showPf) {
+    renderGuard("pfHeal", s, ph, "guard",
+      "the redirect has no guard — if traffic stops reaching the gateway, nothing repairs it");
+  }
+  $("guardsSection").classList.toggle("alert",
+    isBad(s, s.intercept.self_heal) || (showPf && isBad(s, ph)));
+}
 
+// A guard that was armed and has since died is a worse state than one never
+// armed: the first looks handled. Only that case, and an unguarded live
+// redirect, are worth colouring red.
+function isBad(s, g) {
+  if (!g) return false;
+  if (g.running) return false;
+  return g.installed || s.intercept.hosts_entry;
+}
+
+function renderGuard(id, s, ph, noun, notArmedText) {
   const age = ph.last_check_seconds;
   const ago = age < 0 ? "" : age < 90 ? `${age}s ago`
             : age < 5400 ? `${Math.round(age / 60)} min ago`
@@ -591,25 +627,22 @@ function renderPFHeal(s) {
     cls = "bad";
     headline = "INSTALLED BUT NOT RUNNING" + (ago ? ` — last checked ${ago}` : " — it has never reported in");
   } else {
-    // Only an outright problem while the redirect is actually installed;
-    // otherwise there is no rule to guard yet and saying so in red would
-    // train you to ignore this row.
-    cls = s.intercept.hosts_entry ? "bad" : "warn";
-    headline = "NOT ARMED — the pf rdr rule has no guard";
+    cls = isBad(s, ph) ? "bad" : "warn";
+    headline = "NOT ARMED — " + notArmedText;
   }
 
-  sec.classList.toggle("alert", cls === "bad");
   let body = headline;
   if (ph.events && ph.events.length) {
     body += "\n\nWhat it has caught:\n" + ph.events.map(e => "  " + e).join("\n");
   } else if (ph.running) {
-    body += "\n\nNothing to report — the rdr rule has not been lost since this was armed.";
+    body += "\n\nNothing to report — it has not had to act since this was armed.";
   }
   if (!ph.running && ph.install_cmd) {
     body += "\n\nArm it with the button below, or from a terminal:\n" + ph.install_cmd;
   }
-  note($("pfHealStatus"), cls, body);
-  $("armPfHeal").textContent = ph.installed ? "⤓ Reinstall the guard" : "⤓ Arm the guard";
+  note($(id + "Status"), cls, body);
+  const btn = $("arm" + id.charAt(0).toUpperCase() + id.slice(1));
+  btn.textContent = (ph.installed ? "⤓ Reinstall the " : "⤓ Arm the ") + noun;
 }
 
 function renderRequests(rows) {
@@ -718,7 +751,7 @@ async function refresh() {
       // verdict still on screen is about a configuration we can no longer
       // describe.
       $("liveAlert").innerHTML = "";
-      $("pfHealSection").hidden = true;
+      $("guardsSection").hidden = true;
       liveVerdict = undefined;
       lastState = null;
       // Same reasoning for the panel: it is hidden on the strength of a
@@ -868,6 +901,17 @@ $("testConn").onclick = async () => {
 
 $("viewLog").onclick = () => window.open("/api/log", "_blank");
 $("viewPfLog").onclick = () => window.open("/api/pf-heal-log", "_blank");
+$("viewSelfHealLog").onclick = () => window.open("/api/self-heal-log", "_blank");
+
+$("armSelfHeal").onclick = async () => {
+  if (!confirm("Arm the gateway watchdog?\n\nA Terminal window will open. No password needed — it is a user LaunchAgent.\n\nIt checks every 2 minutes that the gateway is actually running and reloads it if not, and stands down while a rollback marker is present so it never undoes a deliberate rollback.")) return;
+  $("armSelfHeal").disabled = true;
+  try {
+    const r = await post("/api/self-heal-install");
+    note($("pfHealNote"), "ok", r.detail + (r.script ? "\n\nScript: " + r.script : ""));
+  } catch (e) { note($("pfHealNote"), "bad", e.message); }
+  finally { $("armSelfHeal").disabled = false; }
+};
 
 // Same reasoning as Install and Revert: the privileged step happens in a
 // Terminal window with the user watching, not silently from an
@@ -890,8 +934,8 @@ $("armPfHeal").onclick = async () => {
 async function runInstall(mode, btn) {
   const machineWide = mode === "transparent";
   const warning = machineWide
-    ? "Install transparent proxy mode?\n\nA Terminal window will open and ask for your password. It changes /etc/hosts, loads a pf rule, and trusts the local CA system-wide — this affects EVERY process on this Mac, not just Claude Code.\n\nUndo any time with: sudo transparent-root.sh remove"
-    : "Install base-url mode?\n\nA Terminal window will open. It backs up your settings, then points Claude Code at this gateway via ANTHROPIC_BASE_URL. No password needed.\n\nNote: Claude Code disables Remote Control while this is on.";
+    ? "Install transparent proxy mode? (recommended)\n\nA Terminal window will open and ask for your password. It changes /etc/hosts, loads a pf rule, and trusts the local CA system-wide — this affects EVERY process on this Mac, not just Claude Code.\n\nUndo any time with: sudo transparent-root.sh remove"
+    : "Install base-url mode?\n\nThis is the FALLBACK mode — transparent proxy is the recommended one. A Terminal window will open. It backs up your settings, then points Claude Code at this gateway via ANTHROPIC_BASE_URL. No password needed.\n\nNote: Claude Code disables Remote Control while this is on.";
   if (!confirm(warning)) return;
   btn.disabled = true;
   try {

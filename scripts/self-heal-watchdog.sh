@@ -33,6 +33,11 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="$HOME/.config/claude-burst/self-heal.log"
 STATE_FILE="$HOME/.config/claude-burst/self-heal-state.json"
 ROLLED_BACK_MARKER="${CLAUDE_BURST_ROLLED_BACK_MARKER:-$HOME/.config/claude-burst/rolled-back}"
+# Proof of life for the dashboard, same contract as the pf guard's. A watchdog
+# nobody can see is a watchdog nobody knows has stopped -- and this one is the
+# reason a dead gateway comes back at all, so "is it actually running?" needs
+# an answer that does not depend on asking launchd.
+HEARTBEAT_FILE="${CLAUDE_BURST_SELFHEAL_HEARTBEAT:-$HOME/.config/claude-burst/self-heal.heartbeat}"
 LABEL="ninja.andrewbaker.claude-burst"
 ADMIN_URL="http://127.0.0.1:7788"
 # Re-notify about a missing redirect at most this often, so a laptop left in
@@ -52,6 +57,11 @@ if [[ -f "$LOG" ]]; then
   log_size=$(stat -f %z "$LOG" 2>/dev/null || stat -c %s "$LOG" 2>/dev/null || echo 0)
   (( log_size > LOG_MAX_BYTES )) && : > "$LOG"
 fi
+
+# Before every early return below, including the rolled-back stand-down: a
+# heartbeat that only appeared on the cycles that did something would go stale
+# exactly when this is working correctly and read as dead.
+date +%s > "$HEARTBEAT_FILE" 2>/dev/null || true
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 

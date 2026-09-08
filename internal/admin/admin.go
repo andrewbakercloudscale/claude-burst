@@ -78,6 +78,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/install", s.mutating(s.handleInstall))
 	mux.HandleFunc("/api/pf-heal-log", s.readOnly(s.handlePFHealLog))
 	mux.HandleFunc("/api/pf-heal-install", s.mutating(s.handlePFHealInstall))
+	mux.HandleFunc("/api/self-heal-log", s.readOnly(s.handleSelfHealLog))
+	mux.HandleFunc("/api/self-heal-install", s.mutating(s.handleSelfHealInstall))
 	return s.guard(mux)
 }
 
@@ -202,6 +204,11 @@ type interceptInfo struct {
 	// meaningful in transparent mode, and only populated there -- base-url
 	// mode has no pf rule to lose.
 	PFHeal *pfHealInfo `json:"pf_heal,omitempty"`
+	// SelfHeal reports the user LaunchAgent that keeps the gateway itself
+	// alive. Populated in BOTH modes, unlike PFHeal: a dead gateway breaks
+	// base-url mode just as thoroughly, it simply breaks it for one user
+	// instead of for the whole machine.
+	SelfHeal *pfHealInfo `json:"self_heal,omitempty"`
 	// BailoutCmd is the ready-to-run command that undoes the machine-wide
 	// redirect (pf + /etc/hosts). Only meaningful in transparent mode, and
 	// only ever needs root -- the dashboard can't run it itself, but it can
@@ -241,6 +248,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ii := interceptInfo{Mode: mode, Host: cfg.Intercept.Host, SettingsURL: settingsURL}
+	scriptsForGuards, _ := s.scriptsDir()
+	sh := selfHealStatus(scriptsForGuards)
+	ii.SelfHeal = &sh
 	if cfg.Intercept.Transparent() {
 		if b, err := os.ReadFile(cfg.Intercept.CABundle); err == nil {
 			ii.CATrusted = tlsca.HasBlock(string(b))
