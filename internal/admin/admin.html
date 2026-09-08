@@ -387,9 +387,9 @@
         </div>
         <button class="secField" id="showSecApiKey">👁 Show</button>
         <button class="primary" id="saveSecondary">✓ Save secondary</button>
-        <button class="success secField" id="testSecondary">⇌ Send &ldquo;hello world&rdquo;</button>
+        <button class="success secField" id="testSecondary">⇌ Test secondary</button>
       </div>
-      <div class="hint secField" style="margin-top:6px">The test sends one real, capped request through the secondary exactly as a failover would &mdash; same auth, same model translation &mdash; so it costs a fraction of a cent on a metered provider.</div>
+      <div class="hint secField" style="margin-top:6px">The test sends one real, capped request through the secondary exactly as a failover would &mdash; same auth, same model translation &mdash; asking the model which version it is. It costs a fraction of a cent on a metered provider.</div>
       <div id="secTestNote"></div>
       <div class="hint" style="margin-top:8px" id="secKeyHint"></div>
       <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json — which only stores the service name. It is never sent back to this page, so the box above stays blank even when a key is stored; the green line at the top of this panel is how you check one is there.</div>
@@ -1172,8 +1172,13 @@ $("testSecondary").onclick = async () => {
     ].filter(Boolean).join("\n");
 
     if (r.ok) {
+      // The served-model line above is the authoritative answer to "what
+      // answered this?"; the model's own account of itself is not, and
+      // saying so here stops a confidently wrong self-description reading
+      // as evidence that the wrong model is configured.
       note($("secTestNote"), "ok",
-        `The secondary answered:\n\n    ${d.reply}\n\n${where}\ntokens: ${d.input_tokens} in / ${d.output_tokens} out`);
+        `The secondary answered:\n\n    ${d.reply}\n\n${where}\ntokens: ${d.input_tokens} in / ${d.output_tokens} out\n\n` +
+        `(models are unreliable at naming themselves — "served by" above is the authoritative answer, taken from config and the provider's own translation.)`);
     } else {
       note($("secTestNote"), "bad",
         `${r.error}\n\n${where}${d.detail ? "\n\nupstream said:\n" + d.detail : ""}`);

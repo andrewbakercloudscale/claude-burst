@@ -27,15 +27,37 @@ type ProbeResult struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// probePrompt is deliberately trivial and capped at a few tokens: this
-// button spends real money on a metered provider every time it is pressed,
-// and the question it answers -- can we reach this provider, authenticate,
-// and get a well-formed answer back -- needs no more than that.
-const probePrompt = "Reply with exactly: hello world"
+// probePrompt asks the model to identify itself rather than to echo a fixed
+// string. Both prove the pipe works; only this one tells you anything about
+// what is on the other end of it. "hello world" comes back identically from
+// the right model, the wrong model, and a cheap model silently substituted
+// by a provider -- which is the misconfiguration this button is most likely
+// to be pressed to investigate.
+//
+// The answer is INFORMATIVE, NOT AUTHORITATIVE, and the UI says so: models
+// are unreliable self-identifiers and routinely name the wrong family
+// entirely. The authoritative answer to "what served this?" is the
+// ServeModel below, which comes from config and the provider's own
+// translation. Read together they catch the interesting case -- the served
+// id and the model's own account of itself disagreeing.
+const probePrompt = "In one short sentence: which AI model and version are you?"
 
 // probeMaxTokens bounds the spend of a single press. A provider that ignores
 // the instruction and starts an essay costs this much and no more.
-const probeMaxTokens = 64
+//
+// It was 64, which was wrong for the provider this feature was built
+// against. GLM-5.3 is a reasoning model: it spends output tokens thinking
+// before it emits any visible text, and the translated reply carries only
+// the text. Three real probes billed 60, 45 and 39 output tokens for a
+// two-token answer -- one of them within four tokens of the old cap. Past
+// it, the model would have spent the entire budget reasoning, returned an
+// empty message, and this probe would have reported a FAILURE against a
+// provider that was working perfectly. A test button whose verdict depends
+// on how long a model happened to think is worse than no test button.
+//
+// 512 still bounds a runaway response to a fraction of a cent, and leaves
+// room for a reasoning model to think and then answer.
+const probeMaxTokens = 512
 
 // probeRequestedModel is the Claude model the probe asks for. It matters
 // that this is a real Claude id rather than the upstream's own: the whole
@@ -217,9 +239,19 @@ func (s *Server) ProbeSecondary(ctx context.Context) (ProbeResult, error) {
 	res.DurationMS = time.Since(start).Milliseconds()
 
 	// A 200 with no text is not a pass. A provider that returns a
-	// well-formed empty message would otherwise render as a green tick over
-	// an empty reply box, which reads as success.
+	// well-formed empty message would otherwise render as a tick over an
+	// empty reply box, which reads as success.
+	//
+	// The two ways it happens need different answers, because only one of
+	// them is the provider's fault: a reasoning model that spent its whole
+	// output budget thinking is HEALTHY and just needs more room, while an
+	// empty message well under the cap is a genuinely broken response. Told
+	// apart here rather than left to whoever reads the dashboard.
 	if res.Reply == "" {
+		if res.OutputTokens >= probeMaxTokens {
+			return res, fmt.Errorf("%s answered HTTP 200 but spent all %d output tokens before emitting any text -- "+
+				"this is a reasoning model that ran out of budget mid-thought, not a broken provider", p.Name(), probeMaxTokens)
+		}
 		return res, fmt.Errorf("%s answered HTTP 200 but with no text content", p.Name())
 	}
 
