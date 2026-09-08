@@ -288,9 +288,15 @@
     </div>
   </section>
 
-  <section>
-    <h2>Secondary provider <span class="hint">where inference goes when the primary is out &mdash; endpoint, model and API key</span></h2>
-    <div class="body">
+  <!-- Starts closed in the MARKUP for the same reason Guards does: set in
+       script it would render open for a frame and then jump shut. -->
+  <section id="secondarySection" class="collapsible collapsed">
+    <h2 id="secondaryHead">Secondary provider <span class="hint">where inference goes when the primary is out &mdash; endpoint, model and API key</span>
+      <span class="spacer"></span>
+      <span id="secSummary" class="hint"></span>
+      <button class="h2btn primary" id="secondaryToggle" aria-expanded="false" aria-controls="secondaryBody">Show</button>
+    </h2>
+    <div class="body" id="secondaryBody">
       <div id="secStatus"></div>
       <div class="row">
         <div>
@@ -322,7 +328,7 @@
         <button class="primary" id="saveSecondary">✓ Save secondary</button>
       </div>
       <div class="hint" style="margin-top:8px" id="secKeyHint"></div>
-      <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json — which only stores the service name. It is never sent back to this page, so the field stays blank even when a key is stored.</div>
+      <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json — which only stores the service name. It is never sent back to this page, so the box above stays blank even when a key is stored; the green line at the top of this panel is how you check one is there.</div>
       <div id="secNote"></div>
     </div>
   </section>
@@ -408,6 +414,10 @@ let dirty = false;
 let secDirty = false;
 ["secProvider","secBaseUrl","secModel","secKeychain","secApiKey"].forEach(
   id => $(id).addEventListener("input", () => secDirty = true));
+// The env-var hint is derived from this field, so it has to move with it --
+// a hint that only updates on save is wrong for exactly as long as someone
+// is looking at it deciding what to type.
+$("secKeychain").addEventListener("input", applySecProvider);
 $("secProvider").addEventListener("change", () => { secDirty = true; applySecProvider(); });
 
 // "none" has no endpoint, model or credential, and bedrock's target model
@@ -420,8 +430,56 @@ function applySecProvider() {
   document.querySelectorAll(".secField").forEach(el => { el.hidden = !showAll; });
   $("secModelField").hidden = p !== "openai-compatible";
   $("secKeyHint").textContent = p === "bedrock"
-    ? "Bedrock reads AWS_BEARER_TOKEN_BEDROCK, or the Keychain service named above. Its per-model targets come from model_map in config.json, not from this form."
-    : (p === "none" ? "" : "The env var is derived from the service name: claude-burst-openrouter → $OPENROUTER_API_KEY. Either source works; the key box writes the Keychain one.");
+    ? "Bedrock reads $AWS_BEARER_TOKEN_BEDROCK, or the Keychain service named above. Its per-model targets come from model_map in config.json, not from this form."
+    : (p === "none" ? "" : `This service name means the gateway also reads $${envVarForService(effectiveKeychainService())}. Either source works; the key box writes the Keychain one.`);
+}
+
+// Mirrors router.OpenAICompatibleIdentity + EnvVarForProvider. This used to
+// be a fixed example ("claude-burst-openrouter → $OPENROUTER_API_KEY") shown
+// under a field reading "claude-burst-together", which does not read as an
+// example -- it reads as the page telling you which variable YOUR key lives
+// in, and naming the wrong one.
+function envVarForService(service) {
+  const label = (service || "").replace(/^claude-burst-/, "") || "openai-compatible";
+  return label.toUpperCase().replace(/-/g, "_") + "_API_KEY";
+}
+
+// A blank field is a real state -- you can clear it -- and it must name the
+// service the SERVER will actually default to, which is not the same rule
+// as envVarForService's. secondaryRoute keeps the existing service when the
+// slot is already openai-compatible and otherwise falls back to
+// claude-burst-together, so a blank box showing $OPENAI_COMPATIBLE_API_KEY
+// (envVarForService's own fallback, for a service name that has already
+// been defaulted) named a variable nothing would ever read.
+function effectiveKeychainService() {
+  const typed = $("secKeychain").value.trim();
+  if (typed) return typed;
+  const cur = lastState && lastState.secondary;
+  if (cur && cur.provider === "openai-compatible" && cur.keychain_service) return cur.keychain_service;
+  return "claude-burst-together";
+}
+
+// Says WHERE the key was found and WHEN it was written, not merely that one
+// exists. The value is never sent to this page, so a bare "key found" is not
+// evidence that the key you just saved is the key the gateway can see: an
+// unrelated environment variable answers identically, and so does a Keychain
+// entry from six weeks ago whose overwrite silently failed. The timestamp is
+// the only thing on the page that distinguishes those.
+function keySentence(sec) {
+  if (!sec.key_env_var) return "";
+  if (sec.key_source === "environment") {
+    return ` Key found in $${sec.key_env_var} (the environment, not the Keychain — it will be gone at next login unless something sets it).`;
+  }
+  const when = sec.key_updated ? ` last saved ${stamp(sec.key_updated)}` : "";
+  return ` Key found in the Keychain under "${sec.keychain_service}"${when}.`;
+}
+
+let secWasBad = false;
+function setSecondaryOpen(open) {
+  const sec = $("secondarySection");
+  sec.classList.toggle("collapsed", !open);
+  $("secondaryToggle").textContent = open ? "Hide" : "Show";
+  $("secondaryToggle").setAttribute("aria-expanded", String(open));
 }
 
 // Populates the form from /api/state. Never touches it while secDirty --
@@ -429,14 +487,29 @@ function applySecProvider() {
 function renderSecondary(s) {
   const sec = s.secondary || {};
   const el = $("secStatus");
-  if (sec.provider === "none" || !sec.provider) {
+  const none = sec.provider === "none" || !sec.provider;
+  const missingKey = !none && sec.key_env_var && !sec.key_present;
+  if (none) {
     note(el, "warn", "No secondary provider is configured. When the primary runs out, requests just fail — there is nowhere to fail over to.");
-  } else if (sec.key_env_var && !sec.key_present) {
+  } else if (missingKey) {
     note(el, "bad", `Secondary is ${sec.provider} (${sec.base_url}) but NO API KEY was found: nothing in the Keychain under "${sec.keychain_service}", and $${sec.key_env_var} is unset. It will fail the first time it is used.`);
   } else {
-    const keyBit = sec.key_env_var ? ` — key found (Keychain "${sec.keychain_service}" or $${sec.key_env_var})` : "";
-    note(el, "ok", `Secondary is ${sec.provider} (${sec.base_url})${sec.model ? " → " + sec.model : ""}${keyBit}.`);
+    note(el, "ok", `Secondary is ${sec.provider} (${sec.base_url})${sec.model ? " → " + sec.model : ""}.${keySentence(sec)}`);
   }
+
+  // Collapsed, the header is the only thing reporting on the secondary, so
+  // it carries the verdict rather than a label -- same rule as Guards.
+  $("secondarySection").classList.toggle("alert", none || missingKey);
+  $("secSummary").textContent = none ? "none configured"
+    : missingKey ? "no API key — will fail when used"
+    : `${sec.model || sec.provider} — key ok`;
+
+  // Opens itself on the TRANSITION into a bad state, never on every render:
+  // re-opening each refresh would take the panel away from someone who read
+  // it and closed it again while the condition persists.
+  const bad = none || missingKey;
+  if (bad && !secWasBad) setSecondaryOpen(true);
+  secWasBad = bad;
   if (secDirty) return;
   $("secProvider").value = sec.provider && sec.provider !== "none" ? sec.provider : (sec.provider === "none" ? "none" : "openai-compatible");
   $("secBaseUrl").value = sec.base_url || "";
@@ -1067,6 +1140,9 @@ $("viewSelfHealLog").onclick = () => window.open("/api/self-heal-log", "_blank")
 // is kept because a bare clickable heading gives no sign that it is one.
 $("guardsHead").onclick = () =>
   setGuardsOpen($("guardsSection").classList.contains("collapsed"));
+
+$("secondaryHead").onclick = () =>
+  setSecondaryOpen($("secondarySection").classList.contains("collapsed"));
 
 $("armSelfHeal").onclick = async () => {
   if (!confirm("Arm the gateway watchdog?\n\nA Terminal window will open. No password needed — it is a user LaunchAgent.\n\nIt checks every 2 minutes that the gateway is actually running and reloads it if not, and stands down while a rollback marker is present so it never undoes a deliberate rollback.")) return;

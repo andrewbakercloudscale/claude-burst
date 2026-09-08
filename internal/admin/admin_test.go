@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 )
 
@@ -466,7 +468,12 @@ func newSecondaryTestServer(t *testing.T) (*Server, string, map[string]string) {
 	s := New(gw, filepath.Join(dir, "metrics.jsonl"), "test-version", "", "/path/to/transparent-root.sh")
 	stored := map[string]string{}
 	s.storeKey = func(service, value string) error { stored[service] = value; return nil }
-	s.hasKey = func(service, envVar string) bool { _, ok := stored[service]; return ok }
+	s.keyInfo = func(service, envVar string) keychain.Info {
+		if _, ok := stored[service]; !ok {
+			return keychain.Info{}
+		}
+		return keychain.Info{Present: true, Source: "keychain", Modified: time.Unix(1757330000, 0)}
+	}
 	return s, home, stored
 }
 
@@ -753,5 +760,44 @@ func TestSecondarySwitchingVendorDoesNotInheritKeychainService(t *testing.T) {
 	}
 	if cfg := loadSavedConfig(t, home); cfg.Secondary.KeychainService == "claude-burst-bedrock" {
 		t.Fatal("openai-compatible secondary inherited Bedrock's keychain service")
+	}
+}
+
+// TestStateReportsKeySourceAndAge covers what a bare "key found" could not:
+// the page never receives the key, so without a source and a write time it
+// cannot tell a save that landed from an unrelated env var, or from a stale
+// Keychain entry whose overwrite silently failed. That ambiguity is what
+// made a successful save look like a lost one.
+func TestStateReportsKeySourceAndAge(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	stored["claude-burst-zai"] = "sk-live"
+	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4",
+		"model":"glm-4.6","keychain_service":"claude-burst-zai"}`); rr.Code != http.StatusOK {
+		t.Fatalf("save failed: %s", rr.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
+	req.Host = "127.0.0.1"
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	var st stateResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Secondary.KeySource != "keychain" {
+		t.Errorf("key_source = %q, want keychain", st.Secondary.KeySource)
+	}
+	if st.Secondary.KeyUpdated == "" {
+		t.Fatal("key_updated is empty, so the page cannot show when the key was last written")
+	}
+	// Must carry an offset, not be a bare UTC instant: this dashboard shows
+	// local time everywhere else, and a UTC timestamp beside them reads as
+	// hours stale.
+	if _, err := time.Parse(time.RFC3339, st.Secondary.KeyUpdated); err != nil {
+		t.Fatalf("key_updated %q is not RFC3339: %v", st.Secondary.KeyUpdated, err)
+	}
+	if strings.HasSuffix(st.Secondary.KeyUpdated, "Z") && time.Local != time.UTC {
+		t.Errorf("key_updated %q is UTC, not local time", st.Secondary.KeyUpdated)
 	}
 }
