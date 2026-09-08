@@ -1,6 +1,11 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -97,5 +102,107 @@ func TestPortOf(t *testing.T) {
 		if got := portOf(in); got != want {
 			t.Errorf("portOf(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestAdminURLDialsLoopbackForWildcardListens: the admin server's own guard
+// only accepts loopback Host headers, so building "http://0.0.0.0:7788" would
+// be rejected by the very server we are trying to reach.
+func TestAdminURLDialsLoopbackForWildcardListens(t *testing.T) {
+	for in, want := range map[string]string{
+		"127.0.0.1:7788": "http://127.0.0.1:7788/api/reset",
+		"localhost:7788": "http://localhost:7788/api/reset",
+		":7788":          "http://127.0.0.1:7788/api/reset",
+		"0.0.0.0:7788":   "http://127.0.0.1:7788/api/reset",
+	} {
+		got, err := adminURL(in, "/api/reset")
+		if err != nil {
+			t.Fatalf("adminURL(%q): %v", in, err)
+		}
+		if got != want {
+			t.Errorf("adminURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if _, err := adminURL("not-a-host-port", "/api/reset"); err == nil {
+		t.Error("expected an error for a malformed admin_listen")
+	}
+}
+
+// TestAdminPostReachesRunningGatewayWithMutationHeader is the regression test
+// for the real defect: `claude-burst reset` built its own router.Server,
+// cleared THAT, wrote state.json, and printed "overflow state cleared" --
+// having never spoken to the gateway actually serving traffic, which reads
+// state.json only at startup. In a genuine overflow window that meant the
+// user was told they were back on the primary while the daemon kept billing
+// them to the secondary.
+func TestAdminPostReachesRunningGatewayWithMutationHeader(t *testing.T) {
+	var gotMethod, gotHeader, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotHeader = r.Header.Get("X-Claude-Burst-Admin")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":"back to primary"}`))
+	}))
+	defer srv.Close()
+
+	msg, err := adminPost(strings.TrimPrefix(srv.URL, "http://"), "/api/force", map[string]int{"minutes": 15})
+	if err != nil {
+		t.Fatalf("adminPost: %v", err)
+	}
+	if msg != "back to primary" {
+		t.Errorf("message = %q, want the gateway's own ok text", msg)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/force" {
+		t.Errorf("got %s %s, want POST /api/force", gotMethod, gotPath)
+	}
+	if gotHeader == "" {
+		t.Error("the mutation header was not sent; the admin server rejects mutations without it")
+	}
+	if gotBody != `{"minutes":15}` {
+		t.Errorf("body = %q, want the minutes payload", gotBody)
+	}
+}
+
+// TestAdminPostRefusalIsNotTreatedAsUnreachable is the distinction the whole
+// design turns on. "No gateway is running" is a legitimate reason to fall
+// back to writing state.json; "the running gateway answered and said no" is
+// not, and writing the file anyway would arm an overflow window behind the
+// back of a process that already said it cannot serve it -- exactly the
+// forced-overflow-with-no-secondary 502 the router documents.
+func TestAdminPostRefusalIsNotTreatedAsUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no secondary provider is configured on the running gateway", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	_, err := adminPost(strings.TrimPrefix(srv.URL, "http://"), "/api/force", nil)
+	if err == nil {
+		t.Fatal("expected an error when the gateway refuses")
+	}
+	var unreachable *errAdminUnreachable
+	if errors.As(err, &unreachable) {
+		t.Fatal("a refusal must NOT be reported as unreachable, or the caller falls back to writing state.json behind the running gateway")
+	}
+	if !strings.Contains(err.Error(), "no secondary provider") {
+		t.Errorf("the gateway's own reason should be surfaced verbatim, got %q", err.Error())
+	}
+}
+
+// TestAdminPostUnreachableIsDistinguishable covers the other side: nothing
+// listening, and the admin listener being disabled outright, must both be
+// reported as unreachable so the caller can fall back and say so honestly.
+func TestAdminPostUnreachableIsDistinguishable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	srv.Close() // nothing is listening there any more
+
+	var unreachable *errAdminUnreachable
+	if _, err := adminPost(addr, "/api/reset", nil); !errors.As(err, &unreachable) {
+		t.Fatalf("a dead listener should be errAdminUnreachable, got %v", err)
+	}
+	if _, err := adminPost("", "/api/reset", nil); !errors.As(err, &unreachable) {
+		t.Fatalf("a disabled admin listener should be errAdminUnreachable, got %v", err)
 	}
 }
