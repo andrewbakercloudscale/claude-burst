@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -187,6 +188,20 @@ func (d *meteredFailureDetector) OnResponse(status int, h http.Header, body []by
 }
 
 func (d *meteredFailureDetector) OnError(err error) FailoverDecision {
+	if isClientCancellation(err) {
+		// The CALLER hung up -- Claude Code interrupted the turn, or the
+		// session went away -- so the outbound request inherited a cancelled
+		// context and died before Anthropic had a chance to answer. Anthropic
+		// did not fail. Counting it as a failure is worse than merely wrong,
+		// because transportMinFailures defaults to 1: a single Esc arms an
+		// overflow window that, having no reset header to read, lasts
+		// unknown_reset_seconds (300 by default) and bills the next five
+		// minutes of inference to the paid secondary. Observed live
+		// 2026-09-08: claim=metered_sustained_failures, reason "1 failures
+		// within 60s (latest: transport error: ... context canceled)", two
+		// turns served by Together AI.
+		return FailoverDecision{}
+	}
 	if isLocalConnectivityFailure(err) {
 		// A DNS resolution failure or "no route to host"/"network
 		// unreachable" doesn't mean Anthropic is having trouble -- it means
@@ -202,6 +217,23 @@ func (d *meteredFailureDetector) OnError(err error) FailoverDecision {
 		return FailoverDecision{}
 	}
 	return d.recordFailure(&d.transportFailures, d.transportMinFailures, "transport error: "+err.Error(), nil)
+}
+
+// isClientCancellation reports whether err is the outbound request dying
+// because the INBOUND one was cancelled, rather than anything upstream going
+// wrong. The outbound request is built with the client's own context
+// (router.go passes in.Context() to Prepare), so a client that disconnects or
+// interrupts cancels our call to Anthropic too, and http.Client.Do returns a
+// *url.Error wrapping context.Canceled.
+//
+// Only context.Canceled, deliberately -- NOT context.DeadlineExceeded. A
+// deadline that expires is a request that ran out of time waiting for the
+// upstream, which is exactly the slow/stalled primary the metered window
+// exists to route around, and excusing it would blind the detector to a real
+// outage. Cancellation is the opposite: nobody is waiting for the answer any
+// more.
+func isClientCancellation(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 // isLocalConnectivityFailure reports whether err specifically indicates this

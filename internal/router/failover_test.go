@@ -1,8 +1,10 @@
 package router
 
 import (
+	"context"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"syscall"
 	"testing"
@@ -237,5 +239,75 @@ func TestMeteredFailoverDetector_ConcurrentSafe(t *testing.T) {
 	}
 	for i := 0; i < 20; i++ {
 		<-done
+	}
+}
+
+// The exact error the running gateway recorded on 2026-09-08 at
+// transportMinFailures=1: a *url.Error wrapping context.Canceled, produced
+// when Claude Code interrupted a turn and the outbound request inherited the
+// cancelled client context. It armed a 300s overflow window and sent two
+// turns to the paid secondary.
+func canceledTransportError() error {
+	return &url.Error{
+		Op:  "Post",
+		URL: "https://api.anthropic.com/v1/messages?beta=true",
+		Err: context.Canceled,
+	}
+}
+
+func TestMeteredFailoverDetector_ClientCancellationNeverFailsOver(t *testing.T) {
+	// transportMinFailures=1 is the shipped default and the setting that made
+	// this expensive: one cancellation was one overflow window.
+	d := newMeteredFailureDetector(60, 3, 1)
+	for i := 0; i < 5; i++ {
+		if dec := d.OnError(canceledTransportError()); dec.Failover {
+			t.Fatalf("client cancellation must never trigger failover (attempt %d): %+v", i+1, dec)
+		}
+	}
+}
+
+// Cancellation must not merely be excused -- it must not be COUNTED either,
+// or two cancellations plus one real transport error would fail over at a
+// threshold of three, which is the same bug wearing a bigger number.
+func TestMeteredFailoverDetector_CancellationDoesNotCountTowardWindow(t *testing.T) {
+	d := newMeteredFailureDetector(60, 3, 3)
+	d.OnError(canceledTransportError())
+	d.OnError(canceledTransportError())
+	if dec := d.OnError(&url.Error{Op: "Post", URL: "https://api.anthropic.com", Err: syscall.ECONNREFUSED}); dec.Failover {
+		t.Fatalf("two cancellations must not count toward a 3-failure window: %+v", dec)
+	}
+}
+
+// The carve-out is for cancellation specifically. A deadline that expires is
+// a real stalled upstream -- the case the metered window exists for -- and
+// must still count, or the detector goes blind to a slow primary.
+func TestMeteredFailoverDetector_DeadlineExceededStillCounts(t *testing.T) {
+	d := newMeteredFailureDetector(60, 3, 1)
+	dec := d.OnError(&url.Error{
+		Op:  "Post",
+		URL: "https://api.anthropic.com/v1/messages",
+		Err: context.DeadlineExceeded,
+	})
+	if !dec.Failover {
+		t.Fatal("a deadline-exceeded transport error must still count toward metered failover")
+	}
+}
+
+// A genuine transport failure still fires on the first one, unchanged.
+func TestMeteredFailoverDetector_RealTransportErrorStillFailsOverFirstTime(t *testing.T) {
+	d := newMeteredFailureDetector(60, 3, 1)
+	dec := d.OnError(&url.Error{Op: "Post", URL: "https://api.anthropic.com", Err: syscall.ECONNREFUSED})
+	if !dec.Failover {
+		t.Fatal("connection refused must still trigger failover on the first occurrence")
+	}
+}
+
+// The combined detector is what oauth-passthrough actually runs with
+// "subscription-limit+metered-failures", so the carve-out has to survive the
+// delegation rather than only existing on the metered leg in isolation.
+func TestCombinedDetector_ClientCancellationNeverFailsOver(t *testing.T) {
+	d := newCombinedDetector(config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 3, TransportErrorMinFailures: 1})
+	if dec := d.OnError(canceledTransportError()); dec.Failover {
+		t.Fatalf("combined detector must not fail over on client cancellation: %+v", dec)
 	}
 }
