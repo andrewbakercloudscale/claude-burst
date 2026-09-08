@@ -62,18 +62,29 @@ state with the gateway port on both sides shows up in the same capture:
 ALL tcp 127.0.0.1:17777 <- 127.0.0.1:17777   TIME_WAIT:TIME_WAIT
 ```
 
-**That experiment has now been run, and the candidate is ruled out.**
-`sudo scripts/experiment-nostate-rule.sh`, 10:53 SAST 2026-09-08: direct 1/15 before,
-0/15 after — the same number, since the baseline rate is ~1 in 20 by itself. The rule was
-`quick` and, for the first time, genuinely evaluated (the experiment adds the filter
-`anchor` line `/etc/pf.conf` lacks), so this eliminates the filter path: the state
-insertion that fails is not one a filter rule can decline to make. Reverted cleanly; real
-path 5/5 after. Full write-up in INVESTIGATION-TLS-STORM.md, update (c).
+**Both the experiment and the packet capture have now been run.**
 
-**Four hypotheses on this issue, four wrong.** The next step is a measurement that
-distinguishes, not a fifth candidate fix: `tcpdump -ni lo0` across a burst of failing
-direct probes, to see whether the SYN reaches the socket at all and whether a RST comes
-back, and from where. None of the four hypotheses addressed that.
+The `no state` rule (hypothesis 4) is ruled out: direct 1/15 before, 0/15 after, with the
+rule `quick` and actually evaluated. Update (c).
+
+`scripts/capture-direct-port-packets.sh` then answered what four hypotheses never asked.
+Across 10 failing probes the SYN reaches lo0 every time — 11 retransmissions each — and
+**nothing comes back at all**: no RST, no SYN-ACK, zero packets. A third burst with no
+port filter confirmed nothing came back under any pair of ports either. The control down
+`:443`, same run, was 10/10 clean. **pf swallows it; the investigation stays on pf.**
+
+The 1-in-10 success is the lead. Its first SYN-ACK left the gateway addressed to
+`127.0.0.1:443` instead of the client's port — pf reverse-translating the reply of a
+connection that was never forward-translated — got a RST, and only survived because the
+*retransmitted* SYN-ACK escaped that. So the failure is in the **reply** direction, not
+the SYN. That is the first account consistent with all of it: zero filter counters, the
+`state-insert` rise (11/probe here vs ~14 measured, same shape), and the anomalous
+`17777 <- 17777` state. Full detail in INVESTIGATION-TLS-STORM.md, update (d).
+
+**Four hypotheses, four wrong — so this is a hypothesis, not a fix.** It is the
+best-supported one yet and that is exactly what the last four felt like. The next step is
+a test of the reply-direction account, and it should revert unconditionally like
+experiment-nostate-rule.sh did.
 
 ### 2. TLS handshake storm — recurred, cause unknown (OPEN)
 
