@@ -16,10 +16,12 @@ line below was verified against the machine, not inferred from config.
   (see INVESTIGATION-TLS-STORM.md update (b)), and the shipped default went back to 7777
   while this machine stayed on 17777. `config.json` names it explicitly, so nothing infers it.
 - **Do not health-check the gateway by connecting to its port directly.** While the pf
-  redirect is installed, the rdr rule makes its own target port unreachable — a direct
-  `curl https://127.0.0.1:17777/healthz` times out, with the gateway perfectly healthy.
-  Probe the real path instead: `curl -sk https://api.anthropic.com/healthz`, which answers
-  from the gateway and whose body contains `"overflow"`.
+  redirect is installed, the rdr rule makes its own target port very nearly unreachable — a
+  direct `curl https://127.0.0.1:17777/healthz` times out roughly nineteen times in twenty,
+  with the gateway perfectly healthy. Note the *roughly*: an occasional probe succeeds, which
+  is precisely what makes this so good at wasting a morning. Probe the real path instead:
+  `curl -sk https://api.anthropic.com/healthz`, which answers from the gateway and whose body
+  contains `"overflow"`.
 - **Admin UI on <http://127.0.0.1:7788>** (loopback only, no login).
 - Primary `oauth-passthrough` → `api.anthropic.com`, failover strategy
   `subscription-limit+metered-failures`. Secondary `openai-compatible` → Together AI

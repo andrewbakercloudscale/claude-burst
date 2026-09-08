@@ -183,11 +183,13 @@ curl -s http://127.0.0.1:7777/healthz          # base-url mode only — see belo
 claude-burst stats --days 30
 ```
 
-**In transparent mode that `curl` will time out, and that is expected.** While the pf
-redirect is installed, direct connections to the gateway's own port are unreachable — the
-rule makes its own target port unreachable, whichever port it targets (issue #1, and
-`INVESTIGATION-TLS-STORM.md` for the measurements). Probe the real path instead, which is
-what the gateway's own health checks do:
+**In transparent mode that `curl` will almost certainly time out, and that is expected.**
+While the pf redirect is installed, direct connections to the gateway's own port nearly
+always fail — the rule makes its own target port unreachable, whichever port it targets.
+Measured at 0/20 and 1/15 in separate runs, so roughly one attempt in twenty does get
+through: enough that a single lucky probe can convince you the port is fine, not enough to
+build a health check on (issue #1, and `INVESTIGATION-TLS-STORM.md` for the measurements).
+Probe the real path instead, which is what the gateway's own health checks do:
 
 ```bash
 curl -sk https://api.anthropic.com/healthz     # answers from the gateway, not Anthropic
