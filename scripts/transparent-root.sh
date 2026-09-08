@@ -35,7 +35,10 @@ SELF="$0"
 
 HOST_DEFAULT="api.anthropic.com"
 PORT_DEFAULT=443
-GATEWAY_PORT_DEFAULT=7777
+# Matches internal/config.Default. A default that silently disagrees with the
+# configured port installs a redirect to a dead port, so callers should pass
+# --gateway-port explicitly rather than rely on this; install-proxy.sh now does.
+GATEWAY_PORT_DEFAULT=17777
 
 HOSTS_FILE="${CLAUDE_BURST_HOSTS_FILE:-/etc/hosts}"
 PF_CONF="${CLAUDE_BURST_PF_CONF:-/etc/pf.conf}"

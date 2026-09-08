@@ -131,15 +131,25 @@ echo
 # that silently builds a redirect to a dropped port is the worst shape this
 # could fail in: pf loads cleanly and nothing reaches the gateway.
 gateway_port="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json'))['listen'].split(':')[-1])" 2>/dev/null || echo 17777)"
+intercept_host="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('intercept',{}).get('host','api.anthropic.com'))" 2>/dev/null || echo api.anthropic.com)"
 echo "== 4. machine-wide redirect: /etc/hosts + pf (needs root) =="
 echo "changing: adds '127.0.0.1 api.anthropic.com' to /etc/hosts, loads a pf anchor"
 echo "redirecting 127.0.0.1:443 -> 127.0.0.1:$gateway_port"
 # HAVE_ROOT was established at the top, before anything was changed, so this
 # cannot be the step that discovers we have no password.
+# Pass the host and port EXPLICITLY. This used to invoke `install` bare and
+# let transparent-root.sh fall back to its own defaults -- which was invisible
+# for as long as those defaults happened to equal the configured values, and
+# broke the moment they did not: on 2026-09-08 this printed "redirecting
+# 127.0.0.1:443 -> 127.0.0.1:17777" and then installed nothing, because the
+# helper probed its default 7777, found nothing there, and refused. A message
+# describing one thing while the command does another is the exact failure
+# shape this repo keeps rediscovering. The intercept host was silently
+# defaulted the same way.
 if [[ $EUID -eq 0 ]]; then
-  "$ROOT_HELPER" install
+  "$ROOT_HELPER" install --host "$intercept_host" --gateway-port "$gateway_port"
 else
-  sudo -n "$ROOT_HELPER" install
+  sudo -n "$ROOT_HELPER" install --host "$intercept_host" --gateway-port "$gateway_port"
 fi || {
   echo "ERROR: the machine-wide redirect did not install. Nothing is redirected," >&2
   echo "so Claude Code still reaches Anthropic directly -- the safe state." >&2
