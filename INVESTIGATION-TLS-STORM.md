@@ -560,3 +560,59 @@ group, which this account has, and refusing to capture without a password that i
 needed is how a diagnostic goes unrun. The capability is tested rather than assumed, and
 when the run is unprivileged the pf rule listing prints **UNKNOWN** rather than nothing —
 "no output" must never read as "no rdr rule".
+
+## Update 2026-09-08 (e): attribution armed and proven, storm dormant
+
+There is no Wireshark or tshark on this machine and no packet-capture MCP connected —
+and neither would have answered this anyway. A capture names a **port**; the question is
+which **process**. The join is port to PID, and `cmd/claude-burst/peerlog.go` already
+does it correctly: `lsof` scoped to the exact ephemeral port, run synchronously the
+instant `Accept()` returns, so the connection cannot reach the TLS handshake and be torn
+down before its owner is known. It had simply never been switched on.
+
+`scripts/peer-log.sh on|off|status` now arms it, and it is **armed**.
+
+### Proven working, on live traffic
+
+```
+peer-log: connection from 127.0.0.1:54343 -- lsof: ... curl 15160 ... 127.0.0.1:54343->127.0.0.1:443
+peer-log: connection from 127.0.0.1:54341 -- lsof: ... 2.1.263 33360 ... 127.0.0.1:54341->127.0.0.1:443
+```
+
+The second is this Claude Code session itself (`2.1.263` is the version-named binary) —
+a false lead, identified rather than chased.
+
+### Two traps this hit, both caught by verification rather than assumption
+
+- **`launchctl kickstart -k` does not re-read the plist.** It restarts the process using
+  launchd's cached job definition, so the edited `EnvironmentVariables` block never
+  reached it. The plist said armed, the plist *was* armed, and `ps eww` on the running
+  process showed the variable absent. `bootout` + `bootstrap` is what makes launchd
+  re-read the file. The script now does that, and confirms by looking for the startup
+  banner rather than trusting the edit.
+- **The peer-log lines and the TLS errors are in different files.** The gateway's own
+  logger (`main.go:157`) writes to a rotating `claude-burst.log`; Go's `http.Server`
+  writes handshake errors to stderr, which launchd puts in `launchd.err.log`. The first
+  version of the status join read only the latter and would have reported "none yet"
+  forever — the exact failure shape this repo keeps rediscovering.
+
+### What the timing says, and what it does not
+
+The storm is **dormant**: last `unknown certificate` at 07:05:35, nothing in the four and
+a half hours since. Burst clusters start roughly hourly overnight — 23:47, 00:55, 01:53,
+02:11, 03:58, 04:59, 07:01 — with a tighter ~15-minute rhythm inside the 02:00 hour that
+may be a second client. Errors arrive in **pairs on adjacent ports**, so whatever it is
+opens two connections at once.
+
+The hourly shape suggests a scheduled task, but `crontab` is empty and no launchd agent
+that runs hourly touches Anthropic at all (the hourly ones are Google, Zoom and GoToMeeting
+updaters, which have no reason to resolve `api.anthropic.com` — and only `api.anthropic.com`
+is in `/etc/hosts`). **That is a narrowing, not a name.** After four wrong answers on
+issue #1, the pattern is not going to be named from a schedule that merely rhymes.
+
+### The cost of leaving it armed
+
+`identify()` is synchronous, so `Accept()` blocks for one `lsof` — measured at 40-70ms
+here — and connections are accepted one at a time while it runs. That is real, and it is
+why the code calls itself diagnostic-only. Since the bursts are overnight, the sensible
+window costs nothing. **Disarm with `scripts/peer-log.sh off` once a burst is captured.**
