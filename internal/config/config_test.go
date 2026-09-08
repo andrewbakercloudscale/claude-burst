@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestConfigBackwardCompat_LegacyFieldsSynthesizePrimarySecondary(t *testing.T) {
 	cfg := Default()
@@ -115,5 +119,75 @@ func TestHostsRedirectActive_OtherHostsEntriesDontCount(t *testing.T) {
 	hosts := "127.0.0.1 localhost\n127.0.0.1 some-other-host.test\n"
 	if HostsRedirectActive([]byte(hosts), "api.anthropic.com") {
 		t.Fatal("a loopback entry for an unrelated host must not count as the redirect being active")
+	}
+}
+
+// TestLoadMergesPricingRatherThanReplacing pins behaviour the default
+// pricing table silently depends on.
+//
+// Load() seeds the struct from Default() and then unmarshals config.json
+// over it. encoding/json reuses a non-nil map rather than allocating a new
+// one, so a file carrying its own `pricing` block ADDS to the defaults
+// instead of replacing them -- which is why adding a model here reaches
+// every existing installation without anyone editing their config.
+//
+// If that ever changed -- a `cfg.Pricing = map[...]{}` reset before
+// Unmarshal, say -- every default price would vanish for anyone with a
+// pricing block, and the only symptom would be cost quietly reading $0.00
+// on models that used to be priced. A zero that means "not priced" looking
+// exactly like a zero that means "free" is the failure this repo keeps
+// re-learning, so it gets a test rather than a comment.
+func TestLoadMergesPricingRatherThanReplacing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "claude-burst")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// A user config naming exactly one model, as a real one would.
+	body := `{"listen":"127.0.0.1:7777","pricing":{"my-vendor/some-model":{"input_per_mtok":1.5,"output_per_mtok":6}}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Pricing["my-vendor/some-model"]; got.InputPerMTok != 1.5 || got.OutputPerMTok != 6 {
+		t.Errorf("the file's own entry was lost: %+v", got)
+	}
+	// The point of the test: a default the file never mentions must survive.
+	for _, model := range []string{"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"} {
+		if got := cfg.Pricing[model]; got.InputPerMTok == 0 {
+			t.Errorf("default pricing for %q was replaced by the file's block; "+
+				"its cost would now silently record as $0.00", model)
+		}
+	}
+}
+
+// TestDefaultPricingCoversCurrentModels guards against the table drifting
+// behind the model line-up. An unpriced model records tokens with zero cost,
+// which reads as free rather than as unknown.
+func TestDefaultPricingCoversCurrentModels(t *testing.T) {
+	p := Default().Pricing
+	for _, model := range []string{
+		"claude-fable-5-1", "claude-fable-5",
+		"claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+		"claude-sonnet-5", "claude-sonnet-4-6",
+		"claude-haiku-4-5",
+	} {
+		got, ok := p[model]
+		if !ok {
+			t.Errorf("no default pricing for %q", model)
+			continue
+		}
+		if got.InputPerMTok <= 0 || got.OutputPerMTok <= 0 {
+			t.Errorf("%q priced at %+v; a zero rate is indistinguishable from free", model, got)
+		}
+		if got.OutputPerMTok <= got.InputPerMTok {
+			t.Errorf("%q has output (%v) <= input (%v), which no Claude model does -- likely transposed",
+				model, got.OutputPerMTok, got.InputPerMTok)
+		}
 	}
 }

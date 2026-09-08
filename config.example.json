@@ -44,6 +44,34 @@
     "zai-org/GLM-5.3": {
       "input_per_mtok": 1.4,
       "output_per_mtok": 4.4
+    },
+    "claude-fable-5-1": {
+      "input_per_mtok": 10,
+      "output_per_mtok": 50
+    },
+    "claude-fable-5": {
+      "input_per_mtok": 10,
+      "output_per_mtok": 50
+    },
+    "claude-opus-4-8": {
+      "input_per_mtok": 5,
+      "output_per_mtok": 25
+    },
+    "claude-opus-4-7": {
+      "input_per_mtok": 5,
+      "output_per_mtok": 25
+    },
+    "claude-opus-4-6": {
+      "input_per_mtok": 5,
+      "output_per_mtok": 25
+    },
+    "claude-sonnet-4-6": {
+      "input_per_mtok": 3,
+      "output_per_mtok": 15
+    },
+    "claude-haiku-4-5": {
+      "input_per_mtok": 1,
+      "output_per_mtok": 5
     }
   }
 }

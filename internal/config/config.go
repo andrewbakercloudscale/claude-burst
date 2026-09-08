@@ -191,7 +191,26 @@ func Default() Config {
 			"claude-haiku-4-5-20251001":      "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 			"claude-haiku-4-5-20251001-v1:0": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 		},
+		// Anthropic first-party rates, per million tokens. These are the
+		// models the PRIMARY slot serves, so they belong in the shipped
+		// defaults -- unlike a third-party secondary's pricing, which is
+		// provider-specific (the same GLM id costs different amounts through
+		// Together, OpenRouter and Z.ai direct) and so lives in the user's
+		// own config.json instead.
+		//
+		// The global.anthropic.* keys are BEDROCK ids and are listed here at
+		// first-party rates, which is not necessarily correct: Bedrock is
+		// partner-operated and separately priced. Left as-is rather than
+		// silently "corrected" to numbers nobody has checked -- see the
+		// pricing note in README. Anyone billing against Bedrock should
+		// verify these against the AWS price list.
 		Pricing: map[string]ModelPrice{
+			"claude-fable-5-1":                                {InputPerMTok: 10, OutputPerMTok: 50},
+			"claude-opus-4-8":                                 {InputPerMTok: 5, OutputPerMTok: 25},
+			"claude-opus-4-7":                                 {InputPerMTok: 5, OutputPerMTok: 25},
+			"claude-opus-4-6":                                 {InputPerMTok: 5, OutputPerMTok: 25},
+			"claude-sonnet-4-6":                               {InputPerMTok: 3, OutputPerMTok: 15},
+			"claude-haiku-4-5":                                {InputPerMTok: 1, OutputPerMTok: 5},
 			"claude-sonnet-5":                                 {InputPerMTok: 2, OutputPerMTok: 10},
 			"global.anthropic.claude-sonnet-5":                {InputPerMTok: 2, OutputPerMTok: 10},
 			"claude-opus-5":                                   {InputPerMTok: 5, OutputPerMTok: 25},
