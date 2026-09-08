@@ -5,10 +5,12 @@ but certificate rejections **came back on 2026-09-07**, at about a tenth of the 
 apparently from a different client. See the 2026-09-08 update on that before treating it as
 closed.
 
-Issue #1 (the direct-port timeout) is **CHARACTERISED 2026-09-08** and no longer a mystery:
-something on this Mac silently drops new flows to **destination port 7777 specifically**, and
-the answer is to stop using that port. See "Update 2026-09-08: issue #1 is the port number"
-at the bottom. It was never intermittent — it reproduces at ~19/20 on demand.
+Issue #1 (the direct-port timeout) is **CHARACTERISED 2026-09-08**, after one wrong answer
+that got as far as being published here and on the issue. It is not the port number. **The pf
+rdr rule makes its own target port unreachable for direct connections**, whichever port that
+is — so it follows the redirect around and changing ports does not help. It was never
+intermittent: it reproduces on demand, and only while transparent mode is installed. See the
+two updates at the bottom, in order.
 
 ## Issue #1 (original): direct 127.0.0.1:7777 timeout right after restart
 
@@ -246,7 +248,12 @@ It identifies the calling process synchronously inside `Accept()`, before the ha
 would otherwise close the connection first. Point it at the next recurrence and name the
 client, rather than inferring it from timestamps a second time.
 
-## Update 2026-09-08: issue #1 is the port number
+## Update 2026-09-08 (a): issue #1 is the port number — **WRONG, see (b) below**
+
+> **Retracted.** The conclusion of this section — that port 7777 specifically is blocked — is
+> wrong, and update (b) below shows why. The capture analysis and the measurements in it are
+> sound and worth keeping; only the interpretation was bad. Left in place rather than deleted
+> so the mistake and its correction stay legible.
 
 Nine captures had accumulated in `health-check-failures.log` while this document said it was
 waiting for one. Reading them settles the issue, and the first thing they show is that **four
@@ -336,3 +343,52 @@ scripts/install-proxy.sh                         # restarts, waits healthy, rein
 The ordering is ROLLBACK.md's rule 3 and matters: between the gateway moving to a new port and
 pf being regenerated, the old rdr would point `443` at a port nothing is listening on — the
 machine-wide-refused state. Removing the hosts redirect first makes that window harmless.
+
+## Update 2026-09-08 (b): it is the rdr target, not the port — correcting (a)
+
+Update (a) concluded that a security product blocks destination port 7777, and recommended
+moving the gateway to 17777. The move was carried out. The result disproves it.
+
+```
+before the redirect was installed:  17777 direct   15/15    (not yet the rdr target)
+after  the redirect was installed:  17777 direct    0/15    (now the rdr target) — timeout
+with 7777 no longer the target:      7777 direct   10/10    (plain python listener)
+```
+
+**7777 was never blocked.** A plain listener on it answers 10/10 right now. What actually
+happens is that **the pf rdr rule makes its own target port unreachable for direct
+connections** — the symptom follows the redirect to whatever port it points at.
+
+### How the wrong answer survived so long
+
+Every control in update (a) was consistent with this too, and was misread. The ports tested
+clean — 7778, 8777, 9777, 17777, 18777, 7801 — were all tested with a listener that was *not*
+the rdr target, and the only port that ever failed was the one that was. The variable being
+changed (the port number) was perfectly confounded with the variable that mattered (being the
+rdr target). The experiment that would have killed the theory in ten seconds — a plain
+listener on 7777 while something else was the rdr target — was never run, because 7777 was
+believed to be poisoned and therefore untestable.
+
+The evidence against was also already in this repo. `transparent-root.sh` records pf states
+with the gateway port on *both* sides, and `deploy.sh`'s note that "only the destination port
+matters" is the same observation phrased as a conclusion about the number rather than about
+the role.
+
+### What this means operationally
+
+- The `no rdr on lo0 ... port <gateway>` exemption line in the anchor does not do what it
+  intends on macOS loopback. That is the bug, and it is ours, not a security vendor's.
+- **The direct probe cannot be trusted whenever transparent mode is installed** — by design,
+  not intermittently. `gateway_healthy`'s real-path probe is not a fallback in that mode, it
+  is the only correct check, and it is why deploys have been succeeding throughout.
+- Changing the port achieves nothing and the default is back to **7777**. The de-hardcoding
+  that the port move forced is kept: `cfg.Listen` is a real setting and every prober now reads
+  it, which was independently worth doing.
+
+### Still open
+
+Why the `no rdr` exemption fails. Worth capturing `sudo pfctl -a claude-burst -sr` and
+`sudo pfctl -s state | grep <gateway port>` during a failing direct probe — the states with
+the gateway port on both sides are the thread to pull. A candidate fix is an explicit
+`pass on lo0 ... to 127.0.0.1 port <gateway>` in the anchor ahead of the rdr, rather than
+relying on `no rdr` alone.

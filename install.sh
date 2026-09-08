@@ -103,7 +103,7 @@ PLIST
   # is listening on is exactly the kind of confidently-wrong instruction this
   # project keeps getting bitten by.
   local gw
-  gw="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','127.0.0.1:17777'))" 2>/dev/null || echo '127.0.0.1:17777')"
+  gw="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','127.0.0.1:7777'))" 2>/dev/null || echo '127.0.0.1:7777')"
 
   cat <<OUT
 
