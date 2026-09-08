@@ -16,8 +16,12 @@
     --muted: #2e3a66;
     --faint: #47539b;
     --accent: #3b5bdb;
-    --ok: #2b8a5c;
-    --ok-bg: #e6f4ec;
+    /* --ok means "healthy", not "green". Everything that reports a good
+       state -- cards, section headings, notes, pills, 2xx rows -- resolves
+       through this pair, so the palette is one edit here rather than a
+       hunt for stragglers. */
+    --ok: #3b5bdb;
+    --ok-bg: #ecf0fd;
     --warn: #a86520;
     --warn-bg: #fdf3e4;
     --bad: #b4342c;
@@ -36,8 +40,8 @@
       --muted: #c3cdf5;
       --faint: #a8b5ea;
       --accent: #7c93f5;
-      --ok: #5fd39b;
-      --ok-bg: #14301f;
+      --ok: #7c93f5;
+      --ok-bg: #1a2140;
       --warn: #e0a75e;
       --warn-bg: #33240f;
       --bad: #f08579;
@@ -102,7 +106,7 @@
      backgrounds already flip with the dark-mode block below, so a tinted
      card is legible in both themes rather than only the one it was built in. */
   .card { border-left: 3px solid var(--border); }
-  .card.c-ok   { background: var(--ok-bg);   border-color: color-mix(in srgb, var(--ok) 28%, transparent);   border-left-color: var(--ok); }
+  .card.c-ok   { background: var(--ok-bg); border-color: color-mix(in srgb, var(--ok) 28%, transparent); border-left-color: var(--ok); }
   .card.c-warn { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 28%, transparent); border-left-color: var(--warn); }
   .card.c-bad  { background: var(--bad-bg);  border-color: color-mix(in srgb, var(--bad) 28%, transparent);  border-left-color: var(--bad); }
   .card.c-ok   .stat { color: var(--ok); }
@@ -112,10 +116,13 @@
   .card.c-ok   h3 { color: var(--ok); }
   .card.c-warn h3 { color: var(--warn); }
   .card.c-bad  h3 { color: var(--bad); }
-  /* Measurement cards: an accent rule, no tint, and the stat keeps the
-     ordinary text colour so it does not read as a verdict. */
-  .card.c-info { border-left-color: var(--accent); }
-  .card.c-info h3 { color: var(--accent); }
+  /* Measurement cards stay entirely neutral. They used to carry an accent
+     rule, which stopped working the moment "healthy" became that same
+     accent: a counted number and a good verdict would have been the same
+     colour, and the distinction between the cards that are telling you
+     something is wrong and the cards that are just counting is the actual
+     information here. */
+  .card.c-info { border-left-color: var(--border); }
   .stat { font-size: 25px; font-weight: 640; letter-spacing: -.02em; line-height: 1.1; }
   .stat small { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
   .sub { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
@@ -138,6 +145,25 @@
   section.collapsible > h2 { cursor: pointer; user-select: none; }
   section.collapsed > h2 { border-bottom: none; }
   section.collapsed > .body { display: none; }
+  /* Heading colour states. A collapsed panel's header is the ONLY thing
+     reporting on it, so the header has to carry the verdict in colour as
+     well as words -- otherwise "both armed" and "no API key" are the same
+     shade of grey and the page reads as uniformly fine at a glance, which
+     is exactly the state where it is not.
+
+     Tinting the header rather than the whole section keeps the body neutral
+     when it is open, so a green header does not turn a form full of inputs
+     into a green form. */
+  section > h2.h-ok   { background: var(--ok-bg); color: var(--ok); border-bottom-color: color-mix(in srgb, var(--ok) 25%, transparent); }
+  section > h2.h-warn { background: var(--warn-bg); color: var(--warn); border-bottom-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+  section > h2.h-bad  { background: var(--bad-bg);  color: var(--bad);  border-bottom-color: color-mix(in srgb, var(--bad) 25%, transparent); }
+  section > h2.h-ok .hint, section > h2.h-warn .hint, section > h2.h-bad .hint { color: inherit; opacity: .78; }
+  /* The toggle sits on a tinted header, so it takes the header's colour
+     rather than the page accent, which would clash with warn and bad. */
+  section > h2.h-ok   .h2btn.primary { background: var(--ok); border-color: var(--ok); }
+  section > h2.h-warn .h2btn.primary { background: var(--warn); border-color: var(--warn); }
+  section > h2.h-bad  .h2btn.primary { background: var(--bad);  border-color: var(--bad); }
+
   .h2btn {
     font: 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 600;
     padding: 4px 9px; border-radius: 6px; text-transform: uppercase; letter-spacing: .05em;
@@ -361,7 +387,10 @@
         </div>
         <button class="secField" id="showSecApiKey">👁 Show</button>
         <button class="primary" id="saveSecondary">✓ Save secondary</button>
+        <button class="success secField" id="testSecondary">⇌ Send &ldquo;hello world&rdquo;</button>
       </div>
+      <div class="hint secField" style="margin-top:6px">The test sends one real, capped request through the secondary exactly as a failover would &mdash; same auth, same model translation &mdash; so it costs a fraction of a cent on a metered provider.</div>
+      <div id="secTestNote"></div>
       <div class="hint" style="margin-top:8px" id="secKeyHint"></div>
       <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json — which only stores the service name. It is never sent back to this page, so the box above stays blank even when a key is stored; the green line at the top of this panel is how you check one is there.</div>
       <div id="secNote"></div>
@@ -509,6 +538,14 @@ function keySentence(sec) {
   return ` Key found in the Keychain under "${sec.keychain_service}"${when}.`;
 }
 
+// Sets a section heading's colour state. One helper for both panels so the
+// two cannot drift into meaning different things by the same colour.
+function setHeadState(headId, state) {
+  const h = $(headId);
+  h.classList.remove("h-ok", "h-warn", "h-bad");
+  if (state) h.classList.add("h-" + state);
+}
+
 let secWasBad = false;
 function setSecondaryOpen(open) {
   const sec = $("secondarySection");
@@ -535,6 +572,10 @@ function renderSecondary(s) {
   // Collapsed, the header is the only thing reporting on the secondary, so
   // it carries the verdict rather than a label -- same rule as Guards.
   $("secondarySection").classList.toggle("alert", none || missingKey);
+  // none is amber, not red: having no secondary is a deliberate choice as
+  // often as it is a mistake. A configured secondary with no key IS red --
+  // that one is always broken, it just has not failed yet.
+  setHeadState("secondaryHead", missingKey ? "bad" : none ? "warn" : "ok");
   $("secSummary").textContent = none ? "none configured"
     : missingKey ? "no API key — will fail when used"
     : `${sec.model || sec.provider} — key ok`;
@@ -847,6 +888,8 @@ function renderGuards(s) {
   // Re-opening on every 2s refresh would take the panel away from anyone who
   // read it and closed it again while the condition persisted -- and the
   // condition can persist for as long as it takes to fix.
+  setHeadState("guardsHead", bad ? "bad" : armed === guards.length ? "ok" : "warn");
+
   if (bad && !guardsWereBad) setGuardsOpen(true);
   guardsWereBad = bad;
 }
@@ -1109,6 +1152,38 @@ $("showSecApiKey").onclick = async () => {
 $("secApiKey").addEventListener("input", () => {
   if (revealed !== null && $("secApiKey").value !== revealed) revealed = null;
 });
+
+$("testSecondary").onclick = async () => {
+  const btn = $("testSecondary");
+  btn.disabled = true;
+  note($("secTestNote"), "warn", "Sending one request to the secondary...");
+  try {
+    const r = await post("/api/test-secondary");
+    const d = r.result || {};
+    // Every line here is a separate thing that had to work, in the order it
+    // had to work in, so a failure says WHICH step got that far rather than
+    // just "it did not work".
+    const where = [
+      `provider: ${d.provider || "?"}`,
+      d.destination ? `endpoint: ${d.destination}` : "",
+      d.requested_model ? `asked for ${d.requested_model}${d.serve_model && d.serve_model !== d.requested_model ? ` -> served by ${d.serve_model}` : ""}` : "",
+      d.status ? `HTTP ${d.status}` : "",
+      d.duration_ms ? `${d.duration_ms} ms` : "",
+    ].filter(Boolean).join("\n");
+
+    if (r.ok) {
+      note($("secTestNote"), "ok",
+        `The secondary answered:\n\n    ${d.reply}\n\n${where}\ntokens: ${d.input_tokens} in / ${d.output_tokens} out`);
+    } else {
+      note($("secTestNote"), "bad",
+        `${r.error}\n\n${where}${d.detail ? "\n\nupstream said:\n" + d.detail : ""}`);
+    }
+    // The probe is real traffic: it lands in Recent responses and in the
+    // spend totals, so the rest of the page is now stale.
+    refresh();
+  } catch (e) { note($("secTestNote"), "bad", e.message); }
+  finally { btn.disabled = false; }
+};
 
 $("saveSecondary").onclick = async () => {
   const provider = $("secProvider").value;

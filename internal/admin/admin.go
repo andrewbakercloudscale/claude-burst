@@ -16,6 +16,7 @@
 package admin
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -95,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
 	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
+	mux.HandleFunc("/api/test-secondary", s.mutating(s.handleTestSecondary))
 	mux.HandleFunc("/api/revert", s.mutating(s.handleRevert))
 	mux.HandleFunc("/api/restart", s.mutating(s.handleRestart))
 	mux.HandleFunc("/api/install", s.mutating(s.handleInstall))
@@ -929,6 +931,39 @@ func (s *Server) handleSecondaryKey(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, secondaryKeyResponse{Value: value, Source: source})
+}
+
+type testSecondaryResponse struct {
+	OK     bool               `json:"ok"`
+	Error  string             `json:"error,omitempty"`
+	Result router.ProbeResult `json:"result"`
+}
+
+// handleTestSecondary sends one trivial completion through the secondary
+// provider and reports what came back.
+//
+// POST, and mutation-guarded, because it is not a read: it spends real money
+// on a metered provider every time it is pressed. Everything it can tell you
+// -- reachable, authenticated, model translated, response well-formed --
+// only becomes true when a request actually goes down the wire, which is why
+// the dashboard could not answer it from config.
+//
+// Deliberately NOT a 500 when the probe fails. The failure detail IS the
+// answer here, and an HTTP error status would leave the UI showing a bare
+// status line instead of the upstream's own message, which is the one thing
+// worth reading when a key is wrong.
+func (s *Server) handleTestSecondary(w http.ResponseWriter, r *http.Request) {
+	// Bounded well inside any browser timeout, so a hung provider produces a
+	// real answer on the page rather than a spinner that never resolves.
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	res, err := s.gateway.ProbeSecondary(ctx)
+	if err != nil {
+		writeJSON(w, testSecondaryResponse{OK: false, Error: err.Error(), Result: res})
+		return
+	}
+	writeJSON(w, testSecondaryResponse{OK: true, Result: res})
 }
 
 // handleRestart exits the process. launchd's KeepAlive brings it straight back
