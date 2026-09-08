@@ -408,6 +408,37 @@ scripts/pf-heal.sh --self-test
 
 See [ROLLBACK.md](ROLLBACK.md) for undoing every part of this independently.
 
+## Emergency recovery, without this machine's help
+
+Everything the dashboard offers goes through a gateway that is running. When it is
+not — the gateway is dead, `127.0.0.1:7788` refuses to connect, and transparent mode's
+`/etc/hosts` redirect is still pointing every process on the Mac at nothing — the
+dashboard cannot help you, and neither can any button on it.
+
+That case is why the whole recovery chain is committed here and nothing in it needs
+this project to be installed, built, or working:
+
+```bash
+git clone https://github.com/andrewbakercloudscale/claude-burst.git
+cd claude-burst
+./scripts/rollback.sh          # asks for sudo; undoes every part, verifies the result
+```
+
+`rollback.sh` removes the `/etc/hosts` redirect and pf rule first (widest blast radius
+first), then the System-keychain CA trust, then restores `settings.json`, `config.json`
+and the CA bundle from the latest backup, stops the gateway, and **verifies
+`api.anthropic.com` resolves off-box before it claims success**. It is idempotent: safe
+when nothing was installed, when half an install succeeded, and twice in a row.
+
+If you cannot even clone, the two commands that matter are short enough to type:
+
+```bash
+sudo sed -i '' '/# BEGIN claude-burst hosts/,/# END claude-burst hosts/d' /etc/hosts
+sudo dscacheutil -flushcache
+```
+
+That alone restores Anthropic access machine-wide; everything else is tidy-up.
+
 ## Forcing the secondary, and the admin UI
 
 A subscription primary only fails over on genuine exhaustion signals, which cannot be
