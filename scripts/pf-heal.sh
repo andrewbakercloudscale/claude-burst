@@ -197,7 +197,27 @@ restart_gateway() {
 # The live rule, not the anchor FILE and not the pf.conf reference. Both of
 # those survived the 2026-09-07 outage intact; only the loaded ruleset lost
 # the rule, which is why every check that looked at configuration reported OK.
-rdr_rule_loaded() { "$PFCTL" -a "$ANCHOR_NAME" -s nat 2>/dev/null | grep -q 'rdr'; }
+# TWO separate facts, and only both together mean traffic is redirected.
+#
+# `pfctl -a claude-burst -s nat` lists the rules INSIDE our anchor. It says
+# nothing about whether the main ruleset still routes anything into that
+# anchor -- and the main ruleset is the half other pf-owning software rewrites
+# when it reloads /etc/pf.conf from its own copy. An anchor full of correct
+# rules that nothing references is inert, and reports itself as perfectly
+# loaded. Checking only the first of these is why the guard sat silent through
+# a live outage on 2026-09-08.
+#
+# The grep is anchored to the start of the rule, too: our anchor also contains
+# a `no rdr` line (see write_anchor in transparent-root.sh), and a bare
+# `grep rdr` matches that one -- so the redirect could be gone entirely while
+# its exemption alone kept the check green.
+rdr_rule_loaded() {
+  "$PFCTL" -a "$ANCHOR_NAME" -s nat 2>/dev/null | grep -qE '^[[:space:]]*rdr[[:space:]]'
+}
+
+anchor_referenced() {
+  "$PFCTL" -s nat 2>/dev/null | grep -q "rdr-anchor \"$ANCHOR_NAME\""
+}
 
 failures() { cat "$FAIL_COUNT_FILE" 2>/dev/null || echo 0; }
 set_failures() {
@@ -248,9 +268,10 @@ fi
 
 # --- 3. The dangerous state. --------------------------------------------------
 gport="$(gateway_port)"
-if rdr_rule_loaded; then rdr=loaded; else rdr=MISSING; fi
-if gateway_listening;  then gw=listening; else gw=DOWN; fi
-log "BROKEN: /etc/hosts redirects $INTERCEPT_HOST here but it does not answer from this gateway -- every process on this Mac is affected (rdr rule: $rdr, gateway on :$gport: $gw)"
+if rdr_rule_loaded;   then rdr=loaded;     else rdr=MISSING;        fi
+if anchor_referenced; then ref=referenced; else ref=NOT-REFERENCED; fi
+if gateway_listening; then gw=listening;   else gw=DOWN;           fi
+log "BROKEN: /etc/hosts redirects $INTERCEPT_HOST here but it does not answer from this gateway -- every process on this Mac is affected (rdr rule: $rdr, main ruleset: $ref, gateway on :$gport: $gw)"
 
 if (( CHECK_ONLY )); then
   log "check: --check given, so nothing was repaired."
@@ -282,11 +303,15 @@ if [[ "$gw" == "DOWN" ]]; then
   fi
 fi
 
-if [[ "$rdr" == "MISSING" ]]; then
-  log "repairing: pf rdr rule is not loaded -- $ROOT_HELPER reload-anchor"
-  reload_out="$("$ROOT_HELPER" reload-anchor 2>&1)"
-  printf '%s\n' "$reload_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
-fi
+# Unconditional, not "only when the rule looks missing". reload-anchor rewrites
+# the anchor AND reloads /etc/pf.conf, so it repairs both halves -- and the half
+# that looks fine to rdr_rule_loaded is exactly the one that was broken on
+# 2026-09-08. It dry-runs the whole ruleset first and restores the previous
+# anchor if the result is worse, so running it when pf was already correct
+# costs a second and changes nothing.
+log "repairing: reloading the pf anchor and main ruleset -- $ROOT_HELPER reload-anchor"
+reload_out="$("$ROOT_HELPER" reload-anchor 2>&1)"
+printf '%s\n' "$reload_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
 
 if intercept_path_healthy; then
   log "HEALED: $INTERCEPT_HOST answers from this gateway again"
@@ -363,8 +388,22 @@ self_test() {
   #   both      -- the real path answers from our gateway
   # Wiring the path probe to BOTH is the whole point: the outage this missed
   # had rdr present and gw absent.
-  printf '#!/bin/zsh\n[[ -f "$(dirname "$0")/rdr" ]] && echo "rdr pass on lo0 ... -> 127.0.0.1 port 7777"\nexit 0\n' > "$PFCTL"
-  printf '#!/bin/zsh\nd="$(dirname "$0")"\n[[ -f "$d/rdr" && -f "$d/gw" ]] && { echo "{\\"overflow\\":false}"; exit 0; }\nexit 7\n' > "$CURL"
+  # Models both pf facts independently: $tmp/rdr is a rule inside the anchor,
+  # $tmp/ref is the main ruleset routing traffic into it. The "no rdr" line is
+  # always emitted, because a check that matches it would pass with the real
+  # redirect gone. The path works only when rdr AND ref AND gw all hold.
+  cat > "$PFCTL" <<'STUB'
+#!/bin/zsh
+d="$(dirname "$0")"
+if [[ "$1" == "-a" ]]; then
+  echo "no rdr on lo0 inet proto tcp from any to 127.0.0.1 port 7777"
+  [[ -f "$d/rdr" ]] && echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7777"
+else
+  [[ -f "$d/ref" ]] && echo 'rdr-anchor "claude-burst" all'
+fi
+exit 0
+STUB
+  printf '#!/bin/zsh\nd="$(dirname "$0")"\n[[ -f "$d/rdr" && -f "$d/ref" && -f "$d/gw" ]] && { echo "{\\"overflow\\":false}"; exit 0; }\nexit 7\n' > "$CURL"
   printf '#!/bin/zsh\n[[ -f "$(dirname "$0")/gw" ]] && exit 0\nexit 1\n' > "$LSOF"
   cat > "$ROOT_HELPER" <<'STUB'
 #!/bin/zsh
@@ -372,8 +411,8 @@ d="$(dirname "$0")"
 case "$1" in
   reload-anchor)
     [[ -f "$d/anchor-wont-load" ]] && { echo "pf rejected the ruleset" >&2; exit 1; }
-    touch "$d/rdr"; echo "reloaded"; exit 0 ;;
-  remove) rm -f "$d/hosts" "$d/rdr"; echo "removed"; exit 0 ;;
+    touch "$d/rdr" "$d/ref"; echo "reloaded"; exit 0 ;;
+  remove) rm -f "$d/hosts" "$d/rdr" "$d/ref"; echo "removed"; exit 0 ;;
 esac
 exit 2
 STUB
@@ -396,7 +435,7 @@ STUB
   (( rc == 0 )) && [[ -z "$out" ]] && ok "no hosts block -> silent no-op" || bad "expected silence with no hosts block" show
 
   # 2. Fully healthy -> silent.
-  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/gw"
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/ref" "$tmp/gw"
   run
   (( rc == 0 )) && [[ -z "$out" ]] && ok "path healthy -> silent no-op" || bad "expected silence when healthy" show
 
@@ -409,6 +448,20 @@ STUB
   [[ -f "$tmp/restarts" ]] && ok "restarted the gateway rather than reloading pf" || bad "never attempted a gateway restart"
   want "HEALED" && ok "restart healed it" || bad "did not heal after the gateway came back" show
 
+  # 3b. THE OTHER HALF, and the one that reported itself healthy: the anchor
+  #     still holds a correct rdr rule, but the MAIN ruleset no longer routes
+  #     anything into it. `pfctl -a claude-burst -s nat` looks perfect.
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/gw"; rm -f "$tmp/ref"
+  run
+  want "BROKEN" && ok "anchor referenced by nothing -> detected" || bad "MISSED an unreferenced anchor" show
+  want "main ruleset: NOT-REFERENCED" && ok "diagnosis names the main ruleset" || bad "diagnosis did not name the main ruleset" show
+  want "HEALED" && ok "reload-anchor restored the reference" || bad "did not heal an unreferenced anchor" show
+
+  # 3c. A `no rdr` line alone must not read as a working redirect.
+  rm -f "$tmp/rdr"; touch "$tmp/ref" "$tmp/gw"
+  run
+  want "rdr rule: MISSING" && ok "'no rdr' line alone does not count as loaded" || bad "counted the no-rdr exemption as the redirect" show
+
   # 4. The original failure mode still works: rule gone, gateway fine.
   rm -f "$tmp/rdr"; rm -f "$tmp/restarts"
   run
@@ -416,12 +469,12 @@ STUB
   want "HEALED" && ok "reload-anchor healed it" || bad "reload-anchor did not heal" show
 
   # 5. Both broken at once -> both repaired.
-  rm -f "$tmp/rdr" "$tmp/gw" "$tmp/restarts"
+  rm -f "$tmp/rdr" "$tmp/ref" "$tmp/gw" "$tmp/restarts"
   run
   want "HEALED" && ok "both pieces broken -> both repaired" || bad "did not repair both" show
 
   # 6. Unrepairable -> count, then bail out by removing the redirect.
-  rm -f "$tmp/rdr" "$tmp/gw" "$FAIL_COUNT_FILE"
+  rm -f "$tmp/rdr" "$tmp/ref" "$tmp/gw" "$FAIL_COUNT_FILE"
   touch "$tmp/anchor-wont-load" "$tmp/gw-wont-start"
   run; want "1/2" && ok "first failure -> retry" || bad "did not count the first failure" show
   run; want "BAILED OUT" && ok "second failure -> bailed out" || bad "did not bail out at the limit" show
@@ -430,7 +483,7 @@ STUB
 
   # 7. Recovery after failures is announced, so the log shows the whole arc.
   rm -f "$tmp/anchor-wont-load" "$tmp/gw-wont-start"
-  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/gw"; echo 3 > "$FAIL_COUNT_FILE"
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/ref" "$tmp/gw"; echo 3 > "$FAIL_COUNT_FILE"
   run
   want "recovered" && ok "recovery after failures is logged" || bad "recovery was silent" show
 

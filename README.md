@@ -2,7 +2,7 @@
 
 **Claude Max as included capacity. A metered secondary as paid overflow.**
 
-Claude Burst is a Mac-only local gateway for Claude Code. It keeps your normal Claude Pro/Max subscription login as the primary credential, observes Anthropic's authoritative subscription rate-limit headers, and only switches inference to a configured secondary when Anthropic says the subscription allowance is actually exhausted. The secondary can be Amazon Bedrock, any OpenAI-compatible chat-completions endpoint (e.g. Together AI serving GLM — see [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below), or a direct Anthropic API key. When the reset timestamp arrives, it automatically returns to the subscription.
+Claude Burst is a Mac-only local gateway for Claude Code. It keeps your normal Claude Pro/Max subscription login as the primary credential, observes Anthropic's authoritative subscription rate-limit headers, and only switches inference to a configured secondary when Anthropic says the subscription allowance is actually exhausted. The secondary is a pluggable slot with three equally supported choices — **Amazon Bedrock**, **OpenRouter**, and **Together AI** (or any other OpenAI-compatible chat-completions endpoint; see [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below) — plus a direct Anthropic API key if you would rather stay on Anthropic's own billing. When the reset timestamp arrives, it automatically returns to the subscription.
 
 This is an experimental MVP. Test it on a non-critical development account before any broader rollout.
 
@@ -15,7 +15,7 @@ Primary and secondary are independent, pluggable slots (`internal/router/provide
 | Slot | Options |
 | --- | --- |
 | **Primary** | `oauth-passthrough` — your existing Claude Pro/Max subscription login (the default, and the setup this whole README describes first) · `anthropic-api-key` — a direct, metered Anthropic API key, for accounts with no subscription |
-| **Secondary** | `bedrock` — Amazon Bedrock · `openai-compatible` — any OpenAI-compatible chat-completions endpoint, worked examples below for Together AI/GLM and OpenRouter · `none` — disable overflow entirely |
+| **Secondary** | `bedrock` — Amazon Bedrock · `openai-compatible` — OpenRouter, Together AI, or any other OpenAI-compatible chat-completions endpoint (worked examples below) · `none` — disable overflow entirely. The three named providers are peers; none is a default. |
 
 See [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below for the openai-compatible worked examples, and [Configuration](#configuration) for every field.
 
@@ -27,7 +27,7 @@ Anthropic exposes materially different commercial models for access to the same 
 
 - Claude Max is a fixed monthly subscription with rolling usage limits.
 - Claude API is metered by token.
-- Amazon Bedrock, and OpenAI-compatible inference providers such as Together AI, offer metered access to Claude-family or comparable models outside Anthropic's own billing.
+- Amazon Bedrock, OpenRouter and Together AI all offer metered access to Claude-family or comparable models outside Anthropic's own billing.
 
 Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BASE_URL` with an existing claude.ai subscription login. Setting only the base URL keeps the subscription credential active and the subscription's usage limits and billing continue to apply. Claude Burst uses that supported gateway mechanism and respects the subscription limit rather than trying to evade it.
 
@@ -39,7 +39,7 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 4. Generic `429` responses do **not** trigger overflow.
 5. Overflow activates only when Anthropic's subscription headers indicate a rejected unified limit, for example `anthropic-ratelimit-unified-status: rejected`, or when an explicit subscription-limit error is returned.
 6. Claude Burst reads Anthropic's reset timestamp and persists it locally.
-7. The rejected request is replayed to the configured secondary — Amazon Bedrock's Anthropic Messages endpoint, or an OpenAI-compatible endpoint such as Together AI or OpenRouter — using a credential stored in macOS Keychain.
+7. The rejected request is replayed to the configured secondary — Amazon Bedrock, OpenRouter, Together AI, or any other OpenAI-compatible endpoint — using a credential stored in macOS Keychain.
 8. Future inference requests use the secondary until the reset time plus a small safety grace period.
 9. The first request after that time goes back to Anthropic Max automatically.
 
@@ -47,7 +47,7 @@ Claude Burst does not rotate Max accounts, suppress quota signals, fabricate hea
 
 ## What is logged
 
-Claude Burst writes to two files under `~/.config/claude-burst/`, and both are metadata-only: **prompts, source code, tool inputs and model outputs are never written to disk.** The proxy necessarily handles the request body in memory so it can replay a rejected request to Bedrock, but it does not persist it.
+Claude Burst writes to two files under `~/.config/claude-burst/`, and both are metadata-only: **prompts, source code, tool inputs and model outputs are never written to disk.** The proxy necessarily handles the request body in memory so it can replay a rejected request to the secondary, but it does not persist it.
 
 ### `metrics.jsonl` — structured, one line per request
 
@@ -88,28 +88,57 @@ A metrics-write failure (disk full, permissions, etc.) is logged but never fails
 - macOS on Apple Silicon or Intel
 - Go 1.23+ (there's no prebuilt binary in the repo; `install.sh` builds one locally)
 - Either: Claude Code already installed and logged into the intended Pro/Max account (subscription mode), **or** a metered Anthropic API key (no-subscription mode)
-- A credential for whichever secondary you pick: Amazon Bedrock access plus a Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`, **or** an API key for an OpenAI-compatible endpoint such as Together AI (see [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below), **or** none at all if you're running with `--secondary none`
+- A credential for whichever secondary you pick — one of:
 
-The secondary is a pluggable slot (`internal/router/provider.go`), not a hardcoded vendor. The install example below uses Bedrock because it needs the fewest moving parts to try first — Bedrock and the two Anthropic-passthrough providers all speak Anthropic's Messages format natively — but it is one option, not a requirement.
+| Secondary | Credential | Provider setting |
+|---|---|---|
+| **Amazon Bedrock** | Bedrock access + an API key in `AWS_BEARER_TOKEN_BEDROCK` | `--secondary bedrock` |
+| **OpenRouter** | an OpenRouter API key | `--secondary openai-compatible` |
+| **Together AI** | a Together API key | `--secondary openai-compatible` |
+| *(none)* | — | `--secondary none` |
+
+The secondary is a pluggable slot (`internal/router/provider.go`), not a hardcoded vendor, and none of these three is privileged over the others in the code or in this document. They differ in exactly one way worth knowing up front: Bedrock speaks Anthropic's Messages wire format natively, so its responses are relayed byte-for-byte, while OpenRouter and Together AI go through the OpenAI-compatible translator (`internal/router/provider_openai.go`) in both directions, streaming included. Both paths are tested; pick on price, model availability and who you would rather have a billing relationship with.
 
 ## Install
 
 ```bash
 git clone https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
+```
 
+Then export the credential for the secondary you chose, and run `./install.sh`. The three are interchangeable — run whichever block matches your account:
+
+```bash
+# Amazon Bedrock
 export AWS_REGION=us-east-1
 export AWS_BEARER_TOKEN_BEDROCK='your-bedrock-api-key'
-
 ./install.sh
 ```
 
-Using Together AI / GLM (or another OpenAI-compatible endpoint) as the secondary instead? Skip the `AWS_*` exports above and see [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below for the equivalent quickstart.
+```bash
+# OpenRouter
+./install.sh
+claude-burst configure --secondary openai-compatible \
+  --secondary-base-url https://openrouter.ai/api/v1 \
+  --secondary-model anthropic/claude-sonnet-4.5
+OPENROUTER_API_KEY='your-key' claude-burst keychain-set --provider openrouter
+```
+
+```bash
+# Together AI
+./install.sh
+claude-burst configure --secondary openai-compatible \
+  --secondary-base-url https://api.together.xyz/v1 \
+  --secondary-model zai-org/GLM-5.3
+TOGETHER_API_KEY='your-key' claude-burst keychain-set --provider together
+```
+
+See [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) for the full detail on the last two, including what the translator does.
 
 The installer:
 
 - builds `claude-burst` locally (`go build`) and installs it into `~/.local/bin/claude-burst`
-- stores the secondary's credential in macOS Keychain when one is present (`AWS_BEARER_TOKEN_BEDROCK` for Bedrock; `claude-burst keychain-set --provider <name>` for others, see [Commands](#commands))
+- stores the secondary's credential in macOS Keychain when one is present (`AWS_BEARER_TOKEN_BEDROCK` is picked up automatically for Bedrock; use `claude-burst keychain-set --provider <name>` for OpenRouter, Together AI or any other endpoint — see [Commands](#commands))
 - writes the initial configuration
 - updates `~/.claude/settings.json` with only `ANTHROPIC_BASE_URL=http://127.0.0.1:7777`
 - does **not** add an Anthropic credential of its own — in subscription mode this keeps the saved Max login active; in no-subscription mode, Claude Code's own `ANTHROPIC_API_KEY` (set separately, see below) is what gets forwarded
@@ -335,12 +364,23 @@ sudo scripts/transparent-root.sh remove
 
 ### What it costs
 
-| | `base-url` (default) | `transparent` |
+`transparent` is the recommended mode and `base-url` is the fallback. The reason is the first row:
+Claude Code turns Remote Control **off** whenever `ANTHROPIC_BASE_URL` names a non-Anthropic host, so
+base-url mode buys its simplicity by disabling the feature transparent mode exists to preserve. Choose
+base-url when you cannot or would rather not touch system files.
+
+| | `transparent` — recommended | `base-url` — fallback |
 |---|---|---|
-| Remote Control | disabled | works |
-| root required | no | once, for `/etc/hosts` + pf |
-| certificates | none | local CA, added to `NODE_EXTRA_CA_CERTS` |
-| blast radius | this user's Claude Code | every process on the machine |
+| Remote Control | **works** | disabled |
+| root required | once, for `/etc/hosts` + pf | no |
+| certificates | local CA, added to `NODE_EXTRA_CA_CERTS` | none |
+| blast radius | every process on the machine | this user's Claude Code |
+| guards needed | gateway watchdog + pf redirect guard | gateway watchdog |
+
+Note that the code's own default is still `base-url`: it is what an unconfigured install falls back to,
+because it is the only mode that needs no privileges and cannot half-install. That is a safe starting
+point, not a recommendation — pick transparent deliberately, from the dashboard or with
+`claude-burst configure --intercept-mode transparent`.
 
 The last row is the real trade. While the `/etc/hosts` entry exists, *everything* on the
 Mac that talks to that hostname goes through the gateway — so if the gateway is down,
@@ -368,6 +408,18 @@ sudo scripts/transparent-root.sh status      # pf rule actually loaded?
 
 Watch for `live rdr rule : MISSING` while the hosts entry is present. That is the bad
 state — DNS redirects but nothing listens — and the fix is `remove`.
+
+### Guards
+
+Two background jobs keep this working while nobody is watching, and **the dashboard shows whether each
+is armed, when it last checked and what it has caught** — with a button to install either:
+
+| Guard | Runs as | Covers |
+|---|---|---|
+| **Gateway watchdog** (`install-selfheal-watchdog.sh`) | you | the gateway's process dying. Checks it has a *pid*, not merely that launchd still has the job registered — launchd goes on answering for a job whose process has exited |
+| **pf redirect guard** (`install-pf-heal.sh`) | root | traffic not reaching the gateway, whatever the cause. Probes the real path end to end rather than any one component |
+
+Both are needed in transparent mode; base-url mode needs only the watchdog.
 
 ### Guarding the pf rule
 
