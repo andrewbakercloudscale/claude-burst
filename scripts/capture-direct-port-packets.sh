@@ -38,7 +38,32 @@
 set -uo pipefail
 
 PROBES="${1:-10}"
-[[ $EUID -eq 0 ]] || { echo "must run as root: sudo $0 $*" >&2; exit 1; }
+
+# Root is NOT required if this account can already open a BPF device -- macOS
+# grants that through the access_bpf group, which anything that has installed
+# Wireshark's ChmodBPF (and this machine) will have. Demanding sudo anyway
+# would refuse to run for a user who can capture perfectly well, and sending
+# someone to fetch a password they do not need is how a diagnostic goes unrun.
+# The capability is TESTED rather than inferred from group membership, since
+# the group is the usual route to it but not the only one.
+HAVE_PF_READ=1
+if [[ $EUID -ne 0 ]]; then
+  HAVE_PF_READ=0
+  # A filter that matches nothing, so this only ever tests whether the BPF
+  # device opens. tcpdump exits immediately when it cannot; it stays alive
+  # waiting for packets when it can.
+  tcpdump -Uni lo0 -w /dev/null 'tcp port 65535' >/dev/null 2>&1 &
+  probe_pid=$!
+  sleep 1
+  if kill -0 "$probe_pid" 2>/dev/null; then
+    kill "$probe_pid" 2>/dev/null
+    wait "$probe_pid" 2>/dev/null
+  else
+    echo "cannot capture on lo0 as this user, and not running as root." >&2
+    echo "re-run with: sudo $0 $*" >&2
+    exit 1
+  fi
+fi
 
 real_home="$(eval echo "~${SUDO_USER:-$USER}")"
 cfg="$real_home/.config/claude-burst/config.json"
@@ -95,8 +120,16 @@ capture_burst() {  # $1 = pcap path, $2 = filter, $3 = url, $4 = count
 
   echo "== 0. is the rdr actually loaded? =="
   # If it is not, both paths will look fine and the capture proves nothing --
-  # the symptom only exists while the redirect is installed.
-  pfctl -a claude-burst -s nat 2>/dev/null | sed 's/^/  /'
+  # the symptom only exists while the redirect is installed. /dev/pf is
+  # root-only, so without root this is stated as unknown rather than quietly
+  # skipped: "no output" here must not read as "no rdr rule".
+  if (( HAVE_PF_READ )); then
+    pfctl -a claude-burst -s nat 2>/dev/null | sed 's/^/  /'
+  else
+    echo "  UNKNOWN -- reading pf rules needs root and this run is unprivileged."
+    echo "  Capture below is still valid; confirm the rdr separately with:"
+    echo "    sudo pfctl -a claude-burst -s nat"
+  fi
   echo
 
   echo "== 1. FAILING path: direct to 127.0.0.1:$gport =="

@@ -476,3 +476,87 @@ The next step on this issue is a **measurement that distinguishes**, not another
 fix — e.g. `tcpdump -ni lo0` across a burst of failing direct probes, which answers a
 question none of the four hypotheses addressed: whether the SYN reaches the socket at all,
 and whether what comes back is a RST, and from where.
+
+## Update 2026-09-08 (d): the SYN is swallowed inside pf — measured, not argued
+
+`scripts/capture-direct-port-packets.sh` was run (unprivileged — see the note at the
+end). Three bursts, one of them with **no port filter at all** so nothing could hide.
+
+### Per-probe, the failing path
+
+10 direct probes to `127.0.0.1:17777`, every client source port listed:
+
+```
+src port 52587  SYNs sent=2    packets received back=18     <- the 1 lucky success
+src port 52588  SYNs sent=11   packets received back=0
+src port 52590  SYNs sent=11   packets received back=0
+src port 52591  SYNs sent=11   packets received back=0
+src port 52595  SYNs sent=11   packets received back=0
+src port 52602  SYNs sent=11   packets received back=0
+src port 52603  SYNs sent=11   packets received back=0
+src port 52606  SYNs sent=11   packets received back=0
+src port 52608  SYNs sent=11   packets received back=0
+src port 52614  SYNs sent=11   packets received back=0
+```
+
+**The SYN reaches lo0 every time. Nothing whatsoever comes back.** Not a RST, not a
+SYN-ACK, not an ICMP — zero packets. The control burst down the working `:443` path,
+captured the same way in the same run, was 10/10 with one SYN and one SYN-ACK each.
+
+That is the first of the four outcomes the script was written to distinguish: **pf
+swallowed it, and the investigation stays on pf.** It is not the socket refusing (that
+would be a RST from `:17777`), not a synthesised RST from elsewhere, and not a packet
+that never left the client.
+
+### The obvious objection, closed
+
+A reply whose source port pf had *also* rewritten would not have matched a
+`tcp port 17777` filter, and would have looked like silence. So a third burst captured
+**every TCP packet on lo0**, no port filter. Across 6 failing probes (66 SYNs), the only
+SYN-ACKs on the interface were unrelated traffic — `:443` from another connection,
+`:7788` (our own admin server), `:9000`. **Nothing came back from the gateway in any
+form, under any pair of ports.**
+
+### 11 SYNs per probe, against a counter that said ~14
+
+`diagnose-direct-port.sh` measured `state-insert` rising 290 across 20 probes, ~14.5
+each. This capture shows 11 SYNs per failing probe. Same order, same shape — one
+insertion failure per SYN retransmission — with the difference explained by curl's
+retransmission schedule inside a 3-second timeout. **The counter belongs to these
+packets**, which is what makes the earlier measurement safe to keep building on.
+
+### What the one success reveals about the mechanism
+
+The lucky probe (1 in 10, matching the known ~1-in-20 baseline) is the most informative
+packet sequence in this whole investigation:
+
+```
+1. 127.0.0.1.52587 > 127.0.0.1.17777: [S]      client SYN, correctly addressed
+2. 127.0.0.1.17777 > 127.0.0.1.443:   [S.]     the gateway's SYN-ACK, sent to :443
+3. 127.0.0.1.443   > 127.0.0.1.17777: [R]      RST -- nothing holds that connection
+4. 127.0.0.1.17777 > 127.0.0.1.52587: [S.]     retransmitted SYN-ACK, addressed right
+   ... handshake completes, request succeeds
+```
+
+Packet 2 is pf **reverse-translating the reply of a connection that was never forward-
+translated**: the destination port went from 52587 to 443, which is exactly the rdr rule's
+mapping run backwards. The connection only survived because the retransmitted SYN-ACK
+(packet 4) escaped that treatment.
+
+So the failure is the reply direction being mangled or dropped by the rdr's reverse
+translation, not the SYN being filtered on the way in. That is consistent with every
+earlier measurement — the zero filter/block counters, the `state-insert` rise, and the
+anomalous `127.0.0.1:17777 <- 127.0.0.1:17777` state — and it is the first account that
+explains all of them at once.
+
+**Still a mechanism inferred from one packet trace, not a fix.** It is the best-supported
+hypothesis this issue has had, and it has been wrong four times before. The next step is
+to test that account, not to act on it.
+
+### Note on running it
+
+The script no longer demands root. macOS grants BPF access through the `access_bpf`
+group, which this account has, and refusing to capture without a password that is not
+needed is how a diagnostic goes unrun. The capability is tested rather than assumed, and
+when the run is unprivileged the pf rule listing prints **UNKNOWN** rather than nothing —
+"no output" must never read as "no rdr rule".
