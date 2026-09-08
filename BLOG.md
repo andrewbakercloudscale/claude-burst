@@ -1,5 +1,7 @@
 # Two Prices for the Same Model: Building Claude Burst
 
+*Written 2026-08-28, describing Claude Burst as it stood at v0.1. It is kept as it was written rather than revised, so every figure and every present-tense claim below is as of that date — including the test counts and coverage number in section 13, both of which are now well out of date. The postscript before the references says what has changed since, and why.*
+
 I recently ran a comparison out of curiosity: what would a normal month of Claude Code usage on a fixed subscription have cost if it had instead been billed at public API rates. I built some local tooling to reconstruct that from session usage, because the standard analytics were not giving me the visibility I wanted into what individual sessions were actually consuming.
 
 The result was startling. A heavy user on a flat monthly subscription had generated a token volume that, translated into public API pricing, was worth a large multiple of what the subscription actually costs.
@@ -159,6 +161,18 @@ I learned the pricing half of this from a comparison that, at first glance, look
 Use the included capacity. Respect the limit. Pay for the burst. Measure everything. Log everything that goes wrong so you never have to guess.
 
 That may turn out to be a much better way to buy coding intelligence.
+
+## Postscript, 2026-09-08: what the next eleven days changed
+
+Three things happened after this was written that a reader would otherwise take the piece to be wrong about, and one set of figures in it has simply gone stale.
+
+**The secondary stopped being Bedrock.** The essay above treats Bedrock as the burst layer, because at v0.1 it was the only one. The slot is now pluggable and holds any of three peers — Amazon Bedrock, or any OpenAI-compatible chat-completions endpoint, which in practice means OpenRouter or Together AI — or nothing at all. None of them is privileged in the code. Bedrock speaks Anthropic's Messages format natively and is relayed byte for byte; the OpenAI-compatible path does real bidirectional translation, streaming and tool calls included. Section 4's argument is unchanged, but "Bedrock becomes the burst layer" should now read "a metered secondary of your choosing becomes the burst layer".
+
+**Pointing Claude Code at a gateway costs you Remote Control, and section 5 does not mention it.** Claude Code disables Remote Control whenever `ANTHROPIC_BASE_URL` names a host other than `api.anthropic.com` — a check on the literal value of the variable, not on where the traffic actually ends up. So the very mechanism section 5 celebrates as the clean interception point takes a feature away as the price of using it. The answer was to stop using that variable: a transparent mode that gets into the path a level lower, at DNS, with local TLS termination, so Claude Code's own settings never change. That works, and it is now the recommended mode, but it buys the feature back at the cost of a change that affects every process on the machine rather than one user's Claude Code — which is a genuinely bigger decision than setting an environment variable, and is treated as one.
+
+**Most of the work since has been recovery, not routing.** Section 9's argument — that working and trustworthy are different states — turned out to be much more right than I meant it at the time, and about a broader class of thing than logging. A machine-wide redirect fails in ways a localhost gateway does not: when the pf rule guarding it silently vanished from the loaded ruleset while the DNS redirect stayed, every process on the Mac lost Anthropic for hours, and every indicator on the dashboard stayed green because each was reading configuration rather than the live path. What the project has grown since is therefore a control panel that reports whether traffic is *actually* flowing through it, two watchdogs that repair the two halves of that failure, and a rollback path that is committed to the repository and needs nothing installed in order to run. The general lesson is the one section 9 gestures at without quite reaching: guard the outcome, never the component, because a component check reports healthy for all the reasons the outcome is not.
+
+**The numbers in section 13 are stale.** Eleven tests and fifty-two percent router coverage were true when written. It is now 144 test functions across ten packages, with router coverage at 83.2%. The shape of the claim I would still defend: those are honest numbers for a project with real gaps rather than figures inflated by testing getters and setters.
 
 ## References
 
