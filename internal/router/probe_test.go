@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -117,6 +118,39 @@ func TestProbeSecondaryEmptyReplyIsNotSuccess(t *testing.T) {
 
 	if _, err := probeServer(t, up.URL).ProbeSecondary(context.Background()); err == nil {
 		t.Fatal("a 200 with no text was reported as success")
+	}
+}
+
+// TestProbeSecondaryReasoningExhaustionIsNamed: a reasoning model that
+// spends its whole output budget thinking returns a well-formed, empty
+// message. That is a healthy provider needing more room, not a broken one,
+// and the two must not read the same -- the cap was 64 while a real GLM-5.3
+// probe billed 60 output tokens for a two-token answer, so this was four
+// tokens away from happening in production.
+func TestProbeSecondaryReasoningExhaustionIsNamed(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"x","choices":[{"message":{"role":"assistant","content":""},
+			"finish_reason":"length"}],"usage":{"prompt_tokens":18,"completion_tokens":%d}}`, probeMaxTokens)
+	}))
+	defer up.Close()
+
+	_, err := probeServer(t, up.URL).ProbeSecondary(context.Background())
+	if err == nil {
+		t.Fatal("an empty reply was reported as success")
+	}
+	if !strings.Contains(err.Error(), "reasoning model") {
+		t.Errorf("error = %q, want it to name reasoning-budget exhaustion rather than a broken provider", err)
+	}
+}
+
+// TestProbeMaxTokensLeavesRoomToThink guards the constant itself. The value
+// is not arbitrary: below a few hundred, a reasoning model's verdict here
+// depends on how long it happened to think that time.
+func TestProbeMaxTokensLeavesRoomToThink(t *testing.T) {
+	if probeMaxTokens < 256 {
+		t.Fatalf("probeMaxTokens = %d, too low: a reasoning model can spend this thinking and emit no text, "+
+			"turning a healthy provider into a reported failure", probeMaxTokens)
 	}
 }
 
