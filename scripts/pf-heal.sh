@@ -26,10 +26,26 @@
 #                   events this exists to record)
 #   not installed-> nothing (no hosts block = nobody is being redirected here;
 #                   a rollback must not be undone by a watchdog)
-#   rule missing -> log it, run `transparent-root.sh reload-anchor`, log the
-#                   outcome, notify the console user
+#   path broken  -> log it, repair whichever piece is actually missing, log
+#                   the outcome, notify the console user
 #   still broken -> after $MAX_FAILURES consecutive failed cycles, REMOVE the
 #                   redirect entirely and say so, loudly
+#
+# WHAT "BROKEN" MEANS, AND WHY IT CHANGED. The first version of this triggered
+# on one thing: `pfctl -a claude-burst -s nat` no longer listing an rdr rule.
+# On 2026-09-08 the Mac was black-holed for four minutes with this daemon armed,
+# beating, and reporting "nothing to report" -- because the pf rule was loaded
+# and correct. The GATEWAY had died. hosts -> 127.0.0.1:443 -> rdr -> :7777 ->
+# nothing listening -> connection refused, machine-wide, for exactly the same
+# user-visible outcome the pf rule going missing produces.
+#
+# So the trigger is now the outcome, not a component: does the intercepted host
+# actually answer, and answer from OUR gateway? That is the same probe the
+# dashboard's Test connection button and health-diagnostics.sh already use.
+# Only once the answer is no does this ask WHICH piece is missing, and repair
+# that one. Guarding a named cause meant being blind to every other cause of
+# the identical outage -- the same mistake as a dashboard reporting ACTIVE
+# because the config on disk looked right.
 #
 # That last step is the point of the whole script. A healer that cannot heal
 # must fall back to the safe state rather than loop forever: with the redirect
@@ -58,7 +74,14 @@ HOSTS_FILE="${CLAUDE_BURST_HOSTS_FILE:-/etc/hosts}"
 STATE_DIR="${CLAUDE_BURST_ROOT_STATE_DIR:-/etc/claude-burst}"
 STATE_FILE="$STATE_DIR/transparent.state"
 ANCHOR_NAME="claude-burst"
+GATEWAY_LABEL="ninja.andrewbaker.claude-burst"
 HOSTS_MARKER="# BEGIN claude-burst hosts"
+INTERCEPT_HOST="${CLAUDE_BURST_INTERCEPT_HOST:-api.anthropic.com}"
+# Absolute-ish, and indirected for --self-test. See INSTALL_BIN in
+# install-pf-heal.sh for why a bare command name in a script that also defines
+# functions is a trap worth not repeating.
+CURL="${CLAUDE_BURST_CURL:-/usr/bin/curl}"
+LSOF="${CLAUDE_BURST_LSOF:-/usr/sbin/lsof}"
 ROOT_HELPER="${CLAUDE_BURST_ROOT_HELPER:-$DIR/transparent-root.sh}"
 # Indirected so --self-test can substitute a stub. Every branch below turns on
 # what pfctl reports, and a decision tree that can only be exercised on a
@@ -128,6 +151,49 @@ notify() {
 
 hosts_redirect_present() { grep -qF "$HOSTS_MARKER" "$HOSTS_FILE" 2>/dev/null; }
 
+# The real path, end to end, exactly as Claude Code travels it: resolve the
+# intercepted host (which /etc/hosts sends here), complete TLS against our
+# local CA, and confirm the body is OURS. The gateway stamps "overflow" into
+# its own /healthz precisely so this can tell "reached the gateway" from
+# "reached the real Anthropic", which returns 404 to an unauthenticated
+# /healthz and would otherwise look like a success.
+intercept_path_healthy() {
+  local body
+  body="$($CURL -s -m 8 "https://$INTERCEPT_HOST/healthz" 2>/dev/null)" || return 1
+  printf '%s' "$body" | grep -q '"overflow"'
+}
+
+# Is anything listening on the gateway port at all? Distinguishes "pf is not
+# redirecting" from "pf is redirecting into a hole", which need different
+# repairs. Deliberately does NOT probe over the redirect: this is the one
+# question about the gateway itself.
+gateway_listening() { $LSOF -nP -iTCP:"$(gateway_port)" -sTCP:LISTEN >/dev/null 2>&1; }
+
+gateway_port() {
+  local g; g="$(grep -E "^gateway_port=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  printf '%s' "${g:-7777}"
+}
+
+# Restarting the gateway is a USER LaunchAgent operation and this runs as root,
+# so it has to be re-entered as the console user -- `launchctl kickstart` from
+# root against gui/<uid> is refused. Best-effort by design: if there is no
+# console user (nobody logged in) there is nothing to restart into, and the
+# bail-out below is the right answer anyway.
+restart_gateway() {
+  local uid
+  uid=$(stat -f %u /dev/console 2>/dev/null) || return 1
+  [[ -n "$uid" && "$uid" != "0" ]] || return 1
+  launchctl asuser "$uid" launchctl enable "gui/$uid/$GATEWAY_LABEL" >/dev/null 2>&1
+  launchctl asuser "$uid" launchctl kickstart -k "gui/$uid/$GATEWAY_LABEL" >/dev/null 2>&1 && return 0
+  # kickstart fails outright when the job is not merely stopped but unloaded
+  # from launchd's database -- the 2026-09-04 critical-battery shape. Bootstrap
+  # it back before giving up.
+  local plist
+  plist="$(dscl . -read "/Users/$(id -un "$uid")" NFSHomeDirectory 2>/dev/null | awk '{print $2}')/Library/LaunchAgents/$GATEWAY_LABEL.plist"
+  [[ -f "$plist" ]] || return 1
+  launchctl asuser "$uid" launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1
+}
+
 # The live rule, not the anchor FILE and not the pf.conf reference. Both of
 # those survived the 2026-09-07 outage intact; only the loaded ruleset lost
 # the rule, which is why every check that looked at configuration reported OK.
@@ -166,56 +232,76 @@ if ! hosts_redirect_present; then
   return 0
 fi
 
-# --- 2. Is the rule actually loaded? -----------------------------------------
-if rdr_rule_loaded; then
+# --- 2. Does the real path work? ----------------------------------------------
+# The outcome, not a component. Everything below only runs when a request to
+# the intercepted host does NOT come back from this gateway -- which is the
+# single condition under which this Mac is broken, whatever the cause.
+if intercept_path_healthy; then
   prev=$(failures)
   if (( prev > 0 )); then
-    log "recovered: rdr rule is loaded again after $prev failed cycle(s)"
+    log "recovered: $INTERCEPT_HOST answers from the gateway again after $prev failed cycle(s)"
   fi
   clear_failures
-  (( CHECK_ONLY )) && log "check: OK -- rdr rule loaded, hosts redirect present"
+  (( CHECK_ONLY )) && log "check: OK -- $INTERCEPT_HOST resolves to this gateway and it answered"
   return 0
 fi
 
-# --- 3. The dangerous state. ------------------------------------------------
-log "BROKEN: /etc/hosts still redirects to this gateway but the pf rdr rule is NOT loaded -- every process on this Mac is being refused for the intercepted host"
+# --- 3. The dangerous state. --------------------------------------------------
+gport="$(gateway_port)"
+if rdr_rule_loaded; then rdr=loaded; else rdr=MISSING; fi
+if gateway_listening;  then gw=listening; else gw=DOWN; fi
+log "BROKEN: /etc/hosts redirects $INTERCEPT_HOST here but it does not answer from this gateway -- every process on this Mac is affected (rdr rule: $rdr, gateway on :$gport: $gw)"
 
 if (( CHECK_ONLY )); then
-  log "check: --check given, so nothing was repaired. Repair with: sudo $ROOT_HELPER reload-anchor"
+  log "check: --check given, so nothing was repaired."
   return 1
 fi
 
 if [[ ! -x "$ROOT_HELPER" ]]; then
   log "FATAL: cannot repair -- no executable helper at $ROOT_HELPER"
-  notify "claude-burst: pf rule lost and the repair helper is missing. Run: sudo transparent-root.sh remove"
+  notify "claude-burst: the intercept is broken and the repair helper is missing. Run: sudo transparent-root.sh remove"
   return 1
 fi
 
-# --- 4. Repair. --------------------------------------------------------------
-# reload-anchor is the existing, tested primitive: it rewrites the anchor from
-# $STATE_FILE, dry-runs the WHOLE ruleset before loading anything, flushes only
-# this anchor's states, verifies the real traffic path, and puts the previous
-# anchor back if the reload made things worse. Reimplementing any of that here
-# is how the two copies drift and the wrong one runs.
-log "repairing: $ROOT_HELPER reload-anchor"
-reload_out="$("$ROOT_HELPER" reload-anchor 2>&1)"
-reload_rc=$?
-printf '%s\n' "$reload_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
+# --- 4. Repair whichever piece is actually missing. ---------------------------
+# Both are attempted when both are wrong, cheapest first, and the verdict comes
+# from re-probing the real path rather than from either repair's exit code -- a
+# repair that "succeeded" while the path stayed broken is not a repair.
+if [[ "$gw" == "DOWN" ]]; then
+  log "repairing: gateway is not listening on :$gport -- restarting its LaunchAgent"
+  if restart_gateway; then
+    # Binding is not instant, and reporting failure during the second it takes
+    # would burn a bail-out budget on a gateway that was coming back fine.
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      gateway_listening && break
+      sleep 1
+    done
+    gateway_listening && log "  gateway is listening again" || log "  gateway still not listening"
+  else
+    log "  could not restart the gateway LaunchAgent (no console user, or no plist)"
+  fi
+fi
 
-if (( reload_rc == 0 )) && rdr_rule_loaded; then
-  log "HEALED: rdr rule reloaded successfully"
+if [[ "$rdr" == "MISSING" ]]; then
+  log "repairing: pf rdr rule is not loaded -- $ROOT_HELPER reload-anchor"
+  reload_out="$("$ROOT_HELPER" reload-anchor 2>&1)"
+  printf '%s\n' "$reload_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
+fi
+
+if intercept_path_healthy; then
+  log "HEALED: $INTERCEPT_HOST answers from this gateway again"
   clear_failures
-  notify "Transparent proxy self-healed: the pf redirect had been lost and was reloaded."
+  notify "Transparent proxy self-healed: the intercept was broken and has been repaired."
   return 0
 fi
 
 # --- 5. Repair failed. Count, and eventually bail out. -----------------------
 n=$(( $(failures) + 1 ))
 set_failures "$n"
-log "repair FAILED (exit $reload_rc), consecutive failures: $n/$MAX_FAILURES"
+log "repair FAILED, consecutive failures: $n/$MAX_FAILURES"
 
 if (( n < MAX_FAILURES )); then
-  notify "claude-burst: pf redirect lost; repair attempt $n of $MAX_FAILURES failed. Retrying."
+  notify "claude-burst: the intercept is broken; repair attempt $n of $MAX_FAILURES did not fix it. Retrying."
   return 1
 fi
 
@@ -231,12 +317,12 @@ printf '%s\n' "$remove_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
 if (( remove_rc == 0 )); then
   log "BAILED OUT: transparent mode removed. Claude Code now talks to Anthropic directly. Reinstall with: sudo $ROOT_HELPER install"
   clear_failures
-  notify "claude-burst could not repair the pf redirect, so it removed it. Claude works normally again; burst is no longer in the path."
+  notify "claude-burst could not repair the intercept, so it removed it. Claude works normally again; burst is no longer in the path."
   return 0
 fi
 
-log "FATAL: bail-out itself failed (exit $remove_rc). This Mac may still be unable to reach the intercepted host. Run by hand: sudo $ROOT_HELPER remove"
-notify "claude-burst: could not repair OR remove the pf redirect. Run: sudo transparent-root.sh remove"
+log "FATAL: bail-out itself failed (exit $remove_rc). This Mac may still be unable to reach $INTERCEPT_HOST. Run by hand: sudo $ROOT_HELPER remove"
+notify "claude-burst: could not repair OR remove the redirect. Run: sudo transparent-root.sh remove"
 return 1
 }
 
@@ -248,7 +334,7 @@ return 1
 # wrong at the moment it is asked to heal -- and every branch below runs at
 # most once every few weeks, on a machine that is already broken.
 self_test() {
-  local tmp rc out fails=0
+  local tmp fails=0
   tmp="$(mktemp -d)"
   trap "rm -rf '$tmp'" EXIT
 
@@ -258,122 +344,104 @@ self_test() {
   HEARTBEAT_FILE="$STATE_DIR/pf-heal.heartbeat"
   LOG="$tmp/pf.log"
   PFCTL="$tmp/pfctl"
+  CURL="$tmp/curl"
+  LSOF="$tmp/lsof"
   ROOT_HELPER="$tmp/helper.sh"
   MAX_FAILURES=2
   CHECK_ONLY=0
-  # Silence the GUI: a self-test must not post four notifications.
   notify() { :; }
+  # Restarting a LaunchAgent needs a console user and a real launchd; the stub
+  # records the attempt and flips the gateway flag, which is what the decision
+  # tree actually turns on.
+  restart_gateway() { echo restart >> "$tmp/restarts"; [[ -f "$tmp/gw-wont-start" ]] && return 1; touch "$tmp/gw"; return 0; }
 
   mkdir -p "$STATE_DIR"
 
-  # $tmp/rdr controls what the fake pfctl reports; $tmp/helper-rc controls
-  # whether the fake repair succeeds, and it flips $tmp/rdr when it does --
-  # so "repair worked" and "the rule is now loaded" stay one fact, the way
-  # they are in reality.
-  cat > "$PFCTL" <<'STUB'
-#!/bin/zsh
-[[ -f "$(dirname "$0")/rdr" ]] && echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7777"
-exit 0
-STUB
+  # Three flag files stand in for the three things that can be true or not:
+  #   $tmp/rdr  -- the pf rdr rule is loaded
+  #   $tmp/gw   -- something is listening on the gateway port
+  #   both      -- the real path answers from our gateway
+  # Wiring the path probe to BOTH is the whole point: the outage this missed
+  # had rdr present and gw absent.
+  printf '#!/bin/zsh\n[[ -f "$(dirname "$0")/rdr" ]] && echo "rdr pass on lo0 ... -> 127.0.0.1 port 7777"\nexit 0\n' > "$PFCTL"
+  printf '#!/bin/zsh\nd="$(dirname "$0")"\n[[ -f "$d/rdr" && -f "$d/gw" ]] && { echo "{\\"overflow\\":false}"; exit 0; }\nexit 7\n' > "$CURL"
+  printf '#!/bin/zsh\n[[ -f "$(dirname "$0")/gw" ]] && exit 0\nexit 1\n' > "$LSOF"
   cat > "$ROOT_HELPER" <<'STUB'
 #!/bin/zsh
 d="$(dirname "$0")"
 case "$1" in
   reload-anchor)
-    if [[ -f "$d/helper-rc" && "$(cat "$d/helper-rc")" == "0" ]]; then
-      touch "$d/rdr"; echo "reloaded"; exit 0
-    fi
-    echo "pf rejected the ruleset" >&2; exit 1 ;;
-  remove)
-    if [[ -f "$d/remove-rc" && "$(cat "$d/remove-rc")" != "0" ]]; then
-      echo "remove failed" >&2; exit 1
-    fi
-    rm -f "$d/hosts" "$d/rdr"; echo "removed"; exit 0 ;;
+    [[ -f "$d/anchor-wont-load" ]] && { echo "pf rejected the ruleset" >&2; exit 1; }
+    touch "$d/rdr"; echo "reloaded"; exit 0 ;;
+  remove) rm -f "$d/hosts" "$d/rdr"; echo "removed"; exit 0 ;;
 esac
 exit 2
 STUB
-  chmod 755 "$PFCTL" "$ROOT_HELPER"
+  chmod 755 "$PFCTL" "$CURL" "$LSOF" "$ROOT_HELPER"
 
-  check() {
-    local name="$1" want_rc="$2" want_text="$3"
-    if [[ "$rc" != "$want_rc" ]]; then
-      echo "  FAIL $name: exit $rc, want $want_rc"; fails=$((fails + 1)); return
-    fi
-    if [[ -n "$want_text" ]] && ! printf '%s' "$out" | grep -q "$want_text"; then
-      echo "  FAIL $name: output did not contain '$want_text'"
-      printf '%s\n' "$out" | sed 's/^/      /'
-      fails=$((fails + 1)); return
-    fi
-    echo "  ok   $name"
-  }
+  run()  { out="$(cycle 2>&1)" && rc=0 || rc=$?; }
+  ok()   { echo "  ok   $1"; }
+  bad()  { echo "  FAIL $1"; fails=$((fails + 1)); if [[ -n "${2:-}" ]]; then printf '%s\n' "$out" | sed 's/^/      /'; fi }
+  want() { printf '%s' "$out" | grep -q "$1"; }
 
   echo "== pf-heal self-test =="
 
-  # 0. The heartbeat must be written on EVERY cycle, including the ones that
-  #    decide to do nothing -- otherwise it goes stale exactly when the daemon
-  #    is healthiest, and the dashboard reports a working guard as dead.
-  rm -f "$HOSTS_FILE" "$tmp/rdr" "$HEARTBEAT_FILE"
-  cycle >/dev/null 2>&1
-  if [[ -s "$HEARTBEAT_FILE" ]]; then
-    echo "  ok   heartbeat written on a no-op cycle"
-  else
-    echo "  FAIL: no heartbeat after a cycle that did nothing"; fails=$((fails + 1))
-  fi
+  # 0. Heartbeat on every cycle, including no-op ones.
+  rm -f "$HOSTS_FILE" "$tmp/rdr" "$tmp/gw" "$HEARTBEAT_FILE"
+  run
+  [[ -s "$HEARTBEAT_FILE" ]] && ok "heartbeat written on a no-op cycle" || bad "no heartbeat after a do-nothing cycle"
 
-  # 1. Nothing installed: never touch anything. This is the branch that keeps
-  #    a rollback rolled back.
-  rm -f "$HOSTS_FILE" "$tmp/rdr"
-  out="$(cycle 2>&1)"; rc=$?
-  check "no hosts block -> no action" 0 ""
-  [[ -z "$out" ]] || { echo "  FAIL: expected silence, got: $out"; fails=$((fails + 1)); }
+  # 1. Nothing installed -> never act. Keeps a rollback rolled back.
+  run
+  (( rc == 0 )) && [[ -z "$out" ]] && ok "no hosts block -> silent no-op" || bad "expected silence with no hosts block" show
 
-  # 2. Installed and healthy: silent.
-  echo "$HOSTS_MARKER" > "$HOSTS_FILE"
-  touch "$tmp/rdr"
-  out="$(cycle 2>&1)"; rc=$?
-  check "rule loaded -> no action" 0 ""
-  [[ -z "$out" ]] || { echo "  FAIL: expected silence, got: $out"; fails=$((fails + 1)); }
+  # 2. Fully healthy -> silent.
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/gw"
+  run
+  (( rc == 0 )) && [[ -z "$out" ]] && ok "path healthy -> silent no-op" || bad "expected silence when healthy" show
 
-  # 3. THE outage: hosts block present, rule gone, repair works.
-  rm -f "$tmp/rdr"; echo 0 > "$tmp/helper-rc"
-  out="$(cycle 2>&1)"; rc=$?
-  check "rule missing, repair works -> HEALED" 0 "HEALED"
-  [[ -f "$tmp/rdr" ]] || { echo "  FAIL: repair did not restore the rule"; fails=$((fails + 1)); }
+  # 3. THE 2026-09-08 OUTAGE: pf rule perfectly loaded, gateway dead. The old
+  #    version reported "nothing to report" here while the Mac was black-holed.
+  rm -f "$tmp/gw"; rm -f "$tmp/restarts"
+  run
+  want "BROKEN" && ok "gateway down with rdr loaded -> detected" || bad "MISSED the outage this was rewritten for" show
+  want "gateway on :7777: DOWN" && ok "diagnosis names the gateway, not pf" || bad "diagnosis blamed the wrong component" show
+  [[ -f "$tmp/restarts" ]] && ok "restarted the gateway rather than reloading pf" || bad "never attempted a gateway restart"
+  want "HEALED" && ok "restart healed it" || bad "did not heal after the gateway came back" show
 
-  # 4. Repair keeps failing: count up, then bail out by removing the redirect.
-  rm -f "$tmp/rdr"; echo 1 > "$tmp/helper-rc"; rm -f "$FAIL_COUNT_FILE"
-  out="$(cycle 2>&1)"; rc=$?
-  check "repair fails once -> retry" 1 "1/2"
-  out="$(cycle 2>&1)"; rc=$?
-  check "repair fails twice -> BAILED OUT" 0 "BAILED OUT"
+  # 4. The original failure mode still works: rule gone, gateway fine.
+  rm -f "$tmp/rdr"; rm -f "$tmp/restarts"
+  run
+  want "rdr rule: MISSING" && ok "rdr missing -> detected and named" || bad "did not name the missing rdr rule" show
+  want "HEALED" && ok "reload-anchor healed it" || bad "reload-anchor did not heal" show
+
+  # 5. Both broken at once -> both repaired.
+  rm -f "$tmp/rdr" "$tmp/gw" "$tmp/restarts"
+  run
+  want "HEALED" && ok "both pieces broken -> both repaired" || bad "did not repair both" show
+
+  # 6. Unrepairable -> count, then bail out by removing the redirect.
+  rm -f "$tmp/rdr" "$tmp/gw" "$FAIL_COUNT_FILE"
+  touch "$tmp/anchor-wont-load" "$tmp/gw-wont-start"
+  run; want "1/2" && ok "first failure -> retry" || bad "did not count the first failure" show
+  run; want "BAILED OUT" && ok "second failure -> bailed out" || bad "did not bail out at the limit" show
   grep -qF "$HOSTS_MARKER" "$HOSTS_FILE" 2>/dev/null \
-    && { echo "  FAIL: bail-out left the hosts redirect in place"; fails=$((fails + 1)); } \
-    || echo "  ok   bail-out removed the hosts redirect"
+    && bad "bail-out left the hosts redirect in place" || ok "bail-out removed the hosts redirect"
 
-  # 5. Bail-out itself fails: say so rather than reporting success.
-  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; echo 1 > "$tmp/remove-rc"
-  echo "$MAX_FAILURES" > "$FAIL_COUNT_FILE"
-  out="$(cycle 2>&1)"; rc=$?
-  check "bail-out fails -> FATAL, non-zero" 1 "FATAL"
+  # 7. Recovery after failures is announced, so the log shows the whole arc.
+  rm -f "$tmp/anchor-wont-load" "$tmp/gw-wont-start"
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/gw"; echo 3 > "$FAIL_COUNT_FILE"
+  run
+  want "recovered" && ok "recovery after failures is logged" || bad "recovery was silent" show
 
-  # 6. Recovery after failures is announced, so the log shows the whole arc.
-  rm -f "$tmp/remove-rc"; echo "$HOSTS_MARKER" > "$HOSTS_FILE"
-  touch "$tmp/rdr"; echo 3 > "$FAIL_COUNT_FILE"
-  out="$(cycle 2>&1)"; rc=$?
-  check "rule back after failures -> recovered" 0 "recovered"
-
-  # 7. --check never repairs, whatever it finds.
-  rm -f "$tmp/rdr"; CHECK_ONLY=1; echo 0 > "$tmp/helper-rc"
-  out="$(cycle 2>&1)"; rc=$?
-  check "--check reports without repairing" 1 "BROKEN"
-  [[ -f "$tmp/rdr" ]] && { echo "  FAIL: --check repaired something"; fails=$((fails + 1)); } \
-                      || echo "  ok   --check changed nothing"
+  # 8. --check never repairs, whatever it finds.
+  rm -f "$tmp/gw"; CHECK_ONLY=1; rm -f "$tmp/restarts"
+  run
+  want "BROKEN" && ok "--check reports the outage" || bad "--check did not report" show
+  [[ -f "$tmp/restarts" ]] && bad "--check restarted the gateway" || ok "--check changed nothing"
 
   echo
-  if (( fails == 0 )); then
-    echo "self-test: all checks passed"
-    return 0
-  fi
+  if (( fails == 0 )); then echo "self-test: all checks passed"; return 0; fi
   echo "self-test: $fails FAILED" >&2
   return 1
 }

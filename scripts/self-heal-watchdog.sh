@@ -82,9 +82,16 @@ rm -f "$ROLLED_BACK_MARKER.noted"
 # --- 1. Is the gateway's own LaunchAgent even loaded? Reload if not. ---
 # No root needed for this half: enable/bootstrap on a LaunchAgent is entirely
 # within this user's own session, unlike the /etc/hosts + pf half below.
-if ! launchagent_loaded; then
-  log "gateway LaunchAgent not loaded -- attempting reload"
-  if ensure_launchagent_loaded; then
+# launchagent_running, not launchagent_loaded: launchd goes on answering for a
+# job whose process has died, and on 2026-09-08 that is exactly what happened
+# -- this step passed, the reload never ran, and the redirect stayed pointed at
+# a gateway that was not there.
+if ! launchagent_running; then
+  log "gateway is not running (LaunchAgent unloaded or its process gone) -- attempting reload"
+  # kickstart -k restarts a registered-but-dead job; ensure_launchagent_loaded
+  # handles the harder case where the job is gone from launchd entirely.
+  launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
+  if launchagent_running || ensure_launchagent_loaded; then
     log "reloaded successfully"
     notify "Gateway had stopped (LaunchAgent was unloaded) -- reloaded automatically."
   else
