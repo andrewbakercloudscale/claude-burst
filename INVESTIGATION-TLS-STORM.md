@@ -2,9 +2,13 @@
 
 Status: TLS handshake storm **ROOT-CAUSED 2026-09-03**, and the fix held for three days —
 but certificate rejections **came back on 2026-09-07**, at about a tenth of the old rate and
-apparently from a different client. See the 2026-09-08 update at the bottom before treating
-this as closed. Issue #1 (port-7777 timeout) is still **OPEN** (confirmed open on GitHub,
-2026-09-08).
+apparently from a different client. See the 2026-09-08 update on that before treating it as
+closed.
+
+Issue #1 (the direct-port timeout) is **CHARACTERISED 2026-09-08** and no longer a mystery:
+something on this Mac silently drops new flows to **destination port 7777 specifically**, and
+the answer is to stop using that port. See "Update 2026-09-08: issue #1 is the port number"
+at the bottom. It was never intermittent — it reproduces at ~19/20 on demand.
 
 ## Issue #1 (original): direct 127.0.0.1:7777 timeout right after restart
 
@@ -241,3 +245,94 @@ CLAUDE_BURST_LOG_TLS_PEERS=1   # then restart the gateway and wait for a burst
 It identifies the calling process synchronously inside `Accept()`, before the handshake that
 would otherwise close the connection first. Point it at the next recurrence and name the
 client, rather than inferring it from timestamps a second time.
+
+## Update 2026-09-08: issue #1 is the port number
+
+Nine captures had accumulated in `health-check-failures.log` while this document said it was
+waiting for one. Reading them settles the issue, and the first thing they show is that **four
+of the nine are not this bug at all**:
+
+| captures | direct probe | gateway | real path | what it actually was |
+|---|---|---|---|---|
+| 1–5 (08-31 ×2, 09-01 ×2, 09-03 07:38) | **timeout, ~3000ms** | LISTENING, 8+ ESTABLISHED | **HTTP 200 in 0.03–0.12s** | issue #1 |
+| 6–9 (09-03 12:50, 12:56, 15:45 ×2) | **refused, 0ms** | `Could not find service` | HTTP 404 from the *real* Anthropic | a half-installed proxy, fixed in `2b2cdf4` |
+
+Captures 6–9 have been inflating this issue's evidence pile with a different failure that has
+its own fix. Captures 1–5 all predate the real-path health fallback (`75da3de`, 09-03 11:04),
+which is why the check failed at all while the gateway was demonstrably fine.
+
+### It reproduces on demand, and it is not intermittent
+
+Measured 2026-09-08 with the gateway healthy and serving live traffic:
+
+```
+gateway  DIRECT     https://127.0.0.1:7777        1/15     curl
+gateway  DIRECT     https://localhost:7777        0/15
+admin    DIRECT     http://127.0.0.1:7788        15/15
+gateway  REAL PATH  https://api.anthropic.com    15/15     pf rdr -> the SAME socket
+nc -> 127.0.0.1:7777    0/10           nc -> 127.0.0.1:7788   10/10
+plain python listener on 127.0.0.1:7801               10/10
+```
+
+Nothing appears in `claude-burst.log` for the failed attempts: the SYN never reaches the
+process.
+
+### What that rules out
+
+Not the gateway process — its own admin listener on 7788 answers 15/15. Not the listening
+socket — traffic arriving at **that exact socket** through the pf rdr from :443 succeeds
+15/15 while direct connections to it fail. Not loopback, not curl (`nc` agrees), not the
+client. Not pf state and not the source port: both were measured out on 2026-09-03 (see
+`deploy.sh`'s note — 0/10 before an anchor state flush, 1/10 after, and 0/10 from three
+different source-port ranges).
+
+What is left is the destination port number, on new flows only. 7778 — the adjacent port —
+is clean at 10/10, as are 8777, 9777, 17777 and 18777, so this is an exact-match entry
+rather than a range.
+
+### The likely mechanism, and why pfctl never showed it
+
+Three network system extensions are active on this Mac, and they filter new flows **above**
+pf, which is exactly why the pf-anchor state flush correctly found nothing:
+
+```
+com.forcepoint.ne          Forcepoint Neo NE     [activated enabled]
+com.crowdstrike.falcon     Falcon Sensor         [activated enabled]
+io.tailscale.ipn...        Tailscale NE          [activated enabled]
+```
+
+7777 is a long-standing backdoor/trojan port on enterprise blocklists. A Forcepoint or Falcon
+policy dropping it fits every observation: destination-port-specific, new-flows-only, SYN
+dropped rather than refused (hence a timeout, never `connection refused`), invisible to
+`pfctl`, and unaffected by anything this project can configure.
+
+Confirming *which* product would need `sudo pfctl -sa` plus vendor policy, but that is now
+optional: it does not change what to do.
+
+### The fix: stop using 7777
+
+The gateway's default listen port is now **17777** (`internal/config.Default`). Real traffic
+is unaffected either way — the pf rule redirects `443 -> the gateway port` — so this only
+ever mattered to the direct probes, which is precisely what was falsely rolling back healthy
+builds and waking the watchdog.
+
+Changing it required removing the hardcoded `7777` from every prober first. `gateway_healthy`,
+the diagnostics dump, `connectivity-test.sh`, `pf-heal.sh`'s fallback, `install.sh`'s summary
+and the dtrace capture all had the port baked in, so `listen` was a setting you could change
+and then watch every health check keep testing the old port — reporting a healthy gateway as
+dead, which is the thing deploy.sh and watchdog.sh act on. They all read `listen` from
+`config.json` now.
+
+**Existing installs keep 7777** — `config.json` names the port explicitly, and `Load` only
+applies the default when the field is empty. Moving an installed gateway means changing
+`listen` *and* regenerating the pf anchor, which needs root:
+
+```bash
+sudo scripts/transparent-root.sh remove          # hosts first: traffic goes direct, the safe state
+claude-burst configure --listen 127.0.0.1:17777
+scripts/install-proxy.sh                         # restarts, waits healthy, reinstalls hosts+pf on the new port
+```
+
+The ordering is ROLLBACK.md's rule 3 and matters: between the gateway moving to a new port and
+pf being regenerated, the old rdr would point `443` at a port nothing is listening on — the
+machine-wide-refused state. Removing the hosts redirect first makes that window harmless.

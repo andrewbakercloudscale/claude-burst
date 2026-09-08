@@ -171,7 +171,7 @@ gateway_listening() { $LSOF -nP -iTCP:"$(gateway_port)" -sTCP:LISTEN >/dev/null 
 
 gateway_port() {
   local g; g="$(grep -E "^gateway_port=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)"
-  printf '%s' "${g:-7777}"
+  printf '%s' "${g:-17777}"
 }
 
 # Restarting the gateway is a USER LaunchAgent operation and this runs as root,

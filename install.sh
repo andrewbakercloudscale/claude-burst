@@ -98,10 +98,17 @@ PLIST
   launchctl bootstrap "gui/$UID" "$PLIST"
   launchctl kickstart -k "gui/$UID/$LABEL"
 
+  # Read the port back rather than printing a literal: the default moved off
+  # 7777 (see internal/config's Default), and a summary naming a port nothing
+  # is listening on is exactly the kind of confidently-wrong instruction this
+  # project keeps getting bitten by.
+  local gw
+  gw="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','127.0.0.1:17777'))" 2>/dev/null || echo '127.0.0.1:17777')"
+
   cat <<OUT
 
 Installed claude-burst $($TARGET version)
-Gateway: http://127.0.0.1:7777
+Gateway: http://$gw
 Claude Code settings: enabled
 LaunchAgent: $LABEL
 AWS region: $REGION
@@ -110,7 +117,7 @@ Now restart Claude Code and run:
   claude-burst status
 
 To test the local gateway itself:
-  curl -s http://127.0.0.1:7777/healthz
+  curl -s http://$gw/healthz
 
 To remove everything later:
   ./install.sh uninstall

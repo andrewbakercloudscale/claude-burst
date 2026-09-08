@@ -86,7 +86,7 @@ func usage() {
 	fmt.Print(`claude-burst - route Claude Code through a primary provider, with a configurable secondary provider for overflow
 
 Commands:
-  serve             Run the local gateway (default: 127.0.0.1:7777)
+  serve             Run the local gateway (default: 127.0.0.1:17777)
   configure         Write/update config.json
   keychain-set      Store $AWS_BEARER_TOKEN_BEDROCK in macOS Keychain (Bedrock secondary)
   enable            Point Claude Code at the local gateway via ~/.claude/settings.json

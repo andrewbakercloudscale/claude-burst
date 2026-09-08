@@ -29,14 +29,16 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 mkdir -p "$HOME/.config/claude-burst"
-echo "capturing connect() calls to 127.0.0.1:7777 for ${DURATION}s..."
+GW_PORT="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','').rsplit(':',1)[-1])" 2>/dev/null || true)"
+GW_PORT="${GW_PORT:-17777}"
+echo "capturing connect() calls to 127.0.0.1:$GW_PORT for ${DURATION}s..."
 echo "output: $OUT"
 echo "(today's bursts have been recurring every few minutes -- this window should catch one)"
 echo
 
 dtrace -n '
   syscall::connect:entry
-  /((struct sockaddr_in *)copyin(arg1, arg2))->sin_port == htons(7777)/
+  /((struct sockaddr_in *)copyin(arg1, arg2))->sin_port == htons($GW_PORT)/
   { printf("%Y  %s [pid %d, ppid %d]\n", walltimestamp, execname, pid, ppid); }
 ' > "$OUT" 2>&1 &
 DPID=$!
@@ -60,6 +62,6 @@ if [[ -s "$OUT" ]] && grep -q 'pid' "$OUT"; then
   echo "== by process =="
   grep -oE '^\S+  \S+' "$OUT" | awk '{print $2}' | sort | uniq -c | sort -rn
 else
-  echo "no connect() calls to 127.0.0.1:7777 seen in this window -- the storm didn't fire" \
+  echo "no connect() calls to 127.0.0.1:$GW_PORT seen in this window -- the storm didn't fire" \
        "during the capture. Re-run with a longer duration or try again when it's active."
 fi

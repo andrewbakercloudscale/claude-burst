@@ -32,8 +32,10 @@ echo "== gateway =="
 # NODE_EXTRA_CA_CERTS. Liveness check, not a trust check. See
 # transparent-root.sh's probe_gateway for the original fix; deploy.sh and
 # watchdog.sh had the same http-only bug until 2026-08-31.
-if curl -skf -m 3 https://127.0.0.1:7777/healthz >/dev/null 2>&1 \
-  || curl -sf -m 3 http://127.0.0.1:7777/healthz >/dev/null 2>&1; then
+gw_port="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','').rsplit(':',1)[-1])" 2>/dev/null || true)"
+gw_port="${gw_port:-17777}"
+if curl -skf -m 3 "https://127.0.0.1:$gw_port/healthz" >/dev/null 2>&1 \
+  || curl -sf -m 3 "http://127.0.0.1:$gw_port/healthz" >/dev/null 2>&1; then
   pass "gateway /healthz responding"
 else
   bad "gateway /healthz not responding (is it enabled? launchctl list ninja.andrewbaker.claude-burst)"
