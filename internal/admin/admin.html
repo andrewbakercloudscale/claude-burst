@@ -1163,12 +1163,22 @@ $("testSecondary").onclick = async () => {
     // Every line here is a separate thing that had to work, in the order it
     // had to work in, so a failure says WHICH step got that far rather than
     // just "it did not work".
+    // Duration alone is not interpretable. A 40-second probe is alarming
+    // until you know it was 171 tokens at 4 tok/s, at which point it says
+    // "the provider is generating slowly right now" rather than "the test
+    // hung" -- and observed throughput on one endpoint has ranged from 0.5
+    // to 100 tok/s, so it is the number that actually varies. The probe
+    // does NOT stream, so this duration is FULL generation time; real
+    // Claude Code traffic streams and starts arriving long before this.
+    const tps = d.duration_ms && d.output_tokens
+      ? ` (${(d.output_tokens / (d.duration_ms / 1000)).toFixed(1)} tok/sec — generation speed, not gateway overhead;\n     the probe waits for the whole answer, while real traffic streams)`
+      : "";
     const where = [
       `provider: ${d.provider || "?"}`,
       d.destination ? `endpoint: ${d.destination}` : "",
       d.requested_model ? `asked for ${d.requested_model}${d.serve_model && d.serve_model !== d.requested_model ? ` -> served by ${d.serve_model}` : ""}` : "",
       d.status ? `HTTP ${d.status}` : "",
-      d.duration_ms ? `${d.duration_ms} ms` : "",
+      d.duration_ms ? `${(d.duration_ms / 1000).toFixed(1)} s${tps}` : "",
     ].filter(Boolean).join("\n");
 
     if (r.ok) {
