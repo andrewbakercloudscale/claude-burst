@@ -171,7 +171,7 @@ gateway_listening() { $LSOF -nP -iTCP:"$(gateway_port)" -sTCP:LISTEN >/dev/null 
 
 gateway_port() {
   local g; g="$(grep -E "^gateway_port=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)"
-  printf '%s' "${g:-17777}"
+  printf '%s' "${g:-7777}"
 }
 
 # Restarting the gateway is a USER LaunchAgent operation and this runs as root,
@@ -367,6 +367,15 @@ self_test() {
   STATE_DIR="$tmp/state"
   FAIL_COUNT_FILE="$STATE_DIR/pf-heal.failures"
   HEARTBEAT_FILE="$STATE_DIR/pf-heal.heartbeat"
+  # STATE_FILE too. It was the one path derived from STATE_DIR that this
+  # sandbox forgot to re-derive, so every run read the REAL
+  # /etc/claude-burst/transparent.state -- invisible for as long as that file
+  # happened to name the same port the assertions hardcode, and a failure the
+  # moment the machine was reconfigured (2026-09-08: the port moved to 17777
+  # and "diagnosis names the gateway" started failing against correct code).
+  # A test that reads host state is not testing the code; see this file's own
+  # note about consts-versus-vars in admin/pfheal.go for the same lesson.
+  STATE_FILE="$STATE_DIR/transparent.state"
   LOG="$tmp/pf.log"
   PFCTL="$tmp/pfctl"
   CURL="$tmp/curl"
@@ -381,6 +390,9 @@ self_test() {
   restart_gateway() { echo restart >> "$tmp/restarts"; [[ -f "$tmp/gw-wont-start" ]] && return 1; touch "$tmp/gw"; return 0; }
 
   mkdir -p "$STATE_DIR"
+  # Seed the port the assertions below expect, rather than depending on a
+  # fallback that can be changed out from under them.
+  printf 'gateway_port=7777\n' > "$STATE_FILE"
 
   # Three flag files stand in for the three things that can be true or not:
   #   $tmp/rdr  -- the pf rdr rule is loaded

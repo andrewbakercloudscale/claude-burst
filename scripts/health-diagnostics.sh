@@ -45,17 +45,20 @@
 # Every probe below used to hardcode 7777, which made cfg.Listen a setting you
 # could change and then watch every health check keep testing the old port --
 # reporting a perfectly healthy gateway as dead, which is what deploy.sh and
-# watchdog.sh act on. It also made the port unchangeable in practice, and the
-# port turned out to be the whole problem: see INVESTIGATION-TLS-STORM.md's
-# 2026-09-08 update. Something on this Mac drops new flows to dst port 7777
-# specifically (7778 and 17777 are both clean), so the direct probe failed
-# ~19/20 while the gateway was serving traffic perfectly over the redirect.
+# watchdog.sh act on.
+#
+# Note what this does NOT fix. While transparent mode is installed, the direct
+# probe fails for whatever port the pf rdr targets, whichever port that is --
+# see INVESTIGATION-TLS-STORM.md's 2026-09-08 update. So in transparent mode
+# the real-path probe below is not a fallback, it is the only trustworthy
+# check; the direct ones are expected to fail and are kept because they are
+# the only option in base-url mode and before the redirect is installed.
 gateway_port() {
   local p=""
   if command -v python3 >/dev/null 2>&1 && [ -f "$HOME/.config/claude-burst/config.json" ]; then
     p="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','').rsplit(':',1)[-1])" 2>/dev/null || true)"
   fi
-  printf '%s' "${p:-17777}"
+  printf '%s' "${p:-7777}"
 }
 
 gateway_healthz_body() {

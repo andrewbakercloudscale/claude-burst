@@ -176,17 +176,7 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		// Not 7777. That port is on enterprise security products'
-		// known-backdoor blocklists, and on a managed Mac the result is that
-		// new flows to it are silently dropped -- SYN never delivered, so the
-		// connection times out rather than being refused, while the gateway
-		// sits there listening and serving traffic perfectly over the pf
-		// redirect. Measured 2026-09-08: 1/15 direct probes to 7777, 15/15 to
-		// 7788 and 15/15 over the real path to the SAME socket; 7778 and
-		// 17777 both clean, so it is an exact-match blocklist entry on the
-		// port number. It cost this project a week of "intermittent" false
-		// rollbacks (issue #1). See INVESTIGATION-TLS-STORM.md.
-		Listen:              "127.0.0.1:17777",
+		Listen:              "127.0.0.1:7777",
 		AdminListen:         "127.0.0.1:7788",
 		AnthropicBaseURL:    "https://api.anthropic.com",
 		BedrockBaseURL:      "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic",
@@ -387,7 +377,7 @@ func Load() (Config, error) {
 	cfg.Primary.BaseURL = strings.TrimRight(cfg.Primary.BaseURL, "/")
 	cfg.Secondary.BaseURL = strings.TrimRight(cfg.Secondary.BaseURL, "/")
 	if cfg.Listen == "" {
-		cfg.Listen = "127.0.0.1:17777"
+		cfg.Listen = "127.0.0.1:7777"
 	}
 	if cfg.MaxRequestMB <= 0 || cfg.MaxRequestMB > 1024 {
 		// The upper bound also guards against int64 overflow in

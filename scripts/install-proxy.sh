@@ -130,7 +130,7 @@ echo
 # port the gateway must NOT use (see INVESTIGATION-TLS-STORM.md) -- a fallback
 # that silently builds a redirect to a dropped port is the worst shape this
 # could fail in: pf loads cleanly and nothing reaches the gateway.
-gateway_port="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json'))['listen'].split(':')[-1])" 2>/dev/null || echo 17777)"
+gateway_port="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json'))['listen'].split(':')[-1])" 2>/dev/null || echo 7777)"
 intercept_host="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('intercept',{}).get('host','api.anthropic.com'))" 2>/dev/null || echo api.anthropic.com)"
 echo "== 4. machine-wide redirect: /etc/hosts + pf (needs root) =="
 echo "changing: adds '127.0.0.1 api.anthropic.com' to /etc/hosts, loads a pf anchor"

@@ -30,7 +30,7 @@ fi
 
 mkdir -p "$HOME/.config/claude-burst"
 GW_PORT="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','').rsplit(':',1)[-1])" 2>/dev/null || true)"
-GW_PORT="${GW_PORT:-17777}"
+GW_PORT="${GW_PORT:-7777}"
 echo "capturing connect() calls to 127.0.0.1:$GW_PORT for ${DURATION}s..."
 echo "output: $OUT"
 echo "(today's bursts have been recurring every few minutes -- this window should catch one)"
