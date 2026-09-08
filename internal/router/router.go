@@ -172,7 +172,7 @@ func buildProvider(rc config.RouteConfig, defaultKeychainService string, default
 		if ks == "" {
 			ks = "claude-burst-together"
 		}
-		label, envVar := openAICompatibleIdentity(ks)
+		label, envVar := OpenAICompatibleIdentity(ks)
 		return NewOpenAICompatibleProvider(label, base, rc.Model, rc.ModelMap, ks, envVar), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", rc.Provider)
@@ -184,20 +184,26 @@ func buildProvider(rc config.RouteConfig, defaultKeychainService string, default
 // vendor label -- "together" -> "TOGETHER_API_KEY", "openrouter" ->
 // "OPENROUTER_API_KEY". Exported because cmd/claude-burst's keychain-set
 // needs this same half of the convention (label -> env var) to know which
-// env var to read for `--provider <label>`; openAICompatibleIdentity below
-// covers the other half (keychain service -> label) and only buildProvider
-// needs that one.
+// env var to read for `--provider <label>`; OpenAICompatibleIdentity below
+// covers the other half (keychain service -> label).
 func EnvVarForProvider(label string) string {
 	return strings.ToUpper(strings.ReplaceAll(label, "-", "_")) + "_API_KEY"
 }
 
-// openAICompatibleIdentity derives the short vendor label and API-key env
+// OpenAICompatibleIdentity derives the short vendor label and API-key env
 // var for an openai-compatible secondary from its keychain service name --
 // e.g. "claude-burst-together" -> ("together", "TOGETHER_API_KEY"),
 // "claude-burst-openrouter" -> ("openrouter", "OPENROUTER_API_KEY"). No
 // vendor is hardcoded here: a config that only ever set (or defaulted to)
 // "claude-burst-together" gets back exactly the identity it had before.
-func openAICompatibleIdentity(keychainService string) (label, envVar string) {
+//
+// Exported for the same reason as EnvVarForProvider: buildProvider is no
+// longer the only caller. The admin UI's secondary-provider form has to
+// name the env var it would read for a given keychain service, and a second
+// copy of this convention there is exactly how the two would drift apart --
+// the form would offer to store a key under a name the gateway never looks
+// for, and nothing would say so until a failover found no credentials.
+func OpenAICompatibleIdentity(keychainService string) (label, envVar string) {
 	label = strings.TrimPrefix(keychainService, "claude-burst-")
 	if label == "" {
 		label = "openai-compatible"

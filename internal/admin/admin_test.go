@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -443,5 +444,314 @@ func TestInterceptActive(t *testing.T) {
 				t.Errorf("active but still gave a reason: %q", reason)
 			}
 		})
+	}
+}
+
+// newSecondaryTestServer is newTestServer with the two Keychain operations
+// replaced by in-memory fakes, and returns HOME so a test can inspect the
+// config.json that was actually written. Nothing here may touch the real
+// login Keychain: `security add-generic-password -U` overwrites, so a test
+// storing under a plausible service name would destroy the key a live
+// secondary is running on.
+func newSecondaryTestServer(t *testing.T) (*Server, string, map[string]string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := t.TempDir()
+	gw, err := router.New(config.Default(), filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(gw, filepath.Join(dir, "metrics.jsonl"), "test-version", "", "/path/to/transparent-root.sh")
+	stored := map[string]string{}
+	s.storeKey = func(service, value string) error { stored[service] = value; return nil }
+	s.hasKey = func(service, envVar string) bool { _, ok := stored[service]; return ok }
+	return s, home, stored
+}
+
+func postSecondary(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary", strings.NewReader(body))
+	req.Host = "127.0.0.1"
+	req.Header.Set(mutationHeader, "1")
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	return rr
+}
+
+func loadSavedConfig(t *testing.T, home string) config.Config {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(home, ".config", "claude-burst", "config.json"))
+	if err != nil {
+		t.Fatalf("config.json was not written: %v", err)
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("config.json does not parse: %v", err)
+	}
+	return cfg
+}
+
+// TestSecondarySavesProviderAndKey is the whole point of the form: an
+// openai-compatible secondary configured from the browser must land in
+// config.json under the same field names the gateway reads, with the secret
+// in the Keychain rather than in that file.
+func TestSecondarySavesProviderAndKey(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home)
+
+	rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/api/coding/paas/v4/",
+		"model":"glm-4.6","keychain_service":"claude-burst-zai","api_key":"sk-secret"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	cfg := loadSavedConfig(t, home)
+	if cfg.Secondary.Provider != "openai-compatible" {
+		t.Errorf("provider = %q, want openai-compatible", cfg.Secondary.Provider)
+	}
+	// The trailing slash must be gone: config.Load trims it on read, but a
+	// value that only becomes correct on the way back in is one refactor
+	// from being concatenated with a path and producing a double slash.
+	if cfg.Secondary.BaseURL != "https://api.z.ai/api/coding/paas/v4" {
+		t.Errorf("base_url = %q, want the trailing slash trimmed", cfg.Secondary.BaseURL)
+	}
+	if cfg.Secondary.Model != "glm-4.6" {
+		t.Errorf("model = %q, want glm-4.6", cfg.Secondary.Model)
+	}
+	if cfg.Secondary.KeychainService != "claude-burst-zai" {
+		t.Errorf("keychain_service = %q, want claude-burst-zai", cfg.Secondary.KeychainService)
+	}
+	if stored["claude-burst-zai"] != "sk-secret" {
+		t.Errorf("key stored under %v, want it under claude-burst-zai", stored)
+	}
+	// The secret must not be anywhere in the file, under any field name.
+	raw, _ := os.ReadFile(filepath.Join(home, ".config", "claude-burst", "config.json"))
+	if strings.Contains(string(raw), "sk-secret") {
+		t.Fatal("the API key was written into config.json in the clear")
+	}
+	// Nor may it come back out of the API in any response.
+	if strings.Contains(rr.Body.String(), "sk-secret") {
+		t.Fatal("the API key was echoed back in the response")
+	}
+}
+
+// TestSecondaryBlankKeyKeepsStoredOne covers the ordinary edit -- changing a
+// model or endpoint without re-typing the secret. A blank field meaning
+// "wipe it" would silently disarm failover on the most routine action the
+// form supports.
+func TestSecondaryBlankKeyKeepsStoredOne(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	stored["claude-burst-zai"] = "sk-existing"
+
+	rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4",
+		"model":"glm-4.7","keychain_service":"claude-burst-zai","api_key":""}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if stored["claude-burst-zai"] != "sk-existing" {
+		t.Fatalf("stored key = %q, want the existing one untouched", stored["claude-burst-zai"])
+	}
+	var resp secondaryResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Warning != "" {
+		t.Errorf("warned about a missing key when one is stored: %q", resp.Warning)
+	}
+}
+
+// TestSecondaryWarnsWithNoKey locks in the saved-but-not-working case being
+// reported at save time rather than at the first real failover.
+func TestSecondaryWarnsWithNoKey(t *testing.T) {
+	s, home, _ := newSecondaryTestServer(t)
+	writeConfig(t, home)
+
+	rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4","model":"glm-4.6"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp secondaryResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Warning == "" {
+		t.Fatal("saved a secondary with no credential anywhere and reported no warning")
+	}
+	// The warning has to name both places a key could come from, or it
+	// sends the reader looking in only one of them.
+	if !strings.Contains(resp.Warning, "TOGETHER_API_KEY") {
+		t.Errorf("warning does not name the env var the gateway reads: %q", resp.Warning)
+	}
+}
+
+// TestSecondaryKeyStoreFailureAbortsSave is the ordering the handler exists
+// to get right: a config naming a provider whose key was never stored defers
+// the failure to the moment the primary runs out.
+func TestSecondaryKeyStoreFailureAbortsSave(t *testing.T) {
+	s, home, _ := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	s.storeKey = func(service, value string) error { return errUnavailable }
+
+	rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4","model":"glm-4.6","api_key":"sk-x"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if cfg := loadSavedConfig(t, home); cfg.Secondary.Provider == "openai-compatible" {
+		t.Fatal("config.json was updated even though storing the key failed")
+	}
+}
+
+var errUnavailable = errors.New("keychain unavailable")
+
+// TestSecondaryNoneClearsLegacyBedrockField guards the resurrection trap
+// documented on config.ProviderNone: ResolveRoutes rebuilds a bedrock
+// secondary out of the legacy flat field whenever the slot is empty, so
+// "none" that leaves bedrock_base_url set silently undoes itself.
+func TestSecondaryNoneClearsLegacyBedrockField(t *testing.T) {
+	s, home, _ := newSecondaryTestServer(t)
+	writeConfig(t, home)
+
+	if rr := postSecondary(t, s, `{"provider":"none"}`); rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	cfg := loadSavedConfig(t, home)
+	if cfg.Secondary.Provider != config.ProviderNone {
+		t.Errorf("secondary provider = %q, want %q", cfg.Secondary.Provider, config.ProviderNone)
+	}
+	if cfg.BedrockBaseURL != "" {
+		t.Errorf("bedrock_base_url = %q, want it cleared", cfg.BedrockBaseURL)
+	}
+	// The real proof: reload through the same path the gateway uses.
+	reloaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Secondary.Provider != config.ProviderNone {
+		t.Fatalf("after reload the secondary came back as %q -- 'none' did not stick", reloaded.Secondary.Provider)
+	}
+}
+
+// TestSecondaryRejectsBadInput keeps the validation at the form rather than
+// at gateway startup, where a bad value means a gateway that will not start
+// and a dashboard that is gone with it.
+func TestSecondaryRejectsBadInput(t *testing.T) {
+	cases := []struct{ name, body string }{
+		{"no base url", `{"provider":"openai-compatible","model":"glm-4.6"}`},
+		{"no model", `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4"}`},
+		{"bare host", `{"provider":"openai-compatible","base_url":"api.z.ai/v4","model":"glm-4.6"}`},
+		{"no scheme", `{"provider":"openai-compatible","base_url":"//api.z.ai/v4","model":"glm-4.6"}`},
+		{"unknown provider", `{"provider":"vertex","base_url":"https://x.example/v1","model":"m"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, home, _ := newSecondaryTestServer(t)
+			writeConfig(t, home)
+			rr := postSecondary(t, s, c.body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d, want 400 (body=%s)", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestStateReportsSecondaryCredential covers the half of this the form reads
+// rather than writes: the dashboard must be able to say "a key exists" (and
+// under which names) without the key ever crossing the wire.
+func TestStateReportsSecondaryCredential(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	stored["claude-burst-openrouter"] = "sk-live"
+
+	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://openrouter.ai/api/v1",
+		"model":"z-ai/glm-4.6","keychain_service":"claude-burst-openrouter"}`); rr.Code != http.StatusOK {
+		t.Fatalf("save failed: %s", rr.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
+	req.Host = "127.0.0.1"
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var st stateResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Secondary.KeychainService != "claude-burst-openrouter" {
+		t.Errorf("keychain_service = %q", st.Secondary.KeychainService)
+	}
+	if st.Secondary.KeyEnvVar != "OPENROUTER_API_KEY" {
+		t.Errorf("key_env_var = %q, want OPENROUTER_API_KEY", st.Secondary.KeyEnvVar)
+	}
+	if !st.Secondary.KeyPresent {
+		t.Error("key_present = false, but a key is stored under that service")
+	}
+	if strings.Contains(rr.Body.String(), "sk-live") {
+		t.Fatal("/api/state leaked the API key")
+	}
+	// A primary with no credential of its own must report no env var at
+	// all, not an empty-looking "missing key" -- the UI distinguishes the
+	// two on exactly this field.
+	if st.Primary.KeyEnvVar != "" {
+		t.Errorf("primary key_env_var = %q, want empty for oauth-passthrough", st.Primary.KeyEnvVar)
+	}
+}
+
+// TestCredentialNamesMatchesBuildProvider pins the defaulting to the same
+// rules router.buildProvider applies. If these drift, the form offers to
+// store a key under a service the gateway never looks in, and nothing says
+// so until a failover finds no credentials.
+func TestCredentialNamesMatchesBuildProvider(t *testing.T) {
+	cases := []struct {
+		name           string
+		rc             config.RouteConfig
+		defaultService string
+		wantService    string
+		wantEnvVar     string
+	}{
+		{"openai-compatible explicit", config.RouteConfig{Provider: "openai-compatible", KeychainService: "claude-burst-zai"}, "claude-burst-bedrock", "claude-burst-zai", "ZAI_API_KEY"},
+		{"openai-compatible default", config.RouteConfig{Provider: "openai-compatible"}, "claude-burst-bedrock", "claude-burst-together", "TOGETHER_API_KEY"},
+		{"bedrock explicit", config.RouteConfig{Provider: "bedrock", KeychainService: "custom"}, "claude-burst-bedrock", "custom", "AWS_BEARER_TOKEN_BEDROCK"},
+		{"bedrock default", config.RouteConfig{Provider: "bedrock"}, "claude-burst-bedrock", "claude-burst-bedrock", "AWS_BEARER_TOKEN_BEDROCK"},
+		{"oauth-passthrough has none", config.RouteConfig{Provider: "oauth-passthrough"}, "claude-burst-bedrock", "", ""},
+		{"none has none", config.RouteConfig{Provider: config.ProviderNone}, "claude-burst-bedrock", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			service, envVar := credentialNames(c.rc, c.defaultService)
+			if service != c.wantService || envVar != c.wantEnvVar {
+				t.Fatalf("credentialNames = (%q, %q), want (%q, %q)", service, envVar, c.wantService, c.wantEnvVar)
+			}
+		})
+	}
+}
+
+// TestSecondarySwitchingVendorDoesNotInheritKeychainService is the
+// regression test for a bug this form had on its first run: with a blank
+// Keychain-service field it carried the PREVIOUS secondary's service name
+// forward regardless of vendor, so switching a bedrock secondary to an
+// openai-compatible one derived "claude-burst-bedrock" -> $BEDROCK_API_KEY
+// and offered to store the new provider's key under Bedrock's entry.
+// `security add-generic-password -U` overwrites, so saving would have
+// destroyed the Bedrock credential -- the same vendor collision
+// cmd/claude-burst's keychainTarget doc comment describes.
+func TestSecondarySwitchingVendorDoesNotInheritKeychainService(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home) // config.Default() resolves to a bedrock secondary
+	stored["claude-burst-bedrock"] = "bedrock-token"
+
+	rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4","model":"glm-4.6","api_key":"sk-glm"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if stored["claude-burst-bedrock"] != "bedrock-token" {
+		t.Fatalf("the Bedrock key was overwritten with the new provider's: %q", stored["claude-burst-bedrock"])
+	}
+	if cfg := loadSavedConfig(t, home); cfg.Secondary.KeychainService == "claude-burst-bedrock" {
+		t.Fatal("openai-compatible secondary inherited Bedrock's keychain service")
 	}
 }
