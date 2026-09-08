@@ -5,27 +5,65 @@ transparent intercept mode, and how to undo each one independently.
 
 ## TL;DR — what is on my machine right now?
 
-Updated 2026-08-31, after deploying.
+Updated 2026-09-08. **Transparent mode is installed and live** — the opposite of what
+this section said on 2026-08-31, when only base-url mode had ever been enabled. Every
+line below was verified against the machine, not inferred from config.
 
 **Deployed and live:**
-- New gateway binary at `~/.local/bin/claude-burst`, running under LaunchAgent
-  `ninja.andrewbaker.claude-burst`, healthy on `127.0.0.1:7777`.
+- Gateway binary `0.2.0` at `~/.local/bin/claude-burst`, running under LaunchAgent
+  `ninja.andrewbaker.claude-burst`, serving **HTTPS** on `127.0.0.1:7777`. Plain
+  `curl http://127.0.0.1:7777/healthz` now answers *"Client sent an HTTP request to an
+  HTTPS server"* — that is the expected reply in this mode, not a fault.
 - **Admin UI on <http://127.0.0.1:7788>** (loopback only, no login).
-- `~/.claude/settings.json` has `ANTHROPIC_BASE_URL=http://127.0.0.1:7777` — the same
-  `base-url` mode as before this work. Remote Control is disabled while that is set.
+- Primary `oauth-passthrough` → `api.anthropic.com`, failover strategy
+  `subscription-limit+metered-failures`. Secondary `openai-compatible` → Together AI
+  (`zai-org/GLM-5.3`), key in Keychain service `claude-burst-together`.
 
-**Not installed, and nothing on the machine refers to it:**
-- Transparent intercept mode. `intercept.mode` is unset (= `base-url`).
-- `/etc/hosts` has **no** claude-burst entry; pf is **Disabled**; no CA has been
-  generated; the `NODE_EXTRA_CA_CERTS` bundle is untouched.
+**Transparent intercept mode — installed, all four parts present:**
+- `intercept.mode` is `transparent`, host `api.anthropic.com`.
+- `/etc/hosts` has the `# BEGIN claude-burst hosts` block redirecting
+  `api.anthropic.com` → `127.0.0.1`.
+- pf: `/etc/pf.anchors/claude-burst` holds the `rdr pass … port 443 -> … port 7777`
+  rule, and `/etc/pf.conf` carries both the `rdr-anchor` and `load anchor` marker blocks.
+- Local CA in `~/.config/claude-burst/ca/` (CA `claude-burst local CA`, valid to
+  2036-08-28; leaf for `api.anthropic.com`, valid to 2027-10-02). Trusted **twice**, and
+  the two are removed separately: inside the `# BEGIN claude-burst CA` block of
+  `~/.claude/certs/node-extra-ca-certs.pem` (13 certificates, 12 of them the
+  corporate ones — see *The CA bundle* below), and as a trusted root in the **System
+  keychain** (`scripts/trust-ca-systemwide.sh`, added because Claude Desktop's updater
+  has no idea about `NODE_EXTRA_CA_CERTS` — see INVESTIGATION-TLS-STORM.md).
+- `~/.claude/settings.json` has **no** `ANTHROPIC_BASE_URL`, which is the whole point:
+  Remote Control keeps working. Do not set it while this mode is installed.
+- Live path confirmed, not just configured: the dashboard's **Test connection** reports
+  `https://api.anthropic.com/healthz` resolving to this gateway.
 
-**If Claude Code is broken and you want out fast:**
+**Both guards armed and beating:**
+- `ninja.andrewbaker.claude-burst-pfheal` — root LaunchDaemon, guards the pf rdr rule,
+  log `/var/log/claude-burst-pf.log` (empty, which is the good case).
+- `ninja.andrewbaker.claude-burst-selfheal` — user LaunchAgent, guards the gateway
+  process, log `~/.config/claude-burst/self-heal.log`.
+- Both write a heartbeat every ~2 min; the dashboard reads the heartbeat, never
+  launchd's opinion. No `rolled-back` marker is present, so neither is standing down.
+
+**If Claude Code — or this Mac — is broken and you want out fast:**
 
 ```sh
-scripts/rollback.sh                       # settings.json, config.json, CA bundle
-sudo scripts/transparent-root.sh remove   # /etc/hosts + pf (safe if never installed)
+scripts/rollback.sh                       # /etc/hosts + pf FIRST, then System-keychain
+                                          # CA trust, then settings.json/config.json/CA
+                                          # bundle from backup; verifies direct reach
 ```
-Then restart Claude Code. Both are idempotent and safe when nothing was installed.
+Then restart Claude Code. Idempotent, and safe when nothing was installed. It is
+also what the dashboard's **Revert** button now runs. If you only want the
+machine-wide half gone: `sudo scripts/transparent-root.sh remove`.
+
+Because transparent mode IS installed, the redirect is machine-wide: while it is in
+place and the gateway is down, *every* process on this Mac fails to reach
+`api.anthropic.com`, not just Claude Code. If you cannot even clone the repo:
+
+```sh
+sudo sed -i '' '/# BEGIN claude-burst hosts/,/# END claude-burst hosts/d' /etc/hosts
+sudo dscacheutil -flushcache
+```
 
 **To go back to the previous binary only:**
 
@@ -109,10 +147,13 @@ macOS 26.5.2. It flushed the anchor and released pf's enable token on exit, and
 its own output confirmed `pf now: Status: Disabled` — the state it started in.
 **Nothing to undo.** `/etc/pf.conf` was never touched.
 
-## Rolling back things that are not yet in play
+## Rolling back each piece of transparent mode
 
-These become relevant only once transparent mode is actually wired up and
-enabled. Listed now so the recovery path exists before the thing it recovers.
+All of this is **in play** — transparent mode is installed on this machine (see
+the TL;DR). This section was written while it was still hypothetical, so that
+the recovery path existed before the thing it recovers; it is now the live
+undo procedure, not a contingency. Each piece below can be removed on its own,
+and `scripts/rollback.sh` does the lot in the safe order.
 
 ### `/etc/hosts` and pf
 
@@ -148,11 +189,12 @@ Or edit `/etc/hosts` and delete everything between
 
 ### The CA bundle
 
-`~/.claude/certs/node-extra-ca-certs.pem` holds **12 certificates**, including
-Zscaler and Capitec internal CAs. Transparent mode appends its own CA inside a
-`# BEGIN claude-burst CA` / `# END claude-burst CA` block and never rewrites the
-rest. To remove by hand, delete that block. `scripts/rollback.sh` restores the
-whole file from the backup taken by `backup-config.sh`.
+`~/.claude/certs/node-extra-ca-certs.pem` holds **13 certificates**: 12 corporate
+ones, including Zscaler and Capitec internal CAs, plus claude-burst's own. Ours
+sits inside a `# BEGIN claude-burst CA` / `# END claude-burst CA` block, appended
+by transparent mode, which never rewrites the rest. To remove by hand, delete
+that block. `scripts/rollback.sh` restores the whole file from the backup taken
+by `backup-config.sh`.
 
 If this file is ever lost, corporate TLS breaks machine-wide, not just Claude
 Code — treat it as the most sensitive file this tool goes near.
@@ -188,6 +230,9 @@ listening and killed a live session with `Connection refused`.
   Settle it with `scripts/check-interception.sh` while the tunnel is on —
   it distinguishes *intercepted* from *bypassed* from *not enrolled*, which a
   bare issuer check cannot.
-- **`internal/keychain` has one failing test on this machine** — pre-existing
-  and unrelated. It expects no Together key; you have one in Keychain. It would
-  pass in CI.
+- ~~`internal/keychain` has one failing test on this machine.~~ **Fixed in
+  `850a59a`.** The test asserted against the real `claude-burst-together`
+  service name, so it passed or failed depending on whether this Mac happened
+  to have that credential stored — a result that depended on the developer's
+  machine rather than on the code. It now uses a deliberately nonexistent
+  service name. `go test ./...` is green locally and in CI.
