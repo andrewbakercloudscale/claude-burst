@@ -105,9 +105,26 @@ launchagent_disabled() {
 
 # launchagent_loaded: true if the LaunchAgent is currently loaded into
 # launchd at all (bootstrapped), independent of whether it's disabled.
+# Registered in launchd's database. NOT the same as "running": launchd keeps
+# answering for a job whose process has exited, so this returns 0 for a gateway
+# that is thoroughly dead. Kept because ensure_launchagent_loaded needs exactly
+# this question -- is there a job to kickstart at all -- and answers a
+# different one from launchagent_running below.
 launchagent_loaded() {
   local svc_label="${LABEL:-ninja.andrewbaker.claude-burst}"
   launchctl print "gui/$UID/$svc_label" >/dev/null 2>&1
+}
+
+# Actually running, judged by launchd reporting a pid for the job.
+#
+# On 2026-09-08 the gateway process vanished with its job still registered, so
+# launchagent_loaded said yes, self-heal-watchdog.sh skipped its reload step,
+# and the Mac stayed black-holed behind a live /etc/hosts redirect until a
+# human hit Revert. "Registered" is configuration; "has a pid" is behaviour,
+# and the watchdog needs the second one.
+launchagent_running() {
+  local svc_label="${LABEL:-ninja.andrewbaker.claude-burst}"
+  launchctl print "gui/$UID/$svc_label" 2>/dev/null | grep -qE '^[[:space:]]*pid = [0-9]+'
 }
 
 # ensure_launchagent_loaded recovers from the one failure mode that looks

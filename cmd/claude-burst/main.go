@@ -146,7 +146,12 @@ func serve(args []string) {
 	statePath, _ := config.StatePath()
 	metricsPath, _ := config.MetricsPath()
 	logPath, _ := config.LogPath()
-	logger := log.New(rotate.NewWriter(logPath, logMaxBytes, logMaxBackups), "", log.LstdFlags|log.LUTC)
+	// Local time, not UTC. The dashboard renders every timestamp local, and a log
+	// file in UTC beside it is a trap: on 2026-09-08 the log's newest line read
+	// 06:11 while the requests table read 08:11, which looks exactly like a
+	// logger that has stopped. It had not -- the machine is UTC+2. One clock,
+	// the reader's.
+	logger := log.New(rotate.NewWriter(logPath, logMaxBytes, logMaxBackups), "", log.LstdFlags)
 	srv, err := router.New(cfg, statePath, metricsPath, logger)
 	if err != nil {
 		fatal(err)

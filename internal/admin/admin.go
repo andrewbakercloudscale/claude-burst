@@ -410,6 +410,20 @@ func gatewayPort(listen string) string {
 	return listen
 }
 
+// utcToLocalCutover names the release that switched the gateway's own log from
+// UTC to local time, so a reader of a file spanning both knows where the seam
+// is rather than assuming a gap or a stalled logger.
+const utcToLocalCutover = "2026-09-08"
+
+func utcOffsetLabel(now time.Time) string {
+	_, offset := now.Zone()
+	h := offset / 3600
+	if h == 0 {
+		return "the same"
+	}
+	return fmt.Sprintf("%dh", h)
+}
+
 // logTailBytes caps how much of claude-burst.log a single /api/log request
 // serves. Under rotation the file can now grow to 200MB (see main.go's
 // logMaxBytes/logMaxBackups) -- loading that whole thing into a browser tab
@@ -442,17 +456,13 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
-	// State the timezone, every time. The gateway logs in UTC (log.LUTC in
-	// main.go) while every timestamp the dashboard renders is local, and on
-	// 2026-09-08 that cost a real detour: the log's newest line read 06:11
-	// while the requests table read 08:11, which looks exactly like a logger
-	// that has silently stopped. It had not -- CEST is UTC+2. A header is
-	// cheaper than rewriting the format of a 10MB file, and unlike a comment
-	// in the source it is in front of the person actually reading the log.
+	// New lines are local time (see main.go). Lines already on disk from
+	// before that change are UTC, and a file with two clocks in it silently
+	// mis-reads unless it says so -- which is the same failure, one layer
+	// along, as the one that made this change necessary.
 	now := time.Now()
-	_, offset := now.Zone()
-	fmt.Fprintf(w, "(timestamps below are UTC; local time here is UTC%+d, so the newest line should read about %s)\n",
-		offset/3600, now.UTC().Format("15:04"))
+	fmt.Fprintf(w, "(timestamps are LOCAL time; it is now %s. Lines written before %s are UTC -- older entries will look %s behind.)\n",
+		now.Format("2006-01-02 15:04:05 MST"), utcToLocalCutover, utcOffsetLabel(now))
 	if st.Size() > logTailBytes {
 		if _, err := f.Seek(-logTailBytes, io.SeekEnd); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
