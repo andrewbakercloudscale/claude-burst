@@ -40,6 +40,24 @@
 # "overflow" field. In base-url mode there is no /etc/hosts entry, so the
 # request reaches the real Anthropic -- whose /healthz does not return our JSON
 # and therefore does not match. A gateway that is genuinely down fails both.
+# gateway_port: the port the gateway is ACTUALLY configured to listen on.
+#
+# Every probe below used to hardcode 7777, which made cfg.Listen a setting you
+# could change and then watch every health check keep testing the old port --
+# reporting a perfectly healthy gateway as dead, which is what deploy.sh and
+# watchdog.sh act on. It also made the port unchangeable in practice, and the
+# port turned out to be the whole problem: see INVESTIGATION-TLS-STORM.md's
+# 2026-09-08 update. Something on this Mac drops new flows to dst port 7777
+# specifically (7778 and 17777 are both clean), so the direct probe failed
+# ~19/20 while the gateway was serving traffic perfectly over the redirect.
+gateway_port() {
+  local p=""
+  if command -v python3 >/dev/null 2>&1 && [ -f "$HOME/.config/claude-burst/config.json" ]; then
+    p="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','').rsplit(':',1)[-1])" 2>/dev/null || true)"
+  fi
+  printf '%s' "${p:-17777}"
+}
+
 gateway_healthz_body() {
   local host="api.anthropic.com"
   if command -v python3 >/dev/null 2>&1 && [ -f "$HOME/.config/claude-burst/config.json" ]; then
@@ -49,8 +67,9 @@ gateway_healthz_body() {
 }
 
 gateway_healthy() {
-  curl -skf -m 3 "https://127.0.0.1:7777/healthz" >/dev/null 2>&1 && return 0
-  curl -sf  -m 3 "http://127.0.0.1:7777/healthz"  >/dev/null 2>&1 && return 0
+  local port; port="$(gateway_port)"
+  curl -skf -m 3 "https://127.0.0.1:$port/healthz" >/dev/null 2>&1 && return 0
+  curl -sf  -m 3 "http://127.0.0.1:$port/healthz"  >/dev/null 2>&1 && return 0
   case "$(gateway_healthz_body)" in
     *'"overflow"'*) return 0 ;;
   esac
@@ -167,17 +186,18 @@ dump_health_diagnostics() {
   mkdir -p "$(dirname "$out")"
   {
     echo "===== $(date -u '+%Y-%m-%dT%H:%M:%SZ') health check failed: $label ====="
-    echo "-- direct 127.0.0.1:7777, https then http (verbose, what actually happened) --"
-    curl -v -k -m 3 "https://127.0.0.1:7777/healthz" 2>&1 | tail -15
-    curl -v -m 3 "http://127.0.0.1:7777/healthz" 2>&1 | tail -15
+    local gport; gport="$(gateway_port)"
+    echo "-- direct 127.0.0.1:$gport, https then http (verbose, what actually happened) --"
+    curl -v -k -m 3 "https://127.0.0.1:$gport/healthz" 2>&1 | tail -15
+    curl -v -m 3 "http://127.0.0.1:$gport/healthz" 2>&1 | tail -15
     echo "-- real traffic path for comparison (same moment): via the intercepted hostname, port 443 --"
     if command -v python3 >/dev/null 2>&1 && [[ -f "$HOME/.config/claude-burst/config.json" ]]; then
       local doh_host
       doh_host="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('intercept',{}).get('host','api.anthropic.com'))" 2>/dev/null || echo "api.anthropic.com")"
       curl -sk -m 3 -o /dev/null -w '%{url_effective} -> HTTP %{http_code} in %{time_total}s\n' "https://$doh_host/healthz" 2>&1
     fi
-    echo "-- lsof -iTCP:7777 --"
-    lsof -nP -iTCP:7777 2>&1
+    echo "-- lsof -iTCP:$gport --"
+    lsof -nP -iTCP:"$gport" 2>&1
     echo "-- launchctl list $svc_label --"
     launchctl list "$svc_label" 2>&1
     echo "-- launchagent loaded / disabled --"
