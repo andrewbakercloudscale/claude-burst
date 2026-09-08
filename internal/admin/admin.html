@@ -13,8 +13,8 @@
     --panel-2: #fbfcfd;
     --border: #e3e6ea;
     --text: #12161c;
-    --muted: #626b78;
-    --faint: #8b95a3;
+    --muted: #2e3a66;
+    --faint: #47539b;
     --accent: #3b5bdb;
     --ok: #2b8a5c;
     --ok-bg: #e6f4ec;
@@ -33,8 +33,8 @@
       --panel-2: #1c2027;
       --border: #282d36;
       --text: #e8ecf1;
-      --muted: #98a2b1;
-      --faint: #6d7784;
+      --muted: #c3cdf5;
+      --faint: #a8b5ea;
       --accent: #7c93f5;
       --ok: #5fd39b;
       --ok-bg: #14301f;
@@ -94,6 +94,21 @@
   section > h2 .hint { font-weight: 400; color: var(--faint); font-size: 12px; }
   .body { padding: 16px; }
 
+  /* A collapsible section, used by Guards. Armed and quiet is this panel's
+     normal state, and saying "nothing has happened" takes more vertical
+     space than every card above it put together -- so it starts closed and
+     the header alone carries the state. It is not hidden: a section that
+     opens itself when something breaks (renderGuards) but stays shut the
+     rest of the time is the shape this page wants for anything whose good
+     news is long. */
+  section.collapsible > h2 { cursor: pointer; user-select: none; }
+  section.collapsed > h2 { border-bottom: none; }
+  section.collapsed > .body { display: none; }
+  .h2btn {
+    font: 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 600;
+    padding: 4px 9px; border-radius: 6px; text-transform: uppercase; letter-spacing: .05em;
+  }
+
   .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
   label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
   input, select {
@@ -107,7 +122,7 @@
     padding: 8px 14px; border-radius: 7px; border: 1px solid var(--border);
     background: var(--panel-2); color: var(--text); cursor: pointer;
   }
-  button:hover { border-color: var(--faint); }
+  button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover { filter: brightness(1.08); }
   button.danger { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 30%, transparent); color: var(--bad); }
@@ -238,9 +253,15 @@
        for hours, with every indicator on this page green. Its guard, and
        what that guard has caught, belong on the page rather than in a
        script you have to already know exists. -->
-  <section id="guardsSection">
-    <h2>Guards <span class="hint">the two things that keep this working while nobody is watching</span></h2>
-    <div class="body">
+  <!-- Starts closed in the MARKUP, not in script, so it never renders open
+       for a frame and then jumps shut on first paint. -->
+  <section id="guardsSection" class="collapsible collapsed">
+    <h2 id="guardsHead">Guards <span class="hint">the two things that keep this working while nobody is watching</span>
+      <span class="spacer"></span>
+      <span id="guardsSummary" class="hint"></span>
+      <button class="h2btn primary" id="guardsToggle" aria-expanded="false" aria-controls="guardsBody">Show</button>
+    </h2>
+    <div class="body" id="guardsBody">
       <!-- Gateway watchdog: shown in both modes. A dead gateway breaks
            base-url mode too; it just breaks it for one user rather than
            for every process on the Mac. -->
@@ -483,7 +504,7 @@ function renderCards(s) {
       note($("bailout"), "bad",
         `Redirect is active but the CA is untrusted -- every request to ${s.intercept.host || "api.anthropic.com"} on this Mac is currently broken. Run:\n${s.intercept.bailout_cmd}`);
     } else {
-      $("bailout").innerHTML = `<div class="note" style="background:var(--panel-2);color:var(--faint);border:1px solid var(--border)">Bail-out (undoes the machine-wide redirect, needs root):\n<code>${esc(s.intercept.bailout_cmd)}</code></div>`;
+      $("bailout").innerHTML = `<div class="note" style="background:var(--panel-2);color:var(--text);border:1px solid var(--border)">Bail-out (undoes the machine-wide redirect, needs root):\n<code>${esc(s.intercept.bailout_cmd)}</code></div>`;
     }
   } else {
     $("bailout").innerHTML = "";
@@ -601,8 +622,36 @@ function renderGuards(s) {
     renderGuard("pfHeal", s, ph, "guard",
       "the redirect has no guard — if traffic stops reaching the gateway, nothing repairs it");
   }
-  $("guardsSection").classList.toggle("alert",
-    isBad(s, s.intercept.self_heal) || (showPf && isBad(s, ph)));
+  const bad = isBad(s, s.intercept.self_heal) || (showPf && isBad(s, ph));
+  $("guardsSection").classList.toggle("alert", bad);
+
+  // Collapsed, this header is the only thing reporting on the guards, so it
+  // has to carry the verdict rather than just a label -- a shut panel that
+  // says nothing is indistinguishable from one with nothing to say.
+  const guards = [s.intercept.self_heal].concat(showPf ? [ph] : []);
+  const armed = guards.filter(g => g && g.running).length;
+  $("guardsSummary").textContent = bad
+    ? "not armed — traffic is unprotected"
+    : armed === guards.length ? (guards.length === 1 ? "armed" : "both armed")
+    : `${armed} of ${guards.length} armed`;
+
+  // Opens itself on the TRANSITION into a bad state, not on every render.
+  // Re-opening on every 2s refresh would take the panel away from anyone who
+  // read it and closed it again while the condition persisted -- and the
+  // condition can persist for as long as it takes to fix.
+  if (bad && !guardsWereBad) setGuardsOpen(true);
+  guardsWereBad = bad;
+}
+
+// Guards starts closed (see the .collapsible CSS). Both halves of the state
+// live on the section's class, so the button label and the aria flag are
+// derived from it rather than tracked separately and allowed to drift.
+let guardsWereBad = false;
+function setGuardsOpen(open) {
+  const sec = $("guardsSection");
+  sec.classList.toggle("collapsed", !open);
+  $("guardsToggle").textContent = open ? "Hide" : "Show";
+  $("guardsToggle").setAttribute("aria-expanded", String(open));
 }
 
 // A guard that was armed and has since died is a worse state than one never
@@ -656,7 +705,7 @@ function renderRequests(rows) {
         <td class="mono">${esc(stamp(e.time))}</td>
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
-        <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "—")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--faint)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
+        <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "—")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--muted)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
         <td class="mono st-${String(e.http_status)[0]}">${esc(e.http_status)}</td>
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
@@ -711,7 +760,7 @@ function renderResponses(rows) {
         <span class="pill ${r.slot === "primary" ? "p" : "s"}">${esc(r.slot || "?")}</span>
         <span class="mono st-${String(r.status)[0]}">${esc(r.status)}</span>
         <span class="mono">${esc(r.method)} ${esc(r.path)}</span>
-        <span class="mono" style="color:var(--faint)" title="${esc(r.destination || "")}">&rarr; ${esc(destHost(r.destination))}</span>
+        <span class="mono" style="color:var(--muted)" title="${esc(r.destination || "")}">&rarr; ${esc(destHost(r.destination))}</span>
         ${r.model && r.slot === "secondary" ? `<span class="mono" style="color:var(--muted)">${esc(r.model)}</span>` : ""}
         <span class="spacer"></span>
         <span class="pill">${keys.length} hdr${flagged ? " · " + flagged + " rate-limit" : ""}</span>
@@ -902,6 +951,10 @@ $("testConn").onclick = async () => {
 $("viewLog").onclick = () => window.open("/api/log", "_blank");
 $("viewPfLog").onclick = () => window.open("/api/pf-heal-log", "_blank");
 $("viewSelfHealLog").onclick = () => window.open("/api/self-heal-log", "_blank");
+// The whole header is the hit target, not just the button -- but the button
+// is kept because a bare clickable heading gives no sign that it is one.
+$("guardsHead").onclick = () =>
+  setGuardsOpen($("guardsSection").classList.contains("collapsed"));
 
 $("armSelfHeal").onclick = async () => {
   if (!confirm("Arm the gateway watchdog?\n\nA Terminal window will open. No password needed — it is a user LaunchAgent.\n\nIt checks every 2 minutes that the gateway is actually running and reloads it if not, and stands down while a rollback marker is present so it never undoes a deliberate rollback.")) return;
