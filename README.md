@@ -179,9 +179,22 @@ In this mode, both the primary (metered Anthropic API) and the secondary (Bedroc
 
 ```bash
 claude-burst status
-curl -s http://127.0.0.1:7777/healthz
+curl -s http://127.0.0.1:7777/healthz          # base-url mode only — see below
 claude-burst stats --days 30
 ```
+
+**In transparent mode that `curl` will time out, and that is expected.** While the pf
+redirect is installed, direct connections to the gateway's own port are unreachable — the
+rule makes its own target port unreachable, whichever port it targets (issue #1, and
+`INVESTIGATION-TLS-STORM.md` for the measurements). Probe the real path instead, which is
+what the gateway's own health checks do:
+
+```bash
+curl -sk https://api.anthropic.com/healthz     # answers from the gateway, not Anthropic
+```
+
+A JSON body containing `"overflow"` means it came from Claude Burst. Anthropic's real
+`/healthz` does not return that, so this cannot produce a false positive.
 
 You can also check Claude Code's own `/status` and `/usage` views to confirm that it is still using the intended subscription before a failover occurs.
 
@@ -415,7 +428,12 @@ loop's exact shape. Set `intercept.upstream_addr` to pin an IP where DoH is bloc
 ```bash
 claude-burst status                          # CA trusted? hosts entry? certificate?
 sudo scripts/transparent-root.sh status      # pf rule actually loaded?
+curl -sk https://api.anthropic.com/healthz   # does the REAL path answer from the gateway?
 ```
+
+Use the last one rather than a direct probe of the gateway port: while the redirect is
+installed the gateway port does not accept direct connections at all (see Verify above).
+The admin dashboard's **Test connection** button runs exactly this check.
 
 Watch for `live rdr rule : MISSING` while the hosts entry is present. That is the bad
 state — DNS redirects but nothing listens — and the fix is `remove`.

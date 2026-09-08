@@ -11,9 +11,15 @@ line below was verified against the machine, not inferred from config.
 
 **Deployed and live:**
 - Gateway binary `0.2.0` at `~/.local/bin/claude-burst`, running under LaunchAgent
-  `ninja.andrewbaker.claude-burst`, serving **HTTPS** on `127.0.0.1:7777`. Plain
-  `curl http://127.0.0.1:7777/healthz` now answers *"Client sent an HTTP request to an
-  HTTPS server"* — that is the expected reply in this mode, not a fault.
+  `ninja.andrewbaker.claude-burst`, serving **HTTPS** on `127.0.0.1:17777`. Note the port:
+  this machine was moved off 7777 on 2026-09-08 chasing issue #1, the move did not fix it
+  (see INVESTIGATION-TLS-STORM.md update (b)), and the shipped default went back to 7777
+  while this machine stayed on 17777. `config.json` names it explicitly, so nothing infers it.
+- **Do not health-check the gateway by connecting to its port directly.** While the pf
+  redirect is installed, the rdr rule makes its own target port unreachable — a direct
+  `curl https://127.0.0.1:17777/healthz` times out, with the gateway perfectly healthy.
+  Probe the real path instead: `curl -sk https://api.anthropic.com/healthz`, which answers
+  from the gateway and whose body contains `"overflow"`.
 - **Admin UI on <http://127.0.0.1:7788>** (loopback only, no login).
 - Primary `oauth-passthrough` → `api.anthropic.com`, failover strategy
   `subscription-limit+metered-failures`. Secondary `openai-compatible` → Together AI
@@ -23,7 +29,7 @@ line below was verified against the machine, not inferred from config.
 - `intercept.mode` is `transparent`, host `api.anthropic.com`.
 - `/etc/hosts` has the `# BEGIN claude-burst hosts` block redirecting
   `api.anthropic.com` → `127.0.0.1`.
-- pf: `/etc/pf.anchors/claude-burst` holds the `rdr pass … port 443 -> … port 7777`
+- pf: `/etc/pf.anchors/claude-burst` holds the `rdr pass … port 443 -> … port 17777`
   rule, and `/etc/pf.conf` carries both the `rdr-anchor` and `load anchor` marker blocks.
 - Local CA in `~/.config/claude-burst/ca/` (CA `claude-burst local CA`, valid to
   2036-08-28; leaf for `api.anthropic.com`, valid to 2027-10-02). Trusted **twice**, and
