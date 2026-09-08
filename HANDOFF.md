@@ -62,15 +62,18 @@ state with the gateway port on both sides shows up in the same capture:
 ALL tcp 127.0.0.1:17777 <- 127.0.0.1:17777   TIME_WAIT:TIME_WAIT
 ```
 
-**Next step is written and not yet run:**
+**That experiment has now been run, and the candidate is ruled out.**
+`sudo scripts/experiment-nostate-rule.sh`, 10:53 SAST 2026-09-08: direct 1/15 before,
+0/15 after — the same number, since the baseline rate is ~1 in 20 by itself. The rule was
+`quick` and, for the first time, genuinely evaluated (the experiment adds the filter
+`anchor` line `/etc/pf.conf` lacks), so this eliminates the filter path: the state
+insertion that fails is not one a filter rule can decline to make. Reverted cleanly; real
+path 5/5 after. Full write-up in INVESTIGATION-TLS-STORM.md, update (c).
 
-```bash
-sudo scripts/experiment-nostate-rule.sh
-```
-
-It applies `pass quick on lo0 ... port <gport> no state` plus the filter anchor line
-`/etc/pf.conf` lacks, measures before and after, and reverts unconditionally — on
-success, failure, error or interrupt. Read its header before running it.
+**Four hypotheses on this issue, four wrong.** The next step is a measurement that
+distinguishes, not a fifth candidate fix: `tcpdump -ni lo0` across a burst of failing
+direct probes, to see whether the SYN reaches the socket at all and whether a RST comes
+back, and from where. None of the four hypotheses addressed that.
 
 ### 2. TLS handshake storm — recurred, cause unknown (OPEN)
 
@@ -82,10 +85,10 @@ INVESTIGATION-TLS-STORM.md: `rollback.sh` step 1b removes the System-keychain tr
 only `install-proxy.sh` step 5 restores it, so every rollback reopens the hole.
 `CLAUDE_BURST_LOG_TLS_PEERS=1` identifies the client and needs no root.
 
-## Three wrong answers — do not re-propose them
+## Four wrong answers — do not re-propose them
 
-Issue #1 attracted three confident wrong diagnoses in one session. All are recorded as
-ruled out, with evidence, in INVESTIGATION-TLS-STORM.md:
+Issue #1 attracted four confident wrong diagnoses. All are recorded as ruled out, with
+evidence, in INVESTIGATION-TLS-STORM.md:
 
 1. **A security product blocklists port 7777.** Wrong. 7777 answers 10/10 with a plain
    listener once it is no longer the rdr target. Moving the port relocated the symptom.
@@ -93,11 +96,16 @@ ruled out, with evidence, in INVESTIGATION-TLS-STORM.md:
    rules in the main ruleset or the com.apple anchor), and our anchor is referenced by
    `rdr-anchor` only, so a filter rule in it is loaded and never evaluated.
 3. **State mismatch.** Predicted explicitly; `state-mismatch` did not move at all.
+4. **A `no state` filter rule**, to skip the insertion that fails. Ruled out by
+   experiment 2026-09-08, update (c): 1/15 before, 0/15 after, with the rule `quick`
+   and actually evaluated. A filter rule cannot decline the insertion that is failing,
+   so the failure is not on the filter path.
 
-The pattern behind all three: reasoning from a mechanism instead of measuring, and in
+The pattern behind all four: reasoning from a mechanism instead of measuring, and in
 case 1 varying a thing (the port number) that was perfectly confounded with the thing
 that mattered (being the rdr target). The read-only diagnostic settled in one run what
-two rounds of theorising did not.
+two rounds of theorising did not, and #4 cost nothing only because it was written as a
+reverting experiment rather than a commit.
 
 ## What changed this session (all pushed to origin/main)
 

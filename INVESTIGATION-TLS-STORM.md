@@ -431,3 +431,48 @@ pass quick on lo0 inet proto tcp from any to 127.0.0.1 port <gateway> no state
 
 Note this is *not* the plain `pass` ruled out above: the point is `no state`, bypassing the
 insertion that is failing, rather than overriding a block that does not exist.
+
+## Update 2026-09-08 (c): the `no state` rule is ruled out too — RUN, not reasoned
+
+`sudo scripts/experiment-nostate-rule.sh` was run at 10:53 SAST. The candidate above was
+applied for real — including the filter `anchor "claude-burst"` line `/etc/pf.conf` lacks,
+so this time the rule was actually *evaluated* rather than loaded and skipped — measured,
+and reverted.
+
+```
+real path (precondition)      5/5
+direct 127.0.0.1:17777 before 1/15
+  rules live in the anchor while applied:
+    no rdr  on lo0 inet proto tcp from any to 127.0.0.1 port = 17777
+    rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 17777
+    pass quick on lo0 inet proto tcp from any to 127.0.0.1 port = 17777 no state
+real path (mid-experiment)    5/5   <- the candidate did not break the machine-wide path
+direct 127.0.0.1:17777 after  0/15
+```
+
+**Verdict: no improvement.** 1/15 and 0/15 are the same number — the baseline rate is
+about 1 in 20 by itself, so a single success on either side is noise, not signal. Both
+files were restored from `/etc/claude-burst/experiment-20260908-105312` and the real path
+re-verified at 5/5 after the revert. Nothing left behind.
+
+This is the **fourth** hypothesis on issue #1 and the fourth wrong one. What is different
+about this one is only that it cost fifteen minutes and no machine-wide reconfiguration,
+because it was written as a reverting experiment instead of a commit.
+
+### What it eliminates
+
+The rule was `quick`, in an anchor that was genuinely evaluated this time, matching the
+exact tuple — and direct connections still failed. So the failing state insertion is **not
+the one the filter rule would have created**. Skipping filter-state creation changes
+nothing, which means the insertion that fails belongs to some other path: most plausibly
+the translation machinery around the `rdr`/`no rdr` pair, which a filter rule cannot opt
+out of. That is a narrowing, not an answer.
+
+### Do not propose next
+
+A fifth mechanism argued from how pf ought to behave. Four for four now, and the one
+diagnostic that was run settled more than the two rounds of theorising that preceded it.
+The next step on this issue is a **measurement that distinguishes**, not another candidate
+fix — e.g. `tcpdump -ni lo0` across a burst of failing direct probes, which answers a
+question none of the four hypotheses addressed: whether the SYN reaches the socket at all,
+and whether what comes back is a RST, and from where.
