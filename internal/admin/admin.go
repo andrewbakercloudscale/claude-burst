@@ -89,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/state", s.readOnly(s.handleState))
 	mux.HandleFunc("/api/requests", s.readOnly(s.handleRequests))
 	mux.HandleFunc("/api/responses", s.readOnly(s.handleResponses))
+	mux.HandleFunc("/api/history", s.readOnly(s.handleHistory))
 	mux.HandleFunc("/api/test-connection", s.readOnly(s.handleTestConnection))
 	mux.HandleFunc("/api/log", s.readOnly(s.handleLog))
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))
@@ -432,6 +433,33 @@ func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.gateway.RecentResponses())
+}
+
+// handleHistory backs the activity chart: the same events /api/requests
+// returns one by one, bucketed per local day and split by slot.
+//
+// The bucketing happens here rather than in the page because the window is
+// six figures of events on a busy machine -- 131,000 over thirty days on
+// the machine this was written on -- and shipping all of them to a browser
+// so it can produce thirty numbers is a lot of JSON to throw away. It reads
+// the rotated backups too, which is why it can report more than the
+// all-time card does; see metrics.Daily.
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	days := 14
+	if v := r.URL.Query().Get("days"); v != "" {
+		// Capped at 90: beyond that the bars are thinner than the gaps
+		// between them, and the read cost is unbounded by anything except
+		// how long the gateway has been running.
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 90 {
+			days = n
+		}
+	}
+	h, err := metrics.Daily(s.metricsPath, days)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, h)
 }
 
 type testConnectionResponse struct {

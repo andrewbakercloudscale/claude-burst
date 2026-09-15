@@ -250,17 +250,221 @@
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12.5px; }
   .kv dt { color: var(--muted); }
   .kv dd { margin: 0; font-family: var(--mono); font-size: 12px; word-break: break-all; }
+
+  /* ===================================================================== *
+   * App shell: a fixed left rail beside a scrolling column.
+   *
+   * The page had grown to nine stacked panels, and the ones that matter
+   * most when something is wrong -- Guards, Secondary -- sit below two
+   * screenfuls of tables. The rail is not decoration: every entry carries
+   * its section's OWN status dot, so a guard that has died is visible from
+   * anywhere on the page rather than only once you have scrolled back to
+   * it. That is the same failure this project keeps finding in its gates,
+   * in layout form -- a panel that is fine and a panel that is broken look
+   * identical when neither is on screen.
+   * ===================================================================== */
+  .app { display: grid; grid-template-columns: 226px minmax(0, 1fr); min-height: 100vh; }
+  .side {
+    position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    background: var(--panel); border-right: 1px solid var(--border);
+    padding: 18px 0 18px; display: flex; flex-direction: column;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 0 18px 16px; }
+  .brand .mark { font-size: 17px; line-height: 1; }
+  .brand .name { font-size: 13.5px; font-weight: 650; letter-spacing: -.01em; }
+  .brand .ver { display: block; font: 10.5px var(--mono); color: var(--faint); margin-top: 2px; }
+  .navgroup { font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .1em;
+              color: var(--faint); padding: 14px 18px 6px; }
+  .navlink {
+    display: flex; align-items: center; gap: 9px; padding: 7px 18px;
+    color: var(--muted); text-decoration: none; font-size: 13px; cursor: pointer;
+    border-left: 2px solid transparent;
+  }
+  .navlink:hover { background: var(--panel-2); color: var(--text); }
+  .navlink.on { color: var(--text); font-weight: 600; border-left-color: var(--accent); background: var(--panel-2); }
+  .navlink .nd { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex: none; }
+  .navlink .nd.ok { background: var(--ok); } .navlink .nd.warn { background: var(--warn); }
+  .navlink .nd.bad { background: var(--bad); }
+  .navlink .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .navlink .count { font: 10.5px var(--mono); color: var(--faint); }
+  .sidefoot { margin-top: auto; padding: 14px 18px 0; border-top: 1px solid var(--border);
+              font-size: 11.5px; color: var(--faint); }
+  .sidefoot .updated { display: block; margin-top: 4px; }
+
+  /* The old rule was `.wrap { max-width: 1180px; margin: 0 auto }` on the
+     whole page. Inside the shell the rail already provides the left gutter,
+     so the column centres within what is left. */
+  .main { min-width: 0; }
+  .main .wrap { max-width: 1120px; }
+
+  /* ===================================================================== *
+   * Hero: one card carrying the verdict, the identity and the four numbers.
+   * ===================================================================== */
+  .hero {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 18px 20px; margin-bottom: 18px;
+  }
+  .hero-top { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .hero-id { min-width: 0; flex: 1 1 260px; }
+  .hero-id h2 { margin: 0; font-size: 20px; font-weight: 660; letter-spacing: -.02em; }
+  .hero-id .sub { margin-top: 3px; }
+  .kpis { display: flex; gap: 26px; flex-wrap: wrap; }
+  .kpi { text-align: right; min-width: 74px; }
+  /* Hero figure spec: one per view, >= 22px, same sans as everything else,
+     proportional rather than tabular -- these are headline numbers, not a
+     column to be compared down. */
+  .kpi .v { font-size: 22px; font-weight: 640; letter-spacing: -.02em; line-height: 1.15; }
+  .kpi .k { font-size: 10px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: .08em; color: var(--faint); margin-top: 3px; }
+
+  /* The readiness meter. Its fill carries severity and its track is a faint
+     step of the same colour, so the state reads across the whole ring
+     rather than only where it is filled. */
+  .meter { position: relative; width: 84px; height: 84px; flex: none; }
+  .meter svg { transform: rotate(-90deg); }
+  .meter .track { stroke: var(--border); }
+  .meter .fill { transition: stroke-dashoffset .4s ease; stroke-linecap: round; }
+  .meter.ok .fill   { stroke: var(--ok); }
+  .meter.warn .fill { stroke: var(--warn); }
+  .meter.bad .fill  { stroke: var(--bad); }
+  .meter .mid {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 1px;
+  }
+  .meter .mid .n { font-size: 21px; font-weight: 650; letter-spacing: -.02em; line-height: 1; }
+  .meter.ok .mid .n { color: var(--ok); } .meter.warn .mid .n { color: var(--warn); }
+  .meter.bad .mid .n { color: var(--bad); }
+  .meter .mid .of { font-size: 9.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; }
+
+  /* The checks the meter is made of, spelled out. A score with no visible
+     components is a vibe; these are the components, each one a link to the
+     panel that fixes it. The ring above takes the colour of the WORST check
+     rather than the average, so four passes and one outage can never render
+     as a comfortable amber. */
+  .checks { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 15px;
+            padding-top: 14px; border-top: 1px solid var(--border); }
+  .check {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border-radius: 999px; font-size: 12px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--muted); cursor: pointer;
+    text-decoration: none; font-weight: 500;
+  }
+  .check:hover { border-color: var(--accent); }
+  .check .g { font-size: 10px; line-height: 1; }
+  .check.ok   { background: var(--ok-bg);   color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
+  .check.warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+  .check.bad  { background: var(--bad-bg);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+  /* ===================================================================== *
+   * Activity chart.
+   *
+   * Series colours are their own tokens, deliberately NOT --ok/--warn. A
+   * bar's colour here answers "which slot served this", which is identity,
+   * not health -- a day of secondary traffic is not a day of warnings. The
+   * pair is the first two slots of a validated categorical palette (blue,
+   * orange), stepped separately for the dark surface; they clear the CVD
+   * and normal-vision separation floors in both modes.
+   * ===================================================================== */
+  :root { --s-primary: #2a78d6; --s-secondary: #eb6834; --grid: #e9ecef; }
+  @media (prefers-color-scheme: dark) {
+    :root { --s-primary: #3987e5; --s-secondary: #d95926; --grid: #23272f; }
+  }
+  .chart-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+                padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .seg button {
+    border: none; border-radius: 0; background: var(--panel); color: var(--muted);
+    font-size: 12px; font-weight: 550; padding: 5px 11px; border-left: 1px solid var(--border);
+  }
+  .seg button:first-child { border-left: none; }
+  .seg button:hover { background: var(--panel-2); border-color: var(--border); }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .legend { display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--muted); }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 6px;
+              vertical-align: -1px; }
+  .chart-wrap { position: relative; padding: 14px 16px 6px; }
+  .chart-wrap svg { display: block; width: 100%; }
+  .chart-tip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: var(--shadow); padding: 8px 11px; font-size: 12px; min-width: 150px; z-index: 5;
+  }
+  .chart-tip .d { font-weight: 640; margin-bottom: 5px; }
+  .chart-tip .r { display: flex; justify-content: space-between; gap: 14px; padding: 1.5px 0; color: var(--muted); }
+  .chart-tip .r b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tiles { display: grid; gap: 1px; background: var(--border);
+           grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border-top: 1px solid var(--border); }
+  .tile { background: var(--panel); padding: 12px 16px; }
+  .tile .k { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
+  .tile .v { font-size: 18px; font-weight: 640; letter-spacing: -.02em; margin-top: 3px; }
+  .tile .h { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  /* Model split: a bar per served model, widest first. Answers the question
+     the spend total cannot -- the models behind it differ in price by an
+     order of magnitude, so "$38" says nothing about what to change. */
+  .mrow { display: grid; grid-template-columns: minmax(120px, 1.4fr) 1fr auto; gap: 12px;
+          align-items: center; padding: 7px 16px; font-size: 12.5px; }
+  .mrow + .mrow { border-top: 1px solid var(--border); }
+  .mbar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+  .mbar span { display: block; height: 100%; border-radius: 4px; }
+  .mrow .amt { font: 12px var(--mono); color: var(--muted); text-align: right; white-space: nowrap; }
+
+  @media (max-width: 900px) {
+    .app { grid-template-columns: minmax(0, 1fr); }
+    .side {
+      position: static; height: auto; flex-direction: row; flex-wrap: wrap;
+      align-items: center; gap: 2px; padding: 10px 14px;
+      border-right: none; border-bottom: 1px solid var(--border);
+    }
+    .brand { padding: 0 14px 0 0; }
+    .navgroup { display: none; }
+    .navlink { padding: 5px 9px; border-left: none; border-radius: 6px; }
+    .navlink.on { border-left: none; }
+    .navlink .count { display: none; }
+    .sidefoot { margin: 0 0 0 auto; border-top: none; padding: 0; }
+  }
 </style>
 </head>
 <body>
+<div class="app">
+
+<!-- The rail. Every entry carries its own section's status dot, set by
+     renderNav() from the same state the panels are drawn from, so a guard
+     that has stopped reporting is visible from the bottom of the requests
+     table rather than only from the panel you would have to scroll back to. -->
+<aside class="side">
+  <div class="brand">
+    <span class="mark">&#9889;</span>
+    <span><span class="name">Claude Burst</span><span class="ver" id="ver"></span></span>
+  </div>
+
+  <div class="navgroup">Observe</div>
+  <a class="navlink" data-target="cards"><span class="nd" id="nd-overview"></span><span class="label">Overview</span><span class="count" id="nc-overview"></span></a>
+  <a class="navlink" data-target="sec-activity"><span class="nd" id="nd-activity"></span><span class="label">Activity</span><span class="count" id="nc-activity"></span></a>
+  <a class="navlink" data-target="sec-responses"><span class="nd" id="nd-responses"></span><span class="label">Responses</span><span class="count" id="nc-responses"></span></a>
+  <a class="navlink" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
+
+  <div class="navgroup">Control</div>
+  <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
+  <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
+  <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Configuration</span></a>
+  <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
+
+  <div class="navgroup">Setup</div>
+  <a class="navlink" data-target="installSection"><span class="nd" id="nd-install"></span><span class="label">Install</span></a>
+
+  <div class="sidefoot">
+    <span id="gatewayAddr"></span>
+    <span class="updated" id="updated"></span>
+  </div>
+</aside>
+
+<main class="main">
 <div class="wrap">
   <header>
-    <h1>Claude Burst</h1>
-    <span class="ver" id="ver"></span>
     <span id="activeBadge"></span>
     <span id="routeBadge"></span>
     <span class="spacer"></span>
-    <span class="updated" id="updated"></span>
     <!-- Shown only while Claude Burst is actually in the traffic path, where
          the Install panel below is hidden: with nothing to fix, a permanent
          Install panel above every card reads as an unfinished setup. It is
@@ -276,12 +480,39 @@
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
 
+  <!-- The hero. The meter is a SCORE, which this project is otherwise
+       suspicious of for good reason -- a single number is how a dashboard
+       ends up reassuring you about something it is not measuring. Two rules
+       keep this one honest, and they are both in renderHero: the ring takes
+       the colour of the WORST check rather than the average, and every check
+       it is made of is listed underneath by name, as a link to the panel
+       that fixes it. A number with its components on screen beside it is a
+       summary; a number without them is a mood. -->
+  <div class="hero" id="hero">
+    <div class="hero-top">
+      <div class="meter" id="meter">
+        <svg width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
+          <circle class="track" cx="42" cy="42" r="36" fill="none" stroke-width="8"></circle>
+          <circle class="fill" id="meterFill" cx="42" cy="42" r="36" fill="none" stroke-width="8"
+                  stroke-dasharray="226.19" stroke-dashoffset="226.19"></circle>
+        </svg>
+        <div class="mid"><span class="n" id="meterNum">&ndash;</span><span class="of" id="meterOf">checks</span></div>
+      </div>
+      <div class="hero-id">
+        <h2 id="heroTitle">Claude Burst</h2>
+        <div class="sub" id="heroSub"></div>
+      </div>
+      <div class="kpis" id="heroKpis"></div>
+    </div>
+    <div class="checks" id="heroChecks"></div>
+  </div>
+
   <!-- Filled in by the live probe below, so a broken intercept states itself
        at the top of the page with the fix attached, rather than only in the
        reply to a Test connection button nobody clicked. -->
   <div id="liveAlert"></div>
 
-  <section id="installSection">
+  <section id="installSection" style="scroll-margin-top:70px">
     <h2>
       <span id="installTitle">Install</span>
       <span class="hint" id="installHint">opens a Terminal window and runs the install there, so you can watch every command</span>
@@ -305,8 +536,44 @@
     </div>
   </section>
 
-  <div class="grid" id="cards"></div>
+  <div class="grid" id="cards" style="scroll-margin-top:70px"></div>
   <div id="bailout"></div>
+
+  <!-- Activity. The window is whole local days, and the coverage line under
+       the chart is not boilerplate: metrics.jsonl rotates at 10MB, so a
+       30-day request is a request, not a promise. Without that line the days
+       before the oldest surviving event draw as empty bars -- a quiet
+       fortnight that never happened, which is precisely the reassuring-and-
+       wrong shape the build gates in this repo exist to catch. -->
+  <section id="sec-activity" style="scroll-margin-top:70px">
+    <div class="chart-head">
+      <strong style="font-size:13px;font-weight:620">Daily activity</strong>
+      <span class="seg" id="metricSeg">
+        <button data-metric="requests" class="on">Requests</button>
+        <button data-metric="tokens">Tokens</button>
+        <button data-metric="spend">Spend</button>
+      </span>
+      <span class="seg" id="daysSeg">
+        <button data-days="7">7d</button>
+        <button data-days="14" class="on">14d</button>
+        <button data-days="30">30d</button>
+      </span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="legend">
+        <span><i style="background:var(--s-primary)"></i>Primary</span>
+        <span><i style="background:var(--s-secondary)"></i>Secondary</span>
+      </span>
+      <button class="h2btn" id="tableToggle" aria-pressed="false">Table</button>
+    </div>
+    <div class="chart-wrap" id="chartWrap">
+      <div id="chart"></div>
+      <div class="chart-tip" id="chartTip"></div>
+    </div>
+    <div class="scroll" id="chartTable" hidden></div>
+    <div class="hint" style="padding:2px 16px 12px" id="coverage"></div>
+    <div class="tiles" id="activityTiles"></div>
+    <div id="modelSplit"></div>
+  </section>
 
   <!-- Transparent mode only. The pf rdr rule is the one piece of this that
        other software on the Mac can take away, and on 2026-09-07 it did --
@@ -315,7 +582,7 @@
        script you have to already know exists. -->
   <!-- Starts closed in the MARKUP, not in script, so it never renders open
        for a frame and then jumps shut on first paint. -->
-  <section id="guardsSection" class="collapsible collapsed">
+  <section id="guardsSection" class="collapsible collapsed" style="scroll-margin-top:70px">
     <h2 id="guardsHead">Guards <span class="hint">the two things that keep this working while nobody is watching</span>
       <span class="spacer"></span>
       <span id="guardsSummary" class="hint"></span>
@@ -350,7 +617,7 @@
 
   <!-- Starts closed in the MARKUP for the same reason Guards does: set in
        script it would render open for a frame and then jump shut. -->
-  <section id="secondarySection" class="collapsible collapsed">
+  <section id="secondarySection" class="collapsible collapsed" style="scroll-margin-top:70px">
     <h2 id="secondaryHead">Secondary provider <span class="hint">where inference goes when the primary is out &mdash; endpoint, model and API key</span>
       <span class="spacer"></span>
       <span id="secSummary" class="hint"></span>
@@ -397,7 +664,7 @@
     </div>
   </section>
 
-  <section>
+  <section id="sec-config" style="scroll-margin-top:70px">
     <h2>Configuration <span class="hint">saved to config.json; the gateway reads it at startup</span></h2>
     <div class="body">
       <div class="row">
@@ -423,7 +690,7 @@
     </div>
   </section>
 
-  <section>
+  <section id="sec-actions" style="scroll-margin-top:70px">
     <h2>Actions</h2>
     <div class="body">
       <div class="row">
@@ -447,15 +714,17 @@
     </div>
   </section>
 
-  <section>
+  <section id="sec-responses" style="scroll-margin-top:70px">
     <h2>Recent responses <span class="hint">last 20, in memory only &mdash; headers that drive failover are highlighted</span></h2>
     <div id="responses"><div class="empty">No responses yet.</div></div>
   </section>
 
-  <section>
+  <section id="sec-requests" style="scroll-margin-top:70px">
     <h2>Recent requests <span class="hint">metadata only &mdash; no prompt or response content is stored or shown</span></h2>
     <div class="scroll" id="requests"><div class="empty">No requests yet.</div></div>
   </section>
+</div>
+</main>
 </div>
 
 <script>
@@ -609,7 +878,7 @@ $("installRevealBtn").onclick = () => {
   installRevealed = true;
   $("installSection").hidden = false;
   $("installRevealBtn").hidden = true;
-  $("installSection").scrollIntoView({behavior: "smooth", block: "nearest"});
+  scrollToEl($("installSection"), "nearest");
 };
 
 function note(el, cls, msg) { el.innerHTML = `<div class="note ${cls}">${esc(msg)}</div>`; }
@@ -740,7 +1009,8 @@ function renderCards(s) {
       "\n\nEverything further down this page still describes the gateway, but Claude Code is not sending it anything.");
   }
   renderGuards(s);
-  $("ver").textContent = "v" + s.version + " · " + s.gateway;
+  $("ver").textContent = "v" + s.version;
+  $("gatewayAddr").textContent = "gateway " + s.gateway;
 
   // The machine-wide redirect (pf + /etc/hosts) needs root to remove and is
   // never touched automatically -- this is the one command that always gets
@@ -763,6 +1033,11 @@ function renderCards(s) {
 // The most recent /api/state, so the Test connection button can redraw the
 // header badges from the same verdict the automatic probe uses.
 let lastState = null;
+
+// Row counts for the two tables, cached so the live probe -- which redraws
+// the rail when its verdict lands -- does not have to refetch them just to
+// keep the counts beside Requests and Responses from blanking.
+let lastCounts = null;
 
 // The live probe's verdict for the current render, or undefined while it is
 // still in flight. Kept outside renderCards so a refresh() that redraws the
@@ -827,6 +1102,11 @@ async function liveCheck(s) {
   liveVerdict = verdict;
   renderActiveBadge(s, verdict);
   renderLiveAlert(s, verdict);
+  // The meter deliberately scores nothing until this lands (see
+  // readinessChecks): the probe is the only check that reads the real path,
+  // and a score that quietly leaves it out is worse than no score.
+  renderHero(s);
+  renderNav(s, lastCounts);
 }
 
 // renderLiveAlert puts the diagnosis and the remedy in the same box at the top
@@ -1027,6 +1307,9 @@ async function refresh() {
       fetch("/api/state").then(r => r.json()),
       fetch("/api/requests?limit=50").then(r => r.json()),
       fetch("/api/responses").then(r => r.json()),
+      // Sets lastHistory as a side effect rather than returning it: the
+      // window buttons reload it on their own, without a full refresh.
+      loadHistory(),
     ]);
 
     // config.json failed to load: /api/state still answers (200, not an
@@ -1058,6 +1341,11 @@ async function refresh() {
       $("guardsSection").hidden = true;
       liveVerdict = undefined;
       lastState = null;
+      // The meter is made of checks read out of a config we could not
+      // parse. The activity chart is not -- it reads metrics.jsonl, and is
+      // often the most useful thing on screen while config.json is broken.
+      $("hero").hidden = true;
+      clearNav();
       // Same reasoning for the panel: it is hidden on the strength of a
       // verdict this response cannot give, so show it rather than hide the
       // one control that might be the way out.
@@ -1069,6 +1357,7 @@ async function refresh() {
         `config.json failed to load, so routing/usage state can't be shown: ${s.config_error}\n\nFix ~/.config/claude-burst/config.json, then click Refresh. Recent requests below still reflect real traffic.`);
       renderRequests(reqs);
       renderResponses(resps);
+      renderActivity();
       $("updated").textContent = "config error — " + new Date().toLocaleTimeString();
       return;
     }
@@ -1098,6 +1387,14 @@ async function refresh() {
       $("mode").value = s.intercept.mode || "base-url";
     }
     renderSecondary(s);
+    $("hero").hidden = false;
+    lastCounts = {requests: reqs.length, responses: resps.length};
+    renderActivity();
+    // Drawn now with liveVerdict still undefined, so the meter reads
+    // "checking" rather than scoring the page without its one live check;
+    // liveCheck redraws both the moment the probe answers.
+    renderHero(s);
+    renderNav(s, lastCounts);
     $("updated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     // The badges are a claim about this instant, and nothing answered, so
@@ -1109,6 +1406,8 @@ async function refresh() {
     $("secStatus").innerHTML = "";
     liveVerdict = undefined;
     lastState = null;
+    $("hero").hidden = true;
+    clearNav();
     $("updated").textContent = "gateway unreachable — " + e.message;
   }
 }
@@ -1308,7 +1607,13 @@ $("testConn").onclick = async () => {
     note($("actNote"), r.ok ? "ok" : "bad", r.detail);
     // Same verdict the header badges are drawn from, so an explicit test and
     // the automatic one can never disagree on the page at the same time.
-    if (lastState) { liveVerdict = r; renderActiveBadge(lastState, r); renderLiveAlert(lastState, r); }
+    if (lastState) {
+      liveVerdict = r;
+      renderActiveBadge(lastState, r);
+      renderLiveAlert(lastState, r);
+      renderHero(lastState);
+      renderNav(lastState, lastCounts);
+    }
   } catch (e) {
     note($("actNote"), "bad", "test failed: " + e.message);
   } finally {
@@ -1350,6 +1655,557 @@ $("armPfHeal").onclick = async () => {
     note($("pfHealNote"), "bad", e.message);
   } finally { $("armPfHeal").disabled = false; }
 };
+
+// ===========================================================================
+// Hero, rail and activity chart.
+// ===========================================================================
+
+// compact keeps a headline number to three or four glyphs. The full value is
+// never only here -- it is in the cards, the tiles and the table -- so this
+// is a reading aid, not a substitute for the figure.
+function compact(n) {
+  n = n || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(Math.round(n));
+}
+// Spend gets its own compactor: $0.04 and $0.4K are both real answers here
+// and rounding the first to "$0" would report a free day.
+function compactMoney(n) {
+  n = n || 0;
+  if (n >= 1000) return "$" + compact(n);
+  if (n >= 10) return "$" + n.toFixed(0);
+  return "$" + n.toFixed(2);
+}
+
+// Axis ticks are derived by dividing a rounded maximum, so they land on
+// halves as often as not. compactMoney rounds 12.5 to "$13", which is a
+// label that does not name the line it is drawn on.
+function axisMoney(n) {
+  n = n || 0;
+  if (n >= 1000) return "$" + compact(n);
+  if (Number.isInteger(n)) return "$" + n;
+  return "$" + n.toFixed(n < 10 ? 2 : 1);
+}
+
+// --- readiness -------------------------------------------------------------
+//
+// readinessChecks returns the list the meter is built from. Each entry is a
+// thing that is separately true or false, named the way the panel that fixes
+// it is named, with `critical` marking the ones that mean traffic is NOT
+// working right now as opposed to not being protected.
+//
+// It returns null while the live probe is still in flight rather than
+// scoring the page without it: the probe is the only check here that reads
+// the actual path, and a score that quietly omits it is the exact reassuring
+// half-answer this dashboard was built to stop giving.
+function readinessChecks(s, verdict) {
+  if (verdict === undefined) return null;
+  const out = [];
+  const transparent = s.intercept.mode === "transparent";
+
+  out.push({
+    key: "path", label: "Traffic reaching gateway", target: "installSection",
+    ok: !!verdict.ok, critical: true,
+    detail: verdict.ok ? "the live probe reached this gateway"
+      : (verdict.detail || "the connection test failed"),
+  });
+
+  const sh = s.intercept.self_heal;
+  out.push({
+    key: "watchdog", label: "Gateway watchdog", target: "guardsSection",
+    ok: !!(sh && sh.running), critical: false,
+    detail: sh && sh.running ? "armed" : "not armed — nothing restarts the gateway if it dies",
+  });
+
+  if (transparent && s.intercept.pf_heal) {
+    const ph = s.intercept.pf_heal;
+    out.push({
+      key: "pfguard", label: "pf redirect guard", target: "guardsSection",
+      ok: !!ph.running, critical: false,
+      detail: ph.running ? "armed" : "not armed — nothing repairs the redirect if it is dropped",
+    });
+  }
+
+  const sec = s.secondary || {};
+  const noSecondary = sec.provider === "none" || !sec.provider;
+  out.push({
+    key: "secondary", label: "Secondary ready", target: "secondarySection",
+    ok: !noSecondary && !(sec.key_env_var && !sec.key_present), critical: false,
+    detail: noSecondary ? "no secondary configured — overflow has nowhere to go"
+      : (sec.key_env_var && !sec.key_present) ? "configured, but no API key was found"
+      : `${sec.model || sec.provider} — key ok`,
+  });
+
+  // Error rate over the charted window. Uses the same numbers the chart
+  // draws, so the check and the picture below it can never disagree.
+  if (lastHistory && lastHistory.window && lastHistory.window.Requests > 0) {
+    const errs = lastHistory.days.reduce((a, d) => a + d.errors, 0);
+    const pct = (errs / lastHistory.window.Requests) * 100;
+    out.push({
+      key: "errors", label: "Error rate", target: "sec-activity",
+      ok: pct < 2, critical: false,
+      detail: `${pct.toFixed(1)}% of ${num(lastHistory.window.Requests)} requests in the window returned 4xx/5xx`,
+    });
+  }
+  return out;
+}
+
+const C = 2 * Math.PI * 36; // the meter ring's circumference, r=36
+
+function renderHero(s) {
+  const checks = readinessChecks(s, liveVerdict);
+  const meter = $("meter");
+  meter.classList.remove("ok", "warn", "bad");
+
+  if (!checks) {
+    $("meterNum").textContent = "…";
+    $("meterOf").textContent = "checking";
+    $("meterFill").setAttribute("stroke-dashoffset", C);
+    $("heroChecks").innerHTML = "";
+  } else {
+    const passed = checks.filter(c => c.ok).length;
+    // The ring's colour comes from the WORST failing check, never from the
+    // proportion. Four passes beside one dead intercept is a red ring, not
+    // an encouraging amber one -- averaging an outage into a score is how a
+    // dashboard ends up looking healthy during an outage.
+    const failed = checks.filter(c => !c.ok);
+    const state = failed.some(c => c.critical) ? "bad" : failed.length ? "warn" : "ok";
+    meter.classList.add(state);
+    $("meterNum").textContent = `${passed}/${checks.length}`;
+    $("meterOf").textContent = "checks";
+    $("meterFill").setAttribute("stroke-dashoffset", C * (1 - passed / checks.length));
+    $("heroChecks").innerHTML = checks.map(c =>
+      `<a class="check ${c.ok ? "ok" : c.critical ? "bad" : "warn"}" data-target="${esc(c.target)}"
+          title="${esc(c.detail)}"><span class="g">${c.ok ? "&#10003;" : "&#9888;"}</span>${esc(c.label)}</a>`
+    ).join("");
+  }
+
+  const modeLabel = s.intercept.mode === "transparent" ? "transparent proxy" : "base-url";
+  $("heroSub").innerHTML = `${esc(modeLabel)} &middot; routing to <b>${esc(
+    s.overflow ? (s.secondary.provider || "secondary") : (s.primary.provider || "primary"))}</b>` +
+    (s.until ? ` &middot; until ${esc(stamp(s.until))}` : "");
+
+  // The four KPIs are over the CHARTED WINDOW, not all time, and the label
+  // under them says which -- a headline number whose period is unstated is
+  // the easiest way to compare two things that are not comparable.
+  const h = lastHistory;
+  const span = h ? `last ${h.days.length}d` : "";
+  const w = (h && h.window) || {};
+  $("heroKpis").innerHTML = [
+    [compact(w.Requests), "requests"],
+    [compact(h ? h.sessions : 0), "sessions"],
+    [compact((w.InputTokens || 0) + (w.OutputTokens || 0)), "tokens"],
+    [compactMoney(w.APIEquivalentUSD), "spend"],
+  ].map(([v, k]) => `<div class="kpi"><div class="v">${esc(v)}</div><div class="k">${esc(k)}${
+    span ? " · " + esc(span) : ""}</div></div>`).join("");
+}
+
+// --- rail ------------------------------------------------------------------
+
+// scrollToEl is `scrollIntoView` with the one thing that makes it work.
+//
+// Chrome treats behavior:"smooth" as a NO-OP -- not as an instant scroll --
+// while the OS is set to reduce motion, so every navigation on this page
+// silently did nothing for anyone with that setting on. It is on by default
+// on a Mac whose "Reduce motion" accessibility option is enabled, which is
+// the setting most likely to be on for the people the rail helps most.
+function scrollToEl(el, block) {
+  if (!el) return;
+  const reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  el.scrollIntoView({behavior: reduce ? "auto" : "smooth", block: block || "start"});
+}
+
+function setDot(id, state) {
+  const el = $(id);
+  if (!el) return;
+  el.className = "nd" + (state ? " " + state : "");
+}
+function setCount(id, n) {
+  const el = $(id);
+  if (!el) return;
+  // Some counts are ratios ("1/2"), not numbers. compact() on a string
+  // returns NaN, which the rail then prints -- so only numbers go through it.
+  el.textContent = n === null || n === undefined ? ""
+    : typeof n === "number" ? compact(n) : String(n);
+}
+
+// renderNav mirrors each panel's own verdict onto its rail entry. It reads
+// the same fields the panels do rather than being told by them, so an entry
+// cannot go on reporting green for a panel that has changed its mind.
+function renderNav(s, counts) {
+  const sec = s.secondary || {};
+  const noSecondary = sec.provider === "none" || !sec.provider;
+  const missingKey = !noSecondary && sec.key_env_var && !sec.key_present;
+
+  setDot("nd-overview", liveVerdict === undefined ? "" : liveVerdict.ok ? "ok" : "bad");
+  setDot("nd-install", s.intercept.active ? "ok" : "bad");
+  setDot("nd-secondary", missingKey ? "bad" : noSecondary ? "warn" : "ok");
+  setDot("nd-config", "");
+
+  const sh = s.intercept.self_heal;
+  const ph = s.intercept.mode === "transparent" ? s.intercept.pf_heal : null;
+  const guards = [sh].concat(ph ? [ph] : []).filter(Boolean);
+  const armed = guards.filter(g => g.running).length;
+  setDot("nd-guards", guards.length && armed === guards.length ? "ok"
+    : guards.some(g => isBad(s, g)) ? "bad" : "warn");
+  setCount("nc-guards", guards.length ? armed + "/" + guards.length : null);
+
+  // Errors in the window colour the Activity entry. A chart nobody has
+  // scrolled to is the same as no chart at all.
+  if (lastHistory && lastHistory.window && lastHistory.window.Requests > 0) {
+    const errs = lastHistory.days.reduce((a, d) => a + d.errors, 0);
+    const pct = (errs / lastHistory.window.Requests) * 100;
+    setDot("nd-activity", pct >= 5 ? "bad" : pct >= 2 ? "warn" : "ok");
+    setCount("nc-activity", lastHistory.window.Requests);
+  } else {
+    setDot("nd-activity", "");
+    setCount("nc-activity", null);
+  }
+  setCount("nc-requests", counts && counts.requests);
+  setCount("nc-responses", counts && counts.responses);
+  // Any render can change the page's height -- the chart drawing, the
+  // install panel hiding itself, a guard panel opening -- and none of those
+  // fire a scroll event, so the highlight would go on pointing at whatever
+  // section used to be under the header.
+  syncNavActive();
+}
+
+function clearNav() {
+  ["overview", "activity", "responses", "requests", "guards", "secondary", "config", "install"]
+    .forEach(k => setDot("nd-" + k, ""));
+  ["overview", "activity", "responses", "requests", "guards"].forEach(k => setCount("nc-" + k, null));
+}
+
+// Rail entries and hero checks are both plain elements with data-target, so
+// one delegated handler covers both and neither can end up pointing at an
+// id that no longer exists without it being obvious.
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-target]");
+  if (!a) return;
+  const el = $(a.dataset.target);
+  if (!el) return;
+  // Opening the panel is part of following the link: a collapsed Guards
+  // section that scrolls into view and says nothing is not an answer.
+  if (el.id === "guardsSection") setGuardsOpen(true);
+  if (el.id === "secondarySection") setSecondaryOpen(true);
+  if (el.id === "installSection" && el.hidden) $("installRevealBtn").click();
+  scrollToEl(el, "start");
+  // The rail's highlight is otherwise driven by the scroll listener, which
+  // has not run yet at this point -- so a click would move the page and
+  // leave the entry you clicked unmarked until you scrolled by hand. Twice,
+  // because the two scroll behaviours land at different times: an instant
+  // scroll (reduced motion) is already in place now, and a smooth one is
+  // still travelling and settles well inside 400ms.
+  syncNavActive();
+  setTimeout(syncNavActive, 400);
+});
+
+// Scroll-spy. Marks the entry whose section is nearest the top of the
+// viewport, so the rail says where you are rather than only where you can go.
+const NAV_TARGETS = [...document.querySelectorAll(".navlink")].map(a => a.dataset.target);
+function syncNavActive() {
+  let best = null, bestTop = -Infinity;
+  for (const id of NAV_TARGETS) {
+    const el = $(id);
+    if (!el || el.hidden) continue;
+    const top = el.getBoundingClientRect().top - 90;
+    if (top <= 0 && top > bestTop) { bestTop = top; best = id; }
+  }
+  document.querySelectorAll(".navlink").forEach(a =>
+    a.classList.toggle("on", a.dataset.target === best));
+}
+window.addEventListener("scroll", syncNavActive, {passive: true});
+
+// --- activity chart --------------------------------------------------------
+
+let lastHistory = null;
+let chartMetric = "requests";
+let chartDays = 14;
+let chartTable = false;
+
+// METRICS is the one place a metric is defined: how each slot's value is
+// read out of a day, how it is formatted, and what the axis says. Adding a
+// fourth metric is an entry here and a button in the markup, not a new
+// branch in the drawing code.
+const METRICS = {
+  requests: {
+    label: "Requests",
+    p: d => d.primary_requests, s: d => d.secondary_requests,
+    fmt: n => num(Math.round(n)), axis: compact,
+  },
+  tokens: {
+    label: "Tokens",
+    p: d => d.primary_tokens, s: d => d.secondary_tokens,
+    fmt: n => num(Math.round(n)), axis: compact,
+  },
+  spend: {
+    label: "Spend",
+    p: d => d.primary_usd, s: d => d.secondary_usd,
+    fmt: money, axis: axisMoney,
+  },
+};
+
+// niceMax rounds an axis top up to a number a person would have chosen, so
+// the gridline labels read 0 / 5K / 10K rather than 0 / 4,317 / 8,634.
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / mag;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * mag;
+}
+
+// dayLabel is the x tick: "14 Sep" without the year, since the whole window
+// is at most 90 days and the coverage line below names the exact start.
+function dayLabel(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {day: "numeric", month: "short"});
+}
+
+function drawChart() {
+  const host = $("chart");
+  // A redraw replaces every hit target, so a tooltip that was open over the
+  // old ones never receives its mouseleave and stays pinned to the chart --
+  // showing one day's numbers over a chart that is now showing a different
+  // metric, or a different window.
+  $("chartTip").style.opacity = "0";
+  if (!lastHistory) { host.innerHTML = ""; return; }
+  const days = lastHistory.days;
+  const M = METRICS[chartMetric];
+  // Days before the oldest surviving event are not zero days -- they are
+  // days this machine has no record of, because metrics.jsonl rotated. They
+  // are drawn as a hatched band, never as an empty bar.
+  const firstKnown = lastHistory.earliest ? lastHistory.earliest.slice(0, 10) : null;
+  const unknown = d => firstKnown !== null && d.date < firstKnown;
+
+  const W = Math.max(320, host.clientWidth || 640), H = 200;
+  const padL = 48, padR = 10, padT = 12, padB = 26;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const max = niceMax(Math.max(...days.map(d => M.p(d) + M.s(d)), 0));
+  const y = v => padT + plotH - (v / max) * plotH;
+  const band = plotW / days.length;
+  const barW = Math.min(24, Math.max(3, band - 6));
+
+  const parts = [];
+  // Gridlines: hairline, solid, one step off the surface, behind the data.
+  for (let i = 0; i <= 4; i++) {
+    const v = (max / 4) * i, yy = y(v);
+    parts.push(`<line x1="${padL}" x2="${W - padR}" y1="${yy}" y2="${yy}" stroke="var(--grid)" stroke-width="1"/>`);
+    parts.push(`<text x="${padL - 8}" y="${yy + 4}" text-anchor="end" font-size="10" fill="var(--faint)">${esc(M.axis(v))}</text>`);
+  }
+
+  days.forEach((d, i) => {
+    const cx = padL + band * i + band / 2;
+    if (unknown(d)) {
+      parts.push(`<rect x="${cx - band / 2}" y="${padT}" width="${band}" height="${plotH}" fill="url(#nodata)"/>`);
+      return;
+    }
+    const pv = M.p(d), sv = M.s(d);
+    if (pv <= 0 && sv <= 0) return;
+    const gap = pv > 0 && sv > 0 ? 2 : 0; // the surface gap, in the surface colour
+    const base = padT + plotH;
+    const pH = (pv / max) * plotH, sH = (sv / max) * plotH;
+    const x = cx - barW / 2;
+    // The topmost segment carries the 4px rounded cap; everything below it
+    // is square, and the stack grows from one baseline.
+    if (pv > 0) {
+      const top = base - pH;
+      const r = sv > 0 ? 0 : Math.min(4, pH);
+      parts.push(rounded(x, top, barW, pH, r, "var(--s-primary)"));
+    }
+    if (sv > 0) {
+      const top = base - pH - gap - sH;
+      parts.push(rounded(x, top, barW, sH, Math.min(4, sH), "var(--s-secondary)"));
+    }
+  });
+
+  // X labels, thinned so they never collide: one every nth band, always
+  // including the last (today), which is the one people look for.
+  const every = Math.max(1, Math.ceil(days.length / Math.max(1, Math.floor(plotW / 58))));
+  const last = days.length - 1;
+  days.forEach((d, i) => {
+    // Counted back FROM today, not forward from the first day: laid out
+    // forward, the final stride lands short and the last label collides
+    // with the forced-on "today" beside it.
+    if ((last - i) % every !== 0) return;
+    const cx = padL + band * i + band / 2;
+    parts.push(`<text x="${cx}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--faint)">${esc(dayLabel(d.date))}</text>`);
+  });
+
+  // Hit targets are the full band, not the bar: a 3px bar on a 90-day
+  // window is not something anyone can point at.
+  days.forEach((d, i) => {
+    parts.push(`<rect class="hit" data-i="${i}" x="${padL + band * i}" y="${padT}" width="${band}" height="${plotH}" fill="transparent"/>`);
+  });
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"
+      aria-label="${esc(M.label)} per day, primary and secondary stacked">
+    <defs>
+      <pattern id="nodata" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+        <line x1="0" y1="0" x2="0" y2="6" stroke="var(--grid)" stroke-width="3"/>
+      </pattern>
+    </defs>
+    ${parts.join("")}
+  </svg>`;
+
+  const tip = $("chartTip"), wrap = $("chartWrap");
+  host.querySelectorAll("rect.hit").forEach(r => {
+    r.addEventListener("mouseenter", () => {
+      const d = days[+r.dataset.i];
+      if (unknown(d)) {
+        tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
+          `<div class="r">no data — older than this machine's metrics log</div>`;
+      } else {
+        const pv = M.p(d), sv = M.s(d);
+        tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
+          `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s-primary);margin-right:6px"></i>Primary</span><b>${esc(M.fmt(pv))}</b></div>` +
+          `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s-secondary);margin-right:6px"></i>Secondary</span><b>${esc(M.fmt(sv))}</b></div>` +
+          `<div class="r"><span>Sessions</span><b>${esc(num(d.sessions))}</b></div>` +
+          (d.errors ? `<div class="r"><span style="color:var(--bad)">Errors</span><b>${esc(num(d.errors))}</b></div>` : "");
+      }
+      const rect = r.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+      const scale = (host.clientWidth || W) / W;
+      tip.style.opacity = "1";
+      tip.style.left = Math.min(wr.width - 170, Math.max(0, rect.left - wr.left + rect.width / 2 - 80)) + "px";
+      tip.style.top = (padT * scale) + "px";
+    });
+    r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
+  });
+}
+
+// rounded draws a rect with only its TOP corners rounded: the data-end is
+// rounded, the baseline end is square, so a stack still reads as sitting on
+// the axis rather than floating above it.
+function rounded(x, y, w, h, r, fill) {
+  if (h <= 0) return "";
+  r = Math.max(0, Math.min(r, w / 2, h));
+  return `<path fill="${fill}" d="M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} ` +
+         `L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z"/>`;
+}
+
+// The table view. Required for the same reason the legend is: the chart's
+// values must be reachable without reading colour or hovering a 3px bar.
+function renderChartTable() {
+  if (!lastHistory) { $("chartTable").innerHTML = ""; return; }
+  const M = METRICS[chartMetric];
+  $("chartTable").innerHTML = `<table><thead><tr>
+      <th>Day</th><th class="num">Primary</th><th class="num">Secondary</th>
+      <th class="num">Sessions</th><th class="num">Errors</th>
+    </tr></thead><tbody>${lastHistory.days.map(d => `<tr>
+      <td class="mono">${esc(d.date)}</td>
+      <td class="num">${esc(M.fmt(M.p(d)))}</td>
+      <td class="num">${esc(M.fmt(M.s(d)))}</td>
+      <td class="num">${esc(num(d.sessions))}</td>
+      <td class="num${d.errors ? " st-5" : ""}">${esc(num(d.errors))}</td>
+    </tr>`).join("")}</tbody></table>`;
+}
+
+function renderActivity() {
+  const h = lastHistory;
+  if (!h) {
+    $("coverage").textContent = "";
+    $("activityTiles").innerHTML = "";
+    $("modelSplit").innerHTML = "";
+    $("chart").innerHTML = "";
+    $("chartTable").innerHTML = "";
+    return;
+  }
+  drawChart();
+  renderChartTable();
+
+  // The coverage sentence. It is the difference between "a quiet fortnight"
+  // and "a fortnight this machine has no record of", and it is stated every
+  // time rather than only when it is bad, so its absence never has to be
+  // interpreted.
+  const files = `${h.files} metrics file${h.files === 1 ? "" : "s"}`;
+  $("coverage").textContent = !h.earliest
+    ? `No requests recorded yet (read ${files}).`
+    : h.covered
+      ? `Complete for this window — data goes back to ${stamp(h.earliest)} (read ${files}).`
+      : `Incomplete: this machine's records begin ${stamp(h.earliest)}, so the hatched days before it are "no data", not "no traffic". metrics.jsonl rotates at 10MB (read ${files}).`;
+
+  const reqs = (h.window && h.window.Requests) || 0;
+  const errs = h.days.reduce((a, d) => a + d.errors, 0);
+  const errPct = reqs ? (errs / reqs) * 100 : 0;
+  const busiest = h.days.reduce((a, d) => (d.requests > (a ? a.requests : -1) ? d : a), null);
+  const unpriced = (h.window && h.window.UnpricedRequests) || 0;
+  $("activityTiles").innerHTML = [
+    {k: "Median latency", v: h.latency_p50_ms ? num(h.latency_p50_ms) + " ms" : "—",
+     h: "successful requests only"},
+    {k: "p95 latency", v: h.latency_p95_ms ? num(h.latency_p95_ms) + " ms" : "—",
+     h: "1 in 20 took longer"},
+    {k: "Error rate", v: reqs ? errPct.toFixed(1) + "%" : "—",
+     h: `${num(errs)} of ${num(reqs)} returned 4xx/5xx`,
+     cls: errPct >= 5 ? "bad" : errPct >= 2 ? "warn" : ""},
+    {k: "Busiest day", v: busiest && busiest.requests ? dayLabel(busiest.date) : "—",
+     h: busiest && busiest.requests ? `${num(busiest.requests)} requests` : ""},
+    // Shown only when it is non-zero: a permanent "0 unpriced" tile is
+    // noise, while its appearance means the spend figure above is a lower
+    // bound rather than a total, and says so.
+  ].concat(unpriced ? [{k: "Unpriced requests", v: num(unpriced), cls: "warn",
+      h: "spend above is a lower bound — add pricing entries in config.json"}] : [])
+   .map(t => `<div class="tile"><div class="k">${esc(t.k)}</div>
+      <div class="v"${t.cls ? ` style="color:var(--${t.cls})"` : ""}>${esc(t.v)}</div>
+      <div class="h">${esc(t.h || "")}</div></div>`).join("");
+
+  // Which models the spend is actually on. The total cannot answer this and
+  // the slot split cannot either: one slot serves several models at prices
+  // an order of magnitude apart.
+  const models = (h.models || []).slice(0, 8);
+  if (!models.length) { $("modelSplit").innerHTML = ""; return; }
+  const top = Math.max(...models.map(m => m.requests));
+  $("modelSplit").innerHTML =
+    `<div class="mrow" style="border-top:1px solid var(--border);color:var(--faint);font-size:10px;
+        text-transform:uppercase;letter-spacing:.08em;font-weight:600">
+       <span>Model</span><span>Share of requests</span><span class="amt">Requests · spend</span></div>` +
+    models.map(m => `<div class="mrow">
+      <span class="mono" title="${esc(m.model)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <span class="pill ${m.slot === "secondary" ? "s" : "p"}">${esc(m.slot || "?")}</span> ${esc(m.model)}</span>
+      <span class="mbar"><span style="width:${(m.requests / top * 100).toFixed(1)}%;background:${
+        m.slot === "secondary" ? "var(--s-secondary)" : "var(--s-primary)"}"></span></span>
+      <span class="amt">${esc(num(m.requests))} · ${esc(m.unpriced ? "unpriced" : money(m.usd))}</span>
+    </div>`).join("");
+}
+
+$("metricSeg").onclick = e => {
+  const b = e.target.closest("button[data-metric]");
+  if (!b) return;
+  chartMetric = b.dataset.metric;
+  [...$("metricSeg").children].forEach(x => x.classList.toggle("on", x === b));
+  renderActivity();
+};
+$("daysSeg").onclick = e => {
+  const b = e.target.closest("button[data-days]");
+  if (!b) return;
+  chartDays = +b.dataset.days;
+  [...$("daysSeg").children].forEach(x => x.classList.toggle("on", x === b));
+  loadHistory().then(() => { renderActivity(); if (lastState) { renderHero(lastState); renderNav(lastState, lastCounts); } });
+};
+$("tableToggle").onclick = () => {
+  chartTable = !chartTable;
+  $("chartTable").hidden = !chartTable;
+  $("chartWrap").hidden = chartTable;
+  $("tableToggle").setAttribute("aria-pressed", String(chartTable));
+  $("tableToggle").classList.toggle("primary", chartTable);
+};
+
+// The chart is drawn at a measured pixel width rather than stretched by a
+// viewBox, so a resize has to redraw it -- a scaled viewBox would stretch
+// the type along with the bars. Debounced, and from cached data: no refetch.
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (lastHistory) drawChart(); }, 120);
+});
+
+async function loadHistory() {
+  try {
+    lastHistory = await fetch("/api/history?days=" + chartDays).then(r => r.json());
+  } catch (e) {
+    lastHistory = null;
+  }
+}
 
 // The install itself runs in a Terminal window, not here -- see
 // internal/admin/install.go for why. This click only generates the script
@@ -1393,7 +2249,7 @@ async function runRevert(btn) {
     if (r.warning) msg += "\n\n⚠ " + r.warning + (r.root_command ? "\n\nRun: " + r.root_command : "");
     if (r.script) msg += "\n\nScript: " + r.script;
     note($("actNote"), r.warning ? "warn" : "ok", msg);
-    $("actNote").scrollIntoView({behavior: "smooth", block: "nearest"});
+    scrollToEl($("actNote"), "nearest");
   } catch (e) { note($("actNote"), "bad", e.message); }
   finally { btn.disabled = prev; }
 }

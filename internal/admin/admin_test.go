@@ -15,6 +15,7 @@ import (
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 )
 
@@ -957,5 +958,75 @@ func TestSecondaryKeyRevealPromptNamesTheProvider(t *testing.T) {
 
 	if !strings.Contains(got, "openai-compatible") || !strings.Contains(got, "API key") {
 		t.Errorf("prompt reason = %q, want it to name the provider and say it is an API key", got)
+	}
+}
+
+// TestHistoryEndpoint covers the two things the chart needs and cannot get
+// from /api/requests: per-day buckets, and a claim about whether the window
+// it is drawing is actually backed by data.
+func TestHistoryEndpoint(t *testing.T) {
+	s := newTestServer(t)
+	b, err := json.Marshal(metrics.Event{Time: time.Now(), Slot: "primary",
+		Route: "anthropic", Model: "claude-opus-5", HTTPStatus: 200, DurationMS: 120,
+		InputTokens: 5, OutputTokens: 7, APIEquivalentUSD: 0.5, SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.metricsPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "http://127.0.0.1/api/history?days=7", nil))
+	if rr.Code != 200 {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var h metrics.History
+	if err := json.Unmarshal(rr.Body.Bytes(), &h); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Days) != 7 {
+		t.Errorf("got %d buckets, want the 7 asked for", len(h.Days))
+	}
+	if h.Window.Requests != 1 || h.Sessions != 1 {
+		t.Errorf("window = %+v sessions=%d", h.Window, h.Sessions)
+	}
+	if h.Earliest == "" {
+		t.Error("Earliest is empty, so the page cannot say where its data begins")
+	}
+
+	// An absurd window is clamped rather than honoured, and a bad one falls
+	// back to the default -- neither may 500 the one endpoint the chart has.
+	for _, q := range []string{"?days=9999", "?days=abc", "?days=-1", ""} {
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "http://127.0.0.1/api/history"+q, nil))
+		if rr.Code != 200 {
+			t.Errorf("days=%q gave %d: %s", q, rr.Code, rr.Body.String())
+			continue
+		}
+		var h metrics.History
+		if err := json.Unmarshal(rr.Body.Bytes(), &h); err != nil {
+			t.Errorf("days=%q: %v", q, err)
+			continue
+		}
+		if len(h.Days) < 1 || len(h.Days) > 90 {
+			t.Errorf("days=%q produced %d buckets", q, len(h.Days))
+		}
+	}
+}
+
+// The history endpoint reads metrics; it must not be a way to change
+// anything, and it must not answer a cross-origin Host.
+func TestHistoryIsReadOnly(t *testing.T) {
+	s := newTestServer(t)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://127.0.0.1/api/history", nil))
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api/history gave %d, want 405", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "http://evil.example/api/history", nil))
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("cross-origin Host gave %d, want 403", rr.Code)
 	}
 }
