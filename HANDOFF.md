@@ -65,16 +65,93 @@ Behaviour worth remembering:
   `TOGETHER_API_KEY=$(security find-generic-password -s claude-burst-together -w) go test ./internal/router/ -run TestLiveSecondary -v`
   Run it after any change to `translateAnthropicRequest`.
 
-## Concurrent work in this tree — read before deploying
+## Token shunting — state at handover (the "other session" above)
 
-Another session is doing **token shunting** (`internal/shunt`, `cmd/claude-burst/shunt.go`,
-`internal/admin/shunt.go`). It committed `49caaf3`, `0af15ec`, `11d9b6c` and, at the time of
-writing, has **uncommitted edits** (`admin.html`, `shunt.go`, `guard.go`, tests).
+**Shipped, deployed (14:19) and on origin:** `49caaf3`, `0af15ec`, `11d9b6c`. **Turned on** for
+this machine: read + write, threshold 350 lines, worker = the Together secondary
+(`zai-org/GLM-5.3`), guard hook installed in `~/.claude/settings.json`, skill installed.
+**Not deployed:** everything committed after `11d9b6c` (the two commits below).
 
-- `deploy.sh` builds the **working tree**. The 13:43 deploy shipped that session's
-  uncommitted edits along with mine; the running binary is not exactly what git holds.
-- I pushed `11d9b6c` when asked to "push" — it was that session's commit, not mine.
-- Commit or stash before the next deploy so production matches a commit.
+What it is: `claude-burst shunt` hands whole-file reads and boilerplate generation to the
+openai-compatible secondary so Opus/Fable never carry them. A `PreToolUse` hook refuses
+whole-file `Read` / plain `cat|head|tail|less|more` at 350+ lines and points at
+`claude-burst shunt read`; `shunt write` generates a file straight to disk. Read and write
+are separate switches. Dashboard: **Token shunting** panel (master switch, threshold, cards,
+recent activity) plus "Token Shunt" rows in *Recent requests*. README has the design and
+the honest numbers ("Token shunting" section). Code: `internal/shunt/`,
+`cmd/claude-burst/shunt.go`, `internal/admin/shunt.go`.
+
+### What the live log showed (the reason for the logging work)
+
+Six direct reads were **refused between 14:21 and 14:24** (`Bash`, 26,719 B x4 and 44,428 B
+x2), and **no worker call followed**. 26,719 B is `wporg-ready/shared/php-parse.php`.
+So a session hit the block and **retried the same `cat` instead of running `shunt read`**.
+
+- The mechanism is fine: from that directory the guard blocks the file at 931 lines and
+  `claude-burst shunt read -q ... shared/php-parse.php` returned an accurate, cited answer
+  in 8.5 s. That call is in the log too (a real read logged at ~14:29, mine, not a session's).
+- **Cause not confirmed and the session is unknown**: the deployed binary logs no session,
+  project or file for a refusal. That is the gap.
+- `CLAUDE_CODE_SESSION_ID` is in the Bash tool's environment and the hook payload carries
+  `session_id` (same id the gateway puts in `metrics.jsonl`), so both halves can record it.
+
+### Committed but NOT deployed
+
+1. **Refusal message rewritten** (`guard.go`): says "Do NOT retry", offers
+   `sed -n 'START,ENDp'` as well as `Read` offset/limit; a test asserts the sed window it
+   recommends is itself allowed. Tested, complete.
+2. **Logging foundation** (`log.go`, `events.go`): `Event` gained `session_id, cwd, tool,
+   path, paths, stage, lines, threshold, repeat`; `events.go` has `StageError`/`StageOf`,
+   `Event.Describe()`, `Tag()`, `IsProblem()`, `RepeatCount()` (refusals of one file by one
+   session in 10 min with no answer in between). The guard now writes `cwd` on refusals and
+   the panel shows the project. **The rest of this is not wired yet — see below.**
+
+### TODO: "make logging tell us clearly what's going on, include sessions"
+
+None of this is done; the pieces above exist so it is mostly plumbing.
+
+1. **Guard** (`cmd/claude-burst/shunt.go` `shuntGuard`): add `SessionID` to `HookInput`
+   (`json:"session_id"`) and `Tool` ("Read" / "Bash cat") to `Decision`; log the full refusal
+   (session, cwd, path, tool, lines, threshold, `Repeat: RepeatCount(...)`); when repeat >= 1
+   prefix the message with "refusal #N of this file, run the shunt read command now".
+   **Log `guard_error` events** instead of the silent `return`s (bad stdin JSON, config load).
+2. **`shunt read` / `write`**: every exit path must log. Today they `fatal()` **before**
+   logging when the feature is off, no worker (wrong provider / no key), or args are bad, so
+   those failures leave no trace. Wrap errors with the stage constants (`StageWorkerCall` in
+   `Complete`, `StageValidate` in `CodeWrite`, ...), take the session from
+   `CLAUDE_CODE_SESSION_ID`, use `flag.ContinueOnError` so a bad flag is logged, and check
+   arguments before `NewWorker`.
+3. **`claude-burst shunt log`** `[-n N] [--problems] [--session ID] [--json]`: plain-text lines
+   from `Tag()` + `Describe()` + project + 8-char session. `shunt status` should list recent
+   problems (failures, guard errors, `Repeat >= 2` "LOOP" refusals).
+4. **Dashboard**: `shuntActivityRow` needs session/project/tool/path/stage/repeat and a
+   server-built `detail` (from `Describe`, so wording lives in one place); add Session and
+   Project columns; add `repeat_refusals_1h` to state and a warning line in the panel; put the
+   short session in the note of the shunt rows in *Recent requests*.
+5. README: say `shunt.jsonl` records file **paths**, project directory and session id but still
+   never contents, questions or answers.
+6. Tests for each, then a real end-to-end with the built binary: disabled, no worker, bad
+   args, guard fed garbage on stdin — each must show up in `shunt log`.
+
+### Before you deploy
+
+- `deploy.sh` builds the **working tree**. It is clean as of this handover; keep it that way
+  or the next deploy ships code no commit holds.
+- A deploy restarts the gateway (blip for live sessions). The **guard runs as a subprocess of
+  the installed binary**, so a deploy also changes what every open Claude Code session's hook
+  does on its next call, with no restart of those sessions.
+- Off switch, immediate (the guard reads config on every call): dashboard master toggle or
+  `claude-burst shunt disable`. Restart Claude Code only to unload the skill.
+- Scratch test instances used ports 27777/27788 with a throwaway `HOME`; the real gateway is
+  `https://127.0.0.1:17777` with the admin panel on `127.0.0.1:7788`.
+
+Verify:
+
+```bash
+claude-burst shunt status
+tail -5 ~/.config/claude-burst/shunt.jsonl
+curl -s http://127.0.0.1:7788/api/shunt-activity | python3 -m json.tool | head -30
+```
 
 ## Small things
 
