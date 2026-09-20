@@ -21,7 +21,7 @@ func decodeOAIRequest(t *testing.T, body []byte) map[string]any {
 
 func TestTranslateRequestSimpleTextMessage(t *testing.T) {
 	in := `{"model":"claude-sonnet-5","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`
-	out, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	out, _, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestTranslateRequestSimpleTextMessage(t *testing.T) {
 
 func TestTranslateRequestWithSystemPrompt(t *testing.T) {
 	in := `{"model":"claude-sonnet-5","system":"you are helpful","messages":[{"role":"user","content":"hi"}]}`
-	out, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	out, _, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestTranslateRequestWithToolsAndToolChoice(t *testing.T) {
 	in := `{"model":"claude-sonnet-5","tool_choice":{"type":"tool","name":"Bash"},
 	  "tools":[{"name":"Bash","description":"run a shell command","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],
 	  "messages":[{"role":"user","content":"list files"}]}`
-	out, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	out, _, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestTranslateRequestToolResultSplitsIntoToolMessages(t *testing.T) {
 	  {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"Bash","input":{"command":"ls"}}]},
 	  {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"file1\nfile2"}]}
 	]}`
-	out, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	out, _, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestTranslateRequestAssistantTextAndToolUseCombined(t *testing.T) {
 	in := `{"model":"claude-sonnet-5","messages":[
 	  {"role":"assistant","content":[{"type":"text","text":"Let me check"},{"type":"tool_use","id":"call_1","name":"Bash","input":{"command":"ls"}}]}
 	]}`
-	out, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	out, _, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,5 +528,94 @@ func TestTranslateStreamingReportsInputTokensInMessageDelta(t *testing.T) {
 	}
 	if usage["output_tokens"] != float64(104) {
 		t.Fatalf("message_delta usage.output_tokens = %v, want 104", usage["output_tokens"])
+	}
+}
+
+// Regression: Claude Code declares Anthropic's server-side tools (web_search
+// and friends) with a name and a "type" but no input_schema, because the
+// Anthropic API runs them itself. Translating one into a function with no
+// "parameters" made Together reject the entire request --
+// 400 Invalid JSON data: missing field `parameters` -- so every failover
+// turn that carried a server tool died, not just the tool.
+func TestTranslateRequestDropsSchemalessServerTools(t *testing.T) {
+	in := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}],
+	  "tools":[
+	    {"type":"web_search_20250305","name":"web_search","max_uses":5},
+	    {"name":"Bash","description":"run a shell command","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}
+	  ]}`
+	out, dropped, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dropped) != 1 || dropped[0] != "web_search" {
+		t.Fatalf("expected web_search reported as dropped, got %v", dropped)
+	}
+	v := decodeOAIRequest(t, out)
+	tools, ok := v["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected only the schema-bearing tool to survive, got %v", v["tools"])
+	}
+	fn := tools[0].(map[string]any)["function"].(map[string]any)
+	if fn["name"] != "Bash" {
+		t.Fatalf("wrong tool survived: %v", fn)
+	}
+	// The whole point: no function may reach the endpoint without one.
+	for _, tool := range tools {
+		f := tool.(map[string]any)["function"].(map[string]any)
+		if f["parameters"] == nil {
+			t.Fatalf("function %v has no parameters", f["name"])
+		}
+	}
+}
+
+func TestTranslateRequestOmitsToolsAndToolChoiceWhenAllDropped(t *testing.T) {
+	in := `{"model":"claude-sonnet-5","tool_choice":{"type":"any"},
+	  "tools":[{"type":"web_search_20250305","name":"web_search"}],
+	  "messages":[{"role":"user","content":"hi"}]}`
+	out, dropped, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dropped) != 1 {
+		t.Fatalf("expected 1 dropped tool, got %v", dropped)
+	}
+	v := decodeOAIRequest(t, out)
+	if _, ok := v["tools"]; ok {
+		t.Fatalf("empty tool list should be omitted entirely, got %v", v["tools"])
+	}
+	if _, ok := v["tool_choice"]; ok {
+		t.Fatalf(`tool_choice "required" with no tools is unsatisfiable, got %v`, v["tool_choice"])
+	}
+}
+
+// A no-argument tool arrives as an empty schema, and Anthropic tolerates a
+// schema with "type" left implicit. Strict validators want an object either
+// way, and neither case should be mistaken for a server tool.
+func TestTranslateRequestNormalisesToolSchemas(t *testing.T) {
+	in := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}],
+	  "tools":[
+	    {"name":"NoArgs","input_schema":{}},
+	    {"name":"Implicit","input_schema":{"properties":{"x":{"type":"string"}}}}
+	  ]}`
+	out, dropped, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("no tool should have been dropped, got %v", dropped)
+	}
+	tools := decodeOAIRequest(t, out)["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %v", tools)
+	}
+	for _, tool := range tools {
+		fn := tool.(map[string]any)["function"].(map[string]any)
+		params, ok := fn["parameters"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool %v lost its parameters: %v", fn["name"], fn)
+		}
+		if params["type"] != "object" {
+			t.Fatalf("tool %v parameters not typed as an object: %v", fn["name"], params)
+		}
 	}
 }
