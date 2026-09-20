@@ -190,3 +190,23 @@ func TestIsSensitive(t *testing.T) {
 		}
 	}
 }
+
+// The refusal is all a blocked session has to go on, and a real one retried the
+// same cat four times in two minutes instead of following it. It has to say
+// not to, and offer the windowed way out that is never blocked.
+func TestDenyMessageForbidsRetryAndOffersAWindow(t *testing.T) {
+	big := writeLines(t, t.TempDir(), "big.go", 500)
+	d := Decide(bashIn("cat "+big, ""), GuardOptions{Read: true, MinLines: 350, Bin: "/opt/bin/claude-burst"})
+	if !d.Deny {
+		t.Fatal("expected a denial")
+	}
+	for _, want := range []string{"Do NOT retry", "shunt read --question", "offset and limit", "sed -n 'START,ENDp'"} {
+		if !strings.Contains(d.Reason, want) {
+			t.Errorf("message missing %q:\n%s", want, d.Reason)
+		}
+	}
+	// the sed window it recommends must itself pass the guard
+	if got := Decide(bashIn("sed -n '1,120p' "+big, ""), opt); got.Deny {
+		t.Errorf("the escape hatch the message offers must not be blocked")
+	}
+}
