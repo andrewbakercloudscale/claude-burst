@@ -175,6 +175,10 @@
     font: 13px/1.4 var(--mono); color: var(--text); background: var(--bg);
     border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; min-width: 210px;
   }
+  /* The rule above gives every input a 210px minimum, which is right for a text
+     field and wrong for a checkbox: the box itself became 210px wide with the
+     tick floating in the middle, pushing its label away. */
+  input[type="checkbox"] { min-width: 0; }
   input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
 
   button {
@@ -447,6 +451,7 @@
   <div class="navgroup">Control</div>
   <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
   <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
+  <a class="navlink" data-target="sec-shunt"><span class="nd" id="nd-shunt"></span><span class="label">Token shunting</span></a>
   <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Configuration</span></a>
   <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
 
@@ -687,6 +692,44 @@
         <button class="primary" id="save">✓ Save</button>
       </div>
       <div id="cfgNote"></div>
+    </div>
+  </section>
+
+  <section id="sec-shunt" style="scroll-margin-top:70px">
+    <h2>Token shunting <span class="hint">bulk reads and boilerplate go to the secondary, not to Claude</span></h2>
+    <div class="body">
+      <div class="grid" id="shuntCards"></div>
+
+      <div style="margin-top:14px">
+        <div class="row" style="align-items:flex-start">
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="shuntRead" style="width:auto;margin:0">
+          Bulk read &mdash; refuse whole-file reads of large files and answer from the worker instead
+        </label>
+        </div>
+        <div class="hint" style="margin:4px 0 12px 0">A hook in Claude Code's settings blocks <code>Read</code> and plain <code>cat</code>/<code>head</code>/<code>tail</code> at or above the threshold and points Claude at <code>claude-burst shunt read</code>. Windowed reads (offset + limit) are never blocked. This is where nearly all of the saving is.</div>
+
+        <div class="row" style="align-items:flex-start">
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="shuntWrite" style="width:auto;margin:0">
+          Code write &mdash; let the worker generate boilerplate straight to disk
+        </label>
+        </div>
+        <div class="hint" style="margin:4px 0 12px 0">Test classes, DTOs, config files that mirror an existing pattern. The generated file never enters Claude's context, so Claude has to review it. An existing file is kept as <code>.bak</code>.</div>
+      </div>
+
+      <div class="row" style="align-items:flex-end">
+        <div>
+          <label for="shuntMin">Delegate reads at or above</label>
+          <input type="number" id="shuntMin" min="20" max="100000" step="10" style="width:120px">
+        </div>
+        <button id="shuntSetMin">Set threshold</button>
+        <button class="warn" id="shuntReinstall" hidden>Repair hook &amp; skill</button>
+      </div>
+      <div class="hint" style="margin-top:6px">Lines, not tokens. Below this a delegated read costs more than it saves &mdash; each one takes 10&ndash;30 seconds.</div>
+      <div id="shuntState" class="hint" style="margin-top:8px"></div>
+      <div id="shuntNote"></div>
+      <div class="hint" style="margin-top:8px">The worker is your configured openai-compatible secondary, so <strong>file contents are sent to that provider</strong> whenever a read is delegated. Files that look like credentials (<code>.env</code>, keys, <code>.aws/</code>, &hellip;) never are. The tokens-kept-out figure is an estimate at ~4 bytes per token.</div>
     </div>
   </section>
 
@@ -1398,6 +1441,7 @@ async function refresh() {
     }
     renderSecondary(s);
     renderDowngrade(s);
+    renderShunt(s);
     $("hero").hidden = false;
     lastCounts = {requests: reqs.length, responses: resps.length};
     renderActivity();
@@ -1547,6 +1591,95 @@ $("save").onclick = async () => {
     refresh();
   } catch (e) { note($("cfgNote"), "bad", e.message); }
 };
+
+// Token shunting. The switches are claims; the hook, the skill and the worker
+// are what make them true, so the page shows all four and says loudly when a
+// switch is on over something that is not actually in place.
+let shuntBusy = false;
+
+function shuntHealth(sh) {
+  const on = !!(sh.read || sh.write);
+  const problems = [];
+  // Only drift between config and what is installed can be fixed by
+  // re-applying it; a missing worker or key cannot.
+  const repairable = (sh.read && !sh.hook_installed) || (!sh.read && sh.hook_installed) || (on && !sh.skill_installed);
+  if (on && !sh.worker_ready) problems.push(sh.worker_error || "the worker is not ready");
+  if (sh.read && !sh.hook_installed) problems.push("bulk read is on but the guard hook is not in ~/.claude/settings.json, so nothing is refusing whole-file reads");
+  if (!sh.read && sh.hook_installed) problems.push("bulk read is off but the guard hook is still installed");
+  if (on && !sh.skill_installed) problems.push("the skill that tells Claude when to delegate is not installed");
+  return {on, problems, repairable};
+}
+
+function shuntUSD(n) { return "$" + (n || 0).toFixed((n || 0) < 1 ? 4 : 2); }
+
+function renderShunt(s) {
+  const sh = s.shunt || {};
+  const {on, problems, repairable} = shuntHealth(sh);
+  if (!shuntBusy) {
+    $("shuntRead").checked = !!sh.read;
+    $("shuntWrite").checked = !!sh.write;
+  }
+  if (document.activeElement !== $("shuntMin")) $("shuntMin").value = sh.min_lines || 350;
+  $("shuntReinstall").hidden = !repairable;
+
+  const t = sh.today || {}, m = sh.last30 || {};
+  const parts = [sh.read ? "read" : null, sh.write ? "write" : null].filter(Boolean).join(" · ");
+  const cls = !on ? "c-info" : problems.length ? "c-bad" : "c-ok";
+  const failed = m.failures ? ` · <strong>${num(m.failures)} failed</strong>` : "";
+  const unpriced = m.unpriced
+    ? `<div class="sub"><strong>${num(m.unpriced)} call(s) unpriced</strong> — add ${esc(sh.model || "the worker model")} to <code>pricing</code> in config.json; this total is a lower bound.</div>` : "";
+  $("shuntCards").innerHTML = `
+    <div class="card ${cls}">
+      <h3>Shunting</h3>
+      <div class="stat">${!on ? "Off" : problems.length ? "Needs attention" : "On"}</div>
+      <div class="sub">${on ? esc(parts) + " · worker " + esc(sh.model || "—") : "Claude reads everything itself"}</div>
+    </div>
+    <div class="card c-info">
+      <h3>Kept out of context · 30 days</h3>
+      <div class="stat">≈${num(m.kept_out_tokens)} <small>tokens</small></div>
+      <div class="sub">${num(m.reads)} reads · ${num(m.writes)} writes · ${num(m.denials)} direct reads refused${failed}</div>
+      <div class="sub">last 24 hours: ≈${num(t.kept_out_tokens)} tokens</div>
+    </div>
+    <div class="card c-info">
+      <h3>Worker cost · 30 days</h3>
+      <div class="stat">${shuntUSD(m.worker_usd)}</div>
+      <div class="sub">${num(m.worker_input_tokens)} in · ${num(m.worker_output_tokens)} out · today ${shuntUSD(t.worker_usd)}</div>
+      ${unpriced}
+    </div>`;
+
+  const lines = [];
+  lines.push(`Guard hook: <strong>${sh.hook_installed ? "installed" : "not installed"}</strong> · Skill: <strong>${sh.skill_installed ? "installed" : "not installed"}</strong> · Worker: <strong>${sh.worker_ready ? "ready" : "not ready"}</strong>`);
+  problems.forEach(p => lines.push(`<span style="color:var(--bad)">⚠ ${esc(p)}</span>`));
+  $("shuntState").innerHTML = lines.join("<br>");
+
+  setDot("nd-shunt", !on && !problems.length ? "" : problems.length ? "bad" : "ok");
+}
+
+async function saveShunt(extra) {
+  const body = Object.assign({read: $("shuntRead").checked, write: $("shuntWrite").checked}, extra || {});
+  shuntBusy = true;
+  try {
+    const r = await post("/api/shunt", body);
+    note($("shuntNote"), "ok", r.ok);
+  } catch (e) {
+    // Put the boxes back to what the server actually holds: leaving them
+    // showing a state it rejected is the same lie as a green tick over a
+    // failed save.
+    note($("shuntNote"), "bad", e.message);
+  } finally {
+    shuntBusy = false;
+    refresh();
+  }
+}
+
+$("shuntRead").onchange = () => saveShunt();
+$("shuntWrite").onchange = () => saveShunt();
+$("shuntSetMin").onclick = () => {
+  const n = parseInt($("shuntMin").value, 10);
+  if (!(n >= 20 && n <= 100000)) { note($("shuntNote"), "bad", "threshold must be between 20 and 100000 lines"); return; }
+  saveShunt({min_lines: n});
+};
+$("shuntReinstall").onclick = () => saveShunt();
 
 // Renders what the chain would actually do right now. The toggle on its own
 // is a claim; the open windows below it are the evidence -- and they are the
@@ -1926,7 +2059,7 @@ function renderNav(s, counts) {
 }
 
 function clearNav() {
-  ["overview", "activity", "responses", "requests", "guards", "secondary", "config", "install"]
+  ["overview", "activity", "responses", "requests", "guards", "secondary", "shunt", "config", "install"]
     .forEach(k => setDot("nd-" + k, ""));
   ["overview", "activity", "responses", "requests", "guards"].forEach(k => setCount("nc-" + k, null));
 }

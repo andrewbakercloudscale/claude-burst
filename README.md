@@ -142,11 +142,13 @@ claude-burst shunt status            # what is on, and what it has saved
 claude-burst shunt disable --write   # switch one part off; disable alone removes everything
 ```
 
+The dashboard has a **Token shunting** panel (rail → Control) with the same two switches, the threshold, and what it has saved. It shows the hook, skill and worker separately and turns red when a switch is on over something that is not actually in place (for example the hook wiped from `settings.json`), with a one-click repair.
+
 Restart Claude Code after enabling. Four parts, installed for you:
 
 | Part | What it does |
 | --- | --- |
-| **Guard** (`PreToolUse` hook, `Read\|Bash`) | Refuses a whole-file `Read`, or a plain `cat`/`head`/`tail`/`less`/`more`, on a file of **350+ lines** (`shunt.min_lines`) and tells Claude to use the worker instead. Windowed reads (`offset`/`limit`) always pass — they are the escape hatch. |
+| **Guard** (`PreToolUse` hook, `Read\|Bash`; installed only while `read` is on) | Refuses a whole-file `Read`, or a plain `cat`/`head`/`tail`/`less`/`more`, on a file of **350+ lines** (`shunt.min_lines`) and tells Claude to use the worker instead. Windowed reads (`offset`/`limit`) always pass — they are the escape hatch. |
 | **`shunt read`** | `--question Q file...` → a terse answer with `path:line` citations. Files over 6,000 lines are chunked and read concurrently. Needs `read` on. |
 | **`shunt write`** | `--spec S --ref example --out path` → generates a file **straight to disk**, never through Claude's context. Keeps the previous file as `.bak`, refuses truncated, empty, `null` or refusal output, writes atomically. Needs `write` on. |
 | **Skill** (`~/.claude/skills/claude-burst-shunt`) | Tells Claude when to delegate and when not to (edits, debugging, concurrency, security review). Describes only what is switched on. |
