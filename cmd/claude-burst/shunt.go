@@ -283,7 +283,7 @@ func shuntRead(args []string) {
 	start := time.Now()
 	res, err := w.BulkRead(ctx, shunt.ReadRequest{Question: *question, Paths: fs.Args(), Cwd: cwd, ChunkLines: cl})
 	logShunt(shunt.Event{Kind: shunt.KindRead, OK: err == nil, Files: res.Files, Calls: res.Calls, BytesIn: res.BytesIn,
-		BytesOut: int64(len(res.Text)), InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, Model: w.Model,
+		BytesOut: int64(len(res.Text)), InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, Model: w.Model, Destination: w.Endpoint(),
 		USD: res.USD, PricingUnknown: res.Unpriced, DurationMS: time.Since(start).Milliseconds(), Note: errNote(err)})
 	if err != nil {
 		fatal(err)
@@ -340,7 +340,7 @@ func shuntWrite(args []string) {
 	start := time.Now()
 	res, err := w.CodeWrite(ctx, shunt.WriteRequest{Spec: specText, Refs: refs, Out: *out, Cwd: cwd})
 	logShunt(shunt.Event{Kind: shunt.KindWrite, OK: err == nil, Files: 1, Calls: 1, BytesOut: int64(res.Bytes),
-		InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, Model: w.Model, USD: res.USD,
+		InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, Model: w.Model, Destination: w.Endpoint(), USD: res.USD,
 		PricingUnknown: res.Unpriced, DurationMS: time.Since(start).Milliseconds(), Note: errNote(err)})
 	if err != nil {
 		fatal(err)

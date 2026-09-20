@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
 	mux.HandleFunc("/api/downgrade", s.mutating(s.handleDowngrade))
 	mux.HandleFunc("/api/shunt", s.mutating(s.handleShunt))
+	mux.HandleFunc("/api/shunt-activity", s.readOnly(s.handleShuntActivity))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
 	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
@@ -485,10 +486,14 @@ func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if events == nil {
-		events = []metrics.Event{}
+	// Worker calls are merged in for display only. They are read from their own
+	// log and never written to metrics.jsonl, so the totals and the activity
+	// chart keep counting gateway requests and nothing else.
+	var calls []shunt.Event
+	if lp, err := config.ShuntLogPath(); err == nil {
+		calls, _ = shunt.Recent(lp, limit, shuntCalls)
 	}
-	writeJSON(w, events)
+	writeJSON(w, mergeRequests(events, calls, limit))
 }
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {

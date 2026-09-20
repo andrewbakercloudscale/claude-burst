@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/shunt"
 )
 
@@ -140,14 +143,154 @@ func (s *Server) handleShunt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg := "shunt off"
+	// Turning it off is immediate -- the guard consults config.json on every
+	// call, so nothing is refused from this moment -- and only unloading the
+	// skill from an already-running session needs a restart. Turning it on is
+	// the reverse: the hook and skill load at session start.
+	msg := "shunt off — the guard stops refusing reads immediately; restart Claude Code sessions to unload the skill"
+	restart := false
 	switch {
 	case cfg.Shunt.Read && cfg.Shunt.Write:
-		msg = "shunt on: bulk read and code write"
+		msg, restart = "shunt on: bulk read and code write", true
 	case cfg.Shunt.Read:
-		msg = "shunt on: bulk read only"
+		msg, restart = "shunt on: bulk read only", true
 	case cfg.Shunt.Write:
-		msg = "shunt on: code write only"
+		msg, restart = "shunt on: code write only", true
 	}
-	writeJSON(w, map[string]string{"ok": msg + " — restart Claude Code sessions for the hook and skill to load"})
+	if restart {
+		msg += " — restart Claude Code sessions for the hook and skill to load"
+	}
+	writeJSON(w, map[string]string{"ok": msg})
+}
+
+// SlotShunt marks a row in the requests table as a Token Shunt rather than a
+// gateway request. It is a display tag, never written to metrics.jsonl: shunt
+// events live in shunt.jsonl, so the activity chart and the totals are not
+// inflated by calls that were never Claude Code traffic.
+const SlotShunt = "shunt"
+
+// requestRow is one line of /api/requests. For gateway requests it is exactly
+// the metrics.Event it always was; the extra fields are only set on shunt rows.
+type requestRow struct {
+	metrics.Event
+	Shunt   string `json:"shunt,omitempty"`    // "read" | "write" on a Token Shunt row
+	ShuntOK *bool  `json:"shunt_ok,omitempty"` // whether the worker call succeeded
+}
+
+// shuntRequestRow turns a worker call into a requests-table row. The model is
+// the WORKER's (what actually answered), since that is what the row is for.
+func shuntRequestRow(e shunt.Event) requestRow {
+	ok := e.OK
+	row := requestRow{
+		Event: metrics.Event{
+			Time:             e.Time,
+			Slot:             SlotShunt,
+			Route:            "token-shunt",
+			Model:            e.Model,
+			Destination:      e.Destination,
+			DurationMS:       e.DurationMS,
+			InputTokens:      e.InputTokens,
+			OutputTokens:     e.OutputTokens,
+			APIEquivalentUSD: e.USD,
+			PricingUnknown:   e.PricingUnknown,
+		},
+		Shunt:   e.Kind,
+		ShuntOK: &ok,
+	}
+	switch {
+	case !e.OK:
+		row.Note = e.Note
+	case e.Kind == shunt.KindRead:
+		row.Note = fmt.Sprintf("read %d file(s) · ≈%s tokens kept out of context", e.Files, groupInt(e.KeptOutTokens()))
+	case e.Kind == shunt.KindWrite:
+		row.Note = fmt.Sprintf("generated %s straight to disk · ≈%s output tokens not spent", byteSize(e.BytesOut), groupInt(e.KeptOutTokens()))
+	}
+	return row
+}
+
+// shuntCalls are the events that are worker calls, as opposed to a refusal
+// (which never reached the worker and belongs only in the panel's own list).
+func shuntCalls(e shunt.Event) bool { return e.Kind == shunt.KindRead || e.Kind == shunt.KindWrite }
+
+// mergeRequests interleaves gateway events with worker calls, newest first,
+// and cuts the result to limit.
+func mergeRequests(events []metrics.Event, calls []shunt.Event, limit int) []requestRow {
+	rows := make([]requestRow, 0, len(events)+len(calls))
+	for _, e := range events {
+		rows = append(rows, requestRow{Event: e})
+	}
+	for _, c := range calls {
+		rows = append(rows, shuntRequestRow(c))
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Time.After(rows[j].Time) })
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows
+}
+
+func groupInt(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
+func byteSize(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d bytes", n)
+}
+
+// shuntActivityRow is one line of the panel's own recent-activity list.
+// Unlike the requests table it includes refused direct reads, which are the
+// guard doing its job even though no worker call followed.
+type shuntActivityRow struct {
+	Time           time.Time `json:"time"`
+	Kind           string    `json:"kind"` // read | write | deny
+	OK             bool      `json:"ok"`
+	Files          int       `json:"files,omitempty"`
+	Calls          int       `json:"calls,omitempty"`
+	BytesIn        int64     `json:"bytes_in,omitempty"`
+	KeptOutTokens  int64     `json:"kept_out_tokens"`
+	InputTokens    int64     `json:"input_tokens,omitempty"`
+	OutputTokens   int64     `json:"output_tokens,omitempty"`
+	Model          string    `json:"model,omitempty"`
+	Destination    string    `json:"destination,omitempty"`
+	USD            float64   `json:"usd,omitempty"`
+	PricingUnknown bool      `json:"pricing_unknown,omitempty"`
+	DurationMS     int64     `json:"duration_ms,omitempty"`
+	Note           string    `json:"note,omitempty"`
+}
+
+func (s *Server) handleShuntActivity(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	rows := []shuntActivityRow{}
+	lp, err := config.ShuntLogPath()
+	if err == nil {
+		events, err := shunt.Recent(lp, limit, nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, e := range events {
+			rows = append(rows, shuntActivityRow{
+				Time: e.Time, Kind: e.Kind, OK: e.OK, Files: e.Files, Calls: e.Calls, BytesIn: e.BytesIn,
+				KeptOutTokens: e.KeptOutTokens(), InputTokens: e.InputTokens, OutputTokens: e.OutputTokens,
+				Model: e.Model, Destination: e.Destination, USD: e.USD, PricingUnknown: e.PricingUnknown,
+				DurationMS: e.DurationMS, Note: e.Note,
+			})
+		}
+	}
+	writeJSON(w, rows)
 }
