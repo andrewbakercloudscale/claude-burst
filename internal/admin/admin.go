@@ -35,6 +35,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
+	"github.com/andrewbakercloudscale/claude-burst/internal/shunt"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 	"github.com/andrewbakercloudscale/claude-burst/internal/touchid"
 )
@@ -75,13 +76,16 @@ type Server struct {
 	// so tests can drive both answers: a gate that is only ever exercised
 	// in its allow direction is not a gate.
 	authenticate func(reason string) error
+	// shuntBin is the binary path written into the shunt guard hook and skill.
+	// A field so tests do not bake the test binary's path into settings.json.
+	shuntBin string
 }
 
 func New(gateway *router.Server, metricsPath, version, extraHost, rootHelper string) *Server {
 	return &Server{gateway: gateway, metricsPath: metricsPath, version: version,
 		extraHost: strings.ToLower(extraHost), rootHelper: rootHelper,
 		storeKey: keychain.Store, keyInfo: keychain.Describe, loadKey: keychain.Load,
-		authenticate: touchid.Authenticate}
+		authenticate: touchid.Authenticate, shuntBin: shunt.SelfPath()}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -96,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))
 	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
 	mux.HandleFunc("/api/downgrade", s.mutating(s.handleDowngrade))
+	mux.HandleFunc("/api/shunt", s.mutating(s.handleShunt))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
 	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
@@ -203,6 +208,10 @@ type stateResponse struct {
 	// behind it -- the useful question on this page is not "is downgrade
 	// enabled" but "what is Fable doing right now".
 	Downgrade downgradeInfo `json:"downgrade"`
+
+	// Shunt is the token-shunting feature: what is switched on, whether the
+	// pieces that enforce it are actually in place, and what it has saved.
+	Shunt shuntInfo `json:"shunt"`
 }
 
 type downgradeInfo struct {
@@ -394,6 +403,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Until = time.Unix(st.OverflowUntil, 0).Format(time.RFC3339)
 	}
 	resp.Downgrade = s.downgradeInfo(cfg)
+	resp.Shunt = s.shuntInfo(cfg)
 	writeJSON(w, resp)
 }
 

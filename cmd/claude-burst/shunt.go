@@ -5,20 +5,20 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/shunt"
 )
 
 func shuntUsage() {
 	fmt.Print(`claude-burst shunt - keep bulk reading and boilerplate out of the frontier model's context
 
-  shunt enable [--read] [--write]   turn parts on (default: both); installs the guard hook and skill
-  shunt disable [--read] [--write]  turn parts off (default: both); removes hook and skill when none remain
+  shunt enable [--read] [--write]   turn parts on (default: both); installs the skill, and the guard hook when read is on
+  shunt disable [--read] [--write]  turn parts off (default: both); removes the hook when read is off, the skill when none remain
   shunt status                      what is on, whether the worker is ready, and what it has saved
   shunt doctor [--quick]            check the worker sees a whole prompt (catches silent truncation)
 
@@ -66,19 +66,6 @@ func shuntCmd(args []string) {
 	}
 }
 
-// selfPath is the absolute, symlink-resolved path of this binary, which is
-// what the hook and the skill must name: Claude Code's PATH is not ours.
-func selfPath() string {
-	p, err := os.Executable()
-	if err != nil {
-		return "claude-burst"
-	}
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		p = r
-	}
-	return p
-}
-
 func shuntEnable(args []string) {
 	fs := flag.NewFlagSet("shunt enable", flag.ExitOnError)
 	read := fs.Bool("read", false, "enable bulk-read delegation")
@@ -100,7 +87,7 @@ func shuntEnable(args []string) {
 	if *model != "" {
 		cfg.Shunt.Model = *model
 	}
-	if _, err := shunt.NewWorker(cfg); err != nil {
+	if err := shunt.Readiness(cfg, keychain.Describe); err != nil {
 		fatal(fmt.Errorf("cannot enable the shunt: %w", err))
 	}
 	if *read {
@@ -150,43 +137,19 @@ func shuntDisable(args []string) {
 	fmt.Printf("shunt: read=%v write=%v\n", cfg.Shunt.Read, cfg.Shunt.Write)
 	if !cfg.Shunt.Enabled() {
 		fmt.Println("hook and skill removed. Restart Claude Code.")
+	} else if !cfg.Shunt.Read {
+		fmt.Println("guard hook removed (only write is on). Restart Claude Code.")
 	}
 }
 
-// applyShunt makes settings.json and the skill agree with config: the hook is
-// present exactly when something is enabled.
+// applyShunt makes settings.json and the skill agree with config.
 func applyShunt(cfg config.Config) {
-	bin := selfPath()
-	p, err := claudesettings.Path()
-	if err != nil {
+	if err := shunt.Apply(cfg, shunt.SelfPath()); err != nil {
 		fatal(err)
-	}
-	root, err := claudesettings.Read(p)
-	if err != nil {
-		fatal(err)
-	}
-	var changed bool
-	if cfg.Shunt.Enabled() {
-		changed = shunt.InstallHook(root, bin)
-	} else {
-		changed = shunt.UninstallHook(root)
-	}
-	if changed {
-		if err := claudesettings.Write(p, root); err != nil {
-			fatal(err)
-		}
-	}
-	if err := shunt.WriteSkill(cfg.Shunt, bin); err != nil {
-		fatal(fmt.Errorf("skill: %w", err))
 	}
 }
 
-func workerModel(cfg config.Config) string {
-	if cfg.Shunt.Model != "" {
-		return cfg.Shunt.Model
-	}
-	return cfg.Secondary.Model
-}
+func workerModel(cfg config.Config) string { return shunt.ModelOf(cfg) }
 
 func shuntStatus() {
 	cfg, err := config.Load()
@@ -211,7 +174,7 @@ func shuntStatusText(cfg config.Config) string {
 	}
 	fmt.Fprintf(&sb, "shunt skill: %s\n", onOff(shunt.SkillInstalled(), "installed", "not installed"))
 	if s.Enabled() {
-		if _, err := shunt.NewWorker(cfg); err != nil {
+		if err := shunt.Readiness(cfg, keychain.Describe); err != nil {
 			fmt.Fprintf(&sb, "shunt worker: NOT READY -- %v\n", err)
 		} else {
 			fmt.Fprintf(&sb, "shunt worker: ready (%s via %s)\n", workerModel(cfg), cfg.Secondary.BaseURL)
@@ -280,7 +243,7 @@ func shuntGuard() {
 	if err != nil {
 		return
 	}
-	d := shunt.Decide(in, shunt.GuardOptions{Read: cfg.Shunt.Read, MinLines: cfg.Shunt.MinLinesOrDefault(), Bin: selfPath()})
+	d := shunt.Decide(in, shunt.GuardOptions{Read: cfg.Shunt.Read, MinLines: cfg.Shunt.MinLinesOrDefault(), Bin: shunt.SelfPath()})
 	if !d.Deny {
 		return
 	}
