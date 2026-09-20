@@ -711,6 +711,16 @@
       </div>
       <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now — the config above can look correct while requests quietly go straight to Anthropic instead.</div>
       <div id="actNote"></div>
+
+      <div class="row" style="margin-top:14px;align-items:flex-start">
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="downgrade" style="width:auto;margin:0">
+          Try another Claude model before the secondary
+        </label>
+      </div>
+      <div class="hint" style="margin-top:4px">Anthropic meters Fable separately from Opus, so a refused Fable request is no evidence about Opus. With this on, a refused model falls down the chain in <code>fallback_chain</code> first — still on your subscription, still free — and only reaches the paid secondary when every rung has been refused too. Off, a refused model goes straight to the secondary.</div>
+      <div id="downgradeState" class="hint" style="margin-top:6px"></div>
+      <div id="dgNote"></div>
     </div>
   </section>
 
@@ -1387,6 +1397,7 @@ async function refresh() {
       $("mode").value = s.intercept.mode || "base-url";
     }
     renderSecondary(s);
+    renderDowngrade(s);
     $("hero").hidden = false;
     lastCounts = {requests: reqs.length, responses: resps.length};
     renderActivity();
@@ -1535,6 +1546,48 @@ $("save").onclick = async () => {
     note($("cfgNote"), "ok", r.ok + (r.restart ? "\n" + r.restart : ""));
     refresh();
   } catch (e) { note($("cfgNote"), "bad", e.message); }
+};
+
+// Renders what the chain would actually do right now. The toggle on its own
+// is a claim; the open windows below it are the evidence -- and they are the
+// reason to come to this page mid-limit at all.
+function renderDowngrade(s) {
+  const d = s.downgrade || {};
+  $("downgrade").checked = !!d.enabled;
+  const chain = d.chain || {};
+  const pairs = Object.keys(chain).sort()
+    .filter(m => (chain[m] || []).length)
+    .map(m => `${esc(m)} → ${chain[m].map(esc).join(" → ")}`);
+  const parts = [];
+  parts.push(pairs.length
+    ? `Chain: ${pairs.join(" · ")}`
+    : `No <code>fallback_chain</code> configured, so there is nothing to fall back to.`);
+  const rejected = d.rejected || [];
+  if (rejected.length) {
+    parts.push(rejected.map(r => {
+      const until = new Date(r.until).toLocaleString();
+      const dest = !d.enabled ? "the secondary (downgrade is off)"
+        : r.falls_back_to ? `<strong>${esc(r.falls_back_to)}</strong>`
+        : "the secondary (no rung left)";
+      return `<strong>${esc(r.model)}</strong> refused until ${esc(until)} → now served by ${dest}`;
+    }).join("<br>"));
+  } else {
+    parts.push("No model is inside a rejection window.");
+  }
+  $("downgradeState").innerHTML = parts.join("<br>");
+}
+
+$("downgrade").onchange = async () => {
+  const on = $("downgrade").checked;
+  try {
+    note($("dgNote"), on ? "ok" : "warn", (await post("/api/downgrade", {enabled: on})).ok);
+    refresh();
+  } catch (e) {
+    // Put the box back: leaving it showing a state the gateway rejected is
+    // the same lie as a green tick over a failed save.
+    $("downgrade").checked = !on;
+    note($("dgNote"), "bad", e.message);
+  }
 };
 
 $("force").onclick = async () => {
