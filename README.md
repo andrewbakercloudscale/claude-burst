@@ -38,10 +38,48 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 3. Successful responses stream straight back to Claude Code.
 4. Generic `429` responses do **not** trigger overflow.
 5. Overflow activates only when Anthropic's subscription headers indicate a rejected unified limit, for example `anthropic-ratelimit-unified-status: rejected`, or when an explicit subscription-limit error is returned.
-6. Claude Burst reads Anthropic's reset timestamp and persists it locally.
-7. The rejected request is replayed to the configured secondary — Amazon Bedrock, OpenRouter, Together AI, or any other OpenAI-compatible endpoint — using a credential stored in macOS Keychain.
-8. Future inference requests use the secondary until the reset time plus a small safety grace period.
-9. The first request after that time goes back to Anthropic Max automatically.
+6. Claude Burst reads Anthropic's reset timestamp and persists it against **the model that was refused**, not the account.
+7. The rejected request is replayed down that model's `fallback_chain` first — another Claude model, still on the subscription, still free.
+8. Only when every rung has a rejection window of its own does the request go to the configured secondary — Amazon Bedrock, OpenRouter, Together AI, or any other OpenAI-compatible endpoint — using a credential stored in macOS Keychain.
+9. Later requests for that model skip straight to the rung (or the secondary) until the reset time plus a small safety grace period; other models are untouched.
+10. The first request after that time goes back to Anthropic Max automatically.
+
+### Limits are per model, and are never inferred
+
+Anthropic's claim headers name the *bucket* that was exhausted (`five_hour`,
+`seven_day_opus`, `seven_day_overage_included`, …) but nothing in the response states which
+**models** that bucket covers. Claude Burst does not guess: only the model that was actually
+refused gets a window. If a limit really is account-wide, the next model discovers that for
+itself on its first request — one rejection, which bills nothing.
+
+Guessing the other way is what cost real money. Until 2026-09-20 any reported limit armed
+one account-wide window, so a single refused Fable request sent **every** model to the paid
+secondary for the next two days while Opus was answering normally.
+
+`fallback_chain` in `config.json` is the ordered list of models to try on the subscription
+before spending anything:
+
+```json
+"fallback_chain": {
+  "claude-fable-5-1": ["claude-opus-5"],
+  "claude-fable-5":   ["claude-opus-5"]
+}
+```
+
+Those two are the shipped default. `claude-opus-5` → `claude-sonnet-5` works the same way
+but is left for you to add deliberately — it is a much larger capability drop than a cost
+saving justifies by default. A rung is skipped when it is inside a window of its own, and a
+chain that names its own key is ignored rather than retrying the model that was just refused.
+
+The dashboard's **Actions** section has a *Try another Claude model before the secondary*
+toggle that turns the whole thing off live, without a config edit or a restart, and shows
+which models are currently refused and where their traffic is actually going. `claude-burst
+status` prints the same thing as `refused:` lines.
+
+The forced window (`claude-burst force-secondary`, or **Force → secondary** on the
+dashboard) is still account-wide and deliberately bypasses the chain: its only purpose is to
+exercise the secondary, and quietly serving a different Claude model instead would defeat
+the only test that path ever gets.
 
 Only `/v1/messages` participates in any of this. Everything else — `count_tokens`, and
 Claude Code's control-plane traffic such as Remote Control's long-poll and settings fetch —

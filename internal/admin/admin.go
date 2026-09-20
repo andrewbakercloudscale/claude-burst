@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -94,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/log", s.readOnly(s.handleLog))
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))
 	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
+	mux.HandleFunc("/api/downgrade", s.mutating(s.handleDowngrade))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
 	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
@@ -194,6 +196,29 @@ type stateResponse struct {
 	Intercept   interceptInfo   `json:"intercept"`
 	Totals      metrics.Summary `json:"totals"`
 	Today       metrics.Summary `json:"today"`
+
+	// Downgrade describes the fallback chain: whether it is on, what it
+	// would do, and which models are currently inside a rejection window of
+	// their own. Without the last part the toggle is a claim with nothing
+	// behind it -- the useful question on this page is not "is downgrade
+	// enabled" but "what is Fable doing right now".
+	Downgrade downgradeInfo `json:"downgrade"`
+}
+
+type downgradeInfo struct {
+	Enabled bool                `json:"enabled"`
+	Chain   map[string][]string `json:"chain,omitempty"`
+	// Rejected lists each model with an open window, soonest first.
+	Rejected []rejectedModel `json:"rejected,omitempty"`
+}
+
+type rejectedModel struct {
+	Model string `json:"model"`
+	Until string `json:"until"`
+	// FallsBackTo is the rung the next request for this model will actually
+	// take -- "" meaning the secondary, because every rung is itself
+	// rejected or none is configured.
+	FallsBackTo string `json:"falls_back_to,omitempty"`
 }
 
 type routeInfo struct {
@@ -368,7 +393,32 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if overflow {
 		resp.Until = time.Unix(st.OverflowUntil, 0).Format(time.RFC3339)
 	}
+	resp.Downgrade = s.downgradeInfo(cfg)
 	writeJSON(w, resp)
+}
+
+func (s *Server) downgradeInfo(cfg config.Config) downgradeInfo {
+	enabled := s.gateway.DowngradeEnabled()
+	di := downgradeInfo{Enabled: enabled, Chain: cfg.FallbackChain}
+	now := time.Now().Unix()
+	open := s.gateway.ModelOverflow()
+	for model, until := range open {
+		if until <= now {
+			continue
+		}
+		r := rejectedModel{Model: model, Until: time.Unix(until, 0).Format(time.RFC3339)}
+		if enabled {
+			for _, rung := range cfg.FallbackChain[model] {
+				if rung != model && open[rung] <= now {
+					r.FallsBackTo = rung
+					break
+				}
+			}
+		}
+		di.Rejected = append(di.Rejected, r)
+	}
+	sort.Slice(di.Rejected, func(i, j int) bool { return di.Rejected[i].Until < di.Rejected[j].Until })
+	return di
 }
 
 // interceptActive reports whether Claude Code's traffic is actually being
@@ -645,6 +695,44 @@ func (s *Server) handleForce(w http.ResponseWriter, r *http.Request) {
 		"ok": fmt.Sprintf("inference now goes to %s (%s) until %s. Clear it any time with Back to primary.",
 			cfg.Secondary.Provider, cfg.Secondary.Model, until.Format("15:04:05")),
 	})
+}
+
+type downgradeRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// handleDowngrade toggles the fallback chain on the RUNNING gateway. It is
+// deliberately not a config.json edit: every other setting on this page says
+// "restart for this to take effect", and the moment you want this one is
+// mid-limit, when a restart is the last thing you want to do.
+func (s *Server) handleDowngrade(w http.ResponseWriter, r *http.Request) {
+	var req downgradeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	s.gateway.SetDowngradeEnabled(req.Enabled)
+	if !req.Enabled {
+		writeJSON(w, map[string]string{"ok": "downgrade off — a refused model now goes straight to the secondary"})
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		writeJSON(w, map[string]string{"ok": "downgrade on"})
+		return
+	}
+	if len(cfg.FallbackChain) == 0 {
+		writeJSON(w, map[string]string{"ok": "downgrade on, but fallback_chain in config.json is empty, so there is nothing to fall back to yet"})
+		return
+	}
+	var pairs []string
+	for model, chain := range cfg.FallbackChain {
+		if len(chain) > 0 {
+			pairs = append(pairs, model+" → "+strings.Join(chain, " → "))
+		}
+	}
+	sort.Strings(pairs)
+	writeJSON(w, map[string]string{"ok": "downgrade on — " + strings.Join(pairs, ", ")})
 }
 
 type configRequest struct {

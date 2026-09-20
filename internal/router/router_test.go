@@ -238,7 +238,7 @@ func TestBedrockModelMappingFailureLogsAndReturns502(t *testing.T) {
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-key")
 
 	s, logBuf := newTestServer(t, "", "http://127.0.0.1:0")
-	s.activateOverflow(time.Now().Add(time.Hour).Unix(), "five_hour", "test setup")
+	s.activateOverflow("some-unmapped-model", time.Now().Add(time.Hour).Unix(), "five_hour", "test setup")
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"some-unmapped-model","messages":[]}`))

@@ -150,6 +150,19 @@ type Config struct {
 	ModelMap         map[string]string     `json:"model_map"`
 	Pricing          map[string]ModelPrice `json:"pricing"`
 
+	// FallbackChain is the ordered list of OTHER Claude models to try on the
+	// primary, on the subscription, before spending money on the secondary.
+	//
+	// Anthropic meters Fable separately from Opus: a rejected Fable request
+	// does not mean Opus is unavailable, and on 2026-09-20 a single Fable
+	// rejection armed a two-day window that sent every model to a paid
+	// secondary while Opus was answering normally. A rung is only taken when
+	// the model it names has no rejection window of its own.
+	//
+	// Keyed by the model Claude Code asked for. An empty or absent entry
+	// means "no downgrade, go straight to the secondary".
+	FallbackChain map[string][]string `json:"fallback_chain,omitempty"`
+
 	Primary         RouteConfig           `json:"primary,omitempty"`
 	Secondary       RouteConfig           `json:"secondary,omitempty"`
 	MeteredFailover MeteredFailoverConfig `json:"metered_failover,omitempty"`
@@ -184,6 +197,13 @@ func Default() Config {
 		UnknownResetSeconds: 300,
 		MaxRequestMB:        128,
 		KeychainService:     "claude-burst-bedrock",
+		// Fable -> Opus only. Opus -> Sonnet is a far larger capability drop
+		// than a cost saving justifies by default, so it is left for the
+		// user to add deliberately rather than shipped on.
+		FallbackChain: map[string][]string{
+			"claude-fable-5-1": {"claude-opus-5"},
+			"claude-fable-5":   {"claude-opus-5"},
+		},
 		ModelMap: map[string]string{
 			"claude-sonnet-5":                "global.anthropic.claude-sonnet-5",
 			"claude-opus-5":                  "global.anthropic.claude-opus-5",
@@ -416,6 +436,9 @@ func Load() (Config, error) {
 	}
 	if cfg.ModelMap == nil {
 		cfg.ModelMap = map[string]string{}
+	}
+	if cfg.FallbackChain == nil {
+		cfg.FallbackChain = Default().FallbackChain
 	}
 	if cfg.Pricing == nil {
 		cfg.Pricing = map[string]ModelPrice{}

@@ -48,9 +48,34 @@ func requestIDFrom(ctx context.Context) string {
 }
 
 type State struct {
+	// OverflowUntil is the ACCOUNT-WIDE window: only ForceOverflow sets it,
+	// because "route everything to the secondary" is the one situation we
+	// know covers every model. A limit Anthropic reported never lands here
+	// -- see ModelOverflow.
 	OverflowUntil int64  `json:"overflow_until"`
 	LimitClaim    string `json:"limit_claim,omitempty"`
 	LastReason    string `json:"last_reason,omitempty"`
+
+	// ModelOverflow maps a requested Claude model to the unix time its own
+	// rejection window ends.
+	//
+	// Anthropic's claim headers name the bucket that was exhausted
+	// (five_hour, seven_day_opus, seven_day_overage_included, ...) but
+	// nothing states which MODELS that bucket covers, and we do not guess:
+	// only the model that was actually refused gets a window. If a limit
+	// really is account-wide, the next model discovers that for itself on
+	// its first request, at the cost of one rejection that bills nothing.
+	// Guessing the other way is what cost real money -- one Fable rejection
+	// on 2026-09-20 sent every model to a paid secondary for two days while
+	// Opus was answering normally.
+	ModelOverflow map[string]int64 `json:"model_overflow,omitempty"`
+
+	// DowngradeDisabled turns the fallback chain off without editing
+	// config.json, from the dashboard, while the gateway runs. Negative so
+	// the zero value keeps the chain on: a user who has configured a chain
+	// has already opted in, and an empty state file must not silently mean
+	// "off".
+	DowngradeDisabled bool `json:"downgrade_disabled,omitempty"`
 }
 
 type Server struct {
@@ -259,6 +284,17 @@ func (s *Server) loadState() {
 		s.logger.Printf("error stage=load_state action=parse path=%s err=%v (starting with no overflow state)", s.statePath, err)
 		return
 	}
+	// One-time migration. Before model scoping, any limit Anthropic reported
+	// armed the account-wide window, so a legacy state file can carry a
+	// days-long window that was only ever evidence about ONE model -- and
+	// keeping it would send every model to the paid secondary for the rest
+	// of it. A forced window is different: it was a deliberate instruction
+	// and is honoured as written.
+	if st.OverflowUntil > time.Now().Unix() && st.LimitClaim != "forced" && len(st.ModelOverflow) == 0 {
+		s.logger.Printf("dropping pre-model-scoping overflow window (until=%s claim=%s): it recorded one model's rejection as account-wide. The next request per model re-establishes the truth.",
+			time.Unix(st.OverflowUntil, 0).Format(time.RFC3339), st.LimitClaim)
+		st.OverflowUntil, st.LimitClaim, st.LastReason = 0, "", ""
+	}
 	s.state = st
 }
 
@@ -291,18 +327,99 @@ func (s *Server) HasSecondary() bool {
 	return s.secondary != nil
 }
 
+// ClearOverflow reopens every route: the forced account-wide window and each
+// model's own. DowngradeDisabled deliberately survives -- it is a policy the
+// user set, not a window that expires, and "Back to primary" silently
+// re-enabling a chain they turned off would be a setting that undoes itself.
 func (s *Server) ClearOverflow() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state = State{}
+	s.state = State{DowngradeDisabled: s.state.DowngradeDisabled}
 	s.saveStateLocked()
 }
 
+// inOverflow reports whether ANY window is open -- the forced account-wide
+// one, or any single model's. Routing never asks this question (it always has
+// a model in hand, and asks modelInOverflow); it is for status output, where
+// "is anything diverted right now" is the useful summary.
 func (s *Server) inOverflow(now time.Time) bool {
 	s.mu.RLock()
-	until := s.state.OverflowUntil
-	s.mu.RUnlock()
-	return until > now.Unix()
+	defer s.mu.RUnlock()
+	if s.state.OverflowUntil > now.Unix() {
+		return true
+	}
+	for _, until := range s.state.ModelOverflow {
+		if until > now.Unix() {
+			return true
+		}
+	}
+	return false
+}
+
+// forcedOverflow is the account-wide window. It deliberately bypasses the
+// fallback chain: someone who pressed "Force -> secondary" is exercising the
+// secondary, and quietly serving them a different Claude model instead would
+// defeat the only test the secondary path ever gets.
+func (s *Server) forcedOverflow(now time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.OverflowUntil > now.Unix()
+}
+
+func (s *Server) modelInOverflow(model string, now time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.ModelOverflow[model] > now.Unix()
+}
+
+// DowngradeEnabled reports whether the fallback chain is live.
+func (s *Server) DowngradeEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.state.DowngradeDisabled
+}
+
+// SetDowngradeEnabled turns the fallback chain on or off for the running
+// gateway and persists the choice, so the dashboard toggle survives a
+// restart without a config edit.
+func (s *Server) SetDowngradeEnabled(on bool) {
+	s.mu.Lock()
+	s.state.DowngradeDisabled = !on
+	s.saveStateLocked()
+	s.mu.Unlock()
+	s.logger.Printf("model downgrade before secondary: %v", on)
+}
+
+// FallbackChain returns the configured rungs for a model, for display.
+func (s *Server) FallbackChain() map[string][]string { return s.cfg.FallbackChain }
+
+// ModelOverflow returns a copy of the per-model windows, for display.
+func (s *Server) ModelOverflow() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64, len(s.state.ModelOverflow))
+	for k, v := range s.state.ModelOverflow {
+		out[k] = v
+	}
+	return out
+}
+
+// ladderFor returns the rungs still worth trying for a requested model: the
+// configured chain minus any model already inside its own rejection window,
+// and minus the requested model itself (a chain that loops back would retry
+// the model that was just refused).
+func (s *Server) ladderFor(model string, now time.Time) []string {
+	if model == "" || !s.DowngradeEnabled() {
+		return nil
+	}
+	var out []string
+	for _, rung := range s.cfg.FallbackChain[model] {
+		if rung == "" || rung == model || s.modelInOverflow(rung, now) {
+			continue
+		}
+		out = append(out, rung)
+	}
+	return out
 }
 
 // ForceOverflow routes inference to the secondary for d, regardless of what
@@ -320,23 +437,42 @@ func (s *Server) ForceOverflow(d time.Duration, reason string) time.Time {
 	}
 	until := time.Now().Add(d)
 	s.mu.Lock()
-	s.state = State{OverflowUntil: until.Unix(), LimitClaim: "forced", LastReason: reason}
+	// Same care as ClearOverflow: replacing the whole struct here silently
+	// reset the downgrade toggle, so forcing the secondary for 15 minutes
+	// also turned a chain the user had switched off back on, permanently.
+	s.state = State{OverflowUntil: until.Unix(), LimitClaim: "forced", LastReason: reason,
+		DowngradeDisabled: s.state.DowngradeDisabled}
 	s.saveStateLocked()
 	s.mu.Unlock()
 	s.logger.Printf("FORCED to secondary until %s reason=%s", until.Format(time.RFC3339), reason)
 	return until
 }
 
-func (s *Server) activateOverflow(resetAt int64, claim, reason string) {
+// activateOverflow records that ONE model was refused, until resetAt. It no
+// longer touches the account-wide window: see State.ModelOverflow for why a
+// claim header is not evidence about models it does not name.
+func (s *Server) activateOverflow(model string, resetAt int64, claim, reason string) {
 	if resetAt <= time.Now().Unix() {
 		resetAt = time.Now().Add(time.Duration(s.cfg.UnknownResetSeconds) * time.Second).Unix()
 	}
 	resetAt += int64(s.cfg.ResetGraceSeconds)
 	s.mu.Lock()
-	s.state = State{OverflowUntil: resetAt, LimitClaim: claim, LastReason: reason}
+	if s.state.ModelOverflow == nil {
+		s.state.ModelOverflow = map[string]int64{}
+	}
+	// An empty model means the body carried none to read. Scoping that to ""
+	// would arm a window nothing ever matches, so it falls back to the
+	// account-wide behaviour it had before -- diverting too much is bad, but
+	// silently diverting nothing while believing otherwise is worse.
+	if model == "" {
+		s.state.OverflowUntil = resetAt
+	} else {
+		s.state.ModelOverflow[model] = resetAt
+	}
+	s.state.LimitClaim, s.state.LastReason = claim, reason
 	s.saveStateLocked()
 	s.mu.Unlock()
-	s.logger.Printf("switching to secondary until %s claim=%s reason=%s", time.Unix(resetAt, 0).Format(time.RFC3339), claim, reason)
+	s.logger.Printf("model=%q rejected until %s claim=%s reason=%s", model, time.Unix(resetAt, 0).Format(time.RFC3339), claim, reason)
 }
 
 // ServeHTTP is the entrypoint Go's http package calls for every request. It
@@ -475,16 +611,34 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// "how many tokens is this" -- and then hang until the response-header
 	// timeout before 502ing, since the reply never resembles a count.
 	if r.URL.Path == "/v1/messages/count_tokens" {
-		s.forward(w, r, body, "primary", s.primary, nil, false, "")
+		s.forward(w, r, body, "primary", s.primary, nil, false, "", nil)
 		return
 	}
 
 	if !isInference(r.URL.Path) {
-		s.forward(w, r, body, "primary", s.primary, nil, false, "")
+		s.forward(w, r, body, "primary", s.primary, nil, false, "", nil)
 		return
 	}
 
-	if s.inOverflow(time.Now()) {
+	now := time.Now()
+	reqModel := requestModel(body)
+	ladder := s.ladderFor(reqModel, now)
+
+	// A model inside its own rejection window is not asked again until the
+	// window ends -- but that is a statement about THAT model, so the chain
+	// is tried before any money is spent.
+	if !s.forcedOverflow(now) && s.modelInOverflow(reqModel, now) && len(ladder) > 0 {
+		rung, rest := ladder[0], ladder[1:]
+		downgraded, err := withModel(body, rung)
+		if err == nil {
+			s.logger.Printf("req=%s downgrade model=%q -> %q reason=%q (its rejection window is still open)", rid, reqModel, rung, "window open")
+			s.forward(w, r, downgraded, "primary", s.primary, s.primaryDetector, true, "downgraded from "+reqModel, rest)
+			return
+		}
+		s.logger.Printf("req=%s error stage=downgrade model=%q err=%v (falling through to the secondary)", rid, reqModel, err)
+	}
+
+	if s.forcedOverflow(now) || s.modelInOverflow(reqModel, now) {
 		if s.secondary == nil {
 			// An overflow window is armed (forced from the admin UI, or left
 			// over in state.json from before a restart) but this process has
@@ -497,10 +651,25 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			s.writeMetric(r, "secondary", "none", "", "", 0, time.Now(), tokenUsage{}, "", 0, "overflow active but no live secondary provider", "")
 			return
 		}
-		s.forward(w, r, body, "secondary", s.secondary, nil, false, "overflow window active")
+		s.forward(w, r, body, "secondary", s.secondary, nil, false, "overflow window active", nil)
 		return
 	}
-	s.forward(w, r, body, "primary", s.primary, s.primaryDetector, s.secondary != nil, "")
+	// allowFailover is true when there is anywhere to go: a secondary, or a
+	// rung on the chain. Before the chain existed this was `s.secondary !=
+	// nil`, which meant a user with no secondary configured got no downgrade
+	// either, though it costs nothing and needs no third party.
+	s.forward(w, r, body, "primary", s.primary, s.primaryDetector, s.secondary != nil || len(ladder) > 0, "", ladder)
+}
+
+// withModel rewrites the "model" field of an Anthropic request body, leaving
+// everything else byte-for-byte as the client sent it.
+func withModel(body []byte, model string) ([]byte, error) {
+	var v map[string]any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return nil, fmt.Errorf("cannot retarget request body: %w", err)
+	}
+	v["model"] = model
+	return json.Marshal(v)
 }
 
 // forward drives one hop of the proxy through Provider p: build the outbound
@@ -519,7 +688,7 @@ func (s *Server) clientFor(path string) *http.Client {
 	return s.client
 }
 
-func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, slot string, p Provider, fd FailoverDetector, allowFailover bool, note string) {
+func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, slot string, p Provider, fd FailoverDetector, allowFailover bool, note string, ladder []string) {
 	rid := requestIDFrom(in.Context())
 	start := time.Now()
 
@@ -582,10 +751,9 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		if allowFailover {
 			if d := fd.OnError(err); d.Failover {
-				s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary", destination)
-				s.activateOverflow(d.ResetAt, d.Claim, d.Reason)
-				s.logger.Printf("req=%s failover route=%s claim=%s reason=%q (transport error: %v) -> replaying to secondary", rid, p.Name(), d.Claim, d.Reason, err)
-				s.forward(w, in, body, "secondary", s.secondary, nil, false, d.Reason)
+				s.activateOverflow(model, d.ResetAt, d.Claim, d.Reason)
+				s.replayElsewhere(w, in, body, slot, p, model, serveModel, destination, start, 0, d, ladder,
+					fmt.Sprintf("transport error: %v", err))
 				return
 			}
 		}
@@ -623,11 +791,9 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 
 	if allowFailover {
 		if d := fd.OnResponse(resp.StatusCode, resp.Header, errBody); d.Failover {
-			s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, d.Claim, d.ResetAt, d.Reason+"; request replayed to secondary", destination)
-			s.activateOverflow(d.ResetAt, d.Claim, d.Reason)
-			s.logger.Printf("req=%s failover route=%s model=%q status=%d claim=%s reason=%q -> replaying to secondary",
-				rid, p.Name(), model, resp.StatusCode, d.Claim, d.Reason)
-			s.forward(w, in, body, "secondary", s.secondary, nil, false, d.Reason)
+			s.activateOverflow(model, d.ResetAt, d.Claim, d.Reason)
+			s.replayElsewhere(w, in, body, slot, p, model, serveModel, destination, start, resp.StatusCode, d, ladder,
+				fmt.Sprintf("status=%d", resp.StatusCode))
 			return
 		}
 	}
@@ -637,6 +803,58 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(errBody)
 	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, "", 0, "upstream error; no failover", destination)
+}
+
+// replayElsewhere is where a failover decision turns into a second hop: down
+// the fallback chain to another Claude model on the subscription, or, when
+// the chain is exhausted or empty, out to the paid secondary.
+//
+// The chain is tried first on purpose. A rejection names one model; the rungs
+// are models the subscription may still be serving, and they cost nothing.
+// Only when none is available does this spend money. If neither is possible
+// the upstream's own error goes back to the client unchanged, which is the
+// behaviour a gateway with no secondary always had.
+func (s *Server) replayElsewhere(w http.ResponseWriter, in *http.Request, body []byte,
+	slot string, p Provider, model, serveModel, destination string, start time.Time, status int,
+	d FailoverDecision, ladder []string, trigger string) {
+
+	rid := requestIDFrom(in.Context())
+
+	for len(ladder) > 0 {
+		rung := ladder[0]
+		ladder = ladder[1:]
+		if s.modelInOverflow(rung, time.Now()) {
+			continue // refused in the time this request has been in flight
+		}
+		downgraded, err := withModel(body, rung)
+		if err != nil {
+			s.logger.Printf("req=%s error stage=downgrade model=%q err=%v", rid, rung, err)
+			break
+		}
+		s.writeMetric(in, slot, p.Name(), serveModel, model, status, start, tokenUsage{}, d.Claim, d.ResetAt,
+			d.Reason+"; request replayed to "+rung, destination)
+		s.logger.Printf("req=%s failover route=%s model=%q claim=%s reason=%q (%s) -> replaying on the subscription as %q",
+			rid, p.Name(), model, d.Claim, d.Reason, trigger, rung)
+		// allowFailover stays true: the rung can be refused too, and when it
+		// is, this same path carries on to the next rung or the secondary.
+		s.forward(w, in, downgraded, "primary", s.primary, s.primaryDetector, true, "downgraded from "+model, ladder)
+		return
+	}
+
+	if s.secondary == nil {
+		s.logger.Printf("req=%s no_failover_target route=%s model=%q claim=%s reason=%q (%s): fallback chain exhausted and no secondary configured",
+			rid, p.Name(), model, d.Claim, d.Reason, trigger)
+		http.Error(w, p.Name()+" refused this model ("+d.Reason+") and there is no fallback chain rung or secondary provider left to try", http.StatusServiceUnavailable)
+		s.writeMetric(in, slot, p.Name(), serveModel, model, status, start, tokenUsage{}, d.Claim, d.ResetAt,
+			d.Reason+"; no fallback target", destination)
+		return
+	}
+
+	s.writeMetric(in, slot, p.Name(), serveModel, model, status, start, tokenUsage{}, d.Claim, d.ResetAt,
+		d.Reason+"; request replayed to secondary", destination)
+	s.logger.Printf("req=%s failover route=%s model=%q claim=%s reason=%q (%s) -> replaying to secondary",
+		rid, p.Name(), model, d.Claim, d.Reason, trigger)
+	s.forward(w, in, body, "secondary", s.secondary, nil, false, d.Reason, nil)
 }
 
 // networkSnapshot captures a point-in-time read of local network health at

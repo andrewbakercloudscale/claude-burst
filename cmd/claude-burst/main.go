@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -478,11 +479,38 @@ func status() {
 		fatal(err)
 	}
 	st := srv.Status()
-	if st.OverflowUntil > time.Now().Unix() {
-		fmt.Printf("route: SECONDARY (%s) overflow\nuntil: %s\nclaim: %s\nreason: %s\n",
+	now := time.Now().Unix()
+	if st.OverflowUntil > now {
+		fmt.Printf("route: SECONDARY (%s) forced\nuntil: %s\nclaim: %s\nreason: %s\n",
 			cfg.Secondary.Provider, time.Unix(st.OverflowUntil, 0).Format(time.RFC3339), st.LimitClaim, st.LastReason)
 	} else {
 		fmt.Printf("route: PRIMARY (%s)\n", cfg.Primary.Provider)
+	}
+	// Per-model windows are printed whatever the line above says. Without
+	// them "route: PRIMARY" is true of the account and wrong about the model
+	// you are actually using, which is the only one you care about while a
+	// limit is open.
+	var refused []string
+	for model, until := range st.ModelOverflow {
+		if until > now {
+			refused = append(refused, model)
+		}
+	}
+	sort.Strings(refused)
+	for _, model := range refused {
+		dest := cfg.Secondary.Provider + " (secondary)"
+		if !st.DowngradeDisabled {
+			for _, rung := range cfg.FallbackChain[model] {
+				if rung != model && st.ModelOverflow[rung] <= now {
+					dest = rung + " (still on the subscription)"
+					break
+				}
+			}
+		}
+		fmt.Printf("refused: %s until %s -> served by %s\n", model, time.Unix(st.ModelOverflow[model], 0).Format(time.RFC3339), dest)
+	}
+	if len(refused) > 0 && st.DowngradeDisabled {
+		fmt.Println("downgrade: OFF (fallback_chain is configured but switched off from the dashboard)")
 	}
 	scheme := "http"
 	if cfg.Intercept.Transparent() {
