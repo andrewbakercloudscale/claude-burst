@@ -343,13 +343,16 @@ func TestShuntActivityListsCallsAndRefusalsNewestFirst(t *testing.T) {
 	lp, _ := config.ShuntLogPath()
 	now := time.Now()
 	shunt.Append(lp, shunt.Event{Time: now.Add(-2 * time.Minute), Kind: shunt.KindRead, OK: true, BytesIn: 400_000, BytesOut: 2_000, Model: "glm"})
-	shunt.Append(lp, shunt.Event{Time: now.Add(-1 * time.Minute), Kind: shunt.KindDeny, OK: true, BytesIn: 90_000, Note: "Read"})
+	shunt.Append(lp, shunt.Event{Time: now.Add(-1 * time.Minute), Kind: shunt.KindDeny, OK: true, BytesIn: 90_000, Note: "Read", Cwd: "/Users/x/proj/wporg-ready"})
 	shunt.Append(lp, shunt.Event{Time: now, Kind: shunt.KindWrite, OK: false, Note: "output rejected"})
 
 	var rows []shuntActivityRow
 	getJSON(t, s, "/api/shunt-activity", &rows)
 	if len(rows) != 3 || rows[0].Kind != "write" || rows[1].Kind != "deny" || rows[2].Kind != "read" {
 		t.Fatalf("want write, deny, read newest first, got %+v", rows)
+	}
+	if rows[1].Cwd != "/Users/x/proj/wporg-ready" {
+		t.Errorf("a refusal must say which project it came from: %+v", rows[1])
 	}
 	if rows[2].KeptOutTokens != shunt.EstimateTokens(398_000) {
 		t.Errorf("kept-out %d", rows[2].KeptOutTokens)
