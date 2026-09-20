@@ -1,4 +1,95 @@
-# Session handoff — 2026-09-08
+# Session handoff — 2026-09-20
+
+A point-in-time snapshot, written at 14:20 local. **Verify before acting.**
+
+## Verify state first
+
+```bash
+curl -s http://127.0.0.1:7788/api/state | python3 -m json.tool | head -40   # the running gateway's own answer
+~/.local/bin/claude-burst status                                              # adds "refused:" lines per model
+grep -a "replaying on the subscription\|dropped server-only tools" ~/.config/claude-burst/claude-burst.log | tail
+```
+
+## What was fixed (both deployed, both on origin/main)
+
+1. **`7d661cb` — failover to GLM died with `400 Invalid JSON data: missing field
+   \`parameters\``.** Claude Code declares Anthropic's *server-side* tools
+   (`web_search_20250305` …) with a name and `type` but no `input_schema`. We turned them
+   into OpenAI functions with no `parameters`, and Together rejects the **whole request**
+   for one such tool. Now dropped (logged as `dropped server-only tools: …`), schemas with
+   `type` left implicit are normalised, and `tools`/`tool_choice` are omitted when nothing
+   survives. Confirmed against the live endpoint before and after.
+2. **`6ca48b5` — one Fable rejection sent every model to the paid secondary for two days.**
+   The overflow window was account-wide. Now `State.ModelOverflow` scopes a rejection to
+   the model that was refused; Anthropic's claim headers name a *bucket*, never the models
+   it covers, so we do not guess. On top: `fallback_chain` (default fable → opus) replays a
+   refused request as another Claude model **on the subscription** before spending money.
+   Dashboard toggle in *Actions* ("Try another Claude model before the secondary") turns it
+   off live and shows which models are refused and where their traffic goes;
+   `claude-burst status` prints `refused:` lines. Design and rationale: README, "Limits are
+   per model, and are never inferred".
+
+Behaviour worth remembering:
+- A **forced** window (`force-secondary`, dashboard button) stays account-wide and
+  **bypasses the chain** on purpose — its only job is to exercise the secondary.
+- A pre-scoping state file's account-wide window is **dropped on load** (logged). That is
+  what happened to the `seven_day_overage_included` window that was armed until 09-22.
+- The toggle (`DowngradeDisabled`) survives `ClearOverflow` and `ForceOverflow`; both used
+  to replace the whole `State` struct and silently reset it.
+
+## NOT yet verified against real traffic
+
+- **The chain has never fired for real.** The window was dropped at deploy, so nothing has
+  been refused since. First real Fable refusal should log
+  `replaying on the subscription as "claude-opus-5"` and show a `refused:` line in
+  `claude-burst status`. **If a Fable refusal goes to GLM instead, that is a bug** — pull the
+  log lines around it.
+- **The dropped-tools line has not appeared in real traffic** (count 0 at 14:20) and no
+  failover to Together has happened since the fix. The fix is proven by the unit tests and a
+  live request, not by an organic failover.
+- I did not run `transparent-root.sh status` (needs sudo). End-to-end evidence that the
+  redirect works: `/v1/messages` 200s in the gateway log at 14:13.
+
+## What went wrong along the way
+
+- **`scripts/rollback.sh` was run by hand at 12:38**, which removed the machine-wide
+  redirect. Claude Code then talked straight to Anthropic, so the Fable limit hit with the
+  gateway bypassed and nothing to fail over. Fixed by re-running
+  `sudo scripts/transparent-root.sh install --host api.anthropic.com --gateway-port 17777`.
+  The self-heal watchdog had stood down (`rolled-back` marker) and only spoke up after the
+  deploy cleared it — a rollback silences the thing that would have noticed it.
+- **Why tests missed the `parameters` bug:** every translation test asserted on JSON this
+  package produced, i.e. our *belief* about what the endpoint accepts, never the endpoint.
+  No fixture had a schema-less tool either. `internal/router/provider_openai_live_test.go`
+  now asks Together for real; it needs a key so it is opt-in:
+  `TOGETHER_API_KEY=$(security find-generic-password -s claude-burst-together -w) go test ./internal/router/ -run TestLiveSecondary -v`
+  Run it after any change to `translateAnthropicRequest`.
+
+## Concurrent work in this tree — read before deploying
+
+Another session is doing **token shunting** (`internal/shunt`, `cmd/claude-burst/shunt.go`,
+`internal/admin/shunt.go`). It committed `49caaf3`, `0af15ec`, `11d9b6c` and, at the time of
+writing, has **uncommitted edits** (`admin.html`, `shunt.go`, `guard.go`, tests).
+
+- `deploy.sh` builds the **working tree**. The 13:43 deploy shipped that session's
+  uncommitted edits along with mine; the running binary is not exactly what git holds.
+- I pushed `11d9b6c` when asked to "push" — it was that session's commit, not mine.
+- Commit or stash before the next deploy so production matches a commit.
+
+## Small things
+
+- The 12:44 deploy printed `ninja.andrewbaker.claude-burst is not loaded in launchd` and
+  recovered; the 13:43 deploy did not, and `launchctl print` shows it loaded now.
+- `scripts/check-interception.sh` is zsh-only: `bash` prints `print: command not found` and
+  a bad-substitution error. Run it by path or with `zsh`. (Its verdict needs the inspecting
+  network; off it, it says INCONCLUSIVE.)
+- Still open from before, untouched today: issue #1 (direct connections to the rdr target
+  port; best lead is the reply direction) and the TLS handshake storm. Both are in the
+  2026-09-08 handoff below and in `INVESTIGATION-TLS-STORM.md`.
+
+---
+
+# Previous handoff — 2026-09-08 (still accurate for issue #1 and the TLS storm)
 
 A point-in-time snapshot, written at the end of a long session. **Everything below
 was true at 11:00 on 2026-09-08 and nothing keeps it true.** Verify before acting;
