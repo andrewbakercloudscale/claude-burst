@@ -160,14 +160,14 @@ func denyMessage(bin, path string, lines, minLines int) string {
 	if bin == "" {
 		bin = "claude-burst"
 	}
-	return fmt.Sprintf(`claude-burst shunt: %s has %d+ lines (threshold %d). Reading it whole would put all of it in your context.
+	return fmt.Sprintf(`claude-burst shunt: %s has %d+ lines (threshold %d). Do NOT retry this read -- it will be refused every time.
 
-Ask a cheaper worker model instead, and you will get a short answer with path:line citations:
+Get what you need from a cheaper worker instead. You will get a short answer with path:line citations:
 
   %s shunt read --question "<exactly what you need to know>" %s [more files...]
 
-If you need the exact text to edit, re-issue Read on just the cited range with offset and limit -- windowed reads are never blocked.`,
-		path, lines, minLines, shellQuote(bin), shellQuote(path))
+Need exact lines to edit or quote? Read only that range: Read with offset and limit, or sed -n 'START,ENDp' %s. Windowed reads are never blocked.`,
+		path, lines, minLines, shellQuote(bin), shellQuote(path), shellQuote(path))
 }
 
 func shellQuote(s string) string {
