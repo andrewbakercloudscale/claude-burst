@@ -248,7 +248,7 @@ func shuntGuard() {
 		return
 	}
 	if lp, err := config.ShuntLogPath(); err == nil {
-		_ = shunt.Append(lp, shunt.Event{Kind: shunt.KindDeny, OK: true, Files: 1, BytesIn: d.Bytes, Note: in.ToolName})
+		_ = shunt.Append(lp, shunt.Event{Kind: shunt.KindDeny, OK: true, Files: 1, BytesIn: d.Bytes, Note: in.ToolName, Cwd: in.Cwd})
 	}
 	fmt.Fprintln(os.Stderr, d.Reason)
 	os.Exit(2)

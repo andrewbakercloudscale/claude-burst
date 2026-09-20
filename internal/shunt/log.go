@@ -12,24 +12,56 @@ import (
 
 // Event kinds.
 const (
-	KindRead  = "read"
-	KindWrite = "write"
-	KindDeny  = "deny" // the guard refused a direct read
+	KindRead       = "read"
+	KindWrite      = "write"
+	KindDeny       = "deny"        // the guard refused a direct read
+	KindGuardError = "guard_error" // the guard could not decide and let the call through
 )
 
-// Event is one line of shunt.jsonl. Metadata only: never file contents,
-// questions, specs or answers.
+// Stages name where a failure happened, so "it failed" always says where.
+const (
+	StageInput      = "input"       // the guard could not parse Claude Code's hook payload
+	StageConfig     = "config"      // config.json unreadable
+	StageDisabled   = "disabled"    // the feature is switched off
+	StageArgs       = "args"        // bad or missing arguments, or a target refused on safety grounds
+	StageWorkerInit = "worker_init" // no usable worker: wrong provider, no key, bad URL
+	StageWorkerCall = "worker_call" // the provider did not answer, or answered with an error
+	StageValidate   = "validate"    // the worker answered but the output was rejected
+	StageWriteFile  = "write_file"  // the generated file could not be written
+)
+
+// Event is one line of shunt.jsonl. Metadata only: file PATHS and the project
+// directory are recorded (they are what makes a refusal traceable), but never
+// file contents, questions, specs or answers.
 type Event struct {
-	Time         time.Time `json:"time"`
-	Kind         string    `json:"kind"`
-	OK           bool      `json:"ok"`
-	Files        int       `json:"files,omitempty"`
-	Calls        int       `json:"calls,omitempty"`
-	BytesIn      int64     `json:"bytes_in,omitempty"`  // file bytes delegated (or, for a deny, the size of the refused file)
-	BytesOut     int64     `json:"bytes_out,omitempty"` // bytes of answer returned, or of code generated to disk
-	InputTokens  int64     `json:"input_tokens,omitempty"`
-	OutputTokens int64     `json:"output_tokens,omitempty"`
-	Model        string    `json:"model,omitempty"`
+	Time time.Time `json:"time"`
+	Kind string    `json:"kind"`
+	OK   bool      `json:"ok"`
+
+	// Who and where. Session is Claude Code's own session id, the same one the
+	// gateway records in metrics.jsonl, so a refusal can be tied to the exact
+	// conversation that caused it; Cwd is that session's project directory.
+	Session string `json:"session_id,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+
+	// What was touched.
+	Tool  string   `json:"tool,omitempty"`  // a refusal: "Read", or "Bash cat" / "Bash head" ...
+	Path  string   `json:"path,omitempty"`  // the refused file, or the file a write targeted
+	Paths []string `json:"paths,omitempty"` // the files a delegated read was asked about
+
+	// Why not, and how many times already.
+	Stage     string `json:"stage,omitempty"`     // where a failure happened (Stage* constants)
+	Lines     int    `json:"lines,omitempty"`     // a refusal: the file's line count (at least this many)
+	Threshold int    `json:"threshold,omitempty"` // a refusal: the threshold in force
+	Repeat    int    `json:"repeat,omitempty"`    // a refusal: earlier refusals of this file in this session, since it last got an answer
+
+	Files        int    `json:"files,omitempty"`
+	Calls        int    `json:"calls,omitempty"`
+	BytesIn      int64  `json:"bytes_in,omitempty"`  // file bytes delegated (or, for a deny, the size of the refused file)
+	BytesOut     int64  `json:"bytes_out,omitempty"` // bytes of answer returned, or of code generated to disk
+	InputTokens  int64  `json:"input_tokens,omitempty"`
+	OutputTokens int64  `json:"output_tokens,omitempty"`
+	Model        string `json:"model,omitempty"`
 	// Destination is the worker endpoint the call went to (scheme, host and
 	// path; never a query or a key), so the requests table can show where a
 	// shunt physically went the way it does for gateway requests.
@@ -132,6 +164,7 @@ func Recent(path string, limit int, keep func(Event) bool) ([]Event, error) {
 // Summary totals shunt.jsonl.
 type Summary struct {
 	Reads, Writes, Denials, Failures int
+	GuardErrors                      int
 	BytesDelegated                   int64 // file bytes the worker read instead of the frontier model
 	BytesAnswered                    int64 // bytes that came back into context as answers
 	BytesGenerated                   int64 // bytes written to disk without passing through context
@@ -174,6 +207,9 @@ func SummarizeLog(path string, since time.Time) (Summary, error) {
 		case KindDeny:
 			s.Denials++
 			continue
+		case KindGuardError:
+			s.GuardErrors++
+			continue
 		case KindRead:
 			s.Reads++
 		case KindWrite:
@@ -202,8 +238,8 @@ func SummarizeLog(path string, since time.Time) (Summary, error) {
 }
 
 func (s Summary) String() string {
-	out := fmt.Sprintf("reads=%d writes=%d denied_direct_reads=%d failures=%d kept_out_of_context≈%d tokens (estimate) worker_tokens=%d in/%d out worker_cost=$%.4f",
-		s.Reads, s.Writes, s.Denials, s.Failures, s.KeptOutTokens(), s.WorkerInputTokens, s.WorkerOutputTokens, s.WorkerUSD)
+	out := fmt.Sprintf("reads=%d writes=%d denied_direct_reads=%d failures=%d guard_errors=%d kept_out_of_context≈%d tokens (estimate) worker_tokens=%d in/%d out worker_cost=$%.4f",
+		s.Reads, s.Writes, s.Denials, s.Failures, s.GuardErrors, s.KeptOutTokens(), s.WorkerInputTokens, s.WorkerOutputTokens, s.WorkerUSD)
 	if s.Unpriced > 0 {
 		out += fmt.Sprintf(" (INCOMPLETE: %d worker call(s) had no pricing entry -- add the worker model to `pricing` in config.json)", s.Unpriced)
 	}

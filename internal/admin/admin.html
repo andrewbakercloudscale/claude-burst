@@ -1725,7 +1725,7 @@ function renderShuntActivity(rows) {
       <td class="num">${r.pricing_unknown ? "unpriced" : r.usd ? shuntUSD(r.usd) : "\u2014"}</td>
       <td class="mono" title="${esc(r.destination || "")}">${esc(r.model || "\u2014")}</td>
       <td class="num">${r.duration_ms ? num(r.duration_ms) : "\u2014"}</td>
-      <td>${esc(r.kind === "deny" ? (r.bytes_in ? "a " + Math.round(r.bytes_in / 1024) + " KB file" : "") + (r.note ? " via " + r.note : "") : (r.note || ""))}</td>
+      <td>${esc(r.kind === "deny" ? (r.bytes_in ? "a " + Math.round(r.bytes_in / 1024) + " KB file" : "") + (r.note ? " via " + r.note : "") + (r.cwd ? " in " + r.cwd.split("/").filter(Boolean).pop() : "") : (r.note || ""))}</td>
     </tr>`).join("")}</tbody></table>`;
 }
 

@@ -266,6 +266,7 @@ type shuntActivityRow struct {
 	PricingUnknown bool      `json:"pricing_unknown,omitempty"`
 	DurationMS     int64     `json:"duration_ms,omitempty"`
 	Note           string    `json:"note,omitempty"`
+	Cwd            string    `json:"cwd,omitempty"`
 }
 
 func (s *Server) handleShuntActivity(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +289,7 @@ func (s *Server) handleShuntActivity(w http.ResponseWriter, r *http.Request) {
 				Time: e.Time, Kind: e.Kind, OK: e.OK, Files: e.Files, Calls: e.Calls, BytesIn: e.BytesIn,
 				KeptOutTokens: e.KeptOutTokens(), InputTokens: e.InputTokens, OutputTokens: e.OutputTokens,
 				Model: e.Model, Destination: e.Destination, USD: e.USD, PricingUnknown: e.PricingUnknown,
-				DurationMS: e.DurationMS, Note: e.Note,
+				DurationMS: e.DurationMS, Note: e.Note, Cwd: e.Cwd,
 			})
 		}
 	}
