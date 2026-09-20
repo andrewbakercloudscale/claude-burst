@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,6 +36,7 @@ type OpenAICompatibleProvider struct {
 	modelMap        map[string]string
 	keychainService string
 	apiKeyEnvVar    string
+	logger          *log.Logger
 }
 
 func NewOpenAICompatibleProvider(name string, base *url.URL, model string, modelMap map[string]string, keychainService, apiKeyEnvVar string) *OpenAICompatibleProvider {
@@ -56,9 +58,13 @@ func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request
 
 	targetModel := p.targetFor(requestedModel)
 
-	openaiBody, err := translateAnthropicRequest(body, targetModel)
+	openaiBody, droppedTools, err := translateAnthropicRequest(body, targetModel)
 	if err != nil {
 		return nil, "", &ProviderError{Status: http.StatusBadGateway, Stage: "request_translation", Model: requestedModel, Err: err}
+	}
+	if len(droppedTools) > 0 && p.logger != nil {
+		p.logger.Printf("route=%s model=%q dropped server-only tools (no input_schema, unsupported by an OpenAI-compatible endpoint): %s",
+			p.name, requestedModel, strings.Join(droppedTools, ","))
 	}
 
 	u := *p.base
@@ -103,10 +109,10 @@ func (p *OpenAICompatibleProvider) TranslateResponse(w http.ResponseWriter, resp
 
 // --- request translation: Anthropic Messages -> OpenAI chat-completions ---
 
-func translateAnthropicRequest(body []byte, targetModel string) ([]byte, error) {
+func translateAnthropicRequest(body []byte, targetModel string) ([]byte, []string, error) {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, fmt.Errorf("request body is not valid JSON")
+		return nil, nil, fmt.Errorf("request body is not valid JSON")
 	}
 
 	var oaiMessages []map[string]any
@@ -126,7 +132,7 @@ func translateAnthropicRequest(body []byte, targetModel string) ([]byte, error) 
 			role, _ := mm["role"].(string)
 			translated, err := translateAnthropicMessage(role, mm["content"])
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			oaiMessages = append(oaiMessages, translated...)
 		}
@@ -153,6 +159,7 @@ func translateAnthropicRequest(body []byte, targetModel string) ([]byte, error) 
 		out["stream_options"] = map[string]any{"include_usage": true}
 	}
 
+	var dropped []string
 	if tools, ok := req["tools"].([]any); ok && len(tools) > 0 {
 		var oaiTools []map[string]any
 		for _, t := range tools {
@@ -160,22 +167,60 @@ func translateAnthropicRequest(body []byte, targetModel string) ([]byte, error) 
 			if !ok {
 				continue
 			}
-			fn := map[string]any{"name": tm["name"]}
+			name, _ := tm["name"].(string)
+			schema, ok := tm["input_schema"].(map[string]any)
+			if !ok || name == "" {
+				// Anthropic server tools -- web_search_20250305,
+				// code_execution_20250522, the text_editor_* family --
+				// are declared by name and "type" alone, with no
+				// input_schema, because Anthropic's own API runs them.
+				// OpenAI-compatible endpoints have no such concept:
+				// Together rejects the whole request with
+				//   400 Invalid JSON data: missing field `parameters`
+				// for any function that omits it. Forwarding one with an
+				// empty schema instead would be worse than dropping it --
+				// the secondary would happily emit a tool_call for a tool
+				// nothing downstream can execute.
+				if name != "" {
+					dropped = append(dropped, name)
+				}
+				continue
+			}
+			fn := map[string]any{"name": name, "parameters": normaliseToolSchema(schema)}
 			if d, ok := tm["description"]; ok {
 				fn["description"] = d
 			}
-			if s, ok := tm["input_schema"]; ok {
-				fn["parameters"] = s
-			}
 			oaiTools = append(oaiTools, map[string]any{"type": "function", "function": fn})
 		}
-		out["tools"] = oaiTools
+		if len(oaiTools) > 0 {
+			out["tools"] = oaiTools
+		}
 	}
-	if tc, ok := req["tool_choice"]; ok {
+	// tool_choice without tools is a 400 of its own on several
+	// OpenAI-compatible endpoints, and "required" with an empty tool list
+	// is unsatisfiable by construction.
+	if tc, ok := req["tool_choice"]; ok && out["tools"] != nil {
 		out["tool_choice"] = translateToolChoice(tc)
 	}
 
-	return json.Marshal(out)
+	b, err := json.Marshal(out)
+	return b, dropped, err
+}
+
+// normaliseToolSchema returns a JSON Schema that an OpenAI-compatible
+// endpoint will accept as a function's "parameters". Anthropic tolerates an
+// input_schema with the "type" left implicit; strict validators do not, and
+// a no-argument tool legitimately arrives as {} .
+func normaliseToolSchema(schema map[string]any) map[string]any {
+	if _, ok := schema["type"]; ok {
+		return schema
+	}
+	out := make(map[string]any, len(schema)+1)
+	for k, v := range schema {
+		out[k] = v
+	}
+	out["type"] = "object"
+	return out
 }
 
 func translateToolChoice(tc any) any {

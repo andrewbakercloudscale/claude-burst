@@ -76,7 +76,7 @@ type Server struct {
 func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (*Server, error) {
 	cfg.ResolveRoutes()
 
-	primary, err := buildProvider(cfg.Primary, cfg.KeychainService, cfg.ModelMap)
+	primary, err := buildProvider(cfg.Primary, cfg.KeychainService, cfg.ModelMap, logger)
 	if err != nil {
 		return nil, fmt.Errorf("primary provider: %w", err)
 	}
@@ -87,7 +87,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 
 	var secondary Provider
 	if cfg.Secondary.Provider != "" && cfg.Secondary.Provider != config.ProviderNone {
-		secondary, err = buildProvider(cfg.Secondary, cfg.KeychainService, cfg.ModelMap)
+		secondary, err = buildProvider(cfg.Secondary, cfg.KeychainService, cfg.ModelMap, logger)
 		if err != nil {
 			return nil, fmt.Errorf("secondary provider: %w", err)
 		}
@@ -132,7 +132,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 }
 
 // buildProvider constructs the Provider for one configured route slot.
-func buildProvider(rc config.RouteConfig, defaultKeychainService string, defaultModelMap map[string]string) (Provider, error) {
+func buildProvider(rc config.RouteConfig, defaultKeychainService string, defaultModelMap map[string]string, logger *log.Logger) (Provider, error) {
 	switch rc.Provider {
 	case "", "oauth-passthrough":
 		base, err := validateBaseURL("oauth-passthrough", rc.BaseURL)
@@ -173,7 +173,9 @@ func buildProvider(rc config.RouteConfig, defaultKeychainService string, default
 			ks = "claude-burst-together"
 		}
 		label, envVar := OpenAICompatibleIdentity(ks)
-		return NewOpenAICompatibleProvider(label, base, rc.Model, rc.ModelMap, ks, envVar), nil
+		p := NewOpenAICompatibleProvider(label, base, rc.Model, rc.ModelMap, ks, envVar)
+		p.logger = logger
+		return p, nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q", rc.Provider)
 	}
