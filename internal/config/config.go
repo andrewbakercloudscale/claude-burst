@@ -133,6 +133,55 @@ func (i InterceptConfig) Transparent() bool {
 	return i.Mode == InterceptTransparent
 }
 
+// Shunt defaults. 350 lines is where a delegated read starts to pay for its
+// 10-30 seconds of latency; below that the direct Read is already cheap and a
+// delegation costs more than it saves.
+const (
+	DefaultShuntMinLines       = 350
+	DefaultShuntChunkLines     = 6000
+	DefaultShuntTimeoutSeconds = 120
+)
+
+// ShuntConfig controls the two independent delegations. Read and Write are
+// separate switches on purpose: reading is low-risk and is where nearly all of
+// the saving is, whereas Write puts generated code on disk without the
+// frontier model ever seeing it.
+type ShuntConfig struct {
+	Read  bool `json:"read,omitempty"`  // block whole-file reads above MinLines and route them to the worker
+	Write bool `json:"write,omitempty"` // allow `shunt write` to generate boilerplate straight to disk
+
+	MinLines       int `json:"min_lines,omitempty"`       // whole-file reads at or above this are delegated
+	ChunkLines     int `json:"chunk_lines,omitempty"`     // lines per worker call before a file is sliced
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"` // per worker call
+
+	// Model overrides the worker model. Empty means the secondary's own model.
+	Model string `json:"model,omitempty"`
+}
+
+// Enabled reports whether either delegation is on.
+func (s ShuntConfig) Enabled() bool { return s.Read || s.Write }
+
+func (s ShuntConfig) MinLinesOrDefault() int {
+	if s.MinLines > 0 {
+		return s.MinLines
+	}
+	return DefaultShuntMinLines
+}
+
+func (s ShuntConfig) ChunkLinesOrDefault() int {
+	if s.ChunkLines > 0 {
+		return s.ChunkLines
+	}
+	return DefaultShuntChunkLines
+}
+
+func (s ShuntConfig) TimeoutOrDefault() int {
+	if s.TimeoutSeconds > 0 {
+		return s.TimeoutSeconds
+	}
+	return DefaultShuntTimeoutSeconds
+}
+
 type Config struct {
 	Listen                       string `json:"listen"`
 	ResetGraceSeconds            int    `json:"reset_grace_seconds"`
@@ -167,6 +216,11 @@ type Config struct {
 	Secondary       RouteConfig           `json:"secondary,omitempty"`
 	MeteredFailover MeteredFailoverConfig `json:"metered_failover,omitempty"`
 	Intercept       InterceptConfig       `json:"intercept,omitempty"`
+
+	// Shunt is the token-shunting feature: bulk file reads and boilerplate
+	// generation are handed to the secondary provider so the frontier model
+	// never carries them in its context. Off unless explicitly enabled.
+	Shunt ShuntConfig `json:"shunt,omitempty"`
 
 	// AdminListen is the local control panel's address. Deliberately a
 	// separate listener from Listen: in transparent mode the gateway serves
@@ -376,6 +430,18 @@ func MetricsPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(d, "metrics.jsonl"), nil
+}
+
+// ShuntLogPath is where the shunt records each delegation and each refused
+// read. Separate from metrics.jsonl: those events are gateway requests, and a
+// worker call is not one -- mixing them would inflate request counts and the
+// secondary's share in every existing summary.
+func ShuntLogPath() (string, error) {
+	d, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "shunt.jsonl"), nil
 }
 
 func LogPath() (string, error) {

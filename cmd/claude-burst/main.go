@@ -24,6 +24,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
+	"github.com/andrewbakercloudscale/claude-burst/internal/shunt"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
@@ -72,6 +73,8 @@ func main() {
 		forceSecondary(os.Args[2:])
 	case "stats":
 		stats(os.Args[2:])
+	case "shunt":
+		shuntCmd(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
@@ -96,6 +99,7 @@ Commands:
   reset             Clear overflow state immediately (back to primary)
   force-secondary   Route inference to the secondary for a while (testing)
   stats             Summarize local routing/token metrics
+  shunt             Keep bulk file reads and boilerplate out of Claude's context (see: shunt help)
   version           Print version
 
 Admin UI:
@@ -519,6 +523,9 @@ func status() {
 	fmt.Printf("gateway: %s://%s\nprimary: %s (%s)\nsecondary: %s (%s)\n",
 		scheme, cfg.Listen, cfg.Primary.Provider, cfg.Primary.BaseURL, cfg.Secondary.Provider, cfg.Secondary.BaseURL)
 	reportIntercept(cfg)
+	if cfg.Shunt.Enabled() {
+		fmt.Print(shuntStatusText(cfg))
+	}
 }
 
 // reportIntercept surfaces the facts that decide whether transparent mode is
@@ -727,6 +734,11 @@ func stats(args []string) {
 		fatal(err)
 	}
 	fmt.Println(s.String())
+	if lp, err := config.ShuntLogPath(); err == nil {
+		if ss, err := shunt.SummarizeLog(lp, since); err == nil && (ss.Reads+ss.Writes+ss.Denials+ss.Failures) > 0 {
+			fmt.Println("shunt: " + ss.String())
+		}
+	}
 }
 
 func enable(args []string) {

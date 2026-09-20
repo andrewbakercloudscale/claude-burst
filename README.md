@@ -131,6 +131,44 @@ Every request gets a `start` line and a matching `done` line (same request id, f
 
 A metrics-write failure (disk full, permissions, etc.) is logged but never fails the request itself — by the time metrics would be written, Claude Code has already been served.
 
+## Token shunting: keep the boring work out of Claude's context
+
+Most of what a coding agent does is I/O, not judgment: reading 25,000 tokens of source to produce 300 tokens of understanding. `claude-burst shunt` hands that to your **configured openai-compatible secondary** (GLM, etc.), so Opus/Fable never carry it. It is the [Spotify technique](https://andrewbaker.ninja/2026/09/17/shunting-the-boring-work-how-spotify-cut-claude-code-token-usage-by-90-and-how-to-do-the-same-without-their-plugin/) built into the gateway you already run, reusing the secondary's Keychain key and base URL.
+
+```bash
+claude-burst shunt enable            # both parts; or --read / --write for one
+claude-burst shunt doctor            # proves the worker sees a whole prompt
+claude-burst shunt status            # what is on, and what it has saved
+claude-burst shunt disable --write   # switch one part off; disable alone removes everything
+```
+
+Restart Claude Code after enabling. Four parts, installed for you:
+
+| Part | What it does |
+| --- | --- |
+| **Guard** (`PreToolUse` hook, `Read\|Bash`) | Refuses a whole-file `Read`, or a plain `cat`/`head`/`tail`/`less`/`more`, on a file of **350+ lines** (`shunt.min_lines`) and tells Claude to use the worker instead. Windowed reads (`offset`/`limit`) always pass — they are the escape hatch. |
+| **`shunt read`** | `--question Q file...` → a terse answer with `path:line` citations. Files over 6,000 lines are chunked and read concurrently. Needs `read` on. |
+| **`shunt write`** | `--spec S --ref example --out path` → generates a file **straight to disk**, never through Claude's context. Keeps the previous file as `.bak`, refuses truncated, empty, `null` or refusal output, writes atomically. Needs `write` on. |
+| **Skill** (`~/.claude/skills/claude-burst-shunt`) | Tells Claude when to delegate and when not to (edits, debugging, concurrency, security review). Describes only what is switched on. |
+
+**Why a hook and not just instructions:** an agent under pressure reads the file directly unless something refuses it. The guard is that something.
+
+**What it will not do**
+
+- **Never sends credential-looking files** (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.aws/`, `.ssh/`, `*.tfstate`, …) to the worker, and refuses to write them. A direct read is allowed for those, as before.
+- **Fails open.** If the guard cannot decide (bad input, unreadable config) it allows the read. A wrongly allowed read only costs tokens; a wrongly refused one would leave Claude unable to look at a file.
+- **Leaves `.claude/` alone** and will not write inside it or `.git/`.
+- **Needs an openai-compatible secondary.** Bedrock is a different wire protocol and is not a worker.
+- **Your files go to that provider** whenever a read is delegated. That is the trade; use `shunt.model`/a self-hosted `secondary.base_url` if it matters.
+
+**Honest numbers.** Spotify's ~90% is the reduction in frontier tokens on *bulk-read* work, not on a whole session; an independent rebuild measured ~60% fewer frontier tokens, ~33% lower total cost and ~65% more elapsed time (a delegated read costs 10-30 s). Below the threshold a delegation costs more than it saves — that is why the default is 350 lines. `claude-burst stats` and `status` report reads, writes, refused direct reads, an *estimated* tokens-kept-out figure (~4 bytes/token) and the worker's own cost. A worker model with no `pricing` entry is reported as unpriced rather than free. Measure over a couple of weeks before quoting it.
+
+```json
+"shunt": { "read": true, "write": true, "min_lines": 350, "chunk_lines": 6000, "timeout_seconds": 120, "model": "" }
+```
+
+`shunt.jsonl` (next to `metrics.jsonl`) records metadata only — never file contents, questions or answers.
+
 ## Requirements
 
 - macOS on Apple Silicon or Intel
