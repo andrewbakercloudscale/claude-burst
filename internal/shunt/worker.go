@@ -126,6 +126,9 @@ func NewTestWorker(baseURL, model string) *Worker {
 	return &Worker{BaseURL: baseURL, Model: model, Label: "test", key: "test-key", HTTP: http.DefaultClient}
 }
 
+// Endpoint is the URL worker calls go to, for the log.
+func (w *Worker) Endpoint() string { return w.BaseURL + "/chat/completions" }
+
 // Cost prices a call at the configured rate. known is false when the model has
 // no pricing entry, so a zero is never mistaken for "free".
 func (w *Worker) Cost(in, out int64) (usd float64, known bool) {

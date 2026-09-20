@@ -211,6 +211,7 @@
           background: var(--panel-2); color: var(--muted); }
   .pill.p { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); background: var(--ok-bg); }
   .pill.s { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); background: var(--warn-bg); }
+  .pill.t { white-space: nowrap; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
   .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); }
 
   details.resp { border-bottom: 1px solid var(--border); }
@@ -481,6 +482,11 @@
          and on 2026-09-07 that meant scrolling past four cards and a config
          panel to find it while a session was down. Always visible, next to
          Reinstall: install and undo are the same decision. -->
+    <!-- Shown only while Claude Burst is NOT in the traffic path -- the mirror
+         of Reinstall above, which appears only when it is. Same action as the
+         recommended button in the Install panel, put where the eye already is:
+         the panel is the fix, and this is the fix without having to look for it. -->
+    <button class="success" id="installTop" style="margin-left:10px" hidden>⤓ Install Transparent Proxy</button>
     <button class="danger" id="revertTop" style="margin-left:10px">↺ Revert to normal Claude</button>
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
@@ -698,6 +704,17 @@
   <section id="sec-shunt" style="scroll-margin-top:70px">
     <h2>Token shunting <span class="hint">bulk reads and boilerplate go to the secondary, not to Claude</span></h2>
     <div class="body">
+      <!-- The master switch is "either part is on". It is derived from the two
+           switches below rather than stored: ticking one of them turns it on,
+           unticking the last one turns it off, so the three can never disagree.
+           Turning it ON enables both; that is the default enable, and the two
+           below are how you narrow it. -->
+      <div class="row" style="align-items:flex-start;margin-bottom:12px">
+        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
+          <input type="checkbox" id="shuntMaster" style="width:auto;margin:0;transform:scale(1.25)">
+          Token shunting <span id="shuntMasterState" class="pill"></span>
+        </label>
+      </div>
       <div class="grid" id="shuntCards"></div>
 
       <div style="margin-top:14px">
@@ -729,6 +746,10 @@
       <div class="hint" style="margin-top:6px">Lines, not tokens. Below this a delegated read costs more than it saves &mdash; each one takes 10&ndash;30 seconds.</div>
       <div id="shuntState" class="hint" style="margin-top:8px"></div>
       <div id="shuntNote"></div>
+
+      <h3 style="margin:18px 0 6px;font-size:13px">Recent activity <span class="hint">last 20 &mdash; worker calls, and reads the guard refused</span></h3>
+      <div class="scroll" id="shuntActivity"><div class="empty">Nothing yet.</div></div>
+
       <div class="hint" style="margin-top:8px">The worker is your configured openai-compatible secondary, so <strong>file contents are sent to that provider</strong> whenever a read is delegated. Files that look like credentials (<code>.env</code>, keys, <code>.aws/</code>, &hellip;) never are. The tokens-kept-out figure is an estimate at ~4 bytes per token.</div>
     </div>
   </section>
@@ -1042,6 +1063,7 @@ function renderCards(s) {
     $("installTitle").textContent = "Install";
     $("installHint").textContent = "already in use \u2014 these re-run the install, or switch between modes";
     $("inuse").innerHTML = "";
+    $("installTop").hidden = true;
     // Nothing to install, so the panel collapses behind its reveal link --
     // unless this render is the one right after a click on that link, or on
     // an install button, in which case the note it just wrote would vanish
@@ -1053,6 +1075,7 @@ function renderCards(s) {
   } else {
     installSection.hidden = false;
     $("installRevealBtn").hidden = true;
+    $("installTop").hidden = false;
     installRevealed = false;
     installSection.classList.add("alert");
     $("installTitle").textContent = "Claude Burst is NOT in use";
@@ -1284,6 +1307,24 @@ function renderRequests(rows) {
       <th>Time</th><th>Slot</th><th>Destination</th><th>Model</th><th>Status</th>
       <th class="num">ms</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th><th>Note</th>
     </tr></thead><tbody>${rows.map(e => {
+      // A worker call, not gateway traffic: labelled as such, with the WORKER's
+      // model (what actually answered) and its own outcome instead of an HTTP
+      // status it never had.
+      if (e.slot === "shunt") {
+        const ok = e.shunt_ok !== false;
+        return `<tr>
+        <td class="mono">${esc(stamp(e.time))}</td>
+        <td><span class="pill t">Token Shunt</span></td>
+        <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
+        <td class="mono">${esc(e.model || "\u2014")}<div style="font-size:10.5px;color:var(--muted)">${esc(e.shunt || "")}</div></td>
+        <td class="mono ${ok ? "st-2" : "st-5"}">${ok ? "ok" : "failed"}</td>
+        <td class="num">${num(e.duration_ms)}</td>
+        <td class="num">${num(e.input_tokens)}</td>
+        <td class="num">${num(e.output_tokens)}</td>
+        <td class="num">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? shuntUSD(e.api_equivalent_usd) : "\u2014"}</td>
+        <td>${esc(e.note || "")}</td>
+      </tr>`;
+      }
       const slot = e.slot || (e.route === "anthropic" ? "primary" : "secondary");
       return `<tr>
         <td class="mono">${esc(stamp(e.time))}</td>
@@ -1356,10 +1397,12 @@ function renderResponses(rows) {
 
 async function refresh() {
   try {
-    const [s, reqs, resps] = await Promise.all([
+    const [s, reqs, resps, shuntAct] = await Promise.all([
       fetch("/api/state").then(r => r.json()),
       fetch("/api/requests?limit=50").then(r => r.json()),
       fetch("/api/responses").then(r => r.json()),
+      // Its own panel's list; a failure here must not take the page down.
+      fetch("/api/shunt-activity?limit=20").then(r => r.json()).catch(() => []),
       // Sets lastHistory as a side effect rather than returning it: the
       // window buttons reload it on their own, without a full refresh.
       loadHistory(),
@@ -1404,6 +1447,7 @@ async function refresh() {
       // one control that might be the way out.
       $("installSection").hidden = false;
       $("installRevealBtn").hidden = true;
+      $("installTop").hidden = true;
       $("installSection").classList.remove("alert");
       $("installTitle").textContent = "Install";
       note($("bailout"), "bad",
@@ -1442,6 +1486,7 @@ async function refresh() {
     renderSecondary(s);
     renderDowngrade(s);
     renderShunt(s);
+    renderShuntActivity(shuntAct);
     $("hero").hidden = false;
     lastCounts = {requests: reqs.length, responses: resps.length};
     renderActivity();
@@ -1618,7 +1663,9 @@ function renderShunt(s) {
   if (!shuntBusy) {
     $("shuntRead").checked = !!sh.read;
     $("shuntWrite").checked = !!sh.write;
+    $("shuntMaster").checked = on;
   }
+  $("shuntMasterState").textContent = !on ? "off" : sh.read && sh.write ? "on" : "on \u00b7 " + (sh.read ? "read only" : "write only");
   if (document.activeElement !== $("shuntMin")) $("shuntMin").value = sh.min_lines || 350;
   $("shuntReinstall").hidden = !repairable;
 
@@ -1655,6 +1702,33 @@ function renderShunt(s) {
   setDot("nd-shunt", !on && !problems.length ? "" : problems.length ? "bad" : "ok");
 }
 
+function renderShuntActivity(rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    $("shuntActivity").innerHTML = `<div class="empty">Nothing yet. Once Claude Code has been restarted with this on, delegated reads, generated files and refused direct reads show up here.</div>`;
+    return;
+  }
+  const label = r => {
+    const what = r.kind === "read" ? "Read delegated" : r.kind === "write" ? "Code written"
+      : r.kind === "deny" ? "Direct read refused" : esc(r.kind);
+    return r.ok ? what : `<span style="color:var(--bad)">${what} \u2014 failed</span>`;
+  };
+  $("shuntActivity").innerHTML = `<table><thead><tr>
+      <th>Time</th><th>Event</th><th class="num">Files</th><th class="num">Kept out</th>
+      <th class="num">Worker in</th><th class="num">Worker out</th><th class="num">Cost</th><th>Model</th><th class="num">ms</th><th>Detail</th>
+    </tr></thead><tbody>${rows.map(r => `<tr>
+      <td class="mono">${esc(stamp(r.time))}</td>
+      <td>${label(r)}</td>
+      <td class="num">${r.files ? num(r.files) : "\u2014"}</td>
+      <td class="num">${r.kept_out_tokens ? "\u2248" + num(r.kept_out_tokens) : "\u2014"}</td>
+      <td class="num">${r.input_tokens ? num(r.input_tokens) : "\u2014"}</td>
+      <td class="num">${r.output_tokens ? num(r.output_tokens) : "\u2014"}</td>
+      <td class="num">${r.pricing_unknown ? "unpriced" : r.usd ? shuntUSD(r.usd) : "\u2014"}</td>
+      <td class="mono" title="${esc(r.destination || "")}">${esc(r.model || "\u2014")}</td>
+      <td class="num">${r.duration_ms ? num(r.duration_ms) : "\u2014"}</td>
+      <td>${esc(r.kind === "deny" ? (r.bytes_in ? "a " + Math.round(r.bytes_in / 1024) + " KB file" : "") + (r.note ? " via " + r.note : "") : (r.note || ""))}</td>
+    </tr>`).join("")}</tbody></table>`;
+}
+
 async function saveShunt(extra) {
   const body = Object.assign({read: $("shuntRead").checked, write: $("shuntWrite").checked}, extra || {});
   shuntBusy = true;
@@ -1672,6 +1746,12 @@ async function saveShunt(extra) {
   }
 }
 
+// Both flags are sent explicitly, so this cannot race with the two switches
+// below it: the request says exactly what state is wanted.
+$("shuntMaster").onchange = () => {
+  const on = $("shuntMaster").checked;
+  saveShunt({read: on, write: on});
+};
 $("shuntRead").onchange = () => saveShunt();
 $("shuntWrite").onchange = () => saveShunt();
 $("shuntSetMin").onclick = () => {
@@ -2415,6 +2495,14 @@ async function runInstall(mode, btn) {
 }
 $("installBaseUrl").onclick = () => runInstall("base-url", $("installBaseUrl"));
 $("installTransparent").onclick = () => runInstall("transparent", $("installTransparent"));
+// The header copy of the same button. runInstall writes its result into the
+// Install panel's note, which is on screen below the header whenever this
+// button is showing (both appear only while Claude Burst is not in use), but
+// scroll to it anyway so the reply to the click is never off-screen.
+$("installTop").onclick = async () => {
+  await runInstall("transparent", $("installTop"));
+  scrollToEl($("installNote"), "nearest");
+};
 
 // Like Install, Revert runs in a Terminal window rather than in this process
 // -- see internal/admin/revert.go. The half that matters most (/etc/hosts, the

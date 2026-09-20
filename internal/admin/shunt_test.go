@@ -12,6 +12,7 @@ import (
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/shunt"
 )
 
@@ -239,5 +240,136 @@ func TestShuntEndpointNeedsTheMutationHeader(t *testing.T) {
 	}
 	if cfg, _ := config.Load(); cfg.Shunt.Read {
 		t.Errorf("refused request changed config")
+	}
+}
+
+func getJSON(t *testing.T, s *Server, path string, out any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1"+path, nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("%s status=%d body=%s", path, rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkerCallsAppearInRequestsAsTokenShunts(t *testing.T) {
+	s, _ := shuntServer(t, true)
+	lp, _ := config.ShuntLogPath()
+	now := time.Now()
+	shunt.Append(lp, shunt.Event{Time: now.Add(-3 * time.Minute), Kind: shunt.KindRead, OK: true, Files: 2, BytesIn: 400_000, BytesOut: 2_000,
+		InputTokens: 100_000, OutputTokens: 400, Model: "zai-org/GLM-5.3", Destination: "https://api.together.xyz/v1/chat/completions", USD: 0.14, DurationMS: 1800})
+	shunt.Append(lp, shunt.Event{Time: now.Add(-2 * time.Minute), Kind: shunt.KindWrite, OK: true, BytesOut: 9_000, Model: "zai-org/GLM-5.3", PricingUnknown: true})
+	shunt.Append(lp, shunt.Event{Time: now.Add(-1 * time.Minute), Kind: shunt.KindRead, OK: false, Model: "zai-org/GLM-5.3", Note: "worker returned HTTP 500"})
+	shunt.Append(lp, shunt.Event{Time: now, Kind: shunt.KindDeny, OK: true, BytesIn: 90_000, Note: "Read"})
+
+	var rows []requestRow
+	getJSON(t, s, "/api/requests?limit=50", &rows)
+
+	if len(rows) != 3 {
+		t.Fatalf("worker calls belong in the table, a refusal does not (no worker call followed): got %d rows", len(rows))
+	}
+	// newest first
+	if rows[0].Shunt != "read" || rows[0].ShuntOK == nil || *rows[0].ShuntOK {
+		t.Errorf("newest row should be the failed read: %+v", rows[0])
+	}
+	if rows[0].Note != "worker returned HTTP 500" {
+		t.Errorf("a failure must show its reason, got %q", rows[0].Note)
+	}
+	for _, r := range rows {
+		if r.Slot != SlotShunt || r.Route != "token-shunt" {
+			t.Errorf("row not tagged as a Token Shunt: %+v", r)
+		}
+		if r.Model != "zai-org/GLM-5.3" {
+			t.Errorf("the row must name the WORKER model, got %q", r.Model)
+		}
+	}
+	last := rows[2]
+	if !strings.Contains(last.Note, "2 file(s)") || !strings.Contains(last.Note, "kept out of context") || last.Destination == "" {
+		t.Errorf("read row: %+v", last)
+	}
+	if !rows[1].PricingUnknown || !strings.Contains(rows[1].Note, "straight to disk") {
+		t.Errorf("write row: %+v", rows[1])
+	}
+}
+
+// A worker call is not gateway traffic. If it leaked into metrics.jsonl the
+// request counts, the secondary's share and the activity chart would all count
+// calls Claude Code never made.
+func TestWorkerCallsNeverInflateGatewayTotals(t *testing.T) {
+	s, _ := shuntServer(t, true)
+	lp, _ := config.ShuntLogPath()
+	for i := 0; i < 5; i++ {
+		shunt.Append(lp, shunt.Event{Kind: shunt.KindRead, OK: true, BytesIn: 100_000, Model: "glm", USD: 0.05})
+	}
+	if st := stateOf(t, s); st.Totals.Requests != 0 || st.Today.Requests != 0 || st.Totals.APIEquivalentUSD != 0 {
+		t.Errorf("shunt calls must not appear in gateway totals: %+v / %+v", st.Totals, st.Today)
+	}
+	var h struct {
+		Window struct{ Requests int }
+	}
+	getJSON(t, s, "/api/history?days=14", &h)
+	if h.Window.Requests != 0 {
+		t.Errorf("the activity chart must not count shunt calls, got %d", h.Window.Requests)
+	}
+}
+
+func TestRequestsMergeRespectsLimitAndOrdering(t *testing.T) {
+	now := time.Now()
+	events := []metrics.Event{{Time: now.Add(-10 * time.Second), Route: "anthropic"}, {Time: now.Add(-50 * time.Second), Route: "anthropic"}}
+	calls := []shunt.Event{{Time: now.Add(-30 * time.Second), Kind: shunt.KindRead, OK: true}, {Time: now.Add(-5 * time.Second), Kind: shunt.KindWrite, OK: true}}
+	rows := mergeRequests(events, calls, 3)
+	if len(rows) != 3 {
+		t.Fatalf("limit not applied: %d", len(rows))
+	}
+	want := []string{"write", "", "read"} // -5s shunt, -10s gateway, -30s shunt; the -50s row is cut
+	for i, w := range want {
+		if rows[i].Shunt != w {
+			t.Errorf("row %d: shunt=%q want %q", i, rows[i].Shunt, w)
+		}
+	}
+	// ordinary gateway rows serialise exactly as before: no shunt fields leak in
+	b, _ := json.Marshal(rows[1])
+	if strings.Contains(string(b), "shunt") {
+		t.Errorf("a gateway row must not carry shunt fields: %s", b)
+	}
+}
+
+func TestShuntActivityListsCallsAndRefusalsNewestFirst(t *testing.T) {
+	s, _ := shuntServer(t, true)
+	lp, _ := config.ShuntLogPath()
+	now := time.Now()
+	shunt.Append(lp, shunt.Event{Time: now.Add(-2 * time.Minute), Kind: shunt.KindRead, OK: true, BytesIn: 400_000, BytesOut: 2_000, Model: "glm"})
+	shunt.Append(lp, shunt.Event{Time: now.Add(-1 * time.Minute), Kind: shunt.KindDeny, OK: true, BytesIn: 90_000, Note: "Read"})
+	shunt.Append(lp, shunt.Event{Time: now, Kind: shunt.KindWrite, OK: false, Note: "output rejected"})
+
+	var rows []shuntActivityRow
+	getJSON(t, s, "/api/shunt-activity", &rows)
+	if len(rows) != 3 || rows[0].Kind != "write" || rows[1].Kind != "deny" || rows[2].Kind != "read" {
+		t.Fatalf("want write, deny, read newest first, got %+v", rows)
+	}
+	if rows[2].KeptOutTokens != shunt.EstimateTokens(398_000) {
+		t.Errorf("kept-out %d", rows[2].KeptOutTokens)
+	}
+	if rows[0].KeptOutTokens != 0 || rows[1].KeptOutTokens != 0 {
+		t.Errorf("a failure and a refusal kept nothing out on their own: %+v", rows[:2])
+	}
+	var limited []shuntActivityRow
+	getJSON(t, s, "/api/shunt-activity?limit=1", &limited)
+	if len(limited) != 1 || limited[0].Kind != "write" {
+		t.Errorf("limit not honoured: %+v", limited)
+	}
+}
+
+func TestShuntActivityIsEmptyNotNull(t *testing.T) {
+	s, _ := shuntServer(t, true)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/shunt-activity", nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if strings.TrimSpace(rr.Body.String()) != "[]" {
+		t.Errorf("no log must serialise as [], which the page iterates, not null: %q", rr.Body.String())
 	}
 }

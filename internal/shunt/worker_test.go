@@ -322,3 +322,39 @@ func TestSkillDescribesOnlyWhatIsOn(t *testing.T) {
 		t.Errorf("skill needs frontmatter and its non-candidates")
 	}
 }
+
+func TestRecentIsNewestFirstAndFilters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shunt.jsonl")
+	for i, k := range []string{KindRead, KindDeny, KindWrite, KindDeny, KindRead} {
+		Append(path, Event{Time: time.Unix(int64(1000+i), 0), Kind: k, OK: true, Files: i})
+	}
+	all, _ := Recent(path, 3, nil)
+	if len(all) != 3 || all[0].Files != 4 || all[2].Files != 2 {
+		t.Errorf("want the last three, newest first: %+v", all)
+	}
+	calls, _ := Recent(path, 10, func(e Event) bool { return e.Kind == KindRead || e.Kind == KindWrite })
+	if len(calls) != 3 || calls[0].Files != 4 {
+		t.Errorf("filter: %+v", calls)
+	}
+	if none, err := Recent(filepath.Join(t.TempDir(), "absent"), 5, nil); err != nil || len(none) != 0 {
+		t.Errorf("a missing log is empty, not an error: %v %v", none, err)
+	}
+}
+
+func TestEventKeptOutTokens(t *testing.T) {
+	cases := []struct {
+		e    Event
+		want int64
+	}{
+		{Event{Kind: KindRead, OK: true, BytesIn: 4000, BytesOut: 400}, 900},
+		{Event{Kind: KindRead, OK: true, BytesIn: 100, BytesOut: 5000}, 0}, // an answer longer than the file kept nothing out
+		{Event{Kind: KindWrite, OK: true, BytesOut: 8000}, 2000},
+		{Event{Kind: KindRead, OK: false, BytesIn: 4000}, 0},
+		{Event{Kind: KindDeny, OK: true, BytesIn: 90000}, 0},
+	}
+	for _, c := range cases {
+		if got := c.e.KeptOutTokens(); got != c.want {
+			t.Errorf("%+v: got %d want %d", c.e, got, c.want)
+		}
+	}
+}
