@@ -1,3 +1,14 @@
+# Update 2026-09-21 (later): token shunting is now OFF
+
+Read this before the handover below. Shunting was switched off with
+`claude-burst shunt disable` because it delegated nothing in real use (12 blocks in real projects, 0 shunts;
+Claude reads in windows, which the guard allows). **The two "not done" asks below (toggle
+switch, README audit) are moot** unless someone decides to keep the feature. Reasoning and
+evidence: `DECISION-token-shunting-off.md`. Open Claude Code sessions need a restart to drop
+the hook.
+
+---
+
 # Handover — 2026-09-21: token shunting
 
 Written when the session closed. **Verify before acting** — everything here was true at the

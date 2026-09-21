@@ -47,6 +47,13 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 
 ## Token shunting: keep the boring work out of Claude's context
 
+> **Switched off on 2026-09-21, and not recommended.** In its first day it blocked 12 direct
+> reads in real plugin projects and delegated **none** of them: Claude read the files in windows
+> instead, which the guard deliberately allows. Full reasoning and the evidence:
+> [DECISION-token-shunting-off.md](DECISION-token-shunting-off.md). What follows documents
+> how it works, for anyone re-enabling it.
+
+
 Most of what a coding agent does is I/O, not judgment: reading 25,000 tokens of source to produce 300 tokens of understanding. `claude-burst shunt` hands that to your **configured openai-compatible secondary** — Together AI serving GLM in the worked example — so Opus/Fable never carry it. It is the [Spotify technique](https://andrewbaker.ninja/2026/09/17/shunting-the-boring-work-how-spotify-cut-claude-code-token-usage-by-90-and-how-to-do-the-same-without-their-plugin/) built into the gateway you already run, reusing the secondary's Keychain key and base URL.
 
 **Prerequisite:** an openai-compatible secondary (Bedrock cannot be a worker). With Together AI:
