@@ -95,14 +95,18 @@ func (s *Server) shuntInfo(cfg config.Config) shuntInfo {
 	si.Last30 = summarizeShunt(now.Add(-30 * 24 * time.Hour))
 	if lp, err := config.ShuntLogPath(); err == nil {
 		if evs, err := shunt.Recent(lp, 500, nil); err == nil {
-			for _, e := range evs { // newest first
-				age := now.Sub(e.Time)
+			// Counted over folded rows, not raw events: a session that was
+			// blocked three times and then followed the redirect is a SHUNTED
+			// row now, and must stop turning the card red the moment it
+			// recovers. Only a loop still unanswered is worth a person's look.
+			for _, a := range shunt.Fold(evs, now) { // newest first
+				age := now.Sub(a.Time)
 				if age > 24*time.Hour {
 					break
 				}
-				if e.Kind == shunt.KindDeny && e.Repeat >= 2 && age <= time.Hour {
+				if a.Tag() == "LOOP" && age <= time.Hour {
 					si.RepeatRefusals1h++
-				} else if e.IsProblem() && e.Kind != shunt.KindDeny {
+				} else if a.IsProblem() && a.Kind != shunt.KindDeny {
 					si.Problems24h++
 				}
 			}
@@ -272,17 +276,19 @@ func byteSize(n int64) string {
 	return fmt.Sprintf("%d bytes", n)
 }
 
-// shuntActivityRow is one line of the panel's own recent-activity list.
-// Unlike the requests table it includes refused direct reads, which are the
-// guard doing its job even though no worker call followed.
+// shuntActivityRow is one line of the panel's own recent-activity list: one
+// shunt, or the reason there was not one. A blocked direct read and the
+// delegated read that answered it are a single SHUNTED row (shunt.Fold); a
+// block nothing answered stays its own row, tagged NO-SHUNT once it goes stale.
 type shuntActivityRow struct {
 	Time time.Time `json:"time"`
-	Kind string    `json:"kind"` // read | write | deny | guard_error
+	Kind string    `json:"kind"` // of the headline event: read | write | deny | guard_error
 	// Tag and Detail are built by shunt.Event, the same wording `claude-burst
 	// shunt log` prints, so the page and the terminal cannot disagree.
 	Tag            string  `json:"tag"`
 	Detail         string  `json:"detail"`
 	Problem        bool    `json:"problem"`
+	Attempts       int     `json:"attempts,omitempty"` // blocked direct reads this row stands for
 	Project        string  `json:"project,omitempty"`
 	Session        string  `json:"session,omitempty"`    // short form, for display
 	SessionFull    string  `json:"session_id,omitempty"` // full id, for the tooltip and for matching
@@ -316,14 +322,21 @@ func (s *Server) handleShuntActivity(w http.ResponseWriter, r *http.Request) {
 	rows := []shuntActivityRow{}
 	lp, err := config.ShuntLogPath()
 	if err == nil {
-		events, err := shunt.Recent(lp, limit, nil)
+		// Folding turns a blocked read and the delegated read that answered it
+		// into one row, so it needs more raw events than rows: each shunt is
+		// two of them, and a half-pair at the cut would show as a stray block.
+		events, err := shunt.Recent(lp, limit*4, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		for _, e := range events {
+		folded := shunt.Fold(events, time.Now())
+		if len(folded) > limit {
+			folded = folded[:limit]
+		}
+		for _, e := range folded {
 			rows = append(rows, shuntActivityRow{
-				Time: e.Time, Kind: e.Kind, Tag: e.Tag(), Detail: e.Describe(), Problem: e.IsProblem(),
+				Time: e.Time, Kind: e.Kind, Tag: e.Tag(), Detail: e.Describe(), Problem: e.IsProblem(), Attempts: e.Attempts,
 				Project: e.Project(), Session: shunt.ShortSession(e.Session), SessionFull: e.Session,
 				Tool: e.Tool, Path: e.Path, Stage: e.Stage, Repeat: e.Repeat, OK: e.OK, Files: e.Files, Calls: e.Calls, BytesIn: e.BytesIn,
 				KeptOutTokens: e.KeptOutTokens(), InputTokens: e.InputTokens, OutputTokens: e.OutputTokens,
