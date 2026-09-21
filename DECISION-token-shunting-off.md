@@ -86,6 +86,28 @@ delivered a single real shunt in its first day of use.
   installed binary's guard, which now allows everything because the feature is off in config.
 - Nothing was deleted. `shunt.jsonl` is kept as the evidence above.
 
+## Lessons
+
+- **A test that forbids the alternative cannot show the model will choose the intended path.**
+  The live tests removed Claude's choice, so 4/4 said nothing about the 0/12 that happened when it
+  had one. Measure the free-choice rate on real sessions before building on a behaviour.
+- **Read a headline number for what it measures.** "90%" was the bulk-read case across four
+  scenarios, by the article's own account, not a session. Ask what the workload was and whether
+  yours matches before adopting the technique.
+- **Check the article's exclusions against your own use first.** The do-not-delegate list (editing,
+  debugging, security review) described most of what runs on this machine, including the review
+  gate, which was the largest source of blocks.
+- **Judge a guard by what it changed, not by how often it fired.** Fourteen blocks looked like
+  activity; zero delegated reads was the result.
+
+## A cheaper experiment, if the goal is still to save tokens
+
+The article's own alternative (its section on subagents) is a subagent pinned to a cheaper model
+for codebase research, which Claude Code recommends for keeping research out of the main context.
+It needs no hook, so there is nothing to block and nothing to work around. It is untested here.
+Judge it by the same measure this decision used: real sessions, free choice, count how often it
+is actually used.
+
 ## If someone wants to revisit it
 
 Do not re-enable it and hope. It needs a measured reason to believe Claude will actually
