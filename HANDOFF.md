@@ -97,7 +97,7 @@ So a session hit the block and **retried the same `cat` instead of running `shun
 
 ### Tests and docs (added after the first handover commit)
 
-- **`internal/integration/shunt_e2e_test.go`** builds the real binary and drives it through the
+- **`internal/integration/shunt_e2e_test.go`** (7 tests) builds the real binary and drives it through the
   hook's stdin/exit-code protocol against a fake worker in a throwaway `HOME`: enable, guard
   block/allow matrix, delegated read (a `.env` never reaches the worker), generated file + `.bak`,
   log, disable restoring `settings.json` exactly, no-worker enable refused, failing worker
@@ -120,32 +120,27 @@ So a session hit the block and **retried the same `cat` instead of running `shun
    session in 10 min with no answer in between). The guard now writes `cwd` on refusals and
    the panel shows the project. **The rest of this is not wired yet — see below.**
 
-### TODO: "make logging tell us clearly what's going on, include sessions"
+### Logging with sessions — DONE (committed after the first handover)
 
-None of this is done; the pieces above exist so it is mostly plumbing.
+The guard and `shunt read`/`write` now record **session id, project, file, tool, lines,
+threshold, failure stage and a repeat count** on every event, and log every exit path.
 
-1. **Guard** (`cmd/claude-burst/shunt.go` `shuntGuard`): add `SessionID` to `HookInput`
-   (`json:"session_id"`) and `Tool` ("Read" / "Bash cat") to `Decision`; log the full refusal
-   (session, cwd, path, tool, lines, threshold, `Repeat: RepeatCount(...)`); when repeat >= 1
-   prefix the message with "refusal #N of this file, run the shunt read command now".
-   **Log `guard_error` events** instead of the silent `return`s (bad stdin JSON, config load).
-2. **`shunt read` / `write`**: every exit path must log. Today they `fatal()` **before**
-   logging when the feature is off, no worker (wrong provider / no key), or args are bad, so
-   those failures leave no trace. Wrap errors with the stage constants (`StageWorkerCall` in
-   `Complete`, `StageValidate` in `CodeWrite`, ...), take the session from
-   `CLAUDE_CODE_SESSION_ID`, use `flag.ContinueOnError` so a bad flag is logged, and check
-   arguments before `NewWorker`.
-3. **`claude-burst shunt log`** `[-n N] [--problems] [--session ID] [--json]`: plain-text lines
-   from `Tag()` + `Describe()` + project + 8-char session. `shunt status` should list recent
-   problems (failures, guard errors, `Repeat >= 2` "LOOP" refusals).
-4. **Dashboard**: `shuntActivityRow` needs session/project/tool/path/stage/repeat and a
-   server-built `detail` (from `Describe`, so wording lives in one place); add Session and
-   Project columns; add `repeat_refusals_1h` to state and a warning line in the panel; put the
-   short session in the note of the shunt rows in *Recent requests*.
-5. README: say `shunt.jsonl` records file **paths**, project directory and session id but still
-   never contents, questions or answers.
-6. Tests for each, then a real end-to-end with the built binary: disabled, no worker, bad
-   args, guard fed garbage on stdin — each must show up in `shunt log`.
+- Session comes from the hook payload (`session_id`) in the guard and from
+  `CLAUDE_CODE_SESSION_ID` (present in Claude's Bash env) in `shunt read`/`write`.
+- `RepeatCount` (`internal/shunt/events.go`): refusals of one file by one session in 10 min with no
+  answered read between. 3rd+ is tagged **LOOP** and the message says so ("REFUSAL #N ... run the
+  shunt read command now").
+- `guard_error` events replace the silent `return`s (bad JSON, unreadable config, panic).
+- Failures before the worker (disabled, no key, bad args) now log with a `stage`.
+- `claude-burst shunt log [-n] [--problems] [--session] [--json]`; `shunt status` lists problems.
+- Dashboard: Project/Session columns, server-built wording (`Event.Describe`, same as the CLI),
+  red problem rows, `repeat_refusals_1h` / `problems_24h` on the card.
+- Tests: 3 new end-to-end (session/project/file/repeat/reset, every failure path, guard errors),
+  unit tests for tags/wording/repeat/stages, admin tests for the counters. **Mutation-checked**:
+  zeroing the repeat counter, dropping the failure log, and silencing guard errors each fail them.
+
+Still true: a session that ignores the redirect will keep being refused. The log now names it.
+Open question if it persists: whether that session simply does not act on the hook's stderr.
 
 ### Before you deploy
 

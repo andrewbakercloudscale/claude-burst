@@ -109,6 +109,7 @@ type rig struct {
 	proj    string
 	worker  *fakeWorker
 	withKey bool
+	session string // CLAUDE_CODE_SESSION_ID for commands run as Claude's Bash tool would
 }
 
 func newRig(t *testing.T, withKey bool) *rig {
@@ -160,6 +161,9 @@ func (r *rig) run(stdin string, args ...string) (stdout, stderr string, code int
 	if r.withKey {
 		cmd.Env = append(cmd.Env, "E2E_API_KEY=test-key") // claude-burst-e2e -> E2E_API_KEY
 	}
+	if r.session != "" {
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_SESSION_ID="+r.session)
+	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -178,9 +182,13 @@ func (r *rig) run(stdin string, args ...string) (stdout, stderr string, code int
 // guard feeds the hook the payload Claude Code sends, and returns the exit code
 // (2 means "blocked", and stderr is what the model is told).
 func (r *rig) guard(tool string, input map[string]any) (stderr string, code int) {
+	return r.guardAs("e2e-session", tool, input)
+}
+
+func (r *rig) guardAs(session, tool string, input map[string]any) (stderr string, code int) {
 	r.t.Helper()
 	payload, _ := json.Marshal(map[string]any{
-		"session_id": "e2e-session", "cwd": r.proj, "hook_event_name": "PreToolUse",
+		"session_id": session, "cwd": r.proj, "hook_event_name": "PreToolUse",
 		"tool_name": tool, "tool_input": input,
 	})
 	_, se, c := r.run(string(payload), "shunt", "guard")
@@ -354,7 +362,7 @@ func TestShuntEndToEnd(t *testing.T) {
 	}
 
 	// --- the log tells the story
-	if got, want := kinds(r.events()), []string{"deny", "deny", "read", "write", "write"}; !reflect.DeepEqual(got, want) {
+	if got, want := kinds(r.events()), []string{"deny", "deny", "guard_error", "read", "write", "write"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("shunt.jsonl kinds = %v, want %v", got, want)
 	}
 	for _, e := range r.events() {
@@ -443,4 +451,196 @@ func TestShuntGuardFailsOpenOnBrokenConfig(t *testing.T) {
 	if se, c := r.guard("Read", map[string]any{"file_path": filepath.Join(r.proj, "big.go")}); c != 0 {
 		t.Errorf("a broken config must not turn the guard into a wall, exit %d: %s", c, se)
 	}
+}
+
+// last returns the newest event of a kind.
+func (r *rig) last(kind string) map[string]any {
+	evs := r.events()
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i]["kind"] == kind {
+			return evs[i]
+		}
+	}
+	return nil
+}
+
+// A refusal has to say WHICH session, WHICH project, WHICH file and how many
+// times, or a looping session cannot be told apart from a healthy one. A real
+// session was refused six times in three minutes and nothing recorded who.
+func TestShuntLogNamesSessionProjectFileAndRepeats(t *testing.T) {
+	r := newRig(t, true)
+	if _, se, c := r.run("", "shunt", "enable"); c != 0 {
+		t.Fatalf("enable: %s", se)
+	}
+	const loop = "aaaa1111-2222-3333-4444-555555555555"
+	const other = "bbbb9999-2222-3333-4444-555555555555"
+	cat := map[string]any{"command": "cat big.go"}
+
+	var msgs []string
+	for i := 0; i < 3; i++ {
+		se, c := r.guardAs(loop, "Bash", cat)
+		if c != 2 {
+			t.Fatalf("refusal %d: exit %d", i+1, c)
+		}
+		msgs = append(msgs, se)
+	}
+	if strings.Contains(msgs[0], "REFUSAL #") {
+		t.Errorf("the first refusal must not claim to be a repeat:\n%s", msgs[0])
+	}
+	contains(t, "second refusal", msgs[1], "REFUSAL #2")
+	contains(t, "third refusal", msgs[2], "REFUSAL #3", "Retrying cannot succeed", "shunt read --question")
+
+	var denies []map[string]any
+	for _, e := range r.events() {
+		if e["kind"] == "deny" {
+			denies = append(denies, e)
+		}
+	}
+	if len(denies) != 3 {
+		t.Fatalf("want 3 refusals logged, got %d", len(denies))
+	}
+	for i, e := range denies {
+		if e["session_id"] != loop || e["cwd"] != r.proj || e["tool"] != "Bash cat" || e["path"] != filepath.Join(r.proj, "big.go") {
+			t.Errorf("refusal %d does not say who/where/what: %v", i+1, e)
+		}
+		if int(e["threshold"].(float64)) != 350 || int(e["lines"].(float64)) < 350 {
+			t.Errorf("refusal %d must record the lines and threshold: %v", i+1, e)
+		}
+		if got, _ := e["repeat"].(float64); int(got) != i {
+			t.Errorf("refusal %d: repeat = %v, want %d", i+1, e["repeat"], i)
+		}
+	}
+
+	// another session hitting the same file is NOT a loop
+	r.guardAs(other, "Bash", cat)
+	if last := r.last("deny"); last["repeat"] != nil {
+		t.Errorf("a different session must start its own count: %v", last)
+	}
+
+	// following the redirect resets the count for the session that did
+	r.session = loop
+	if _, se, c := r.run("", "shunt", "read", "--question", "where?", "big.go"); c != 0 {
+		t.Fatalf("shunt read: %s", se)
+	}
+	// A process's working directory is the symlink-resolved path (/private/var
+	// on macOS), while the hook payload carries whatever Claude Code sent.
+	resolved, err := filepath.EvalSymlinks(r.proj)
+	must(t, err)
+	if got := r.last("read"); got["session_id"] != loop || got["cwd"] != resolved {
+		t.Errorf("a delegated read must record its session and project: %v", got)
+	}
+	r.guardAs(loop, "Bash", cat)
+	if last := r.last("deny"); last["repeat"] != nil {
+		t.Errorf("an answered read must reset the repeat count: %v", last)
+	}
+
+	// the plain-text view
+	out, _, code := r.run("", "shunt", "log", "-n", "50")
+	if code != 0 {
+		t.Fatalf("shunt log failed")
+	}
+	contains(t, "shunt log", out, "LOOP", "refused a direct Bash cat of big.go", "retrying instead of running shunt read",
+		"session aaaa1111", "session bbbb9999", filepath.Base(r.proj), "READ ", "delegated read of 1 file(s)")
+	probs, _, _ := r.run("", "shunt", "log", "--problems")
+	if !strings.Contains(probs, "LOOP") || strings.Contains(probs, "delegated read") || strings.Contains(probs, "session bbbb9999") {
+		t.Errorf("--problems must show only what needs a look:\n%s", probs)
+	}
+	only, _, _ := r.run("", "shunt", "log", "--session", "bbbb")
+	if !strings.Contains(only, "session bbbb9999") || strings.Contains(only, "session aaaa1111") {
+		t.Errorf("--session must filter:\n%s", only)
+	}
+	raw, _, _ := r.run("", "shunt", "log", "--json", "-n", "2")
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Errorf("--json must print one JSON object per line: %q", line)
+		}
+	}
+	status, _, _ := r.run("", "shunt", "status")
+	contains(t, "status", status, "shunt PROBLEMS")
+}
+
+// Failures used to call fatal() BEFORE the log write, so a disabled feature, a
+// missing worker or a bad argument left no trace and looked like a refusal that
+// nothing ever followed up.
+func TestShuntEveryFailurePathLeavesATrace(t *testing.T) {
+	r := newRig(t, true)
+	r.session = "cccc0000-1111-2222-3333-444444444444"
+	stageOf := func() (string, string) {
+		evs := r.events()
+		if len(evs) == 0 {
+			return "", ""
+		}
+		e := evs[len(evs)-1]
+		return fmt.Sprint(e["stage"]), fmt.Sprint(e["session_id"])
+	}
+	expect := func(what, want string, args ...string) {
+		t.Helper()
+		before := len(r.events())
+		_, se, code := r.run("", args...)
+		if code == 0 {
+			t.Errorf("%s: must exit non-zero", what)
+		}
+		if len(r.events()) != before+1 {
+			t.Fatalf("%s: a failure must log exactly one event (stderr: %s)", what, se)
+		}
+		if st, sess := stageOf(); st != want || sess != r.session {
+			t.Errorf("%s: stage=%q session=%q, want stage %q session %q", what, st, sess, want, r.session)
+		}
+	}
+
+	expect("read while off", "disabled", "shunt", "read", "--question", "x", "big.go")
+	expect("write while off", "disabled", "shunt", "write", "--spec", "x", "--out", "a.go")
+
+	if _, se, c := r.run("", "shunt", "enable"); c != 0 {
+		t.Fatalf("enable: %s", se)
+	}
+	expect("read without a question", "args", "shunt", "read", "big.go")
+	expect("read without a file", "args", "shunt", "read", "--question", "x")
+	expect("a bad flag", "args", "shunt", "read", "--no-such-flag")
+	expect("write without a spec", "args", "shunt", "write", "--out", "a.go")
+	expect("write to a credentials file", "args", "shunt", "write", "--spec", "x", "--out", ".env")
+	expect("read of only secrets", "args", "shunt", "read", "--question", "x", ".env")
+	if n := len(r.worker.seen()); n != 0 {
+		t.Errorf("none of those should have reached the worker, got %d calls", n)
+	}
+
+	r.worker.reply = func(string) string { return "I'm sorry, but I can't help with that." }
+	expect("a refusing worker", "validate", "shunt", "write", "--spec", "make it", "--out", "a.go")
+	if _, err := os.Stat(filepath.Join(r.proj, "a.go")); err == nil {
+		t.Errorf("a rejected generation must not leave a file")
+	}
+
+	r.worker.status = 500
+	expect("a failing provider", "worker_call", "shunt", "read", "--question", "x", "big.go")
+
+	r.withKey = false // the key goes missing after it was enabled
+	expect("a vanished key", "worker_init", "shunt", "read", "--question", "x", "big.go")
+
+	out, _, _ := r.run("", "shunt", "log", "--problems", "-n", "50")
+	contains(t, "problems view", out, "READ-FAIL", "WRITE-FAIL", "FAILED at disabled", "FAILED at args", "FAILED at validate", "FAILED at worker_call", "FAILED at worker_init")
+}
+
+// A guard that cannot decide lets the call through; that must not be invisible.
+func TestShuntGuardErrorsAreLogged(t *testing.T) {
+	r := newRig(t, true)
+	if _, se, c := r.run("", "shunt", "enable"); c != 0 {
+		t.Fatalf("enable: %s", se)
+	}
+	if _, _, c := r.run("this is not json", "shunt", "guard"); c != 0 {
+		t.Fatalf("garbage must be allowed through")
+	}
+	if e := r.last("guard_error"); e == nil || e["stage"] != "input" || e["ok"] != false {
+		t.Errorf("garbage stdin must log a guard_error at stage input: %v", e)
+	}
+
+	must(t, os.WriteFile(filepath.Join(r.home, ".config", "claude-burst", "config.json"), []byte("{ not json"), 0o600))
+	if se, c := r.guardAs("dddd0000-1111", "Read", map[string]any{"file_path": filepath.Join(r.proj, "big.go")}); c != 0 {
+		t.Fatalf("broken config must not block: %s", se)
+	}
+	if e := r.last("guard_error"); e["stage"] != "config" || e["session_id"] != "dddd0000-1111" {
+		t.Errorf("a broken config must log a guard_error at stage config with the session: %v", e)
+	}
+	out, _, _ := r.run("", "shunt", "log", "--problems")
+	contains(t, "log", out, "GUARD-ERR", "the call was ALLOWED through")
 }

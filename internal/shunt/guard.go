@@ -14,6 +14,7 @@ import (
 
 // HookInput is the part of Claude Code's PreToolUse payload the guard reads.
 type HookInput struct {
+	SessionID string `json:"session_id"` // Claude Code's session id: what ties a refusal to a conversation
 	ToolName  string `json:"tool_name"`
 	Cwd       string `json:"cwd"`
 	ToolInput struct {
@@ -32,6 +33,7 @@ type Decision struct {
 	Path   string // the file that tripped the threshold
 	Lines  int    // its line count (at least MinLines when denied)
 	Bytes  int64
+	Tool   string // what was refused: "Read", or "Bash cat" / "Bash head" ...
 }
 
 // GuardOptions are the knobs the guard needs, decoupled from config so the
@@ -58,10 +60,13 @@ func Decide(in HookInput, opt GuardOptions) Decision {
 		if in.ToolInput.Offset != nil || in.ToolInput.Limit != nil {
 			return Decision{}
 		}
-		return checkPath(in.ToolInput.FilePath, in.Cwd, opt)
+		d := checkPath(in.ToolInput.FilePath, in.Cwd, opt)
+		d.Tool = "Read"
+		return d
 	case "Bash":
 		for _, p := range bashReadTargets(in.ToolInput.Command, opt.MinLines) {
 			if d := checkPath(p, in.Cwd, opt); d.Deny {
+				d.Tool = "Bash " + bashProgram(in.ToolInput.Command)
 				return d
 			}
 		}
@@ -227,6 +232,15 @@ func bashReadTargets(command string, minLines int) []string {
 		return nil
 	}
 	return files
+}
+
+// bashProgram names the command a plain read used (cat, head, ...), for the log.
+func bashProgram(command string) string {
+	words, ok := shellWords(strings.TrimSpace(command))
+	if !ok || len(words) == 0 {
+		return "?"
+	}
+	return filepath.Base(words[0])
 }
 
 // headTailCount extracts the -n N / -nN / -N / --lines=N count. explicit is

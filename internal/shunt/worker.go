@@ -139,8 +139,14 @@ func (w *Worker) Cost(in, out int64) (usd float64, known bool) {
 	return float64(in)/1e6*p.InputPerMTok + float64(out)/1e6*p.OutputPerMTok, true
 }
 
-// Complete runs one chat completion at temperature 0.
+// Complete runs one chat completion at temperature 0. Every failure is tagged
+// StageWorkerCall so the log says the provider is where it went wrong.
 func (w *Worker) Complete(ctx context.Context, system, user string, maxTokens int) (Result, error) {
+	r, err := w.complete(ctx, system, user, maxTokens)
+	return r, stage(StageWorkerCall, err)
+}
+
+func (w *Worker) complete(ctx context.Context, system, user string, maxTokens int) (Result, error) {
 	body, err := json.Marshal(map[string]any{
 		"model":       w.Model,
 		"temperature": 0,
