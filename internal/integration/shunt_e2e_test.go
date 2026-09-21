@@ -80,19 +80,33 @@ func newFakeWorker(t *testing.T) *fakeWorker {
 		user := body.Messages[len(body.Messages)-1]["content"]
 		f.mu.Lock()
 		f.prompts = append(f.prompts, user)
-		st := f.status
+		st, reply := f.status, f.reply
 		f.mu.Unlock()
 		if st != 0 {
 			http.Error(w, "upstream exploded", st)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{{"message": map[string]string{"content": f.reply(user)}, "finish_reason": "stop"}},
+			"choices": []map[string]any{{"message": map[string]string{"content": reply(user)}, "finish_reason": "stop"}},
 			"usage":   map[string]int{"prompt_tokens": 1200, "completion_tokens": 30},
 		})
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// setReply and setStatus change the worker's behaviour while its handler may be
+// running on another goroutine, so they take the same lock the handler reads under.
+func (f *fakeWorker) setReply(fn func(user string) string) {
+	f.mu.Lock()
+	f.reply = fn
+	f.mu.Unlock()
+}
+
+func (f *fakeWorker) setStatus(code int) {
+	f.mu.Lock()
+	f.status = code
+	f.mu.Unlock()
 }
 
 func (f *fakeWorker) seen() []string {
@@ -353,7 +367,7 @@ func TestShuntEndToEnd(t *testing.T) {
 	if strings.Contains(out, "func Generated") {
 		t.Errorf("the generated code must not be echoed into the model's context")
 	}
-	r.worker.reply = func(string) string { return "package gen\n\nfunc Second() {}" }
+	r.worker.setReply(func(string) string { return "package gen\n\nfunc Second() {}" })
 	if _, _, code = r.run("", "shunt", "write", "--spec", "again", "--out", "gen/gen.go"); code != 0 {
 		t.Fatalf("overwrite failed")
 	}
@@ -418,7 +432,7 @@ func TestShuntWorkerFailureIsReportedAndLogged(t *testing.T) {
 	if _, se, c := r.run("", "shunt", "enable"); c != 0 {
 		t.Fatalf("enable: %s", se)
 	}
-	r.worker.status = 500
+	r.worker.setStatus(500)
 
 	_, se, code := r.run("", "shunt", "read", "--question", "anything", "big.go")
 	if code == 0 {
@@ -605,13 +619,13 @@ func TestShuntEveryFailurePathLeavesATrace(t *testing.T) {
 		t.Errorf("none of those should have reached the worker, got %d calls", n)
 	}
 
-	r.worker.reply = func(string) string { return "I'm sorry, but I can't help with that." }
+	r.worker.setReply(func(string) string { return "I'm sorry, but I can't help with that." })
 	expect("a refusing worker", "validate", "shunt", "write", "--spec", "make it", "--out", "a.go")
 	if _, err := os.Stat(filepath.Join(r.proj, "a.go")); err == nil {
 		t.Errorf("a rejected generation must not leave a file")
 	}
 
-	r.worker.status = 500
+	r.worker.setStatus(500)
 	expect("a failing provider", "worker_call", "shunt", "read", "--question", "x", "big.go")
 
 	r.withKey = false // the key goes missing after it was enabled
