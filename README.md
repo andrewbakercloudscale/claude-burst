@@ -108,6 +108,14 @@ Tags: `REFUSED` (the guard blocked a direct read), **`LOOP`** (the same session 
 
 **How it is tested.** Each piece has unit tests (the guard's rules, the worker, code-write validation, the `settings.json` hook editor, the dashboard endpoints). On top of those, `internal/integration/shunt_e2e_test.go` builds the real binary and drives it the way Claude Code does — the hook's stdin/exit-code protocol, a `settings.json` that already holds someone else's hook, and a fake openai-compatible worker — through enable, blocking and passing the right calls, a delegated read (a credentials file never reaches the worker), a generated file, the log, and disable restoring `settings.json` exactly. It also checks that enabling refuses without a worker, that a failing worker is reported and logged, and that the guard fails open on a broken config. Breaking the guard, or skipping the worker check on enable, makes it fail.
 
+**Live proof on your machine.** Those tests fake Claude Code. `internal/integration/shunt_live_test.go` uses the real thing: it runs `claude -p` on a small model against a 600-line file, then reads `shunt.jsonl` for *that session's own* events. It checks that a real whole-file `Read` is blocked, that the refusal reaches the model, that the log names the session, project and file, that the delegated `shunt read` runs with the same session id (so `CLAUDE_CODE_SESSION_ID` really is in Claude's Bash environment), that a real call to your worker is billed and recorded, that nothing loops, and that the answer is right. It uses the **installed** binary and your real config, so it answers "is what I have deployed working?", and it costs a few cents, so it is opt-in:
+
+```bash
+CLAUDE_BURST_LIVE_SHUNT=1 go test ./internal/integration/ -run TestLiveShunt -v -timeout 10m
+```
+
+Its events appear in your real log under a project named `shunt-live-check-*`. It refuses to pass on a machine where shunting is not fully enabled. A model that is blocked is free to answer another way (it sometimes uses `grep`), so one test lets the model choose and asserts only what holds either way, and the other tells it to follow the refusal's instructions and proves the whole redirect.
+
 ## Routing behaviour
 
 1. Claude Code sends `/v1/messages` to `http://127.0.0.1:7777`.

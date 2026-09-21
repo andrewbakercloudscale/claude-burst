@@ -109,6 +109,17 @@ So a session hit the block and **retried the same `cat` instead of running `shun
   runs `configure --region`); the README says so and shows the `configure` step that replaces it.
   `BLOG.md` was left alone on purpose — it is a dated post that says it is kept as written.
 
+### Live proof (opt-in, real Claude Code + real worker)
+
+`CLAUDE_BURST_LIVE_SHUNT=1 go test ./internal/integration/ -run TestLiveShunt -v -timeout 10m`
+runs `claude -p` (haiku) against a 600-line file and reads that session's own events from the
+**real** `shunt.jsonl` via the **installed** binary. Verified passing on 2026-09-21: real `Read`
+refused -> refusal reached the model -> model ran `shunt read` -> GLM-5.3 on Together answered
+(cited line 433, correct) -> `READ` logged with the same session id. Cost about $0.013 of Together
+plus a few cents of haiku per run; rows appear in your real log under `shunt-live-check-*`.
+Finding: a blocked model is free to answer another way. One manual run used `grep` and never
+touched the worker; the natural test therefore asserts only what holds either way.
+
 ### Committed but NOT deployed
 
 1. **Refusal message rewritten** (`guard.go`): says "Do NOT retry", offers
