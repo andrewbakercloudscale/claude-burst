@@ -1,3 +1,21 @@
+# Update 2026-09-21 (evening): the 18:04 failure, and what is still open
+
+The 502 "resolve api.anthropic.com over DoH ... no such host" was **the machine's network**,
+not a Burst bug: the gateway's own network snapshot shows no uplink and `www.apple.com` failing
+in 1 ms at 16:36, 17:59 and 18:04-18:23, with the interface flapping between a hotspot
+(`172.20.10.2`), a LAN (`192.168.0.90`), link-local (`169.254.x`) and `192.168.89.x`. Three
+Burst behaviours made it worse and are fixed in the commit after this note (retry a dead pooled
+connection once, do not fail over into a dead network, short self-releasing outage windows).
+
+**Still open:** the pf-heal daemon healed the redirect three times that afternoon (17:35, 17:47,
+17:59, ~1 s each, every one on a network change) and then logged nothing after 17:59:29, while
+at 18:24 the redirect was refused again. Whether it died, hung, or was not triggered during the
+18:04-18:24 churn is unknown: `scripts/rollback.sh` ran at 18:25:07 and stopped everything before
+it could be inspected. If Burst is re-enabled, check `/var/log/claude-burst-pf.log` and the
+daemon's state *first*, before trusting the redirect after a network change.
+
+---
+
 # Update 2026-09-21 (later): token shunting is now OFF
 
 Read this before the handover below. Shunting was switched off with

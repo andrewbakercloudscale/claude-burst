@@ -137,6 +137,24 @@ Its events appear in your real log under a project named `shunt-live-check-*`. I
 9. Later requests for that model skip straight to the rung (or the secondary) until the reset time plus a small safety grace period; other models are untouched.
 10. The first request after that time goes back to Anthropic Max automatically.
 
+### When the network itself is the problem
+
+A laptop changing WiFi looks like an Anthropic outage from the inside, and failing over does
+not help: the secondary is behind the same network. Three rules keep it from being treated as
+one (all from the 2026-09-21 evening, when a hotspot-to-LAN switch put a healthy primary's
+traffic behind a secondary that could not answer for five minutes):
+
+- **A dead pooled connection is retried once, on a fresh one.** A `write: broken pipe` means
+  the kept-alive connection died and the server never saw the request, so it is safe to resend
+  and is not counted as a failure. Read-side resets are *not* retried: the server may already
+  have run the request.
+- **Silence while DNS is down does not fail over.** If the far side did not answer (a timeout,
+  not a refused or reset connection) *and* the control lookup of `www.apple.com` fails, the
+  request gets a fast, explicit 502 instead of waiting on a second dead host.
+- **An outage window is short and releases itself.** A window armed by failures (as opposed to
+  a rate limit) lasts `metered_failover.window_seconds` (60 s), not the 5-minute unknown-reset
+  default, and ends the moment the secondary also fails at the transport level.
+
 ### Limits are per model, and are never inferred
 
 Anthropic's claim headers name the *bucket* that was exhausted (`five_hour`,

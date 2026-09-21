@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -70,6 +71,11 @@ type State struct {
 	// Opus was answering normally.
 	ModelOverflow map[string]int64 `json:"model_overflow,omitempty"`
 
+	// ModelClaim is what armed each model's window: an Anthropic limit claim
+	// (five_hour, seven_day_overage_included, ...) or metered_* for an outage.
+	// The two need different handling -- see releaseOutageWindow.
+	ModelClaim map[string]string `json:"model_claim,omitempty"`
+
 	// DowngradeDisabled turns the fallback chain off without editing
 	// config.json, from the dashboard, while the gateway runs. Negative so
 	// the zero value keeps the chain on: a user who has configured a chain
@@ -84,6 +90,10 @@ type Server struct {
 	primaryDetector FailoverDetector
 	secondary       Provider // nil if no secondary is configured
 	client          *http.Client
+	// probe measures local network health after a transport failure. A field so
+	// tests can say "the network is down" or "up" without depending on the
+	// machine they run on having working DNS.
+	probe func() netProbe
 	// passthroughClient serves non-inference paths; identical to client but
 	// with no ResponseHeaderTimeout, for long-polling control-plane requests.
 	passthroughClient *http.Client
@@ -139,6 +149,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		primaryDetector: primaryDetector,
 		secondary:       secondary,
 		client:          &http.Client{Timeout: 0, Transport: newTransport(timeout)},
+		probe:           probeNetwork,
 		// Control-plane traffic (notably Claude Code's Remote Control, which
 		// registers and then long-polls for work) can legitimately hold a
 		// connection open for minutes before sending any response header.
@@ -327,6 +338,27 @@ func (s *Server) HasSecondary() bool {
 	return s.secondary != nil
 }
 
+// isOutageClaim reports whether a failover was armed by failures rather than by
+// Anthropic saying a limit was reached.
+func isOutageClaim(claim string) bool { return strings.HasPrefix(claim, "metered_") }
+
+// releaseOutageWindow ends a model's window if -- and only if -- an outage armed
+// it. A rate-limit window is left alone: the primary would just refuse again.
+func (s *Server) releaseOutageWindow(model string) {
+	if model == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !isOutageClaim(s.state.ModelClaim[model]) || s.state.ModelOverflow[model] == 0 {
+		return
+	}
+	delete(s.state.ModelOverflow, model)
+	delete(s.state.ModelClaim, model)
+	s.saveStateLocked()
+	s.logger.Printf("released outage window for model=%q: the secondary also failed at the transport level, so the next request tries the primary", model)
+}
+
 // ClearOverflow reopens every route: the forced account-wide window and each
 // model's own. DowngradeDisabled deliberately survives -- it is a policy the
 // user set, not a window that expires, and "Back to primary" silently
@@ -453,12 +485,27 @@ func (s *Server) ForceOverflow(d time.Duration, reason string) time.Time {
 // claim header is not evidence about models it does not name.
 func (s *Server) activateOverflow(model string, resetAt int64, claim, reason string) {
 	if resetAt <= time.Now().Unix() {
-		resetAt = time.Now().Add(time.Duration(s.cfg.UnknownResetSeconds) * time.Second).Unix()
+		ttl := time.Duration(s.cfg.UnknownResetSeconds) * time.Second
+		if isOutageClaim(claim) {
+			// An outage has no reset time to read, and the unknown-reset default
+			// (5 minutes) is sized for a rate limit that genuinely lasts that
+			// long. An outage that has passed should not keep steering traffic
+			// to a secondary: hold it only as long as the failures that armed it
+			// were counted over.
+			ttl = time.Duration(s.cfg.MeteredFailover.WindowSeconds) * time.Second
+		}
+		resetAt = time.Now().Add(ttl).Unix()
 	}
 	resetAt += int64(s.cfg.ResetGraceSeconds)
 	s.mu.Lock()
 	if s.state.ModelOverflow == nil {
 		s.state.ModelOverflow = map[string]int64{}
+	}
+	if s.state.ModelClaim == nil {
+		s.state.ModelClaim = map[string]string{}
+	}
+	if model != "" {
+		s.state.ModelClaim[model] = claim
 	}
 	// An empty model means the body carried none to read. Scoping that to ""
 	// would arm a window nothing ever matches, so it falls back to the
@@ -722,6 +769,20 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	}
 
 	resp, err := s.clientFor(in.URL.Path).Do(req)
+	if err != nil && isStaleWriteFailure(err) && in.Context().Err() == nil {
+		// The kept-alive connection died under us (a network switch), and the
+		// write onto it failed, so the server never saw the request. Drop the
+		// pooled connections and send it again on a fresh one, once, BEFORE
+		// treating it as a failure: counting this against the primary is what
+		// armed a failover window on 2026-09-21 that then sent a healthy
+		// primary's traffic to a secondary that was also unreachable.
+		s.clientFor(in.URL.Path).CloseIdleConnections()
+		if retry, _, perr := p.Prepare(in.Context(), in, body); perr == nil {
+			s.logger.Printf("req=%s retry route=%s reason=%q -> one more attempt on a fresh connection", rid, p.Name(), err)
+			req = retry
+			resp, err = s.clientFor(in.URL.Path).Do(req)
+		}
+	}
 	if resp != nil {
 		s.recent.add(RecentResponse{
 			Time: start, RequestID: rid, Method: in.Method, Path: in.URL.Path,
@@ -736,7 +797,12 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		// secondary's DNS lookup failed outright ~90s later, and the log gave
 		// no way to tell whether that was one continuous network outage or two
 		// unrelated failures. This snapshot answers that next time.
-		s.logger.Printf("req=%s %s", rid, networkSnapshot(p.Name(), err))
+		probe := s.probe
+		if probe == nil {
+			probe = probeNetwork
+		}
+		np := probe()
+		s.logger.Printf("req=%s %s", rid, np.snapshot(p.Name(), err))
 		// The client's own context is what Prepare was given, so if it is
 		// done, this request died because the CALLER went away -- not because
 		// the upstream failed. Checked here as well as in the detector
@@ -747,6 +813,29 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		if in.Context().Err() != nil {
 			s.logger.Printf("req=%s client_gone route=%s err=%v (no failover, not replayed)", rid, p.Name(), err)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "client cancelled: "+err.Error(), destination)
+			return
+		}
+		if slot == "secondary" {
+			// The secondary just failed at the transport level. If the window
+			// that sent traffic here was armed by an outage (not by a rate limit,
+			// which the primary would only refuse again), it is not helping:
+			// release it so the next request tries the primary rather than
+			// queueing behind a secondary that cannot answer.
+			//
+			// Keyed by the model the CLIENT asked for, read from the body: what
+			// Prepare returns for a secondary is that provider's own model id,
+			// and the window was armed under the requested one.
+			s.releaseOutageWindow(requestModel(body))
+		}
+		if !np.dnsOK && !peerAnswered(err) && !isClientCancellation(err) {
+			// Silence from the far side while this machine cannot resolve any
+			// name: the network is down, and the secondary is behind the same
+			// network. Failing over would only make the request wait on a second
+			// dead host (four Together timeouts in a row, 2026-09-21), and it
+			// would arm a window blaming a model for a laptop changing WiFi.
+			s.logger.Printf("req=%s no_failover route=%s reason=%q (local network unavailable: control DNS failed)", rid, p.Name(), "network down")
+			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
 		}
 		if allowFailover {
@@ -873,32 +962,75 @@ func (s *Server) replayElsewhere(w http.ResponseWriter, in *http.Request, body [
 //     DoH entirely, unlike interceptResolver). If this also fails, DNS is
 //     broken machine-wide, not just for the provider that just errored.
 func networkSnapshot(route string, triggerErr error) string {
-	var ifaces []string
+	return probeNetwork().snapshot(route, triggerErr)
+}
+
+// netProbe is one measurement of local network health. It is taken once per
+// transport failure and used twice: written to the log, and consulted to
+// decide whether failing over could possibly help.
+type netProbe struct {
+	ifaces []string
+	dnsOK  bool
+	dnsErr error
+	dnsDur time.Duration
+}
+
+func probeNetwork() netProbe {
+	var p netProbe
 	if addrs, ierr := net.InterfaceAddrs(); ierr == nil {
 		for _, a := range addrs {
 			ipnet, ok := a.(*net.IPNet)
 			if !ok || ipnet.IP.IsLoopback() {
 				continue
 			}
-			ifaces = append(ifaces, ipnet.IP.String())
+			p.ifaces = append(p.ifaces, ipnet.IP.String())
 		}
 	}
-	ifaceState := "NONE (network interface appears down)"
-	if len(ifaces) > 0 {
-		ifaceState = strings.Join(ifaces, ",")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	dnsStart := time.Now()
-	_, dnsErr := net.DefaultResolver.LookupHost(ctx, "www.apple.com")
-	dnsState := fmt.Sprintf("ok (%s)", time.Since(dnsStart).Round(time.Millisecond))
-	if dnsErr != nil {
-		dnsState = fmt.Sprintf("FAILED (%s): %v", time.Since(dnsStart).Round(time.Millisecond), dnsErr)
-	}
+	start := time.Now()
+	_, p.dnsErr = net.DefaultResolver.LookupHost(ctx, "www.apple.com")
+	p.dnsDur = time.Since(start)
+	p.dnsOK = p.dnsErr == nil
+	return p
+}
 
+func (p netProbe) snapshot(route string, triggerErr error) string {
+	ifaceState := "NONE (network interface appears down)"
+	if len(p.ifaces) > 0 {
+		ifaceState = strings.Join(p.ifaces, ",")
+	}
+	dnsState := fmt.Sprintf("ok (%s)", p.dnsDur.Round(time.Millisecond))
+	if p.dnsErr != nil {
+		dnsState = fmt.Sprintf("FAILED (%s): %v", p.dnsDur.Round(time.Millisecond), p.dnsErr)
+	}
 	return fmt.Sprintf("network-snapshot route=%s trigger_err=%q local_ifaces=%s control_dns=%s",
 		route, triggerErr, ifaceState, dnsState)
+}
+
+// peerAnswered reports whether err proves something on the far side of the
+// network actually replied. A refused or reset connection is a peer speaking;
+// a timeout or an EOF is silence, and silence is the ambiguous case where the
+// probe above is worth consulting.
+func peerAnswered(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET)
+}
+
+// isStaleWriteFailure reports whether err is a WRITE onto a connection that
+// had already died, which is what a laptop moving between networks produces:
+// the kept-alive connection to Anthropic is still in the pool, the interface
+// it rode on is gone, and the first write onto it fails with EPIPE.
+//
+// It is scoped to writes on purpose. A failed write means the server cannot
+// have received the whole request, so sending it again on a fresh connection
+// cannot run the same generation twice. A read-side reset or EOF gives no such
+// guarantee and is deliberately not retried.
+func isStaleWriteFailure(err error) bool {
+	var op *net.OpError
+	if !errors.As(err, &op) || op.Op != "write" {
+		return false
+	}
+	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }
 
 func copyResponseHeaders(dst http.Header, src http.Header) {
