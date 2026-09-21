@@ -1,3 +1,128 @@
+# Handover — 2026-09-21: token shunting
+
+Written when the session closed. **Verify before acting** — everything here was true at the
+time and nothing keeps it true. Two older handoffs follow it: 2026-09-20 (failover fixes) and
+2026-09-08 (issue #1, TLS storm). Neither is superseded by this one.
+
+## Start here: what is NOT done
+
+Two asks were in flight when the session ended.
+
+### 1. Make the shunt master control a toggle switch, not a checkbox — NOT STARTED
+
+`internal/admin/admin.html`, the "Token shunting" section. Today it is a plain checkbox:
+
+```html
+<label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
+  <input type="checkbox" id="shuntMaster" style="width:auto;margin:0;transform:scale(1.25)">
+  Token shunting <span id="shuntMasterState" class="pill"></span>
+</label>
+```
+
+- The JS only uses `.checked` and `onchange` (`$("shuntMaster").onchange` posts
+  `{read:on, write:on}`; `renderShunt` sets `.checked` unless `shuntBusy`). **Restyle, do not
+  rewrite**: a `.switch` class with `appearance:none`, a 44x24 pill track, a `::after` thumb, the
+  track using `var(--ok)` when `:checked`, a `:focus-visible` ring, and `role="switch"` with
+  `aria-checked` kept in step in `renderShunt` and the handler. Remove the inline `scale(1.25)`.
+- Gotcha: a global rule gives every `input` `min-width:210px` and padding. `input[type="checkbox"]
+  {min-width:0}` already exists for checkboxes; the switch needs `min-width:0; padding:0; border`
+  set explicitly. Use the theme variables so dark mode works.
+- The two part switches (Bulk read, Code write) are still checkboxes. The ask said "the shunt", so
+  they were left alone; say so, and offer to convert them for consistency.
+- Verify visually. The browser extension was disconnected at the end, so this has never been seen
+  in Chrome. Panel logic can be checked without a browser: extract the functions from the
+  `<script>` in `admin.html` and run them in Node with stub `$`/`esc`/`num` (worked well for the
+  activity table). Screenshot click coordinates are in the screenshot's frame (1453 wide), not CSS
+  pixels, and the first click after a page load is sometimes ignored.
+
+### 2. README audit against what the product does now — PARTLY DONE
+
+Asked: "did you rewrite the readme to reflect what the product currently does?" The honest answer
+was: reframed around Together AI + shunting, but never audited end to end. The audit found:
+
+- **Accurate (checked by script):** every `claude-burst <command>` and `--flag` in the README's
+  code blocks exists in the CLI (the only two hits, `--self-test` and `claude-burst hosts`, are a
+  script flag and an /etc/hosts marker); Go 1.23 matches `go.mod`; every internal anchor resolves.
+- **Stale, still to write:**
+  - *Forcing the secondary, and the admin UI* describes an older dashboard. Add: the readiness
+    ring (checks: traffic reaching gateway, gateway watchdog, pf redirect guard, secondary ready,
+    error rate), the rail (Observe / Control / Setup), the daily activity chart (7d/14d/30d),
+    the **Token shunting** panel (master switch, threshold, cards, recent activity with project and
+    session, LOOP rows), the *Try another Claude model before the secondary* toggle, the header
+    **Install Transparent Proxy** button (only while Claude Burst is not in use), **Reinstall**
+    (only while it is), key reveal gated by Touch ID, and that *Recent requests* now includes
+    "Token Shunt" rows (merged for display only, never into `metrics.jsonl`).
+  - *What is logged* names two files; `shunt.jsonl` is a third (documented only under Token
+    shunting). Add a pointer.
+  - *Commands*: `claude-burst stats` now also prints a `shunt:` line.
+  - *Uninstall*: now removes the shunt hook and skill and switches shunting off in `config.json`
+    (a reinstall needs `claude-burst shunt enable`); the purge hint lists the Together, OpenRouter
+    and Bedrock Keychain services. **The code was fixed and tested; this paragraph was not
+    updated.**
+- **Deliberate, worth a sentence in the docs:** `claude-burst disable` / `enable` do **not** touch
+  the shunt hook. `deploy.sh` calls them around the swap in base-url mode, so tying shunting to them
+  would silently switch the guard off on every deploy. Only `shunt enable|disable` and
+  `./install.sh uninstall` change it.
+
+## Where things stand (verify, do not trust)
+
+- **git:** HEAD `b73e332` (uninstall fix) plus this handover commit; `origin/main` is at
+  `1b1793b`, so **the last two commits are unpushed**. Push only when asked.
+- **Deployed:** gateway `https://127.0.0.1:17777` (transparent mode), admin `127.0.0.1:7788`.
+  Built from `37b365b`; no non-test Go has changed since, so the running binary matches HEAD's Go
+  code. `install.sh` is a script, so its fix needs no deploy.
+- **Shunting is ON here:** read + write, 350 lines, worker `zai-org/GLM-5.3` on Together, hook and
+  skill installed. Last look (30 days, includes the test runs): 5 delegated reads, 13 refused
+  direct reads, about 32.7k tokens kept out of context (an estimate), $0.08 worker cost.
+- **Off switch, immediate** (the guard reads `config.json` on every call): the panel's master
+  switch, or `claude-burst shunt disable`. Restart Claude Code only to unload the skill.
+  **A restart is also what loads the skill** in sessions that started before shunting was enabled.
+
+## What exists (all on origin unless noted)
+
+`claude-burst shunt enable|disable|status|doctor|log` plus the hook-run `guard` and the
+Claude-run `read` / `write`. A `PreToolUse` hook refuses whole-file `Read` and plain
+`cat|head|tail|less|more` at 350+ lines and points at `shunt read`; windowed reads always pass;
+credential-looking files are never sent to the worker; it fails **open** and says so
+(`GUARD-ERR`). Worker = the configured openai-compatible secondary (Bedrock cannot be one).
+Code: `internal/shunt/`, `cmd/claude-burst/shunt.go`, `internal/admin/shunt.go`. Every event in
+`~/.config/claude-burst/shunt.jsonl` carries session id, project, file, tool, and a failure
+`stage`; a session refused the same file 3+ times with no answered read is tagged **LOOP**.
+`claude-burst shunt log --problems` is the first thing to run if it seems not to be working.
+
+## Tests, and how to run them
+
+```bash
+go vet ./... && go test ./... -race -count=1            # the CI gate; deploy.sh runs the same
+go test ./internal/integration -run TestShunt -v         # 7 end-to-end tests, real binary, fake worker
+go test ./internal/integration -run TestInstallScript    # real install.sh uninstall, launchctl stubbed
+CLAUDE_BURST_LIVE_SHUNT=1 go test ./internal/integration -run TestLiveShunt -v -timeout 10m   # real Claude Code + real worker, ~ a few cents
+TOGETHER_API_KEY=$(security find-generic-password -s claude-burst-together -w) \
+  go test ./internal/router -run TestLiveSecondary -v    # real Together translation
+```
+
+All of these passed on 2026-09-21. The key behaviours were mutation-checked (making the guard never
+block, skipping the readiness check on enable, zeroing the repeat counter, dropping the failure
+log, silencing guard errors each fail the suite). The live tests' events land in the real log under
+projects named `shunt-live-check-*`.
+
+## Things that will bite you
+
+- **`deploy.sh` builds the working tree** and runs `go test ./... -race`. A data race in a test
+  refused a deploy once (plain `go test` had passed). Keep the tree clean or it ships code no
+  commit holds.
+- **Deploying changes every open Claude Code session's hook on its next call**: the guard is a
+  subprocess of the installed binary. It also restarts the gateway (a blip).
+- **A blocked model may not follow the redirect.** One live run answered with `grep` and never
+  touched the worker, which is legitimate. The natural test asserts only what holds either way; the
+  other test tells the model to follow the refusal. The loop that started the logging work (a
+  `wporg-ready` session refused six times, no worker call, session then unknowable) was never
+  identified; the log would name it now.
+- `shunt.jsonl` is append-ordered and `Recent()` returns file order newest-first; tests that append
+  out of time order get confusing results.
+- Throwaway instances used ports 27777/27788 with a scratch `HOME`. The real gateway is 17777.
+- `BLOG.md` is a dated post that says it is kept as written. Leave it.
+
 # Session handoff — 2026-09-20
 
 A point-in-time snapshot, written at 14:20 local. **Verify before acting.**
@@ -65,113 +190,11 @@ Behaviour worth remembering:
   `TOGETHER_API_KEY=$(security find-generic-password -s claude-burst-together -w) go test ./internal/router/ -run TestLiveSecondary -v`
   Run it after any change to `translateAnthropicRequest`.
 
-## Token shunting — state at handover (the "other session" above)
+## Token shunting
 
-**Shipped, deployed (14:19) and on origin:** `49caaf3`, `0af15ec`, `11d9b6c`. **Turned on** for
-this machine: read + write, threshold 350 lines, worker = the Together secondary
-(`zai-org/GLM-5.3`), guard hook installed in `~/.claude/settings.json`, skill installed.
-**Not deployed:** everything committed after `11d9b6c` (the two commits below).
-
-What it is: `claude-burst shunt` hands whole-file reads and boilerplate generation to the
-openai-compatible secondary so Opus/Fable never carry them. A `PreToolUse` hook refuses
-whole-file `Read` / plain `cat|head|tail|less|more` at 350+ lines and points at
-`claude-burst shunt read`; `shunt write` generates a file straight to disk. Read and write
-are separate switches. Dashboard: **Token shunting** panel (master switch, threshold, cards,
-recent activity) plus "Token Shunt" rows in *Recent requests*. README has the design and
-the honest numbers ("Token shunting" section). Code: `internal/shunt/`,
-`cmd/claude-burst/shunt.go`, `internal/admin/shunt.go`.
-
-### What the live log showed (the reason for the logging work)
-
-Six direct reads were **refused between 14:21 and 14:24** (`Bash`, 26,719 B x4 and 44,428 B
-x2), and **no worker call followed**. 26,719 B is `wporg-ready/shared/php-parse.php`.
-So a session hit the block and **retried the same `cat` instead of running `shunt read`**.
-
-- The mechanism is fine: from that directory the guard blocks the file at 931 lines and
-  `claude-burst shunt read -q ... shared/php-parse.php` returned an accurate, cited answer
-  in 8.5 s. That call is in the log too (a real read logged at ~14:29, mine, not a session's).
-- **Cause not confirmed and the session is unknown**: the deployed binary logs no session,
-  project or file for a refusal. That is the gap.
-- `CLAUDE_CODE_SESSION_ID` is in the Bash tool's environment and the hook payload carries
-  `session_id` (same id the gateway puts in `metrics.jsonl`), so both halves can record it.
-
-### Tests and docs (added after the first handover commit)
-
-- **`internal/integration/shunt_e2e_test.go`** (7 tests) builds the real binary and drives it through the
-  hook's stdin/exit-code protocol against a fake worker in a throwaway `HOME`: enable, guard
-  block/allow matrix, delegated read (a `.env` never reaches the worker), generated file + `.bak`,
-  log, disable restoring `settings.json` exactly, no-worker enable refused, failing worker
-  logged, guard fails open on broken config. **Mutation-checked**: making the guard never block,
-  and skipping the readiness check on enable, each fail it. Run: `go test ./internal/integration -run TestShunt -v`.
-- **README rewritten around Together AI + token shunting** (Bedrock is now "overflow only" and
-  lives in its own *Amazon Bedrock notes* section; limitations renumbered; all internal anchors
-  checked). `--help` and `config.example.json` follow. `install.sh` is still Bedrock-only (it
-  runs `configure --region`); the README says so and shows the `configure` step that replaces it.
-  `BLOG.md` was left alone on purpose — it is a dated post that says it is kept as written.
-
-### Live proof (opt-in, real Claude Code + real worker)
-
-`CLAUDE_BURST_LIVE_SHUNT=1 go test ./internal/integration/ -run TestLiveShunt -v -timeout 10m`
-runs `claude -p` (haiku) against a 600-line file and reads that session's own events from the
-**real** `shunt.jsonl` via the **installed** binary. Verified passing on 2026-09-21: real `Read`
-refused -> refusal reached the model -> model ran `shunt read` -> GLM-5.3 on Together answered
-(cited line 433, correct) -> `READ` logged with the same session id. Cost about $0.013 of Together
-plus a few cents of haiku per run; rows appear in your real log under `shunt-live-check-*`.
-Finding: a blocked model is free to answer another way. One manual run used `grep` and never
-touched the worker; the natural test therefore asserts only what holds either way.
-
-### Committed but NOT deployed
-
-1. **Refusal message rewritten** (`guard.go`): says "Do NOT retry", offers
-   `sed -n 'START,ENDp'` as well as `Read` offset/limit; a test asserts the sed window it
-   recommends is itself allowed. Tested, complete.
-2. **Logging foundation** (`log.go`, `events.go`): `Event` gained `session_id, cwd, tool,
-   path, paths, stage, lines, threshold, repeat`; `events.go` has `StageError`/`StageOf`,
-   `Event.Describe()`, `Tag()`, `IsProblem()`, `RepeatCount()` (refusals of one file by one
-   session in 10 min with no answer in between). The guard now writes `cwd` on refusals and
-   the panel shows the project. **The rest of this is not wired yet — see below.**
-
-### Logging with sessions — DONE (committed after the first handover)
-
-The guard and `shunt read`/`write` now record **session id, project, file, tool, lines,
-threshold, failure stage and a repeat count** on every event, and log every exit path.
-
-- Session comes from the hook payload (`session_id`) in the guard and from
-  `CLAUDE_CODE_SESSION_ID` (present in Claude's Bash env) in `shunt read`/`write`.
-- `RepeatCount` (`internal/shunt/events.go`): refusals of one file by one session in 10 min with no
-  answered read between. 3rd+ is tagged **LOOP** and the message says so ("REFUSAL #N ... run the
-  shunt read command now").
-- `guard_error` events replace the silent `return`s (bad JSON, unreadable config, panic).
-- Failures before the worker (disabled, no key, bad args) now log with a `stage`.
-- `claude-burst shunt log [-n] [--problems] [--session] [--json]`; `shunt status` lists problems.
-- Dashboard: Project/Session columns, server-built wording (`Event.Describe`, same as the CLI),
-  red problem rows, `repeat_refusals_1h` / `problems_24h` on the card.
-- Tests: 3 new end-to-end (session/project/file/repeat/reset, every failure path, guard errors),
-  unit tests for tags/wording/repeat/stages, admin tests for the counters. **Mutation-checked**:
-  zeroing the repeat counter, dropping the failure log, and silencing guard errors each fail them.
-
-Still true: a session that ignores the redirect will keep being refused. The log now names it.
-Open question if it persists: whether that session simply does not act on the hook's stderr.
-
-### Before you deploy
-
-- `deploy.sh` builds the **working tree**. It is clean as of this handover; keep it that way
-  or the next deploy ships code no commit holds.
-- A deploy restarts the gateway (blip for live sessions). The **guard runs as a subprocess of
-  the installed binary**, so a deploy also changes what every open Claude Code session's hook
-  does on its next call, with no restart of those sessions.
-- Off switch, immediate (the guard reads config on every call): dashboard master toggle or
-  `claude-burst shunt disable`. Restart Claude Code only to unload the skill.
-- Scratch test instances used ports 27777/27788 with a throwaway `HOME`; the real gateway is
-  `https://127.0.0.1:17777` with the admin panel on `127.0.0.1:7788`.
-
-Verify:
-
-```bash
-claude-burst shunt status
-tail -5 ~/.config/claude-burst/shunt.jsonl
-curl -s http://127.0.0.1:7788/api/shunt-activity | python3 -m json.tool | head -30
-```
+Moved. It has its own handover at the very top of this file and that one is current; this
+section used to describe it and had gone stale within a day (it still said the session-aware
+logging was undeployed).
 
 ## Small things
 
