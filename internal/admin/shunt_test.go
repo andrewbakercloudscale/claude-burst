@@ -393,8 +393,10 @@ func TestStateFlagsALoopingSession(t *testing.T) {
 	shunt.Append(lp, shunt.Event{Time: now, Kind: shunt.KindRead, OK: false, Stage: shunt.StageWorkerCall, Note: "HTTP 500"})
 
 	st := stateOf(t, s).Shunt
-	if st.RepeatRefusals1h != 2 {
-		t.Errorf("repeat refusals (3rd and later, last hour) = %d, want 2", st.RepeatRefusals1h)
+	// Four blocks of one file by one session are ONE looping session, so one
+	// loop -- counting blocks would report a single stuck session as four.
+	if st.RepeatRefusals1h != 1 {
+		t.Errorf("loops in the last hour = %d, want 1", st.RepeatRefusals1h)
 	}
 	if st.Problems24h != 1 {
 		t.Errorf("other problems (the failed read) = %d, want 1", st.Problems24h)
@@ -416,7 +418,7 @@ func TestStateFlagsALoopingSession(t *testing.T) {
 		loop.Tool != "Bash cat" || !strings.Contains(loop.Detail, "retrying instead of running shunt read") {
 		t.Errorf("the row must name session, project, tool and the loop: %+v", loop)
 	}
-	if rows[0].Tag != "READ-FAIL" || !rows[0].Problem || !strings.Contains(rows[0].Detail, "FAILED at worker_call") {
+	if rows[0].Tag != "SHUNT-FAIL" || !rows[0].Problem || !strings.Contains(rows[0].Detail, "FAILED at worker_call") {
 		t.Errorf("a failed read must be a problem row saying where: %+v", rows[0])
 	}
 }
@@ -425,5 +427,47 @@ func TestShuntRequestRowCarriesTheSession(t *testing.T) {
 	row := shuntRequestRow(shunt.Event{Time: time.Now(), Kind: shunt.KindRead, OK: true, Session: "aaaa1111-2222", Model: "glm", Files: 1})
 	if row.SessionID != "aaaa1111-2222" {
 		t.Errorf("the requests table row must carry the session: %+v", row.Event)
+	}
+}
+
+// The whole point of the fold, end to end through the endpoint the page polls:
+// a blocked read and the read that answered it arrive as ONE row, and a block
+// nothing answered arrives as its own NO-SHUNT row rather than a red failure.
+func TestShuntActivityFoldsABlockAndItsAnswerIntoOneRow(t *testing.T) {
+	s, _ := shuntServer(t, true)
+	mutate(t, s, "/api/shunt", `{"read":true,"write":true}`)
+	lp, _ := config.ShuntLogPath()
+	now := time.Now()
+	cwd := "/Users/x/proj"
+
+	// answered: block, then the delegated read that followed it
+	shunt.Append(lp, shunt.Event{Time: now.Add(-20 * time.Minute), Kind: shunt.KindDeny, OK: true, Session: "aaaa1111-2222", Cwd: cwd,
+		Tool: "Read", Path: cwd + "/big.go", Lines: 602, Threshold: 350, BytesIn: 21400})
+	shunt.Append(lp, shunt.Event{Time: now.Add(-20*time.Minute + 7*time.Second), Kind: shunt.KindRead, OK: true, Session: "aaaa1111-2222", Cwd: cwd,
+		Paths: []string{"big.go"}, Files: 1, BytesIn: 25600, BytesOut: 200, Model: "zai-org/GLM-5.3", DurationMS: 3900})
+	// unanswered and long stale: blocked, and Claude went a different way
+	shunt.Append(lp, shunt.Event{Time: now.Add(-10 * time.Minute), Kind: shunt.KindDeny, OK: true, Session: "bbbb9999-2222", Cwd: cwd,
+		Tool: "Read", Path: cwd + "/other.go", Lines: 500, Threshold: 350, BytesIn: 15000})
+
+	var rows []shuntActivityRow
+	getJSON(t, s, "/api/shunt-activity?limit=10", &rows)
+	if len(rows) != 2 {
+		t.Fatalf("a block plus its answer plus one unanswered block is TWO rows, got %d: %+v", len(rows), rows)
+	}
+	// newest first
+	if rows[0].Tag != "NO-SHUNT" || rows[0].Problem || !strings.Contains(rows[0].Detail, "not shunted") {
+		t.Errorf("an unanswered block is a different, non-failure event type: %+v", rows[0])
+	}
+	if rows[1].Tag != "SHUNTED" || rows[1].Problem || rows[1].Attempts != 1 || !strings.Contains(rows[1].Detail, "big.go") {
+		t.Errorf("the pair must be one quiet SHUNTED row: %+v", rows[1])
+	}
+	for _, r := range rows {
+		if strings.Contains(strings.ToLower(r.Tag+r.Detail), "refus") {
+			t.Errorf("nothing here is a refusal: %+v", r)
+		}
+	}
+	// The row's tokens and cost come from the read, not the block.
+	if rows[1].KeptOutTokens == 0 || rows[1].Model != "zai-org/GLM-5.3" {
+		t.Errorf("the SHUNTED row must carry the worker's numbers: %+v", rows[1])
 	}
 }

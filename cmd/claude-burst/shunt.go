@@ -194,7 +194,21 @@ func shuntStatusText(cfg config.Config) string {
 		// Anything that needs a look, newest last, so a looping session or a
 		// failing worker is on the status page rather than buried in a log.
 		since := time.Now().Add(-24 * time.Hour)
-		if probs, err := shunt.Recent(lp, 5, func(e shunt.Event) bool { return e.IsProblem() && e.Time.After(since) }); err == nil && len(probs) > 0 {
+		// Folded before filtering, for the same reason `shunt log` does: a block
+		// that a delegated read answered is not a problem, and only the folded
+		// row knows that.
+		var probs []shunt.Activity
+		if evs, err := shunt.Recent(lp, 400, func(e shunt.Event) bool { return e.Time.After(since) }); err == nil {
+			for _, a := range shunt.Fold(evs, time.Now()) {
+				if a.IsProblem() {
+					probs = append(probs, a)
+					if len(probs) == 5 {
+						break
+					}
+				}
+			}
+		}
+		if len(probs) > 0 {
 			fmt.Fprintf(&sb, "shunt PROBLEMS (last 24h, newest last; full list: claude-burst shunt log --problems):\n")
 			for i := len(probs) - 1; i >= 0; i-- {
 				fmt.Fprintf(&sb, "  %s\n", shuntLogLine(probs[i]))
@@ -451,7 +465,7 @@ func shuntWrite(args []string) {
 func shuntLog(args []string) {
 	fs := flag.NewFlagSet("shunt log", flag.ExitOnError)
 	n := fs.Int("n", 30, "how many events to show")
-	problems := fs.Bool("problems", false, "only failures, guard errors and repeated refusals")
+	problems := fs.Bool("problems", false, "only failures, guard errors and retry loops")
 	session := fs.String("session", "", "only events from a session (id or prefix)")
 	asJSON := fs.Bool("json", false, "raw events, one JSON object per line")
 	_ = fs.Parse(args)
@@ -460,32 +474,57 @@ func shuntLog(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	evs, err := shunt.Recent(lp, *n, func(e shunt.Event) bool {
-		if *problems && !e.IsProblem() {
-			return false
+	if *asJSON {
+		// Raw events, unfolded: --json is for tools, which want the record as
+		// it was written rather than the presentation of it.
+		evs, err := shunt.Recent(lp, *n, func(e shunt.Event) bool {
+			return (!*problems || e.IsProblem()) && (*session == "" || strings.HasPrefix(e.Session, *session))
+		})
+		if err != nil {
+			fatal(err)
 		}
+		for i := len(evs) - 1; i >= 0; i-- {
+			b, _ := json.Marshal(evs[i])
+			fmt.Println(string(b))
+		}
+		if len(evs) == 0 {
+			fmt.Printf("no matching shunt activity recorded yet (log: %s)\n", lp)
+		}
+		return
+	}
+
+	// Folded, like the dashboard: a blocked read and the delegated read that
+	// answered it are one SHUNTED line. Filtering happens AFTER folding --
+	// filtering first would drop the block and leave the read looking unprompted,
+	// or the reverse -- and the raw window is wider than n because each shunt is
+	// two events.
+	evs, err := shunt.Recent(lp, *n*4+100, func(e shunt.Event) bool {
 		return *session == "" || strings.HasPrefix(e.Session, *session)
 	})
 	if err != nil {
 		fatal(err)
 	}
-	if len(evs) == 0 {
+	var rows []shunt.Activity
+	for _, a := range shunt.Fold(evs, time.Now()) { // newest first
+		if *problems && !a.IsProblem() {
+			continue
+		}
+		rows = append(rows, a)
+		if len(rows) == *n {
+			break
+		}
+	}
+	if len(rows) == 0 {
 		fmt.Printf("no matching shunt activity recorded yet (log: %s)\n", lp)
 		return
 	}
-	for i := len(evs) - 1; i >= 0; i-- {
-		e := evs[i]
-		if *asJSON {
-			b, _ := json.Marshal(e)
-			fmt.Println(string(b))
-			continue
-		}
-		fmt.Println(shuntLogLine(e))
+	for i := len(rows) - 1; i >= 0; i-- {
+		fmt.Println(shuntLogLine(rows[i]))
 	}
 }
 
-// shuntLogLine is one event as a line of plain text.
-func shuntLogLine(e shunt.Event) string {
+// shuntLogLine is one activity row as a line of plain text.
+func shuntLogLine(e shunt.Activity) string {
 	ts := e.Time.Format("15:04:05")
 	if !sameDay(e.Time, time.Now()) {
 		ts = e.Time.Format("Jan 02 15:04:05")

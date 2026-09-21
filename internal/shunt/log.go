@@ -14,7 +14,7 @@ import (
 const (
 	KindRead       = "read"
 	KindWrite      = "write"
-	KindDeny       = "deny"        // the guard refused a direct read
+	KindDeny       = "deny"        // the guard blocked a direct read and redirected Claude to shunt read
 	KindGuardError = "guard_error" // the guard could not decide and let the call through
 )
 
@@ -238,7 +238,7 @@ func SummarizeLog(path string, since time.Time) (Summary, error) {
 }
 
 func (s Summary) String() string {
-	out := fmt.Sprintf("reads=%d writes=%d denied_direct_reads=%d failures=%d guard_errors=%d kept_out_of_context≈%d tokens (estimate) worker_tokens=%d in/%d out worker_cost=$%.4f",
+	out := fmt.Sprintf("reads=%d writes=%d redirected_reads=%d failures=%d guard_errors=%d kept_out_of_context≈%d tokens (estimate) worker_tokens=%d in/%d out worker_cost=$%.4f",
 		s.Reads, s.Writes, s.Denials, s.Failures, s.GuardErrors, s.KeptOutTokens(), s.WorkerInputTokens, s.WorkerOutputTokens, s.WorkerUSD)
 	if s.Unpriced > 0 {
 		out += fmt.Sprintf(" (INCOMPLETE: %d worker call(s) had no pricing entry -- add the worker model to `pricing` in config.json)", s.Unpriced)

@@ -49,11 +49,11 @@ func TestTagsAndProblems(t *testing.T) {
 		tag     string
 		problem bool
 	}{
-		{Event{Kind: KindDeny, OK: true}, "REFUSED", false},
-		{Event{Kind: KindDeny, OK: true, Repeat: 1}, "REFUSED", false}, // a second refusal is not yet a loop
+		{Event{Kind: KindDeny, OK: true}, "REDIRECTED", false},
+		{Event{Kind: KindDeny, OK: true, Repeat: 1}, "REDIRECTED", false}, // a second attempt is not yet a loop
 		{Event{Kind: KindDeny, OK: true, Repeat: 2}, "LOOP", true},
-		{Event{Kind: KindRead, OK: true}, "READ", false},
-		{Event{Kind: KindRead, OK: false}, "READ-FAIL", true},
+		{Event{Kind: KindRead, OK: true}, "SHUNTED", false},
+		{Event{Kind: KindRead, OK: false}, "SHUNT-FAIL", true},
 		{Event{Kind: KindWrite, OK: true}, "WRITE", false},
 		{Event{Kind: KindWrite, OK: false}, "WRITE-FAIL", true},
 		{Event{Kind: KindGuardError}, "GUARD-ERR", true},
@@ -68,13 +68,13 @@ func TestTagsAndProblems(t *testing.T) {
 func TestDescribeSaysWhatHappenedAndWhere(t *testing.T) {
 	deny := Event{Kind: KindDeny, OK: true, Tool: "Bash cat", Path: "/p/wporg-ready/shared/php-parse.php", BytesIn: 26719, Lines: 931, Threshold: 350}
 	got := deny.Describe()
-	for _, w := range []string{"refused a direct Bash cat of php-parse.php", "26.1 KB", "931+ lines", "threshold 350"} {
+	for _, w := range []string{"blocked a direct Bash cat of php-parse.php", "26.1 KB", "931+ lines", "threshold 350"} {
 		if !strings.Contains(got, w) {
 			t.Errorf("deny description missing %q: %s", w, got)
 		}
 	}
 	deny.Repeat = 3
-	if d := deny.Describe(); !strings.Contains(d, "refusal #4") || !strings.Contains(d, "retrying instead of running shunt read") {
+	if d := deny.Describe(); !strings.Contains(d, "attempt #4") || !strings.Contains(d, "retrying instead of running shunt read") {
 		t.Errorf("a loop must be named as one: %s", d)
 	}
 	fail := Event{Kind: KindRead, OK: false, Stage: StageWorkerInit, Note: "no API key"}

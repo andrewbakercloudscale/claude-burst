@@ -64,7 +64,13 @@ func (e Event) IsProblem() bool {
 	return !e.OK || e.Kind == KindGuardError || (e.Kind == KindDeny && e.Repeat >= 2)
 }
 
-// Tag is the short label a log line leads with.
+// Tag is the short label a lone event leads with. Rows built by Fold use
+// Activity.Tag instead, which folds a block and the read that answered it into
+// one SHUNTED row and can tell a stale block (NO-SHUNT) from a fresh one.
+//
+// The words are chosen so nothing that is the feature working sounds like a
+// failure: a block is REDIRECTED (it sends Claude to the worker, it does not
+// deny it anything), and only genuine failures get a -FAIL or -ERR suffix.
 func (e Event) Tag() string {
 	switch {
 	case e.Kind == KindGuardError:
@@ -72,13 +78,13 @@ func (e Event) Tag() string {
 	case e.Kind == KindDeny && e.Repeat >= 2:
 		return "LOOP"
 	case e.Kind == KindDeny:
-		return "REFUSED"
+		return "REDIRECTED"
 	case !e.OK && e.Kind == KindRead:
-		return "READ-FAIL"
+		return "SHUNT-FAIL"
 	case !e.OK && e.Kind == KindWrite:
 		return "WRITE-FAIL"
 	case e.Kind == KindRead:
-		return "READ"
+		return "SHUNTED"
 	case e.Kind == KindWrite:
 		return "WRITE"
 	}
@@ -95,12 +101,12 @@ func (e Event) Describe() string {
 	}
 	switch e.Kind {
 	case KindDeny:
-		s := fmt.Sprintf("refused a direct %s of %s (%s, %d+ lines, threshold %d)", orDefault(e.Tool, "read"), orDefault(file, "a file"), humanBytes(e.BytesIn), e.Lines, e.Threshold)
+		s := fmt.Sprintf("blocked a direct %s of %s (%s, %d+ lines, threshold %d) and pointed Claude at shunt read", orDefault(e.Tool, "read"), orDefault(file, "a file"), humanBytes(e.BytesIn), e.Lines, e.Threshold)
 		switch {
 		case e.Repeat >= 2:
-			s += fmt.Sprintf(" — refusal #%d of this file with no answer in between: the session is retrying instead of running shunt read", e.Repeat+1)
+			s += fmt.Sprintf(" — attempt #%d on this file with no answer in between: the session is retrying instead of running shunt read", e.Repeat+1)
 		case e.Repeat == 1:
-			s += " — second refusal of this file"
+			s += " — second attempt on this file"
 		}
 		return s
 	case KindGuardError:

@@ -212,7 +212,7 @@
   .pill.p { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); background: var(--ok-bg); }
   .pill.s { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); background: var(--warn-bg); }
   .pill.t { white-space: nowrap; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-  .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); }
+  .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); } .st-wait { color: var(--muted); }
 
   details.resp { border-bottom: 1px solid var(--border); }
   details.resp:last-child { border-bottom: none; }
@@ -721,7 +721,7 @@
         <div class="row" style="align-items:flex-start">
         <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
           <input type="checkbox" id="shuntRead" style="width:auto;margin:0">
-          Bulk read &mdash; refuse whole-file reads of large files and answer from the worker instead
+          Bulk read &mdash; redirect whole-file reads of large files to the worker instead
         </label>
         </div>
         <div class="hint" style="margin:4px 0 12px 0">A hook in Claude Code's settings blocks <code>Read</code> and plain <code>cat</code>/<code>head</code>/<code>tail</code> at or above the threshold and points Claude at <code>claude-burst shunt read</code>. Windowed reads (offset + limit) are never blocked. This is where nearly all of the saving is.</div>
@@ -747,7 +747,7 @@
       <div id="shuntState" class="hint" style="margin-top:8px"></div>
       <div id="shuntNote"></div>
 
-      <h3 style="margin:18px 0 6px;font-size:13px">Recent activity <span class="hint">last 20 &mdash; worker calls, and reads the guard refused</span></h3>
+      <h3 style="margin:18px 0 6px;font-size:13px">Recent activity <span class="hint">last 20 &mdash; one row per shunt, plus the times a shunt did not happen</span></h3>
       <div class="scroll" id="shuntActivity"><div class="empty">Nothing yet.</div></div>
 
       <div class="hint" style="margin-top:8px">The worker is your configured openai-compatible secondary, so <strong>file contents are sent to that provider</strong> whenever a read is delegated. Files that look like credentials (<code>.env</code>, keys, <code>.aws/</code>, &hellip;) never are. The tokens-kept-out figure is an estimate at ~4 bytes per token.</div>
@@ -1649,7 +1649,7 @@ function shuntHealth(sh) {
   // re-applying it; a missing worker or key cannot.
   const repairable = (sh.read && !sh.hook_installed) || (!sh.read && sh.hook_installed) || (on && !sh.skill_installed);
   if (on && !sh.worker_ready) problems.push(sh.worker_error || "the worker is not ready");
-  if (sh.repeat_refusals_1h > 0) problems.push(sh.repeat_refusals_1h + " repeated refusal(s) in the last hour — a Claude session is retrying a blocked read instead of running shunt read (rows tagged LOOP below name the project and session)");
+  if (sh.repeat_refusals_1h > 0) problems.push(sh.repeat_refusals_1h + " retry loop(s) in the last hour — a Claude session keeps retrying a blocked read instead of running shunt read (rows tagged LOOP below name the project and session)");
   if (sh.problems_24h > 0) problems.push(sh.problems_24h + " failed delegation(s) or guard error(s) in the last 24 hours (see the rows in red below, or run: claude-burst shunt log --problems)");
   if (sh.read && !sh.hook_installed) problems.push("bulk read is on but the guard hook is not in ~/.claude/settings.json, so nothing is refusing whole-file reads");
   if (!sh.read && sh.hook_installed) problems.push("bulk read is off but the guard hook is still installed");
@@ -1686,7 +1686,7 @@ function renderShunt(s) {
     <div class="card c-info">
       <h3>Kept out of context · 30 days</h3>
       <div class="stat">≈${num(m.kept_out_tokens)} <small>tokens</small></div>
-      <div class="sub">${num(m.reads)} reads · ${num(m.writes)} writes · ${num(m.denials)} direct reads refused${failed}</div>
+      <div class="sub">${num(m.reads)} reads · ${num(m.writes)} writes · ${num(m.denials)} direct reads redirected${failed}</div>
       <div class="sub">last 24 hours: ≈${num(t.kept_out_tokens)} tokens</div>
     </div>
     <div class="card c-info">
@@ -1706,13 +1706,18 @@ function renderShunt(s) {
 
 function renderShuntActivity(rows) {
   if (!Array.isArray(rows) || !rows.length) {
-    $("shuntActivity").innerHTML = `<div class="empty">Nothing yet. Once Claude Code has been restarted with this on, delegated reads, generated files and refused direct reads show up here, with the project and session that caused them.</div>`;
+    $("shuntActivity").innerHTML = `<div class="empty">Nothing yet. Once Claude Code has been restarted with this on, shunted reads, generated files and the times a shunt did not happen show up here, with the project and session that caused them.</div>`;
     return;
   }
   // The tag and the sentence both come from the server (shunt.Event), the same
   // wording `claude-burst shunt log` prints, so the page and the terminal say
   // the same thing. Problems are coloured; everything else stays quiet.
-  const tagClass = r => r.problem ? "st-5" : r.kind === "deny" ? "st-4" : "st-2";
+  // SHUNTED is the feature working and stays quiet. NO-SHUNT is the one
+  // that is not a shunt and not a failure, so it gets the amber of "look if
+  // you like" rather than the red of "something broke".
+  // REDIRECTED is a shunt still in flight: neither success nor anything to
+  // worry about yet, so it is grey, and turns into SHUNTED or NO-SHUNT.
+  const tagClass = r => r.problem ? "st-5" : r.tag === "NO-SHUNT" ? "st-4" : r.tag === "REDIRECTED" ? "st-wait" : "st-2";
   $("shuntActivity").innerHTML = `<table><thead><tr>
       <th>Time</th><th>Event</th><th>Project</th><th>Session</th><th class="num">Kept out</th>
       <th class="num">Worker in</th><th class="num">Worker out</th><th class="num">Cost</th><th>Model</th><th class="num">ms</th><th>What happened</th>

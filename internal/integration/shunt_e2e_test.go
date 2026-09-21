@@ -387,7 +387,7 @@ func TestShuntEndToEnd(t *testing.T) {
 		}
 	}
 	statusOut, _, _ := r.run("", "shunt", "status")
-	contains(t, "status", statusOut, "shunt hook: installed", "shunt worker: ready", "reads=1 writes=2 denied_direct_reads=2")
+	contains(t, "status", statusOut, "shunt hook: installed", "shunt worker: ready", "reads=1 writes=2 redirected_reads=2")
 
 	// --- disable: guard stands down immediately, the machine is back as it was
 	if _, _, code := r.run("", "shunt", "disable"); code != 0 {
@@ -488,6 +488,10 @@ func TestShuntLogNamesSessionProjectFileAndRepeats(t *testing.T) {
 	}
 	const loop = "aaaa1111-2222-3333-4444-555555555555"
 	const other = "bbbb9999-2222-3333-4444-555555555555"
+	// stuck is blocked three times and never follows the redirect: the only
+	// shape that is still a LOOP once blocked-then-answered reads fold into one
+	// SHUNTED row.
+	const stuck = "cccc0000-2222-3333-4444-555555555555"
 	cat := map[string]any{"command": "cat big.go"}
 
 	var msgs []string
@@ -548,15 +552,25 @@ func TestShuntLogNamesSessionProjectFileAndRepeats(t *testing.T) {
 		t.Errorf("an answered read must reset the repeat count: %v", last)
 	}
 
+	for i := 0; i < 3; i++ {
+		r.guardAs(stuck, "Bash", cat)
+	}
+
 	// the plain-text view
 	out, _, code := r.run("", "shunt", "log", "-n", "50")
 	if code != 0 {
 		t.Fatalf("shunt log failed")
 	}
-	contains(t, "shunt log", out, "LOOP", "refused a direct Bash cat of big.go", "retrying instead of running shunt read",
-		"session aaaa1111", "session bbbb9999", filepath.Base(r.proj), "READ ", "delegated read of 1 file(s)")
+	contains(t, "shunt log", out, "LOOP", "blocked a direct Bash cat of big.go", "retrying instead of running shunt read",
+		"session aaaa1111", "session bbbb9999", "session cccc0000", filepath.Base(r.proj),
+		"SHUNTED", "via e2e-model instead of Claude", "tried a direct read 3 times")
+	// One shunt is ONE line: aaaa1111's three blocks and the read that finally
+	// answered them must not appear as separate REDIRECTED lines above it.
+	if n := strings.Count(out, "session aaaa1111"); n != 2 { // its SHUNTED row, and the fresh block after it
+		t.Errorf("session aaaa1111 should have exactly two rows (the shunt, then the new block), got %d:\n%s", n, out)
+	}
 	probs, _, _ := r.run("", "shunt", "log", "--problems")
-	if !strings.Contains(probs, "LOOP") || strings.Contains(probs, "delegated read") || strings.Contains(probs, "session bbbb9999") {
+	if !strings.Contains(probs, "LOOP") || strings.Contains(probs, "SHUNTED") || strings.Contains(probs, "session bbbb9999") || strings.Contains(probs, "session aaaa1111") {
 		t.Errorf("--problems must show only what needs a look:\n%s", probs)
 	}
 	only, _, _ := r.run("", "shunt", "log", "--session", "bbbb")
@@ -632,7 +646,7 @@ func TestShuntEveryFailurePathLeavesATrace(t *testing.T) {
 	expect("a vanished key", "worker_init", "shunt", "read", "--question", "x", "big.go")
 
 	out, _, _ := r.run("", "shunt", "log", "--problems", "-n", "50")
-	contains(t, "problems view", out, "READ-FAIL", "WRITE-FAIL", "FAILED at disabled", "FAILED at args", "FAILED at validate", "FAILED at worker_call", "FAILED at worker_init")
+	contains(t, "problems view", out, "SHUNT-FAIL", "WRITE-FAIL", "FAILED at disabled", "FAILED at args", "FAILED at validate", "FAILED at worker_call", "FAILED at worker_init")
 }
 
 // A guard that cannot decide lets the call through; that must not be invisible.
