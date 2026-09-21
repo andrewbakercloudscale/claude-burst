@@ -1,8 +1,13 @@
 # Claude Burst
 
-**Claude Max as included capacity. A metered secondary as paid overflow.**
+**Your Claude subscription as the engine. Together AI's GLM as cheap overflow — and as a worker that keeps the boring work out of Claude's context.**
 
-Claude Burst is a Mac-only local gateway for Claude Code. It keeps your normal Claude Pro/Max subscription login as the primary credential, observes Anthropic's authoritative subscription rate-limit headers, and only switches inference to a configured secondary when Anthropic says the subscription allowance is actually exhausted. The secondary is a pluggable slot with three equally supported choices — **Amazon Bedrock**, **OpenRouter**, and **Together AI** (or any other OpenAI-compatible chat-completions endpoint; see [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below) — plus a direct Anthropic API key if you would rather stay on Anthropic's own billing. When the reset timestamp arrives, it automatically returns to the subscription.
+Claude Burst is a Mac-only local gateway for Claude Code. One inexpensive metered model does two jobs:
+
+1. **Overflow.** It keeps your normal Claude Pro/Max login as the primary credential, watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests to a secondary — this README works through **Together AI serving GLM** — then returns to the subscription when the reset timestamp arrives.
+2. **Token shunting.** The same secondary reads large files and generates boilerplate *instead of* Claude, so your allowance is spent on judgment rather than I/O. A hook refuses whole-file reads above a threshold and redirects them to the worker. See [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context).
+
+The secondary is a pluggable slot. **Together AI** and **OpenRouter** (or any other OpenAI-compatible chat-completions endpoint) can do both jobs. **Amazon Bedrock** is supported for overflow only and cannot be a shunt worker. A direct Anthropic API key is available if you would rather stay on Anthropic's own billing. See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-openrouter-or-any-openai-compatible-secondary).
 
 This is an experimental MVP. Test it on a non-critical development account before any broader rollout.
 
@@ -15,9 +20,18 @@ Primary and secondary are independent, pluggable slots (`internal/router/provide
 | Slot | Options |
 | --- | --- |
 | **Primary** | `oauth-passthrough` — your existing Claude Pro/Max subscription login (the default, and the setup this whole README describes first) · `anthropic-api-key` — a direct, metered Anthropic API key, for accounts with no subscription |
-| **Secondary** | `bedrock` — Amazon Bedrock · `openai-compatible` — OpenRouter, Together AI, or any other OpenAI-compatible chat-completions endpoint (worked examples below) · `none` — disable overflow entirely. The three named providers are peers; none is a default. |
+| **Secondary** | `openai-compatible` — **Together AI** (the worked example, serving GLM), OpenRouter, or any other OpenAI-compatible chat-completions endpoint · `bedrock` — Amazon Bedrock · `none` — disable overflow entirely |
 
-See [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) below for the openai-compatible worked examples, and [Configuration](#configuration) for every field.
+What each secondary can do:
+
+| Secondary | Overflow | Token-shunting worker |
+| --- | :---: | :---: |
+| Together AI, OpenRouter, any OpenAI-compatible endpoint | yes | **yes** |
+| Amazon Bedrock | yes | no |
+
+Bedrock speaks Anthropic's Messages format natively and is relayed byte-for-byte. The OpenAI-compatible providers go through a translator in both directions. The shunt worker makes one plain chat-completions call, which is why only that family can serve it.
+
+See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-openrouter-or-any-openai-compatible-secondary) for the worked examples, and [Configuration](#configuration) for every field.
 
 **Keeping Remote Control.** Pointing Claude Code at any local gateway normally costs you its Remote Control feature — Claude Code disables Remote Control the moment `ANTHROPIC_BASE_URL` names anything other than `api.anthropic.com`, and the default setup below sets exactly that variable. Claude Burst's `transparent` intercept mode solves this by never touching `ANTHROPIC_BASE_URL` at all: instead of using that config mechanism, it gets into the path a level lower, at DNS, so Claude Code's own settings never change and it believes it is still talking to `api.anthropic.com` directly. See [Keeping Remote Control: transparent intercept mode](#keeping-remote-control-transparent-intercept-mode-optional) below.
 
@@ -27,9 +41,62 @@ Anthropic exposes materially different commercial models for access to the same 
 
 - Claude Max is a fixed monthly subscription with rolling usage limits.
 - Claude API is metered by token.
-- Amazon Bedrock, OpenRouter and Together AI all offer metered access to Claude-family or comparable models outside Anthropic's own billing.
+- Together AI, OpenRouter and Amazon Bedrock all offer metered access to Claude-family or comparable models outside Anthropic's own billing.
 
 Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BASE_URL` with an existing claude.ai subscription login. Setting only the base URL keeps the subscription credential active and the subscription's usage limits and billing continue to apply. Claude Burst uses that supported gateway mechanism and respects the subscription limit rather than trying to evade it.
+
+## Token shunting: keep the boring work out of Claude's context
+
+Most of what a coding agent does is I/O, not judgment: reading 25,000 tokens of source to produce 300 tokens of understanding. `claude-burst shunt` hands that to your **configured openai-compatible secondary** — Together AI serving GLM in the worked example — so Opus/Fable never carry it. It is the [Spotify technique](https://andrewbaker.ninja/2026/09/17/shunting-the-boring-work-how-spotify-cut-claude-code-token-usage-by-90-and-how-to-do-the-same-without-their-plugin/) built into the gateway you already run, reusing the secondary's Keychain key and base URL.
+
+**Prerequisite:** an openai-compatible secondary (Bedrock cannot be a worker). With Together AI:
+
+```bash
+claude-burst configure --secondary openai-compatible \
+  --secondary-base-url https://api.together.xyz/v1 \
+  --secondary-model zai-org/GLM-5.3
+TOGETHER_API_KEY='your-key' claude-burst keychain-set --provider together
+```
+
+Then:
+
+```bash
+claude-burst shunt enable            # both parts; or --read / --write for one
+claude-burst shunt doctor            # proves the worker sees a whole prompt
+claude-burst shunt status            # what is on, and what it has saved
+claude-burst shunt disable --write   # switch one part off; disable alone removes everything
+```
+
+The dashboard has a **Token shunting** panel (rail → Control) with the same two switches, the threshold, and what it has saved. It shows the hook, skill and worker separately and turns red when a switch is on over something that is not actually in place (for example the hook wiped from `settings.json`), with a one-click repair.
+
+Restart Claude Code after enabling. Four parts, installed for you:
+
+| Part | What it does |
+| --- | --- |
+| **Guard** (`PreToolUse` hook, `Read\|Bash`; installed only while `read` is on) | Refuses a whole-file `Read`, or a plain `cat`/`head`/`tail`/`less`/`more`, on a file of **350+ lines** (`shunt.min_lines`) and tells Claude to use the worker instead. Windowed reads (`offset`/`limit`) always pass — they are the escape hatch. |
+| **`shunt read`** | `--question Q file...` → a terse answer with `path:line` citations. Files over 6,000 lines are chunked and read concurrently. Needs `read` on. |
+| **`shunt write`** | `--spec S --ref example --out path` → generates a file **straight to disk**, never through Claude's context. Keeps the previous file as `.bak`, refuses truncated, empty, `null` or refusal output, writes atomically. Needs `write` on. |
+| **Skill** (`~/.claude/skills/claude-burst-shunt`) | Tells Claude when to delegate and when not to (edits, debugging, concurrency, security review). Describes only what is switched on. |
+
+**Why a hook and not just instructions:** an agent under pressure reads the file directly unless something refuses it. The guard is that something.
+
+**What it will not do**
+
+- **Never sends credential-looking files** (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.aws/`, `.ssh/`, `*.tfstate`, …) to the worker, and refuses to write them. A direct read is allowed for those, as before.
+- **Fails open.** If the guard cannot decide (bad input, unreadable config) it allows the read. A wrongly allowed read only costs tokens; a wrongly refused one would leave Claude unable to look at a file.
+- **Leaves `.claude/` alone** and will not write inside it or `.git/`.
+- **Needs an openai-compatible secondary.** Bedrock is a different wire protocol and is not a worker.
+- **Your files go to that provider** whenever a read is delegated. That is the trade; use `shunt.model`/a self-hosted `secondary.base_url` if it matters.
+
+**Honest numbers.** Spotify's ~90% is the reduction in frontier tokens on *bulk-read* work, not on a whole session; an independent rebuild measured ~60% fewer frontier tokens, ~33% lower total cost and ~65% more elapsed time (a delegated read costs 10-30 s). Below the threshold a delegation costs more than it saves — that is why the default is 350 lines. `claude-burst stats` and `status` report reads, writes, refused direct reads, an *estimated* tokens-kept-out figure (~4 bytes/token) and the worker's own cost. A worker model with no `pricing` entry is reported as unpriced rather than free. Measure over a couple of weeks before quoting it.
+
+```json
+"shunt": { "read": true, "write": true, "min_lines": 350, "chunk_lines": 6000, "timeout_seconds": 120, "model": "" }
+```
+
+`shunt.jsonl` (next to `metrics.jsonl`) records metadata only — never file contents, questions or answers.
+
+**How it is tested.** Each piece has unit tests (the guard's rules, the worker, code-write validation, the `settings.json` hook editor, the dashboard endpoints). On top of those, `internal/integration/shunt_e2e_test.go` builds the real binary and drives it the way Claude Code does — the hook's stdin/exit-code protocol, a `settings.json` that already holds someone else's hook, and a fake openai-compatible worker — through enable, blocking and passing the right calls, a delegated read (a credentials file never reaches the worker), a generated file, the log, and disable restoring `settings.json` exactly. It also checks that enabling refuses without a worker, that a failing worker is reported and logged, and that the guard fails open on a broken config. Breaking the guard, or skipping the worker check on enable, makes it fail.
 
 ## Routing behaviour
 
@@ -40,7 +107,7 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 5. Overflow activates only when Anthropic's subscription headers indicate a rejected unified limit, for example `anthropic-ratelimit-unified-status: rejected`, or when an explicit subscription-limit error is returned.
 6. Claude Burst reads Anthropic's reset timestamp and persists it against **the model that was refused**, not the account.
 7. The rejected request is replayed down that model's `fallback_chain` first — another Claude model, still on the subscription, still free.
-8. Only when every rung has a rejection window of its own does the request go to the configured secondary — Amazon Bedrock, OpenRouter, Together AI, or any other OpenAI-compatible endpoint — using a credential stored in macOS Keychain.
+8. Only when every rung has a rejection window of its own does the request go to the configured secondary — Together AI, OpenRouter, any other OpenAI-compatible endpoint, or Amazon Bedrock — using a credential stored in macOS Keychain.
 9. Later requests for that model skip straight to the rung (or the secondary) until the reset time plus a small safety grace period; other models are untouched.
 10. The first request after that time goes back to Anthropic Max automatically.
 
@@ -114,62 +181,22 @@ Claude Opus rates.)
 - input/output token usage where exposed in the SSE stream
 - estimated API-equivalent cost using the prices in `config.json`. A model with **no** `pricing` entry costs `0` — so the event also carries `pricing_unknown: true`, and `stats` counts it separately, because a zero meaning "not priced" must not read as a zero meaning "free". Third-party secondary models are not in the default pricing table: add yours to `pricing` or its spend will not be counted
 - subscription limit claim and reset timestamp when failover occurs
-- a short note on what happened (e.g. "subscription limit detected; request replayed to Bedrock", "keychain load failed: ...")
+- a short note on what happened (e.g. "subscription limit detected; request replayed to secondary", "keychain load failed: ...")
 
 ### `claude-burst.log` — plain text, for debugging
 
 Every request gets a `start` line and a matching `done` line (same request id, final HTTP status, duration), so you can always see what the gateway did even for requests that never made it into `metrics.jsonl`. In addition, every failure path logs which stage it failed at and why:
 
 - reading or size-limiting the request body
-- building the outbound request to Anthropic or Bedrock
+- building the outbound request to Anthropic or the secondary
 - the upstream HTTP call itself (network errors)
-- loading the Bedrock key from the environment/Keychain
-- mapping a model name for Bedrock
+- loading the secondary's key from the environment/Keychain
+- mapping a model name for the secondary (Bedrock `model_map`, or the openai-compatible target)
 - reading or writing the local overflow-state file
 - writing a metrics event
 - a panic anywhere in the request path — recovered, logged with a stack trace, and turned into a `500` instead of crashing the gateway or hanging Claude Code's connection
 
 A metrics-write failure (disk full, permissions, etc.) is logged but never fails the request itself — by the time metrics would be written, Claude Code has already been served.
-
-## Token shunting: keep the boring work out of Claude's context
-
-Most of what a coding agent does is I/O, not judgment: reading 25,000 tokens of source to produce 300 tokens of understanding. `claude-burst shunt` hands that to your **configured openai-compatible secondary** (GLM, etc.), so Opus/Fable never carry it. It is the [Spotify technique](https://andrewbaker.ninja/2026/09/17/shunting-the-boring-work-how-spotify-cut-claude-code-token-usage-by-90-and-how-to-do-the-same-without-their-plugin/) built into the gateway you already run, reusing the secondary's Keychain key and base URL.
-
-```bash
-claude-burst shunt enable            # both parts; or --read / --write for one
-claude-burst shunt doctor            # proves the worker sees a whole prompt
-claude-burst shunt status            # what is on, and what it has saved
-claude-burst shunt disable --write   # switch one part off; disable alone removes everything
-```
-
-The dashboard has a **Token shunting** panel (rail → Control) with the same two switches, the threshold, and what it has saved. It shows the hook, skill and worker separately and turns red when a switch is on over something that is not actually in place (for example the hook wiped from `settings.json`), with a one-click repair.
-
-Restart Claude Code after enabling. Four parts, installed for you:
-
-| Part | What it does |
-| --- | --- |
-| **Guard** (`PreToolUse` hook, `Read\|Bash`; installed only while `read` is on) | Refuses a whole-file `Read`, or a plain `cat`/`head`/`tail`/`less`/`more`, on a file of **350+ lines** (`shunt.min_lines`) and tells Claude to use the worker instead. Windowed reads (`offset`/`limit`) always pass — they are the escape hatch. |
-| **`shunt read`** | `--question Q file...` → a terse answer with `path:line` citations. Files over 6,000 lines are chunked and read concurrently. Needs `read` on. |
-| **`shunt write`** | `--spec S --ref example --out path` → generates a file **straight to disk**, never through Claude's context. Keeps the previous file as `.bak`, refuses truncated, empty, `null` or refusal output, writes atomically. Needs `write` on. |
-| **Skill** (`~/.claude/skills/claude-burst-shunt`) | Tells Claude when to delegate and when not to (edits, debugging, concurrency, security review). Describes only what is switched on. |
-
-**Why a hook and not just instructions:** an agent under pressure reads the file directly unless something refuses it. The guard is that something.
-
-**What it will not do**
-
-- **Never sends credential-looking files** (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.aws/`, `.ssh/`, `*.tfstate`, …) to the worker, and refuses to write them. A direct read is allowed for those, as before.
-- **Fails open.** If the guard cannot decide (bad input, unreadable config) it allows the read. A wrongly allowed read only costs tokens; a wrongly refused one would leave Claude unable to look at a file.
-- **Leaves `.claude/` alone** and will not write inside it or `.git/`.
-- **Needs an openai-compatible secondary.** Bedrock is a different wire protocol and is not a worker.
-- **Your files go to that provider** whenever a read is delegated. That is the trade; use `shunt.model`/a self-hosted `secondary.base_url` if it matters.
-
-**Honest numbers.** Spotify's ~90% is the reduction in frontier tokens on *bulk-read* work, not on a whole session; an independent rebuild measured ~60% fewer frontier tokens, ~33% lower total cost and ~65% more elapsed time (a delegated read costs 10-30 s). Below the threshold a delegation costs more than it saves — that is why the default is 350 lines. `claude-burst stats` and `status` report reads, writes, refused direct reads, an *estimated* tokens-kept-out figure (~4 bytes/token) and the worker's own cost. A worker model with no `pricing` entry is reported as unpriced rather than free. Measure over a couple of weeks before quoting it.
-
-```json
-"shunt": { "read": true, "write": true, "min_lines": 350, "chunk_lines": 6000, "timeout_seconds": 120, "model": "" }
-```
-
-`shunt.jsonl` (next to `metrics.jsonl`) records metadata only — never file contents, questions or answers.
 
 ## Requirements
 
@@ -178,14 +205,14 @@ Restart Claude Code after enabling. Four parts, installed for you:
 - Either: Claude Code already installed and logged into the intended Pro/Max account (subscription mode), **or** a metered Anthropic API key (no-subscription mode)
 - A credential for whichever secondary you pick — one of:
 
-| Secondary | Credential | Provider setting |
-|---|---|---|
-| **Amazon Bedrock** | Bedrock access + an API key in `AWS_BEARER_TOKEN_BEDROCK` | `--secondary bedrock` |
-| **OpenRouter** | an OpenRouter API key | `--secondary openai-compatible` |
-| **Together AI** | a Together API key | `--secondary openai-compatible` |
-| *(none)* | — | `--secondary none` |
+| Secondary | Credential | Provider setting | Overflow | Shunt worker |
+|---|---|---|:---:|:---:|
+| **Together AI** (worked example) | a Together API key | `--secondary openai-compatible` | yes | yes |
+| **OpenRouter** | an OpenRouter API key | `--secondary openai-compatible` | yes | yes |
+| **Amazon Bedrock** | Bedrock access + an API key in `AWS_BEARER_TOKEN_BEDROCK` | `--secondary bedrock` | yes | no |
+| *(none)* | — | `--secondary none` | no | no |
 
-The secondary is a pluggable slot (`internal/router/provider.go`), not a hardcoded vendor, and none of these three is privileged over the others in the code or in this document. They differ in exactly one way worth knowing up front: Bedrock speaks Anthropic's Messages wire format natively, so its responses are relayed byte-for-byte, while OpenRouter and Together AI go through the OpenAI-compatible translator (`internal/router/provider_openai.go`) in both directions, streaming included. Both paths are tested; pick on price, model availability and who you would rather have a billing relationship with.
+The secondary is a pluggable slot (`internal/router/provider.go`), not a hardcoded vendor. The two families differ in two ways worth knowing up front. Bedrock speaks Anthropic's Messages wire format natively, so its responses are relayed byte-for-byte, while Together AI and OpenRouter go through the OpenAI-compatible translator (`internal/router/provider_openai.go`) in both directions, streaming included — both paths are tested. And only the OpenAI-compatible family can be a [token-shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context) worker. Pick on price, model availability and who you would rather have a billing relationship with.
 
 ## Install
 
@@ -194,13 +221,16 @@ git clone https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 ```
 
-Then export the credential for the secondary you chose, and run `./install.sh`. The three are interchangeable — run whichever block matches your account:
+Run `./install.sh`, then point the secondary at your provider. Together AI is the recommended path — it does overflow and can also be the shunt worker:
 
 ```bash
-# Amazon Bedrock
-export AWS_REGION=us-east-1
-export AWS_BEARER_TOKEN_BEDROCK='your-bedrock-api-key'
+# Together AI (recommended)
 ./install.sh
+claude-burst configure --secondary openai-compatible \
+  --secondary-base-url https://api.together.xyz/v1 \
+  --secondary-model zai-org/GLM-5.3
+TOGETHER_API_KEY='your-key' claude-burst keychain-set --provider together
+claude-burst shunt enable          # optional: token shunting, see above
 ```
 
 ```bash
@@ -213,20 +243,20 @@ OPENROUTER_API_KEY='your-key' claude-burst keychain-set --provider openrouter
 ```
 
 ```bash
-# Together AI
+# Amazon Bedrock (overflow only — cannot be a shunt worker)
+export AWS_REGION=us-east-1
+export AWS_BEARER_TOKEN_BEDROCK='your-bedrock-api-key'
 ./install.sh
-claude-burst configure --secondary openai-compatible \
-  --secondary-base-url https://api.together.xyz/v1 \
-  --secondary-model zai-org/GLM-5.3
-TOGETHER_API_KEY='your-key' claude-burst keychain-set --provider together
 ```
 
-See [OpenAI-compatible secondary](#openai-compatible-secondary-together-ai-openrouter-or-any-endpoint) for the full detail on the last two, including what the translator does.
+**Why the Together and OpenRouter blocks run `configure` after the installer.** `install.sh` itself only knows Bedrock: it runs `configure --region` and stores `AWS_BEARER_TOKEN_BEDROCK` if that is set. That is its historical default, not a recommendation. Until you run `configure --secondary openai-compatible` the secondary is a Bedrock slot with no key behind it, so overflow would have nowhere to go.
+
+See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-openrouter-or-any-openai-compatible-secondary) for the full detail, including what the translator does.
 
 The installer:
 
 - builds `claude-burst` locally (`go build`) and installs it into `~/.local/bin/claude-burst`
-- stores the secondary's credential in macOS Keychain when one is present (`AWS_BEARER_TOKEN_BEDROCK` is picked up automatically for Bedrock; use `claude-burst keychain-set --provider <name>` for OpenRouter, Together AI or any other endpoint — see [Commands](#commands))
+- stores a Bedrock key in macOS Keychain if `AWS_BEARER_TOKEN_BEDROCK` is set; for Together AI, OpenRouter or any other endpoint use `claude-burst keychain-set --provider <name>` as shown above (see [Commands](#commands))
 - writes the initial configuration
 - updates `~/.claude/settings.json` with only `ANTHROPIC_BASE_URL=http://127.0.0.1:7777`
 - does **not** add an Anthropic credential of its own — in subscription mode this keeps the saved Max login active; in no-subscription mode, Claude Code's own `ANTHROPIC_API_KEY` (set separately, see below) is what gets forwarded
@@ -240,18 +270,18 @@ Restart Claude Code after installation.
 If you don't have a Claude Pro/Max subscription, use a direct Anthropic API key as the primary route instead of subscription passthrough:
 
 ```bash
-export AWS_REGION=us-east-1
-export AWS_BEARER_TOKEN_BEDROCK='your-bedrock-api-key'
-
 ./install.sh
-claude-burst keychain-set
-claude-burst configure --primary anthropic-api-key --secondary bedrock --region us-east-1
+claude-burst configure --primary anthropic-api-key \
+  --secondary openai-compatible \
+  --secondary-base-url https://api.together.xyz/v1 \
+  --secondary-model zai-org/GLM-5.3
+TOGETHER_API_KEY='your-key' claude-burst keychain-set --provider together
 claude-burst enable
 ```
 
 Then set `ANTHROPIC_API_KEY` in Claude Code's own settings env (e.g. the `env` block in `~/.claude/settings.json`, alongside `ANTHROPIC_BASE_URL`) — **not** in claude-burst's config. The gateway never stores or injects an Anthropic credential itself; it only forwards whatever auth header Claude Code already sent, exactly like subscription mode does with the OAuth header.
 
-In this mode, both the primary (metered Anthropic API) and the secondary (Bedrock) cost money per token, so failover isn't triggered by a single rate-limit response — see [`metered_failover`](#configuration) below.
+In this mode, both the primary (metered Anthropic API) and the secondary (Together AI) cost money per token, so failover isn't triggered by a single rate-limit response — see [`metered_failover`](#configuration) below. (Amazon Bedrock works here too: `--secondary bedrock --region us-east-1` with `AWS_BEARER_TOKEN_BEDROCK` stored via `claude-burst keychain-set`.)
 
 ## Verify
 
@@ -282,11 +312,10 @@ You can also check Claude Code's own `/status` and `/usage` views to confirm tha
 
 ```text
 claude-burst serve
-claude-burst configure --region us-east-1
-claude-burst configure --primary anthropic-api-key --secondary bedrock
+claude-burst configure --secondary openai-compatible \
+  --secondary-base-url https://api.together.xyz/v1 --secondary-model zai-org/GLM-5.3
 claude-burst configure --secondary none
-claude-burst keychain-set                    # Bedrock: reads AWS_BEARER_TOKEN_BEDROCK
-claude-burst keychain-set --provider together # OpenAI-compatible: reads TOGETHER_API_KEY
+claude-burst keychain-set --provider together   # reads TOGETHER_API_KEY into the Keychain
 claude-burst keychain-set --provider together --service my-service   # store under a custom service name
 claude-burst enable
 claude-burst disable
@@ -295,7 +324,19 @@ claude-burst reset                           # back to primary now
 claude-burst force-secondary --minutes 15    # route to the secondary on purpose (testing)
 claude-burst stats --days 30
 claude-burst version
+
+claude-burst shunt enable [--read] [--write] # token shunting: default both
+claude-burst shunt disable [--read] [--write]
+claude-burst shunt status
+claude-burst shunt doctor [--quick]          # does the worker see a whole prompt?
+
+# Amazon Bedrock secondary (overflow only)
+claude-burst configure --secondary bedrock --region us-east-1
+claude-burst keychain-set                    # reads AWS_BEARER_TOKEN_BEDROCK
+claude-burst configure --primary anthropic-api-key --secondary bedrock
 ```
+
+`shunt guard`, `shunt read` and `shunt write` also exist, but they are what the hook and Claude run, not commands you type.
 
 ## Configuration
 
@@ -314,13 +355,18 @@ Configuration lives at `~/.config/claude-burst/config.json`. Legacy flat fields 
     "failover_strategy": "subscription-limit"
   },
   "secondary": {
-    "provider": "bedrock",
-    "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic",
-    "keychain_service": "claude-burst-bedrock",
-    "model_map": {
-      "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
-      "claude-opus-5": "global.anthropic.claude-opus-5"
-    }
+    "provider": "openai-compatible",
+    "base_url": "https://api.together.xyz/v1",
+    "model": "zai-org/GLM-5.3",
+    "keychain_service": "claude-burst-together"
+  },
+  "pricing": {
+    "zai-org/GLM-5.3": { "input_per_mtok": 1.4, "output_per_mtok": 4.4 }
+  },
+  "shunt": {
+    "read": true,
+    "write": true,
+    "min_lines": 350
   },
   "metered_failover": {
     "window_seconds": 60,
@@ -329,48 +375,40 @@ Configuration lives at `~/.config/claude-burst/config.json`. Legacy flat fields 
 }
 ```
 
-- `primary.provider` / `secondary.provider`: `oauth-passthrough` (subscription OAuth passthrough), `anthropic-api-key` (metered, no-subscription), `bedrock`, or `openai-compatible`. Neither slot is tied to a specific vendor — either can hold any of them, though `configure --primary` only accepts the first three, so a non-Anthropic primary means editing `config.json`. `none` is valid for the secondary only.
+An Amazon Bedrock secondary instead has `"provider": "bedrock"`, the `bedrock-runtime` `base_url`, `"keychain_service": "claude-burst-bedrock"` and a required `model_map` from every Claude model to its Bedrock id — see [Amazon Bedrock notes](#amazon-bedrock-notes).
+
+- `primary.provider` / `secondary.provider`: `oauth-passthrough` (subscription OAuth passthrough), `anthropic-api-key` (metered, no-subscription), `openai-compatible` (Together AI, OpenRouter, ...), or `bedrock`. Neither slot is tied to a specific vendor — either can hold any of them, though `configure --primary` only accepts the first three, so a non-Anthropic primary means editing `config.json`. `none` is valid for the secondary only.
 - `primary.failover_strategy`: `subscription-limit` (only Anthropic's own subscription-exhaustion headers trigger failover — a bare 429 never does), `metered-failures` (a sliding-window failure count triggers failover, since every route is metered and a single blip shouldn't move traffic), `subscription-limit+metered-failures` (both: genuine subscription exhaustion fails over immediately as above, *and* a sustained run of 429/5xx responses or transport errors/timeouts — an Anthropic outage, not plan exhaustion — fails over once the relevant `metered_failover` threshold is reached, which is a different number for HTTP failures than for transport failures; see below), or `none` (never fail over). A subscription (`oauth-passthrough`) primary defaults to `subscription-limit` alone, which by design does **not** react to a bare 500 or a timeout — set `subscription-limit+metered-failures` (`claude-burst configure --failover-strategy subscription-limit+metered-failures`) if you also want overflow on an Anthropic outage.
 - `metered_failover.window_seconds` / `min_failures` / `transport_error_min_failures`: for the metered strategies, how many upstream failures inside a trailing window before failing over. **Two counters, not one**, because the two signals differ in strength. An HTTP failure (429 or 5xx) means Anthropic answered and could be a passing blip, so it takes `min_failures` (default 3) within `window_seconds` (default 60). A transport failure — Anthropic could not be reached at all — takes `transport_error_min_failures`, which defaults to **1**, so a real outage does not sit retrying against a dead primary. Any success resets both. Other 4xx errors (bad key, malformed request) never count, since routing to the secondary wouldn't fix them; neither do failures that are unambiguously *this machine's* fault — DNS resolution failure, "network unreachable", "no route to host" — because the secondary is equally unreachable through a dead local network, and counting them turns walking out of WiFi range into a paid overflow window. Nor does a request the **client** cancelled: the outbound call carries Claude Code's own request context, so interrupting a turn cancels the upstream call too, and with `transport_error_min_failures` at 1 a single Esc used to arm a 300-second overflow window and bill the next few minutes of inference to the paid secondary (observed live 2026-09-08). Cancellation is excluded, and a cancelled request is never replayed to the secondary — nobody is waiting for the answer. A *deadline* that expires still counts, since that is a genuinely stalled upstream.
+- `pricing`: per-million-token rates, keyed by the model that actually served the request. A third-party model is **not** in the defaults (the same GLM id costs different amounts through Together, OpenRouter and Z.ai), so add yours or its spend is reported as unpriced rather than free. This also prices token-shunt worker calls.
+- `shunt.read` / `shunt.write` / `shunt.min_lines` / `shunt.chunk_lines` / `shunt.timeout_seconds` / `shunt.model`: token shunting — see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context). `shunt.model` overrides the worker model; empty means the secondary's own model.
 - `response_header_timeout_seconds`: bounds how long the gateway waits for a response to *start* before treating the upstream as failed (doesn't affect how long an already-started stream can run).
 
-Model IDs change over time. Keep `model_map` aligned with the Claude models enabled in your Bedrock account.
+Model IDs change over time. With Together AI or OpenRouter keep `secondary.model` (and any `model_map`) aligned with a model the endpoint actually serves; with Bedrock keep `model_map` aligned with the Claude models enabled in your account.
 
 ## Important limitations
 
-### 1. Bedrock feature compatibility
+### 1. No failover on ordinary throttling
 
-Claude Code's Anthropic endpoint can send beta features that a third-party/cloud endpoint may not support. Claude Burst strips only the OAuth-specific `oauth-*` beta value before Bedrock and leaves the remaining Claude Code beta capabilities intact. If Bedrock rejects a feature that Anthropic accepts, the response is returned to Claude Code rather than silently weakening the request.
+Anthropic uses HTTP 429 for several different conditions. Claude Burst deliberately refuses to interpret a bare 429 as Max exhaustion. This avoids turning a temporary capacity throttle into unexpected spend on the secondary.
 
-### 2. Bedrock API key authentication only (as of v0.2.0)
-
-The gateway reads `AWS_BEARER_TOKEN_BEDROCK` and stores it in macOS Keychain. It does not yet implement AWS SSO, role assumption, `awsAuthRefresh`, or SigV4 signing. Those should be added before a large enterprise rollout.
-
-### 3. No failover on ordinary throttling
-
-Anthropic uses HTTP 429 for several different conditions. Claude Burst deliberately refuses to interpret a bare 429 as Max exhaustion. This avoids turning a temporary capacity throttle into unexpected Bedrock spend.
-
-### 4. API-equivalent cost is not Anthropic's internal cost
+### 2. API-equivalent cost is not Anthropic's internal cost
 
 The metrics estimate answers: "What would these observed input/output tokens cost at the configured public API rates?" It does not estimate Anthropic's marginal inference cost, gross margin, internal transfer pricing, or the economic value of prompt caching unless you extend the metric model to account for cache buckets.
 
-### 5. Consumer versus commercial governance remains different
+### 3. Consumer versus commercial governance remains different
 
 A local data-loss-prevention layer can reduce what leaves the machine, but it does not make a consumer Max account contractually or operationally identical to Claude for Work, the Claude API, or Bedrock. Review your organization's legal, procurement, retention, audit and account-management requirements before rolling consumer subscriptions out to employees.
 
-### 6. No caller authentication on the local gateway
+### 4. No caller authentication on the local gateway
 
 Any local process — including a browser tab, since `POST /v1/messages` with a simple content type needs no CORS preflight — can send the gateway a request. It cannot force an overflow window open (only genuine subscription-limit/sustained-failure signals do that), but it can ride an already-open one, and it can drive ordinary (non-overflow) traffic through your credential. Don't bind `listen` to anything but `127.0.0.1`.
 
-### 7. The Bedrock key is briefly visible in local process listings
-
-`claude-burst keychain-set` passes the key to `/usr/bin/security` as a command-line argument, so it's visible in `ps` output to other local processes for the duration of that one call. Reading it from stdin instead would close this, but `security`'s interactive password prompt doesn't reliably accept piped stdin in non-terminal contexts, so this hasn't been changed yet.
-
-### 8. Upstream error text (including the request path/query) is logged and metered failure detail is not size-bounded
+### 5. Upstream error text (including the request path/query) is logged and metered failure detail is not size-bounded
 
 Transport-error and non-failover-error log lines include the upstream `error.Error()` string, which can contain the request URL (path and query, not host credentials — Go's `url.Error` redacts userinfo). Prompts and response bodies are never included per the metadata-only design, but treat `claude-burst.log` as containing request metadata, not as fully opaque.
 
-### 9. Transparent intercept mode is machine-wide, and TLS interception is assumed benign
+### 6. Transparent intercept mode is machine-wide, and TLS interception is assumed benign
 
 The `/etc/hosts` entry transparent mode installs affects every process on the Mac, not just
 Claude Code — see the trade-off table above. Separately, the design assumes that TLS
@@ -380,9 +418,13 @@ exactly that) but is not something this project can prove. `scripts/check-interc
 settles it on a network that actually inspects TLS: it distinguishes *intercepted* from
 *bypassed* from *not enrolled*, which a bare certificate-issuer check cannot.
 
-## OpenAI-compatible secondary (Together AI, OpenRouter, or any endpoint)
+### 7. Token shunting sends file contents to the secondary provider
 
-A secondary can be any OpenAI-compatible chat-completions endpoint instead of Bedrock — not just one named vendor. `provider: "openai-compatible"` plus a `base_url` and `model` is the entire integration surface; nothing about the vendor is hardcoded anywhere in the request path. Two are shown below as concrete examples — Together AI serving GLM, and OpenRouter, which fronts many different model providers behind one OpenAI-compatible API — but the same `base_url`/`model` shape works for any other OpenAI-compatible endpoint too. Unlike `bedrock` and the two Anthropic-passthrough providers, which all speak Anthropic's Messages wire format natively and only need `Server.relay` to stream the response back byte-for-byte, this provider (`internal/router/provider_openai.go`) does real bidirectional translation: request body shape (`system`/`messages`/`tools`, including splitting Anthropic's nested `tool_result` blocks into OpenAI's sibling `tool` messages), non-streaming and **streaming** response shape (OpenAI's `delta`-based SSE chunks translated live into Anthropic's `message_start`/`content_block_start`/`content_block_delta`/`content_block_stop`/`message_delta`/`message_stop` event sequence, including parallel tool calls), and tool-call schema (`tool_use` blocks ↔ `tool_calls`). Verified against a real Together AI + GLM 5.3 endpoint, including a genuine streaming tool call.
+Whenever a read is delegated the whole file goes to the secondary (Together AI in the worked example), a third party with its own retention terms. Credential-looking files (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.aws/`, `.ssh/`, `*.tfstate`, ...) are never sent, by a name-based heuristic that errs toward refusing; it is a safety net, not a data-loss-prevention control. A worker's answer is derived from file contents, which can contain text that looks like instructions, so the installed skill tells Claude to treat it as data. Turn it off from the dashboard's master switch or with `claude-burst shunt disable`; the guard reads `config.json` on every call, so off takes effect immediately.
+
+## Together AI, OpenRouter or any OpenAI-compatible secondary
+
+A secondary can be any OpenAI-compatible chat-completions endpoint, not one named vendor. **Together AI serving GLM 5.3 is the one this project runs and has verified live**, including a genuine streaming tool call. `provider: "openai-compatible"` plus a `base_url` and `model` is the entire integration surface; nothing about the vendor is hardcoded anywhere in the request path. This is also the only family that can be a [token-shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context) worker. Together AI and OpenRouter (which fronts many different model providers behind one OpenAI-compatible API) are shown below, but the same `base_url`/`model` shape works for any other OpenAI-compatible endpoint. Unlike `bedrock` and the two Anthropic-passthrough providers, which all speak Anthropic's Messages wire format natively and only need `Server.relay` to stream the response back byte-for-byte, this provider (`internal/router/provider_openai.go`) does real bidirectional translation: request body shape (`system`/`messages`/`tools`, including splitting Anthropic's nested `tool_result` blocks into OpenAI's sibling `tool` messages), non-streaming and **streaming** response shape (OpenAI's `delta`-based SSE chunks translated live into Anthropic's `message_start`/`content_block_start`/`content_block_delta`/`content_block_stop`/`message_delta`/`message_stop` event sequence, including parallel tool calls), and tool-call schema (`tool_use` blocks ↔ `tool_calls`).
 
 Not translated (dropped, not an error): Anthropic's server-side tools (`web_search_20250305` and friends — declared with a name and a `type` but no `input_schema`, because Anthropic's own API runs them; a logged line names any that were dropped), images/documents in message content, Anthropic extended-thinking (`thinking`/`redacted_thinking`) blocks in history, and prompt-caching `cache_control` hints — none have a meaningful equivalent on a generic OpenAI-compatible endpoint, and Claude Code's ordinary coding-agent traffic is overwhelmingly text + tool-use.
 
@@ -441,6 +483,22 @@ claude-burst keychain-set --provider openrouter   # reads OPENROUTER_API_KEY
 `claude-burst keychain-set --provider <label>` stores whatever `<label>_API_KEY` is set in the environment (uppercased, hyphens become underscores) into a macOS Keychain service named `claude-burst-<label>` by default — `--provider together` reads `TOGETHER_API_KEY` into `claude-burst-together`, `--provider openrouter` reads `OPENROUTER_API_KEY` into `claude-burst-openrouter`, and so on for any other vendor. Nothing here is a hardcoded allowlist; `<label>` can be anything. At request time, the gateway derives the same identity back out of whichever keychain service `secondary.keychain_service` actually names, so the two directions always agree without a second place to keep in sync (`internal/router.EnvVarForProvider` / `openAICompatibleIdentity`). Use `--secondary-keychain-service` on `configure` if you want a service name other than the `claude-burst-<label>` default (for example, to run two different OpenAI-compatible secondaries side by side under distinct names), and the matching `--service` on `keychain-set` to store the key under that same name. `keychain-set` never infers the service from whichever secondary happens to be configured: it used to, and the first time two OpenAI-compatible providers existed side by side it overwrote one provider's stored key with the other's. Storing several providers' keys and swapping which is active is now just independent config edits.
 
 **Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected**, in favor of the above. It would have required reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`) — exactly the pattern this README's design principles (and the source blog post) call out as why other third-party tools have been blocked by Anthropic. Not planned.
+
+## Amazon Bedrock notes
+
+Bedrock is supported as an overflow secondary (`--secondary bedrock`), not as a token-shunting worker. Its `model_map` is required: every Claude model needs an entry, and one without it fails the request rather than falling back. What is specific to it:
+
+### Bedrock feature compatibility
+
+Claude Code's Anthropic endpoint can send beta features that a third-party/cloud endpoint may not support. Claude Burst strips only the OAuth-specific `oauth-*` beta value before Bedrock and leaves the remaining Claude Code beta capabilities intact. If Bedrock rejects a feature that Anthropic accepts, the response is returned to Claude Code rather than silently weakening the request.
+
+### Bedrock API key authentication only (as of v0.2.0)
+
+The gateway reads `AWS_BEARER_TOKEN_BEDROCK` and stores it in macOS Keychain. It does not yet implement AWS SSO, role assumption, `awsAuthRefresh`, or SigV4 signing. Those should be added before a large enterprise rollout.
+
+### The Bedrock key is briefly visible in local process listings
+
+`claude-burst keychain-set` passes the key to `/usr/bin/security` as a command-line argument, so it's visible in `ps` output to other local processes for the duration of that one call. Reading it from stdin instead would close this, but `security`'s interactive password prompt doesn't reliably accept piped stdin in non-terminal contexts, so this hasn't been changed yet.
 
 ## Keeping Remote Control: transparent intercept mode (optional)
 
@@ -683,7 +741,9 @@ go vet ./...
 
 CI runs both on every push and pull request (see `.github/workflows/test.yml`).
 
-The tests include a simulated Anthropic subscription rejection that verifies the same request is replayed to Bedrock, the model is remapped, the OAuth beta is removed from the Bedrock call, and the overflow reset state is persisted, plus an equivalent suite for the metered-failures strategy (sustained-failure threshold, window expiry, success reset, and the no-subscription primary forwarding its own auth header unchanged).
+The tests include a simulated Anthropic subscription rejection that verifies the same request is replayed to the secondary, the model is remapped, the OAuth beta is removed from a Bedrock call, and the overflow reset state is persisted (the suite covers both Bedrock and the OpenAI-compatible translator), plus an equivalent suite for the metered-failures strategy (sustained-failure threshold, window expiry, success reset, and the no-subscription primary forwarding its own auth header unchanged).
+
+Token shunting has its own tests, including an end-to-end one that builds the binary and drives it through the hook protocol — see [How it is tested](#token-shunting-keep-the-boring-work-out-of-claudes-context).
 
 ## Uninstall
 

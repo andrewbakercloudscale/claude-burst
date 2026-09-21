@@ -92,7 +92,7 @@ func usage() {
 Commands:
   serve             Run the local gateway (default: 127.0.0.1:7777)
   configure         Write/update config.json
-  keychain-set      Store $AWS_BEARER_TOKEN_BEDROCK in macOS Keychain (Bedrock secondary)
+  keychain-set      Store a secondary's API key in macOS Keychain (--provider together|openrouter|bedrock)
   enable            Point Claude Code at the local gateway via ~/.claude/settings.json
   disable           Remove Claude Burst from Claude Code settings
   status            Show routing state
@@ -118,22 +118,27 @@ Keeping Claude Code's Remote Control (optional):
     claude-burst enable          # prints the one sudo step that remains
   Undo with: sudo scripts/transparent-root.sh remove
 
-Setup with a Claude Max/Pro subscription (default), Bedrock overflow:
-  export AWS_BEARER_TOKEN_BEDROCK='...'
-  claude-burst keychain-set
-  claude-burst configure --region us-east-1
+Setup with a Claude Max/Pro subscription (default), Together AI overflow:
+  claude-burst configure --secondary openai-compatible \
+    --secondary-base-url https://api.together.xyz/v1 --secondary-model zai-org/GLM-5.3
+  TOGETHER_API_KEY='...' claude-burst keychain-set --provider together
   claude-burst enable
   claude-burst serve
+  claude-burst shunt enable        # optional: keep bulk reads out of Claude's context
 
-Setup with no subscription (metered Anthropic API key primary), Bedrock overflow:
-  export AWS_BEARER_TOKEN_BEDROCK='...'
-  claude-burst keychain-set
-  claude-burst configure --primary anthropic-api-key --secondary bedrock --region us-east-1
+Setup with no subscription (metered Anthropic API key primary), Together AI overflow:
+  claude-burst configure --primary anthropic-api-key --secondary openai-compatible \
+    --secondary-base-url https://api.together.xyz/v1 --secondary-model zai-org/GLM-5.3
+  TOGETHER_API_KEY='...' claude-burst keychain-set --provider together
   claude-burst enable
   # Then set ANTHROPIC_API_KEY in Claude Code's own settings env -- the
   # gateway never stores or injects an Anthropic credential itself, it only
   # forwards whatever auth header Claude Code already sent.
   claude-burst serve
+
+Amazon Bedrock is also supported as an overflow secondary (not as a shunt worker):
+  export AWS_BEARER_TOKEN_BEDROCK='...' && claude-burst keychain-set
+  claude-burst configure --secondary bedrock --region us-east-1
 `)
 }
 

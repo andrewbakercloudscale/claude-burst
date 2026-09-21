@@ -10,37 +10,21 @@
     "failover_strategy": "subscription-limit"
   },
   "secondary": {
-    "provider": "bedrock",
-    "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic",
-    "keychain_service": "claude-burst-bedrock",
-    "model_map": {
-      "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
-      "claude-opus-5": "global.anthropic.claude-opus-5",
-      "claude-fable-5": "global.anthropic.claude-fable-5",
-      "claude-haiku-4-5-20251001": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-    }
+    "provider": "openai-compatible",
+    "base_url": "https://api.together.xyz/v1",
+    "model": "zai-org/GLM-5.3",
+    "keychain_service": "claude-burst-together"
+  },
+  "shunt": {
+    "read": true,
+    "write": true,
+    "min_lines": 350
   },
   "metered_failover": {
     "window_seconds": 60,
     "min_failures": 3
   },
   "pricing": {
-    "claude-sonnet-5": {
-      "input_per_mtok": 2,
-      "output_per_mtok": 10
-    },
-    "global.anthropic.claude-sonnet-5": {
-      "input_per_mtok": 2,
-      "output_per_mtok": 10
-    },
-    "claude-opus-5": {
-      "input_per_mtok": 5,
-      "output_per_mtok": 25
-    },
-    "global.anthropic.claude-opus-5": {
-      "input_per_mtok": 5,
-      "output_per_mtok": 25
-    },
     "zai-org/GLM-5.3": {
       "input_per_mtok": 1.4,
       "output_per_mtok": 4.4
@@ -53,6 +37,10 @@
       "input_per_mtok": 10,
       "output_per_mtok": 50
     },
+    "claude-opus-5": {
+      "input_per_mtok": 5,
+      "output_per_mtok": 25
+    },
     "claude-opus-4-8": {
       "input_per_mtok": 5,
       "output_per_mtok": 25
@@ -64,6 +52,10 @@
     "claude-opus-4-6": {
       "input_per_mtok": 5,
       "output_per_mtok": 25
+    },
+    "claude-sonnet-5": {
+      "input_per_mtok": 2,
+      "output_per_mtok": 10
     },
     "claude-sonnet-4-6": {
       "input_per_mtok": 3,
