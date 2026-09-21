@@ -95,6 +95,20 @@ So a session hit the block and **retried the same `cat` instead of running `shun
 - `CLAUDE_CODE_SESSION_ID` is in the Bash tool's environment and the hook payload carries
   `session_id` (same id the gateway puts in `metrics.jsonl`), so both halves can record it.
 
+### Tests and docs (added after the first handover commit)
+
+- **`internal/integration/shunt_e2e_test.go`** builds the real binary and drives it through the
+  hook's stdin/exit-code protocol against a fake worker in a throwaway `HOME`: enable, guard
+  block/allow matrix, delegated read (a `.env` never reaches the worker), generated file + `.bak`,
+  log, disable restoring `settings.json` exactly, no-worker enable refused, failing worker
+  logged, guard fails open on broken config. **Mutation-checked**: making the guard never block,
+  and skipping the readiness check on enable, each fail it. Run: `go test ./internal/integration -run TestShunt -v`.
+- **README rewritten around Together AI + token shunting** (Bedrock is now "overflow only" and
+  lives in its own *Amazon Bedrock notes* section; limitations renumbered; all internal anchors
+  checked). `--help` and `config.example.json` follow. `install.sh` is still Bedrock-only (it
+  runs `configure --region`); the README says so and shows the `configure` step that replaces it.
+  `BLOG.md` was left alone on purpose — it is a dated post that says it is kept as written.
+
 ### Committed but NOT deployed
 
 1. **Refusal message rewritten** (`guard.go`): says "Do NOT retry", offers
