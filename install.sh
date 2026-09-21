@@ -3,12 +3,17 @@
 #
 # Usage:
 #   ./install.sh              install (or reinstall/update) claude-burst
-#   ./install.sh uninstall    remove the LaunchAgent and binary
+#   ./install.sh uninstall    remove the routing, the token-shunting hook and
+#                             skill, the LaunchAgent and the binary
 #
 # Uninstall intentionally keeps ~/.config/claude-burst (config, state,
 # metrics) and the macOS Keychain secret, since those are not things you
 # want wiped by an accidental rerun. See the printed message at the end
 # of uninstall for how to purge them too.
+#
+# Note that shunting is switched OFF in config.json as part of uninstall (that is
+# how its hook and skill are removed), so a later reinstall needs
+# `claude-burst shunt enable` to turn it back on.
 set -euo pipefail
 
 LABEL="ninja.andrewbaker.claude-burst"
@@ -22,12 +27,24 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 uninstall() {
-  if [[ -x "$TARGET" ]]; then "$TARGET" disable || true; fi
+  if [[ -x "$TARGET" ]]; then
+    # Token shunting puts a hook in ~/.claude/settings.json that runs this binary
+    # before every Read and Bash call, and a skill telling Claude to run it. Both
+    # have to come out while the binary still exists to remove them: left behind,
+    # the hook points at nothing and the skill instructs Claude to run a command
+    # that is gone. A no-op when shunting was never enabled.
+    "$TARGET" shunt disable >/dev/null 2>&1 || true
+    "$TARGET" disable || true
+  fi
   launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
   rm -f "$PLIST" "$TARGET"
-  echo "Removed Claude Burst routing and LaunchAgent."
+  echo "Removed Claude Burst routing, the token-shunting hook and skill, and the LaunchAgent."
   echo "Kept ~/.config/claude-burst (config, state, metrics) and the macOS Keychain secret intentionally."
-  echo "To purge those too: rm -rf ~/.config/claude-burst && security delete-generic-password -s claude-burst-bedrock"
+  echo "To purge those too: rm -rf ~/.config/claude-burst"
+  echo "  and delete whichever secondary key you stored:"
+  echo "    security delete-generic-password -s claude-burst-together     # Together AI"
+  echo "    security delete-generic-password -s claude-burst-openrouter   # OpenRouter"
+  echo "    security delete-generic-password -s claude-burst-bedrock      # Amazon Bedrock"
 }
 
 install() {
