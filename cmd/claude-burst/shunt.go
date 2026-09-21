@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -21,6 +23,9 @@ func shuntUsage() {
   shunt disable [--read] [--write]  turn parts off (default: both); removes the hook when read is off, the skill when none remain
   shunt status                      what is on, whether the worker is ready, and what it has saved
   shunt doctor [--quick]            check the worker sees a whole prompt (catches silent truncation)
+  shunt log [-n N] [--problems] [--session ID] [--json]
+                                    what happened, in plain text: refusals, delegations, failures,
+                                    with project and session (--problems: only what needs a look)
 
 Used by Claude, not by you:
   shunt guard                       PreToolUse hook: refuses whole-file reads above the threshold
@@ -51,6 +56,8 @@ func shuntCmd(args []string) {
 		shuntStatus()
 	case "doctor":
 		shuntDoctor(args[1:])
+	case "log":
+		shuntLog(args[1:])
 	case "guard":
 		shuntGuard()
 	case "read":
@@ -184,6 +191,15 @@ func shuntStatusText(cfg config.Config) string {
 		if sum, err := shunt.SummarizeLog(lp, time.Now().Add(-30*24*time.Hour)); err == nil {
 			fmt.Fprintf(&sb, "shunt (30d): %s\n", sum)
 		}
+		// Anything that needs a look, newest last, so a looping session or a
+		// failing worker is on the status page rather than buried in a log.
+		since := time.Now().Add(-24 * time.Hour)
+		if probs, err := shunt.Recent(lp, 5, func(e shunt.Event) bool { return e.IsProblem() && e.Time.After(since) }); err == nil && len(probs) > 0 {
+			fmt.Fprintf(&sb, "shunt PROBLEMS (last 24h, newest last; full list: claude-burst shunt log --problems):\n")
+			for i := len(probs) - 1; i >= 0; i-- {
+				fmt.Fprintf(&sb, "  %s\n", shuntLogLine(probs[i]))
+			}
+		}
 	}
 	return sb.String()
 }
@@ -231,47 +247,112 @@ func shuntDoctor(args []string) {
 	fmt.Println("OK: the worker saw the whole prompt.")
 }
 
+// guardError records that the guard could not decide and let the call through.
+// It used to return silently, which made a broken guard indistinguishable from
+// one that had nothing to block.
+func guardError(stage, note string, in shunt.HookInput) {
+	logShunt(shunt.Event{Kind: shunt.KindGuardError, OK: false, Stage: stage, Note: note, Session: in.SessionID, Cwd: in.Cwd})
+}
+
 // shuntGuard is the PreToolUse hook. Exit 2 with a message on stderr blocks the
 // tool call and hands the message to the model; any other outcome allows it.
-// Every internal error therefore ends in exit 0: see shunt.Decide.
+// Every internal error therefore ends in exit 0 -- see shunt.Decide -- but never
+// silently: each one is logged as a guard_error so a broken guard shows up.
 func shuntGuard() {
+	var in shunt.HookInput
+	defer func() {
+		if r := recover(); r != nil {
+			guardError("panic", fmt.Sprint(r), in)
+		}
+	}()
 	in, err := shunt.ParseHookInput(os.Stdin)
 	if err != nil {
+		guardError(shunt.StageInput, "hook payload is not valid JSON: "+errNote(err), in)
 		return
 	}
 	cfg, err := config.Load()
 	if err != nil {
+		guardError(shunt.StageConfig, errNote(err), in)
 		return
 	}
-	d := shunt.Decide(in, shunt.GuardOptions{Read: cfg.Shunt.Read, MinLines: cfg.Shunt.MinLinesOrDefault(), Bin: shunt.SelfPath()})
+	threshold := cfg.Shunt.MinLinesOrDefault()
+	d := shunt.Decide(in, shunt.GuardOptions{Read: cfg.Shunt.Read, MinLines: threshold, Bin: shunt.SelfPath()})
 	if !d.Deny {
 		return
 	}
+
+	ev := shunt.Event{Kind: shunt.KindDeny, OK: true, Session: in.SessionID, Cwd: in.Cwd,
+		Tool: d.Tool, Path: d.Path, Lines: d.Lines, Threshold: threshold, BytesIn: d.Bytes, Files: 1}
+	msg := d.Reason
 	if lp, err := config.ShuntLogPath(); err == nil {
-		_ = shunt.Append(lp, shunt.Event{Kind: shunt.KindDeny, OK: true, Files: 1, BytesIn: d.Bytes, Note: in.ToolName, Cwd: in.Cwd})
+		// Counted BEFORE this refusal is recorded, so it means "refused this
+		// many times already". A session that follows the redirect resets it.
+		ev.Repeat = shunt.RepeatCount(lp, ev, time.Now())
+		_ = config.EnsureDir()
+		_ = shunt.Append(lp, ev)
 	}
-	fmt.Fprintln(os.Stderr, d.Reason)
+	if ev.Repeat >= 1 {
+		msg = fmt.Sprintf("REFUSAL #%d of this file in this session with no answer in between. Retrying cannot succeed -- run the shunt read command below now.\n\n", ev.Repeat+1) + msg
+	}
+	fmt.Fprintln(os.Stderr, msg)
 	os.Exit(2)
 }
 
+// run carries what every shunt read/write log line needs, so that EVERY exit
+// path records itself. Before this, the feature-off, no-worker and bad-argument
+// failures called fatal() ahead of the log write and left no trace at all.
+type run struct {
+	ev    shunt.Event
+	start time.Time
+}
+
+func newRun(kind string) *run {
+	cwd, _ := os.Getwd()
+	return &run{start: time.Now(), ev: shunt.Event{Kind: kind, Session: os.Getenv("CLAUDE_CODE_SESSION_ID"), Cwd: cwd}}
+}
+
+// fail logs the failure with its stage and exits with the message.
+func (r *run) fail(stage string, err error) {
+	r.ev.OK = false
+	r.ev.Stage = stage
+	if se := shunt.StageOf(err); se != "error" && stage == "" {
+		r.ev.Stage = se
+	}
+	r.ev.Note = errNote(err)
+	r.ev.DurationMS = time.Since(r.start).Milliseconds()
+	logShunt(r.ev)
+	fatal(err)
+}
+
 func shuntRead(args []string) {
-	fs := flag.NewFlagSet("shunt read", flag.ExitOnError)
+	r := newRun(shunt.KindRead)
+	fs := flag.NewFlagSet("shunt read", flag.ContinueOnError)
 	question := fs.String("question", "", "what you need to know (required)")
 	fs.StringVar(question, "q", "", "shorthand for --question")
 	chunk := fs.Int("chunk-lines", 0, "override lines per worker call")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		r.fail(shunt.StageArgs, err)
+	}
+	r.ev.Paths = fs.Args()
 
 	cfg, err := config.Load()
 	if err != nil {
-		fatal(err)
+		r.fail(shunt.StageConfig, err)
 	}
 	if !cfg.Shunt.Read {
-		fatal(fmt.Errorf("bulk-read delegation is off. Read the file with offset and limit windows, or run: claude-burst shunt enable --read"))
+		r.fail(shunt.StageDisabled, fmt.Errorf("bulk-read delegation is off. Read the file with offset and limit windows, or run: claude-burst shunt enable --read"))
+	}
+	if strings.TrimSpace(*question) == "" || len(fs.Args()) == 0 {
+		r.fail(shunt.StageArgs, fmt.Errorf("--question and at least one file are required: claude-burst shunt read --question \"...\" FILE..."))
 	}
 	w, err := shunt.NewWorker(cfg)
 	if err != nil {
-		fatal(fmt.Errorf("%w. Read the file with offset and limit windows instead", err))
+		r.fail(shunt.StageWorkerInit, fmt.Errorf("%w. Read the file with offset and limit windows instead", err))
 	}
+	r.ev.Model, r.ev.Destination = w.Model, w.Endpoint()
 	cl := cfg.Shunt.ChunkLinesOrDefault()
 	if *chunk > 0 {
 		cl = *chunk
@@ -280,17 +361,18 @@ func shuntRead(args []string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	start := time.Now()
 	res, err := w.BulkRead(ctx, shunt.ReadRequest{Question: *question, Paths: fs.Args(), Cwd: cwd, ChunkLines: cl})
-	logShunt(shunt.Event{Kind: shunt.KindRead, OK: err == nil, Files: res.Files, Calls: res.Calls, BytesIn: res.BytesIn,
-		BytesOut: int64(len(res.Text)), InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, Model: w.Model, Destination: w.Endpoint(),
-		USD: res.USD, PricingUnknown: res.Unpriced, DurationMS: time.Since(start).Milliseconds(), Note: errNote(err)})
+	r.ev.Files, r.ev.Calls, r.ev.BytesIn, r.ev.BytesOut = res.Files, res.Calls, res.BytesIn, int64(len(res.Text))
+	r.ev.InputTokens, r.ev.OutputTokens, r.ev.USD, r.ev.PricingUnknown = res.InputTokens, res.OutputTokens, res.USD, res.Unpriced
 	if err != nil {
-		fatal(err)
+		r.fail(shunt.StageOf(err), err)
 	}
+	r.ev.OK = true
+	r.ev.DurationMS = time.Since(r.start).Milliseconds()
+	logShunt(r.ev)
 	fmt.Println(res.Text)
 	fmt.Println()
-	fmt.Println(res.Footer(w.Model, time.Since(start)))
+	fmt.Println(res.Footer(w.Model, time.Since(r.start)))
 }
 
 type multiFlag []string
@@ -299,57 +381,133 @@ func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 func shuntWrite(args []string) {
-	fs := flag.NewFlagSet("shunt write", flag.ExitOnError)
+	r := newRun(shunt.KindWrite)
+	fs := flag.NewFlagSet("shunt write", flag.ContinueOnError)
 	spec := fs.String("spec", "", "what the file must do (or - to read stdin)")
 	specFile := fs.String("spec-file", "", "read the specification from a file")
 	out := fs.String("out", "", "path to write (required)")
 	var refs multiFlag
 	fs.Var(&refs, "ref", "reference file whose conventions to follow (repeatable)")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		r.fail(shunt.StageArgs, err)
+	}
+	r.ev.Path, r.ev.Paths = *out, refs
 
 	cfg, err := config.Load()
 	if err != nil {
-		fatal(err)
+		r.fail(shunt.StageConfig, err)
 	}
 	if !cfg.Shunt.Write {
-		fatal(fmt.Errorf("code-write delegation is off. Write the file yourself, or run: claude-burst shunt enable --write"))
+		r.fail(shunt.StageDisabled, fmt.Errorf("code-write delegation is off. Write the file yourself, or run: claude-burst shunt enable --write"))
 	}
 	specText := *spec
 	switch {
 	case *specFile != "":
 		b, err := os.ReadFile(*specFile)
 		if err != nil {
-			fatal(err)
+			r.fail(shunt.StageArgs, err)
 		}
 		specText = string(b)
 	case specText == "-":
 		b, err := readAllStdin()
 		if err != nil {
-			fatal(err)
+			r.fail(shunt.StageArgs, err)
 		}
 		specText = string(b)
 	}
+	if strings.TrimSpace(specText) == "" || *out == "" {
+		r.fail(shunt.StageArgs, fmt.Errorf("--spec and --out are required: claude-burst shunt write --spec \"...\" --ref EXAMPLE --out PATH"))
+	}
 	w, err := shunt.NewWorker(cfg)
 	if err != nil {
-		fatal(fmt.Errorf("%w. Write the file yourself instead", err))
+		r.fail(shunt.StageWorkerInit, fmt.Errorf("%w. Write the file yourself instead", err))
 	}
+	r.ev.Model, r.ev.Destination = w.Model, w.Endpoint()
 	cwd, _ := os.Getwd()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	start := time.Now()
 	res, err := w.CodeWrite(ctx, shunt.WriteRequest{Spec: specText, Refs: refs, Out: *out, Cwd: cwd})
-	logShunt(shunt.Event{Kind: shunt.KindWrite, OK: err == nil, Files: 1, Calls: 1, BytesOut: int64(res.Bytes),
-		InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, Model: w.Model, Destination: w.Endpoint(), USD: res.USD,
-		PricingUnknown: res.Unpriced, DurationMS: time.Since(start).Milliseconds(), Note: errNote(err)})
+	r.ev.Files, r.ev.Calls, r.ev.BytesOut = 1, 1, int64(res.Bytes)
+	r.ev.InputTokens, r.ev.OutputTokens, r.ev.USD, r.ev.PricingUnknown = res.InputTokens, res.OutputTokens, res.USD, res.Unpriced
 	if err != nil {
-		fatal(err)
+		r.fail(shunt.StageOf(err), err)
 	}
-	fmt.Printf("wrote %s (%d lines, %d bytes) via %s in %.1fs.\n", res.Path, res.Lines, res.Bytes, w.Model, time.Since(start).Seconds())
+	r.ev.OK = true
+	r.ev.DurationMS = time.Since(r.start).Milliseconds()
+	logShunt(r.ev)
+	fmt.Printf("wrote %s (%d lines, %d bytes) via %s in %.1fs.\n", res.Path, res.Lines, res.Bytes, w.Model, time.Since(r.start).Seconds())
 	if res.Backup != "" {
 		fmt.Printf("previous version kept at %s\n", res.Backup)
 	}
 	fmt.Println("The file was NOT shown to you. Review it (git diff, or Read a window) and run the tests or linter before relying on it.")
+}
+
+// shuntLog prints recent shunt activity as plain text, oldest first (like tail),
+// one line per event: when, what kind, what happened, which project and session.
+func shuntLog(args []string) {
+	fs := flag.NewFlagSet("shunt log", flag.ExitOnError)
+	n := fs.Int("n", 30, "how many events to show")
+	problems := fs.Bool("problems", false, "only failures, guard errors and repeated refusals")
+	session := fs.String("session", "", "only events from a session (id or prefix)")
+	asJSON := fs.Bool("json", false, "raw events, one JSON object per line")
+	_ = fs.Parse(args)
+
+	lp, err := config.ShuntLogPath()
+	if err != nil {
+		fatal(err)
+	}
+	evs, err := shunt.Recent(lp, *n, func(e shunt.Event) bool {
+		if *problems && !e.IsProblem() {
+			return false
+		}
+		return *session == "" || strings.HasPrefix(e.Session, *session)
+	})
+	if err != nil {
+		fatal(err)
+	}
+	if len(evs) == 0 {
+		fmt.Printf("no matching shunt activity recorded yet (log: %s)\n", lp)
+		return
+	}
+	for i := len(evs) - 1; i >= 0; i-- {
+		e := evs[i]
+		if *asJSON {
+			b, _ := json.Marshal(e)
+			fmt.Println(string(b))
+			continue
+		}
+		fmt.Println(shuntLogLine(e))
+	}
+}
+
+// shuntLogLine is one event as a line of plain text.
+func shuntLogLine(e shunt.Event) string {
+	ts := e.Time.Format("15:04:05")
+	if !sameDay(e.Time, time.Now()) {
+		ts = e.Time.Format("Jan 02 15:04:05")
+	}
+	who := ""
+	if e.Project() != "" || e.Session != "" {
+		who = fmt.Sprintf("  [%s · session %s]", orDash(e.Project()), orDash(shunt.ShortSession(e.Session)))
+	}
+	return fmt.Sprintf("%s  %-10s %s%s", ts, e.Tag(), e.Describe(), who)
+}
+
+func sameDay(a, b time.Time) bool {
+	ay, am, ad := a.Local().Date()
+	by, bm, bd := b.Local().Date()
+	return ay == by && am == bm && ad == bd
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
 }
 
 func logShunt(e shunt.Event) {

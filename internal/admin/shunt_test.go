@@ -376,3 +376,54 @@ func TestShuntActivityIsEmptyNotNull(t *testing.T) {
 		t.Errorf("no log must serialise as [], which the page iterates, not null: %q", rr.Body.String())
 	}
 }
+
+// A session retrying a blocked read is the failure this whole logging exists to
+// surface, so the state must say so and the card must not read as healthy.
+func TestStateFlagsALoopingSession(t *testing.T) {
+	s, _ := shuntServer(t, true)
+	mutate(t, s, "/api/shunt", `{"read":true,"write":true}`)
+	lp, _ := config.ShuntLogPath()
+	now := time.Now()
+	// the log is append-ordered, so the old event goes in first, as it would in life
+	shunt.Append(lp, shunt.Event{Time: now.Add(-3 * time.Hour), Kind: shunt.KindDeny, OK: true, Repeat: 5}) // an hour+ old: not "now"
+	for i, rep := range []int{0, 1, 2, 3} {
+		shunt.Append(lp, shunt.Event{Time: now.Add(time.Duration(i-5) * time.Minute), Kind: shunt.KindDeny, OK: true, Repeat: rep,
+			Session: "aaaa1111-2222", Cwd: "/Users/x/wporg-ready", Tool: "Bash cat", Path: "/Users/x/wporg-ready/php-parse.php", Lines: 931, Threshold: 350, BytesIn: 26719})
+	}
+	shunt.Append(lp, shunt.Event{Time: now, Kind: shunt.KindRead, OK: false, Stage: shunt.StageWorkerCall, Note: "HTTP 500"})
+
+	st := stateOf(t, s).Shunt
+	if st.RepeatRefusals1h != 2 {
+		t.Errorf("repeat refusals (3rd and later, last hour) = %d, want 2", st.RepeatRefusals1h)
+	}
+	if st.Problems24h != 1 {
+		t.Errorf("other problems (the failed read) = %d, want 1", st.Problems24h)
+	}
+
+	var rows []shuntActivityRow
+	getJSON(t, s, "/api/shunt-activity?limit=10", &rows)
+	var loop *shuntActivityRow
+	for i := range rows {
+		if rows[i].Tag == "LOOP" {
+			loop = &rows[i]
+			break
+		}
+	}
+	if loop == nil {
+		t.Fatalf("a third refusal must be tagged LOOP: %+v", rows)
+	}
+	if !loop.Problem || loop.Session != "aaaa1111" || loop.SessionFull != "aaaa1111-2222" || loop.Project != "wporg-ready" ||
+		loop.Tool != "Bash cat" || !strings.Contains(loop.Detail, "retrying instead of running shunt read") {
+		t.Errorf("the row must name session, project, tool and the loop: %+v", loop)
+	}
+	if rows[0].Tag != "READ-FAIL" || !rows[0].Problem || !strings.Contains(rows[0].Detail, "FAILED at worker_call") {
+		t.Errorf("a failed read must be a problem row saying where: %+v", rows[0])
+	}
+}
+
+func TestShuntRequestRowCarriesTheSession(t *testing.T) {
+	row := shuntRequestRow(shunt.Event{Time: time.Now(), Kind: shunt.KindRead, OK: true, Session: "aaaa1111-2222", Model: "glm", Files: 1})
+	if row.SessionID != "aaaa1111-2222" {
+		t.Errorf("the requests table row must carry the session: %+v", row.Event)
+	}
+}

@@ -46,14 +46,14 @@ type WriteResult struct {
 func (w *Worker) CodeWrite(ctx context.Context, req WriteRequest) (WriteResult, error) {
 	var res WriteResult
 	if strings.TrimSpace(req.Spec) == "" {
-		return res, fmt.Errorf("--spec is required")
+		return res, stage(StageArgs, fmt.Errorf("--spec is required"))
 	}
 	if req.Out == "" {
-		return res, fmt.Errorf("--out is required")
+		return res, stage(StageArgs, fmt.Errorf("--out is required"))
 	}
 	out := resolve(req.Out, req.Cwd)
 	if err := checkWriteTarget(out); err != nil {
-		return res, err
+		return res, stage(StageArgs, err)
 	}
 
 	var prompt strings.Builder
@@ -62,18 +62,18 @@ func (w *Worker) CodeWrite(ctx context.Context, req WriteRequest) (WriteResult, 
 	for _, r := range req.Refs {
 		abs := resolve(r, req.Cwd)
 		if IsSensitive(abs) {
-			return res, fmt.Errorf("reference %s looks like a credentials file; it is never sent to a worker", r)
+			return res, stage(StageArgs, fmt.Errorf("reference %s looks like a credentials file; it is never sent to a worker", r))
 		}
 		b, err := os.ReadFile(abs)
 		if err != nil {
-			return res, fmt.Errorf("reference %s: %w", r, err)
+			return res, stage(StageArgs, fmt.Errorf("reference %s: %w", r, err))
 		}
 		if bytes.IndexByte(b[:min(len(b), 8192)], 0) >= 0 {
-			return res, fmt.Errorf("reference %s is a binary file", r)
+			return res, stage(StageArgs, fmt.Errorf("reference %s is a binary file", r))
 		}
 		total += len(b)
 		if total > maxRefBytes {
-			return res, fmt.Errorf("reference files exceed %d KB; pass fewer or smaller examples", maxRefBytes>>10)
+			return res, stage(StageArgs, fmt.Errorf("reference files exceed %d KB; pass fewer or smaller examples", maxRefBytes>>10))
 		}
 		fmt.Fprintf(&prompt, "\n=== REFERENCE %s ===\n%s\n", r, b)
 	}
@@ -88,16 +88,16 @@ func (w *Worker) CodeWrite(ctx context.Context, req WriteRequest) (WriteResult, 
 	// A truncated file would compile-fail at best and silently drop the end of
 	// a class at worst; never write one.
 	if r.FinishReason == "length" {
-		return res, fmt.Errorf("the worker hit its output limit mid-file, so nothing was written. Split the file or narrow the spec")
+		return res, stage(StageValidate, fmt.Errorf("the worker hit its output limit mid-file, so nothing was written. Split the file or narrow the spec"))
 	}
 	content, err := ValidateGenerated(r.Text)
 	if err != nil {
-		return res, fmt.Errorf("worker output rejected, nothing written: %w", err)
+		return res, stage(StageValidate, fmt.Errorf("worker output rejected, nothing written: %w", err))
 	}
 
 	backup, err := writeAtomic(out, []byte(content))
 	if err != nil {
-		return res, err
+		return res, stage(StageWriteFile, err)
 	}
 	res.Path, res.Backup = out, backup
 	res.Bytes = len(content)

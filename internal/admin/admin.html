@@ -1322,7 +1322,7 @@ function renderRequests(rows) {
         <td class="num">${num(e.input_tokens)}</td>
         <td class="num">${num(e.output_tokens)}</td>
         <td class="num">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? shuntUSD(e.api_equivalent_usd) : "\u2014"}</td>
-        <td>${esc(e.note || "")}</td>
+        <td>${esc(e.note || "")}${e.session_id ? ` <span style="color:var(--muted)" title="${esc(e.session_id)}">\u00b7 session ${esc(e.session_id.slice(0, 8))}</span>` : ""}</td>
       </tr>`;
       }
       const slot = e.slot || (e.route === "anthropic" ? "primary" : "secondary");
@@ -1649,6 +1649,8 @@ function shuntHealth(sh) {
   // re-applying it; a missing worker or key cannot.
   const repairable = (sh.read && !sh.hook_installed) || (!sh.read && sh.hook_installed) || (on && !sh.skill_installed);
   if (on && !sh.worker_ready) problems.push(sh.worker_error || "the worker is not ready");
+  if (sh.repeat_refusals_1h > 0) problems.push(sh.repeat_refusals_1h + " repeated refusal(s) in the last hour — a Claude session is retrying a blocked read instead of running shunt read (rows tagged LOOP below name the project and session)");
+  if (sh.problems_24h > 0) problems.push(sh.problems_24h + " failed delegation(s) or guard error(s) in the last 24 hours (see the rows in red below, or run: claude-burst shunt log --problems)");
   if (sh.read && !sh.hook_installed) problems.push("bulk read is on but the guard hook is not in ~/.claude/settings.json, so nothing is refusing whole-file reads");
   if (!sh.read && sh.hook_installed) problems.push("bulk read is off but the guard hook is still installed");
   if (on && !sh.skill_installed) problems.push("the skill that tells Claude when to delegate is not installed");
@@ -1704,28 +1706,28 @@ function renderShunt(s) {
 
 function renderShuntActivity(rows) {
   if (!Array.isArray(rows) || !rows.length) {
-    $("shuntActivity").innerHTML = `<div class="empty">Nothing yet. Once Claude Code has been restarted with this on, delegated reads, generated files and refused direct reads show up here.</div>`;
+    $("shuntActivity").innerHTML = `<div class="empty">Nothing yet. Once Claude Code has been restarted with this on, delegated reads, generated files and refused direct reads show up here, with the project and session that caused them.</div>`;
     return;
   }
-  const label = r => {
-    const what = r.kind === "read" ? "Read delegated" : r.kind === "write" ? "Code written"
-      : r.kind === "deny" ? "Direct read refused" : esc(r.kind);
-    return r.ok ? what : `<span style="color:var(--bad)">${what} \u2014 failed</span>`;
-  };
+  // The tag and the sentence both come from the server (shunt.Event), the same
+  // wording `claude-burst shunt log` prints, so the page and the terminal say
+  // the same thing. Problems are coloured; everything else stays quiet.
+  const tagClass = r => r.problem ? "st-5" : r.kind === "deny" ? "st-4" : "st-2";
   $("shuntActivity").innerHTML = `<table><thead><tr>
-      <th>Time</th><th>Event</th><th class="num">Files</th><th class="num">Kept out</th>
-      <th class="num">Worker in</th><th class="num">Worker out</th><th class="num">Cost</th><th>Model</th><th class="num">ms</th><th>Detail</th>
-    </tr></thead><tbody>${rows.map(r => `<tr>
+      <th>Time</th><th>Event</th><th>Project</th><th>Session</th><th class="num">Kept out</th>
+      <th class="num">Worker in</th><th class="num">Worker out</th><th class="num">Cost</th><th>Model</th><th class="num">ms</th><th>What happened</th>
+    </tr></thead><tbody>${rows.map(r => `<tr${r.problem ? ' style="background:var(--bad-bg)"' : ""}>
       <td class="mono">${esc(stamp(r.time))}</td>
-      <td>${label(r)}</td>
-      <td class="num">${r.files ? num(r.files) : "\u2014"}</td>
+      <td class="mono ${tagClass(r)}" title="${esc(r.stage ? "stage: " + r.stage : "")}"><strong>${esc(r.tag || r.kind)}</strong></td>
+      <td class="mono">${esc(r.project || "\u2014")}</td>
+      <td class="mono" title="${esc(r.session_id || "")}">${esc(r.session || "\u2014")}</td>
       <td class="num">${r.kept_out_tokens ? "\u2248" + num(r.kept_out_tokens) : "\u2014"}</td>
       <td class="num">${r.input_tokens ? num(r.input_tokens) : "\u2014"}</td>
       <td class="num">${r.output_tokens ? num(r.output_tokens) : "\u2014"}</td>
       <td class="num">${r.pricing_unknown ? "unpriced" : r.usd ? shuntUSD(r.usd) : "\u2014"}</td>
       <td class="mono" title="${esc(r.destination || "")}">${esc(r.model || "\u2014")}</td>
       <td class="num">${r.duration_ms ? num(r.duration_ms) : "\u2014"}</td>
-      <td>${esc(r.kind === "deny" ? (r.bytes_in ? "a " + Math.round(r.bytes_in / 1024) + " KB file" : "") + (r.note ? " via " + r.note : "") + (r.cwd ? " in " + r.cwd.split("/").filter(Boolean).pop() : "") : (r.note || ""))}</td>
+      <td title="${esc(r.path || "")}">${esc(r.detail || "")}</td>
     </tr>`).join("")}</tbody></table>`;
 }
 

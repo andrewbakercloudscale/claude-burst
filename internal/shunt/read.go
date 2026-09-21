@@ -56,10 +56,10 @@ type unit struct {
 func (w *Worker) BulkRead(ctx context.Context, req ReadRequest) (ReadResult, error) {
 	var res ReadResult
 	if strings.TrimSpace(req.Question) == "" {
-		return res, fmt.Errorf("--question is required")
+		return res, stage(StageArgs, fmt.Errorf("--question is required"))
 	}
 	if len(req.Paths) == 0 {
-		return res, fmt.Errorf("at least one file path is required")
+		return res, stage(StageArgs, fmt.Errorf("at least one file path is required"))
 	}
 	chunk := req.ChunkLines
 	if chunk <= 0 {
@@ -86,7 +86,7 @@ func (w *Worker) BulkRead(ctx context.Context, req ReadRequest) (ReadResult, err
 		res.Files++
 	}
 	if len(units) == 0 {
-		return res, fmt.Errorf("nothing to read: %s", strings.Join(res.Skipped, "; "))
+		return res, stage(StageArgs, fmt.Errorf("nothing to read: %s", strings.Join(res.Skipped, "; ")))
 	}
 
 	groups := pack(units, chunk)

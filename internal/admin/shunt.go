@@ -45,6 +45,15 @@ type shuntInfo struct {
 
 	Today  shuntSummary `json:"today"`
 	Last30 shuntSummary `json:"last30"`
+
+	// RepeatRefusals1h counts refusals in the last hour that were the third or
+	// later of the same file by the same session with no answer in between: a
+	// session retrying a blocked read instead of running shunt read. Problems24h
+	// counts everything else that needs a look (failed delegations, a guard that
+	// could not decide). Both turn the card red: a switch that is on over a
+	// session that keeps hitting a wall is not "working".
+	RepeatRefusals1h int `json:"repeat_refusals_1h"`
+	Problems24h      int `json:"problems_24h"`
 }
 
 func summarizeShunt(since time.Time) shuntSummary {
@@ -84,6 +93,21 @@ func (s *Server) shuntInfo(cfg config.Config) shuntInfo {
 	now := time.Now()
 	si.Today = summarizeShunt(now.Add(-24 * time.Hour))
 	si.Last30 = summarizeShunt(now.Add(-30 * 24 * time.Hour))
+	if lp, err := config.ShuntLogPath(); err == nil {
+		if evs, err := shunt.Recent(lp, 500, nil); err == nil {
+			for _, e := range evs { // newest first
+				age := now.Sub(e.Time)
+				if age > 24*time.Hour {
+					break
+				}
+				if e.Kind == shunt.KindDeny && e.Repeat >= 2 && age <= time.Hour {
+					si.RepeatRefusals1h++
+				} else if e.IsProblem() && e.Kind != shunt.KindDeny {
+					si.Problems24h++
+				}
+			}
+		}
+	}
 	return si
 }
 
@@ -184,6 +208,7 @@ func shuntRequestRow(e shunt.Event) requestRow {
 	row := requestRow{
 		Event: metrics.Event{
 			Time:             e.Time,
+			SessionID:        e.Session,
 			Slot:             SlotShunt,
 			Route:            "token-shunt",
 			Model:            e.Model,
@@ -251,22 +276,34 @@ func byteSize(n int64) string {
 // Unlike the requests table it includes refused direct reads, which are the
 // guard doing its job even though no worker call followed.
 type shuntActivityRow struct {
-	Time           time.Time `json:"time"`
-	Kind           string    `json:"kind"` // read | write | deny
-	OK             bool      `json:"ok"`
-	Files          int       `json:"files,omitempty"`
-	Calls          int       `json:"calls,omitempty"`
-	BytesIn        int64     `json:"bytes_in,omitempty"`
-	KeptOutTokens  int64     `json:"kept_out_tokens"`
-	InputTokens    int64     `json:"input_tokens,omitempty"`
-	OutputTokens   int64     `json:"output_tokens,omitempty"`
-	Model          string    `json:"model,omitempty"`
-	Destination    string    `json:"destination,omitempty"`
-	USD            float64   `json:"usd,omitempty"`
-	PricingUnknown bool      `json:"pricing_unknown,omitempty"`
-	DurationMS     int64     `json:"duration_ms,omitempty"`
-	Note           string    `json:"note,omitempty"`
-	Cwd            string    `json:"cwd,omitempty"`
+	Time time.Time `json:"time"`
+	Kind string    `json:"kind"` // read | write | deny | guard_error
+	// Tag and Detail are built by shunt.Event, the same wording `claude-burst
+	// shunt log` prints, so the page and the terminal cannot disagree.
+	Tag            string  `json:"tag"`
+	Detail         string  `json:"detail"`
+	Problem        bool    `json:"problem"`
+	Project        string  `json:"project,omitempty"`
+	Session        string  `json:"session,omitempty"`    // short form, for display
+	SessionFull    string  `json:"session_id,omitempty"` // full id, for the tooltip and for matching
+	Tool           string  `json:"tool,omitempty"`
+	Path           string  `json:"path,omitempty"`
+	Stage          string  `json:"stage,omitempty"`
+	Repeat         int     `json:"repeat,omitempty"`
+	OK             bool    `json:"ok"`
+	Files          int     `json:"files,omitempty"`
+	Calls          int     `json:"calls,omitempty"`
+	BytesIn        int64   `json:"bytes_in,omitempty"`
+	KeptOutTokens  int64   `json:"kept_out_tokens"`
+	InputTokens    int64   `json:"input_tokens,omitempty"`
+	OutputTokens   int64   `json:"output_tokens,omitempty"`
+	Model          string  `json:"model,omitempty"`
+	Destination    string  `json:"destination,omitempty"`
+	USD            float64 `json:"usd,omitempty"`
+	PricingUnknown bool    `json:"pricing_unknown,omitempty"`
+	DurationMS     int64   `json:"duration_ms,omitempty"`
+	Note           string  `json:"note,omitempty"`
+	Cwd            string  `json:"cwd,omitempty"`
 }
 
 func (s *Server) handleShuntActivity(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +323,9 @@ func (s *Server) handleShuntActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, e := range events {
 			rows = append(rows, shuntActivityRow{
-				Time: e.Time, Kind: e.Kind, OK: e.OK, Files: e.Files, Calls: e.Calls, BytesIn: e.BytesIn,
+				Time: e.Time, Kind: e.Kind, Tag: e.Tag(), Detail: e.Describe(), Problem: e.IsProblem(),
+				Project: e.Project(), Session: shunt.ShortSession(e.Session), SessionFull: e.Session,
+				Tool: e.Tool, Path: e.Path, Stage: e.Stage, Repeat: e.Repeat, OK: e.OK, Files: e.Files, Calls: e.Calls, BytesIn: e.BytesIn,
 				KeptOutTokens: e.KeptOutTokens(), InputTokens: e.InputTokens, OutputTokens: e.OutputTokens,
 				Model: e.Model, Destination: e.Destination, USD: e.USD, PricingUnknown: e.PricingUnknown,
 				DurationMS: e.DurationMS, Note: e.Note, Cwd: e.Cwd,

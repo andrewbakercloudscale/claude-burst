@@ -94,7 +94,17 @@ Restart Claude Code after enabling. Four parts, installed for you:
 "shunt": { "read": true, "write": true, "min_lines": 350, "chunk_lines": 6000, "timeout_seconds": 120, "model": "" }
 ```
 
-`shunt.jsonl` (next to `metrics.jsonl`) records metadata only — never file contents, questions or answers.
+**Seeing what is going on.** Every refusal, delegation and failure is recorded in `~/.config/claude-burst/shunt.jsonl` with **the Claude Code session id, the project directory, the file and the tool** (`Read`, `Bash cat`, ...), and no file contents, questions, specs or answers.
+
+```bash
+claude-burst shunt log                  # plain text, oldest first: time, TAG, what happened, [project · session]
+claude-burst shunt log --problems       # only what needs a look
+claude-burst shunt log --session aaaa1  # one session (id or prefix)
+claude-burst shunt log --json           # raw events
+claude-burst shunt status               # totals, plus the last problems
+```
+
+Tags: `REFUSED` (the guard blocked a direct read), **`LOOP`** (the same session has been refused the same file three or more times with no answer in between: it is retrying instead of running `shunt read`; the third and later refusals also tell the model so), `READ` / `WRITE` (a delegation), `READ-FAIL` / `WRITE-FAIL` (**with the stage it failed at**: `disabled`, `args`, `worker_init`, `worker_call`, `validate`, `write_file`), and `GUARD-ERR` (the guard could not decide and **allowed** the call; it fails open, and now says so). Every exit path logs, including the ones that used to leave no trace: the feature being off, no worker key, bad arguments. The dashboard's *Recent activity* table shows the same tags with project and session columns, highlights problem rows, and turns the card red while a session is looping.
 
 **How it is tested.** Each piece has unit tests (the guard's rules, the worker, code-write validation, the `settings.json` hook editor, the dashboard endpoints). On top of those, `internal/integration/shunt_e2e_test.go` builds the real binary and drives it the way Claude Code does — the hook's stdin/exit-code protocol, a `settings.json` that already holds someone else's hook, and a fake openai-compatible worker — through enable, blocking and passing the right calls, a delegated read (a credentials file never reaches the worker), a generated file, the log, and disable restoring `settings.json` exactly. It also checks that enabling refuses without a worker, that a failing worker is reported and logged, and that the guard fails open on a broken config. Breaking the guard, or skipping the worker check on enable, makes it fail.
 
@@ -329,6 +339,7 @@ claude-burst shunt enable [--read] [--write] # token shunting: default both
 claude-burst shunt disable [--read] [--write]
 claude-burst shunt status
 claude-burst shunt doctor [--quick]          # does the worker see a whole prompt?
+claude-burst shunt log [--problems]          # what happened, with project and session
 
 # Amazon Bedrock secondary (overflow only)
 claude-burst configure --secondary bedrock --region us-east-1
