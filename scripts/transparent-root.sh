@@ -260,7 +260,7 @@ do_reload_anchor() {
   echo "== verifying =="
   local direct real
   probe_direct_retry "$gport" 20 && direct=OK || direct=FAIL
-  gateway_body_has_overflow && real=OK || real=FAIL
+  real_path_retry 10 && real=OK || real=FAIL
   echo "  direct 127.0.0.1:$gport : $direct"
   echo "  real path (port $port)  : $real"
   if [[ "$real" != "OK" ]]; then
@@ -326,6 +326,27 @@ gateway_body_has_overflow() {
   case "$(curl -sk -m 3 "https://$host/healthz" 2>/dev/null)" in
     *'"overflow"'*) return 0 ;;
   esac
+  return 1
+}
+
+# gateway_body_has_overflow is single-shot, fine for the quick, informational
+# `status` line -- but do_reload_anchor's verify step above uses it to decide
+# whether to REVERT the anchor it just installed, and the same "a single probe
+# cannot verify anything on this port" measurement two comments up applies to
+# the real path just as much as the direct one: pf-heal.sh's own real-path
+# check (identical logic, added 2026-09-22 after the same bug bit it) went
+# from OK to FAIL and back with nothing else changing, cycle to cycle. A
+# false FAIL here is worse than there -- it undoes a reload that was correct.
+real_path_retry() {
+  local budget="${1:-10}" waited=0 attempts=0
+  while true; do
+    attempts=$((attempts + 1))
+    gateway_body_has_overflow && { echo "  real path answered on attempt $attempts (${waited}s in)"; return 0; }
+    (( waited >= budget )) && break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "  real path did not answer in $attempts attempt(s) over ${waited}s"
   return 1
 }
 
