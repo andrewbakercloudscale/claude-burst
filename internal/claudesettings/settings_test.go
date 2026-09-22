@@ -3,7 +3,10 @@ package claudesettings
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/backup"
 )
 
 func TestClearBaseURL(t *testing.T) {
@@ -121,5 +124,37 @@ func TestSetBaseURLPreservesExistingEnv(t *testing.T) {
 	}
 	if env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:7777" {
 		t.Error("base URL not set")
+	}
+}
+
+// Same regression as internal/config's TestSaveUpdatesTheBackupRollbackWouldRestore:
+// this file carries the shunt guard hook, and a Write that skips updating the
+// restore point is exactly how scripts/rollback.sh silently reinstalled it on
+// 2026-09-21 (settings.json.latest.bak held an old, hook-present snapshot).
+func TestWriteUpdatesTheBackupRollbackWouldRestore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_BURST_BACKUP_DIR", "")
+	p := filepath.Join(home, ".claude", "settings.json")
+
+	stale := []byte(`{"hooks":{"PreToolUse":[{"hooks":[{"command":"claude-burst shunt guard"}]}]}}`)
+	if err := backup.SetLatest(p, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Write(p, map[string]any{"hooks": map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, _ := backup.Dir()
+	b, err := os.ReadFile(filepath.Join(dir, "settings.json.latest.bak"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) == string(stale) {
+		t.Fatal("latest.bak still holds the stale, hook-present settings: a rollback right now would silently reinstall the shunt guard hook, same as 2026-09-21")
+	}
+	if strings.Contains(string(b), "shunt guard") {
+		t.Fatalf("the restore point must reflect what Write just wrote, not an old hook-bearing version: %s", b)
 	}
 }

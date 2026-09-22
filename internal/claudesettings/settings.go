@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/backup"
 )
 
 const BaseURLKey = "ANTHROPIC_BASE_URL"
@@ -48,11 +50,20 @@ func Write(p string, root map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
 	}
+	// Best-effort throughout: see internal/backup's doc comment. This file
+	// carries the shunt guard hook among other things, and a writer that skips
+	// this is exactly how a rollback silently reinstalled it on 2026-09-21.
+	_ = backup.Snapshot(p) // archive the outgoing version, for history
 	b, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(b, '\n'), 0600)
+	full := append(b, '\n')
+	if err := os.WriteFile(p, full, 0600); err != nil {
+		return err
+	}
+	_ = backup.SetLatest(p, full)
+	return nil
 }
 
 // BaseURL returns the currently configured ANTHROPIC_BASE_URL, if any.

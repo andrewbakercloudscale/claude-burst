@@ -14,6 +14,17 @@ it or `/var/log/claude-burst-pf.log` before `scripts/rollback.sh` ran at 18:25:0
 whatever they would have shown. Codified in ROLLBACK.md's ordering rules (#5): check pf-heal's
 own state before rolling back for a broken redirect, not after.
 
+**A second, real gap that same rollback exposed:** it also silently re-enabled token shunting
+(disabled earlier that day) and reinstalled its guard hook, because `claude-burst shunt disable`
+writes `config.json`/`settings.json` directly and never updates the backup rollback restores
+from. Fixed: `internal/backup` now updates `*.latest.bak` from inside `config.Save` and
+`claudesettings.Write` themselves, from what was just written, right after every successful
+write -- so it is never older than the config actually in force. Codified in ROLLBACK.md's
+ordering rules (#6). The first implementation (snapshot BEFORE the write, matching
+`scripts/backup-config.sh`'s own convention) does NOT fix this -- a before-write snapshot of
+the old value is still the old value, and a later unrelated rollback still restores it; a test
+written against that version failed, which is what caught the mistake.
+
 ---
 
 # Update 2026-09-21 (later): token shunting is now OFF

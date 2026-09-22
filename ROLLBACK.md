@@ -240,6 +240,22 @@ listening and killed a live session with `Connection refused`.
    heartbeat or the log, which erased whatever they would have shown. The
    daemon is not the untested part -- checking it before tearing everything
    down is.
+6. **`rollback.sh`'s restore point is now kept current automatically, so its
+   `cp backups/*.latest.bak` step is safe to run at any time.** Until
+   2026-09-21 evening, `config.json`/`settings.json`'s `latest.bak` was only
+   ever updated by `scripts/backup-config.sh`, and several Go write paths
+   (`claude-burst shunt enable/disable` among them) never called it -- so a
+   config change made through one of those could sit for hours with no
+   backup reflecting it, and an UNRELATED rollback (this one, recovering from
+   a network outage) would restore whatever the last real backup happened to
+   be and silently undo it. `internal/backup` now updates `*.latest.bak` from
+   inside every `config.Save`/`claudesettings.Write` call, from what was just
+   written, immediately after the write succeeds -- so `latest.bak` is never
+   older than the config actually in force, and `rollback.sh` needed no
+   changes. `scripts/backup-config.sh` and its callers (`deploy.sh`,
+   `install.go`) are unaffected and still worth running before a risky
+   change: they also cover the CA bundle and `/etc/hosts`, which
+   `internal/backup` does not touch.
 
 ## Known unknowns
 
