@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/backup"
 )
 
 // HostsRedirectActive reports whether /etc/hosts contains a live loopback
@@ -524,9 +526,19 @@ func Save(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// Best-effort throughout: see internal/backup's doc comment for why every
+	// writer needs this, not just the ones that remember to run
+	// scripts/backup-config.sh first, and why the restore point is set AFTER
+	// the write, from what was actually written, rather than before it.
+	_ = backup.Snapshot(p) // archive the outgoing version, for history
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(b, '\n'), 0600)
+	full := append(b, '\n')
+	if err := os.WriteFile(p, full, 0600); err != nil {
+		return err
+	}
+	_ = backup.SetLatest(p, full)
+	return nil
 }
