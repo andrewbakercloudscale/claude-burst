@@ -82,6 +82,12 @@ INTERCEPT_HOST="${CLAUDE_BURST_INTERCEPT_HOST:-api.anthropic.com}"
 # functions is a trap worth not repeating.
 CURL="${CLAUDE_BURST_CURL:-/usr/bin/curl}"
 LSOF="${CLAUDE_BURST_LSOF:-/usr/sbin/lsof}"
+# How hard intercept_path_healthy retries one check before believing it.
+# Overridable so --self-test's fake curl (instant, deterministic -- see
+# self_test below) doesn't have to sit through real sleeps to exercise the
+# failure path; it sets both to 0, which still tries once.
+HEALTH_PROBE_BUDGET="${CLAUDE_BURST_HEALTH_PROBE_BUDGET:-10}"
+HEALTH_PROBE_SLEEP="${CLAUDE_BURST_HEALTH_PROBE_SLEEP:-1}"
 ROOT_HELPER="${CLAUDE_BURST_ROOT_HELPER:-$DIR/transparent-root.sh}"
 # Indirected so --self-test can substitute a stub. Every branch below turns on
 # what pfctl reports, and a decision tree that can only be exercised on a
@@ -158,9 +164,28 @@ hosts_redirect_present() { grep -qF "$HOSTS_MARKER" "$HOSTS_FILE" 2>/dev/null; }
 # "reached the real Anthropic", which returns 404 to an unauthenticated
 # /healthz and would otherwise look like a success.
 intercept_path_healthy() {
-  local body
-  body="$($CURL -s -m 8 "https://$INTERCEPT_HOST/healthz" 2>/dev/null)" || return 1
-  printf '%s' "$body" | grep -q '"overflow"'
+  # A single probe cannot be trusted, same principle as probe_direct_retry in
+  # transparent-root.sh (its own comment there has the 2026-09-03 measurement:
+  # a healthy gateway answering 1 direct probe in 10). Proven live on
+  # 2026-09-22: this function, single-shot, reported the real path broken 4
+  # cycles running while transparent-root.sh's OWN reload-anchor verified the
+  # exact same path OK every one of those cycles, moments earlier -- and
+  # pf-heal gave up and tore down a working redirect on the strength of that
+  # single bad reading, four times over, not on four real outages.
+  local waited=0 attempts=0 body
+  while true; do
+    attempts=$((attempts + 1))
+    body="$($CURL -s -m 2 "https://$INTERCEPT_HOST/healthz" 2>/dev/null)"
+    if printf '%s' "$body" | grep -q '"overflow"'; then
+      (( attempts > 1 )) && log "  real path answered on attempt $attempts (${waited}s in)"
+      return 0
+    fi
+    (( waited >= HEALTH_PROBE_BUDGET )) && break
+    sleep "$HEALTH_PROBE_SLEEP"
+    waited=$((waited + HEALTH_PROBE_SLEEP))
+  done
+  (( attempts > 1 )) && log "  real path did not answer in $attempts attempt(s) over ${waited}s"
+  return 1
 }
 
 # Is anything listening on the gateway port at all? Distinguishes "pf is not
@@ -383,6 +408,11 @@ self_test() {
   ROOT_HELPER="$tmp/helper.sh"
   MAX_FAILURES=2
   CHECK_ONLY=0
+  # The fake curl below is instant and deterministic -- retrying it teaches
+  # nothing and would make every failing-path assertion sit through a real
+  # sleep. Zero still tries exactly once (see intercept_path_healthy).
+  HEALTH_PROBE_BUDGET=0
+  HEALTH_PROBE_SLEEP=0
   notify() { :; }
   # Restarting a LaunchAgent needs a console user and a real launchd; the stub
   # records the attempt and flips the gateway flag, which is what the decision

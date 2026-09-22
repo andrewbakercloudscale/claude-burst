@@ -14,6 +14,24 @@ it or `/var/log/claude-burst-pf.log` before `scripts/rollback.sh` ran at 18:25:0
 whatever they would have shown. Codified in ROLLBACK.md's ordering rules (#5): check pf-heal's
 own state before rolling back for a broken redirect, not after.
 
+**Update, 2026-09-22 morning:** pf-heal bailed out again -- "GIVING UP after 4 failed
+repairs" -- but NOT the same bug. Its own log showed `transparent-root.sh reload-anchor`
+verifying the real path OK all 4 times, moments before pf-heal's own single-shot recheck of
+the exact same URL said FAIL, all 4 times. Root cause: `intercept_path_healthy()` was one
+curl call with no retry, against a path the tool's own comments already document as
+unreliable single-shot (`probe_direct_retry`'s 2026-09-03 measurement: 1 success in 10 for
+the analogous direct-port check). Fixed: both `intercept_path_healthy` (pf-heal.sh) and the
+equivalent, more dangerous check inside `do_reload_anchor` (transparent-root.sh, where a
+false FAIL reverts a just-installed good anchor) now retry with a budget, same pattern as
+`probe_direct_retry` already used for the direct port. `pf-heal.sh --self-test` verified
+(20/20, unchanged); `transparent-root.sh --self-test` verified (text-edit paths only --
+`do_reload_anchor` needs root and has no automated coverage). Both retry functions were also
+exercised standalone against a stubbed curl that fails twice then succeeds, and one that
+never succeeds, confirming recovery and budget behaviour. This was NOT investigated as a
+repeat of `claude_burst_direct_port_investigation.md` (the open, four-wrong-guesses direct-
+port mystery) -- it's a different, narrower bug, evidenced directly from the log rather than
+inferred.
+
 **A second, real gap that same rollback exposed:** it also silently re-enabled token shunting
 (disabled earlier that day) and reinstalled its guard hook, because `claude-burst shunt disable`
 writes `config.json`/`settings.json` directly and never updates the backup rollback restores
