@@ -7,12 +7,12 @@ in 1 ms at 16:36, 17:59 and 18:04-18:23, with the interface flapping between a h
 Burst behaviours made it worse and are fixed in the commit after this note (retry a dead pooled
 connection once, do not fail over into a dead network, short self-releasing outage windows).
 
-**Still open:** the pf-heal daemon healed the redirect three times that afternoon (17:35, 17:47,
-17:59, ~1 s each, every one on a network change) and then logged nothing after 17:59:29, while
-at 18:24 the redirect was refused again. Whether it died, hung, or was not triggered during the
-18:04-18:24 churn is unknown: `scripts/rollback.sh` ran at 18:25:07 and stopped everything before
-it could be inspected. If Burst is re-enabled, check `/var/log/claude-burst-pf.log` and the
-daemon's state *first*, before trusting the redirect after a network change.
+**Correction, same evening:** pf-heal is not missing instrumentation -- it already has
+heartbeat-based liveness (`/etc/claude-burst/pf-heal.heartbeat`), the same pattern as the
+gateway watchdog, surfaced live on the dashboard's Guards card. The gap is that nobody checked
+it or `/var/log/claude-burst-pf.log` before `scripts/rollback.sh` ran at 18:25:07 and erased
+whatever they would have shown. Codified in ROLLBACK.md's ordering rules (#5): check pf-heal's
+own state before rolling back for a broken redirect, not after.
 
 ---
 

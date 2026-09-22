@@ -229,6 +229,17 @@ listening and killed a live session with `Connection refused`.
    switch, so it is the last thing enabled and the first thing removed.
 4. **Arm the watchdog** immediately after enabling:
    `nohup scripts/watchdog.sh & disown`.
+5. **Before running `rollback.sh` for a broken redirect, check pf-heal's own
+   state first.** It already has heartbeat-based liveness
+   (`/etc/claude-burst/pf-heal.heartbeat`, the same pattern as the gateway
+   watchdog), shown live on the dashboard's Guards card, plus
+   `sudo scripts/pf-heal.sh --check` and `/var/log/claude-burst-pf.log`. On
+   2026-09-21 pf-heal healed the redirect three times after network changes
+   (17:35, 17:47, 17:59) and then went quiet; the redirect broke again at
+   18:24 and `rollback.sh` ran at 18:25 before anyone looked at the
+   heartbeat or the log, which erased whatever they would have shown. The
+   daemon is not the untested part -- checking it before tearing everything
+   down is.
 
 ## Known unknowns
 
