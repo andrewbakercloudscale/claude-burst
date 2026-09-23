@@ -257,8 +257,8 @@ func Default() Config {
 		// than a cost saving justifies by default, so it is left for the
 		// user to add deliberately rather than shipped on.
 		FallbackChain: map[string][]string{
-			"claude-fable-5-1": {"claude-opus-5"},
-			"claude-fable-5":   {"claude-opus-5"},
+			"claude-fable-5-1": {"claude-opus-5-5"},
+			"claude-fable-5":   {"claude-opus-5-5"},
 		},
 		ModelMap: map[string]string{
 			"claude-sonnet-5":                "global.anthropic.claude-sonnet-5",
