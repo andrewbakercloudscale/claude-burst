@@ -58,6 +58,14 @@ sudo scripts/lid-awake-root.sh apply ac                             # printed fo
 
 With `always`, a closed laptop never sleeps: on battery in a bag that means heat and a flat battery. That is why `ac` is the default.
 
+`./install.sh` applies whatever `config.json` says (nothing at all when `false`), and `./install.sh uninstall` removes the daemon and restores the prior sleep setting. Check it is live with `claude-burst status`:
+
+```text
+keep awake lid closed: on, mode ac (now on AC: SleepDisabled on, Ghostty App Nap disabled on)
+```
+
+Any line starting `->` beneath it is drift, with the command that fixes it.
+
 ## Why this exists
 
 Anthropic exposes materially different commercial models for access to the same Claude model families:
@@ -392,6 +400,12 @@ claude-burst force-secondary --minutes 15    # route to the secondary on purpose
 claude-burst stats --days 30
 claude-burst version
 
+claude-burst configure --keep-awake-lid-closed true|false   # lid shut: keep Claude Code + Remote Control running
+claude-burst configure --keep-awake-power ac|always         # ac (default): only while plugged in
+sudo scripts/lid-awake-root.sh apply ac|always              # the root half; configure prints this
+sudo scripts/lid-awake-root.sh remove
+scripts/lid-awake-root.sh status
+
 claude-burst shunt enable [--read] [--write] # token shunting: default both
 claude-burst shunt disable [--read] [--write]
 claude-burst shunt status
@@ -417,6 +431,8 @@ Configuration lives at `~/.config/claude-burst/config.json`. Legacy flat fields 
   "unknown_reset_seconds": 300,
   "response_header_timeout_seconds": 60,
   "max_request_mb": 128,
+  "keep_awake_lid_closed": false,
+  "keep_awake_lid_closed_power": "ac",
   "primary": {
     "provider": "oauth-passthrough",
     "base_url": "https://api.anthropic.com",
@@ -450,7 +466,10 @@ An Amazon Bedrock secondary instead has `"provider": "bedrock"`, the `bedrock-ru
 - `metered_failover.window_seconds` / `min_failures` / `transport_error_min_failures`: for the metered strategies, how many upstream failures inside a trailing window before failing over. **Two counters, not one**, because the two signals differ in strength. An HTTP failure (429 or 5xx) means Anthropic answered and could be a passing blip, so it takes `min_failures` (default 3) within `window_seconds` (default 60). A transport failure — Anthropic could not be reached at all — takes `transport_error_min_failures`, which defaults to **1**, so a real outage does not sit retrying against a dead primary. Any success resets both. Other 4xx errors (bad key, malformed request) never count, since routing to the secondary wouldn't fix them; neither do failures that are unambiguously *this machine's* fault — DNS resolution failure, "network unreachable", "no route to host" — because the secondary is equally unreachable through a dead local network, and counting them turns walking out of WiFi range into a paid overflow window. Nor does a request the **client** cancelled: the outbound call carries Claude Code's own request context, so interrupting a turn cancels the upstream call too, and with `transport_error_min_failures` at 1 a single Esc used to arm a 300-second overflow window and bill the next few minutes of inference to the paid secondary (observed live 2026-09-08). Cancellation is excluded, and a cancelled request is never replayed to the secondary — nobody is waiting for the answer. A *deadline* that expires still counts, since that is a genuinely stalled upstream.
 - `pricing`: per-million-token rates, keyed by the model that actually served the request. A third-party model is **not** in the defaults (the same GLM id costs different amounts through Together, OpenRouter and Z.ai), so add yours or its spend is reported as unpriced rather than free. This also prices token-shunt worker calls.
 - `shunt.read` / `shunt.write` / `shunt.min_lines` / `shunt.chunk_lines` / `shunt.timeout_seconds` / `shunt.model`: token shunting — see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context). `shunt.model` overrides the worker model; empty means the secondary's own model.
+- `keep_awake_lid_closed` (default `false`) / `keep_awake_lid_closed_power` (`ac` default, or `always`): keep the Mac, and so Claude Code in Ghostty and Remote Control, running with the lid shut — plugged in only, or on battery too. Changing the file alone does nothing to the machine: apply with `configure --keep-awake-lid-closed` or `./install.sh`, and `claude-burst status` reports any drift. See [Keeping Claude Code working with the lid shut](#keeping-claude-code-working-with-the-lid-shut-optional).
 - `response_header_timeout_seconds`: bounds how long the gateway waits for a response to *start* before treating the upstream as failed (doesn't affect how long an already-started stream can run).
+
+`./install.sh` re-applies `keep_awake_lid_closed` from `config.json` on every run. When it is `false` (the default) the installer touches no power settings and asks for no password; when `true` it asks for sudo once to apply the chosen power mode.
 
 Model IDs change over time. With Together AI or OpenRouter keep `secondary.model` (and any `model_map`) aligned with a model the endpoint actually serves; with Bedrock keep `model_map` aligned with the Claude models enabled in your account.
 
@@ -489,6 +508,10 @@ settles it on a network that actually inspects TLS: it distinguishes *intercepte
 ### 7. Token shunting sends file contents to the secondary provider
 
 Whenever a read is delegated the whole file goes to the secondary (Together AI in the worked example), a third party with its own retention terms. Credential-looking files (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.aws/`, `.ssh/`, `*.tfstate`, ...) are never sent, by a name-based heuristic that errs toward refusing; it is a safety net, not a data-loss-prevention control. A worker's answer is derived from file contents, which can contain text that looks like instructions, so the installed skill tells Claude to treat it as data. Turn it off from the dashboard's master switch or with `claude-burst shunt disable`; the guard reads `config.json` on every call, so off takes effect immediately.
+
+### 8. Lid-closed keep-awake changes a machine-wide power setting
+
+`keep_awake_lid_closed` sets `pmset SleepDisabled`, which applies to the whole Mac, not just Claude Code. In the default `ac` mode a root LaunchDaemon turns it off when you unplug; if that daemon is stopped, the last value stays, so a Mac unplugged while it is down will not sleep with the lid shut. `claude-burst status` and `scripts/lid-awake-root.sh status` show the daemon and the live value. In `always` mode a closed laptop on battery never sleeps: heat and a flat battery in a bag. Unplugging while the lid is already shut has not been verified to sleep the Mac immediately rather than at its next wake check.
 
 ## Together AI, OpenRouter or any OpenAI-compatible secondary
 
@@ -819,7 +842,7 @@ Token shunting has its own tests, including an end-to-end one that builds the bi
 ./install.sh uninstall
 ```
 
-This removes the LaunchAgent and the binary and intentionally keeps metrics, configuration and the Keychain secret so a rerun of the installer does not silently wipe them.
+This removes the LaunchAgent and the binary. If `keep_awake_lid_closed` was applied it also removes the root power-source LaunchDaemon and restores `SleepDisabled` to its prior value (one sudo prompt), so an uninstall never leaves a Mac that will not sleep. It intentionally keeps metrics, configuration and the Keychain secret so a rerun of the installer does not silently wipe them.
 
 ## Terms and design notes
 
