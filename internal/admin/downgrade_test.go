@@ -87,10 +87,14 @@ func TestStateReportsRejectedModelsAndWhereTheyGo(t *testing.T) {
 	if r.Model != "claude-fable-5-1" {
 		t.Fatalf("wrong model reported: %+v", r)
 	}
-	if r.FallsBackTo != "claude-opus-5" {
-		t.Fatalf("the page must name the rung traffic is actually taking, got %q", r.FallsBackTo)
+	// Read from config.Default(), which writeConfig installs, not hardcoded:
+	// fee840f moved the default rung to claude-opus-5-5 and a literal here
+	// left this test asserting the old default for as long as nobody ran it.
+	wantRung := config.Default().FallbackChain["claude-fable-5-1"][0]
+	if r.FallsBackTo != wantRung {
+		t.Fatalf("the page must name the rung traffic is actually taking (%q), got %q", wantRung, r.FallsBackTo)
 	}
-	if got.Chain["claude-fable-5-1"][0] != "claude-opus-5" {
+	if got.Chain["claude-fable-5-1"][0] != wantRung {
 		t.Fatalf("the configured chain is not being surfaced: %+v", got.Chain)
 	}
 
