@@ -4,6 +4,7 @@
   "unknown_reset_seconds": 300,
   "response_header_timeout_seconds": 60,
   "max_request_mb": 128,
+  "keep_awake_lid_closed": false,
   "primary": {
     "provider": "oauth-passthrough",
     "base_url": "https://api.anthropic.com",

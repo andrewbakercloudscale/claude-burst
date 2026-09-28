@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -189,5 +191,20 @@ func TestDefaultPricingCoversCurrentModels(t *testing.T) {
 			t.Errorf("%q has output (%v) <= input (%v), which no Claude model does -- likely transposed",
 				model, got.OutputPerMTok, got.InputPerMTok)
 		}
+	}
+}
+
+// keep_awake_lid_closed is written even when false so the switch is visible
+// in config.json, and defaults to false for a config that never mentions it.
+func TestKeepAwakeLidClosedDefaultsFalseAndIsVisible(t *testing.T) {
+	if Default().KeepAwakeLidClosed {
+		t.Fatal("KeepAwakeLidClosed must default to false")
+	}
+	b, err := json.Marshal(Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"keep_awake_lid_closed":false`) {
+		t.Fatalf("keep_awake_lid_closed missing from marshalled config: %s", b)
 	}
 }

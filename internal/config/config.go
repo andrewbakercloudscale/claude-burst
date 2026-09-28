@@ -230,6 +230,14 @@ type Config struct {
 	// Empty disables the panel entirely.
 	AdminListen string `json:"admin_listen,omitempty"`
 
+	// KeepAwakeLidClosed keeps the Mac awake with the lid shut, so a Claude
+	// Code session in Ghostty keeps working and Remote Control stays reachable.
+	// Off by default: a closed laptop that never sleeps drains its battery and
+	// runs hot in a bag. Applied by `configure --keep-awake-lid-closed`, which
+	// sets pmset SleepDisabled (root, scripts/lid-awake-root.sh) and turns off
+	// App Nap for Ghostty. `status` reports drift between this and the machine.
+	KeepAwakeLidClosed bool `json:"keep_awake_lid_closed"`
+
 	// AdminHostname is an optional friendly name for the admin UI, e.g.
 	// "cloudscale-claudeburst.test", paired with an /etc/hosts entry pointing
 	// it at 127.0.0.1.

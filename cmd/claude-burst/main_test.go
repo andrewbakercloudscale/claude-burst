@@ -206,3 +206,20 @@ func TestAdminPostUnreachableIsDistinguishable(t *testing.T) {
 		t.Fatalf("a disabled admin listener should be errAdminUnreachable, got %v", err)
 	}
 }
+
+func TestParseSleepDisabled(t *testing.T) {
+	cases := []struct {
+		out       string
+		on, known bool
+	}{
+		{"System-wide power settings:\n SleepDisabled\t\t1\nCurrently in use:\n sleep 0\n", true, true},
+		{"System-wide power settings:\n SleepDisabled\t\t0\n", false, true},
+		{"Currently in use:\n sleep 0\n", false, false},
+	}
+	for _, c := range cases {
+		on, known := parseSleepDisabled(c.out)
+		if on != c.on || known != c.known {
+			t.Errorf("parseSleepDisabled(%q) = %v,%v want %v,%v", c.out, on, known, c.on, c.known)
+		}
+	}
+}

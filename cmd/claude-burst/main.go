@@ -118,6 +118,12 @@ Keeping Claude Code's Remote Control (optional):
     claude-burst enable          # prints the one sudo step that remains
   Undo with: sudo scripts/transparent-root.sh remove
 
+Keeping Claude Code working with the lid shut (optional, default off):
+  claude-burst configure --keep-awake-lid-closed true
+  Sets pmset SleepDisabled (one sudo step) and turns off App Nap for Ghostty,
+  so the session and Remote Control survive closing the lid. The Mac then
+  never sleeps -- mind the battery and heat in a bag. Undo with false.
+
 Setup with a Claude Max/Pro subscription (default), Together AI overflow:
   claude-burst configure --secondary openai-compatible \
     --secondary-base-url https://api.together.xyz/v1 --secondary-model zai-org/GLM-5.3
@@ -277,6 +283,7 @@ func configure(args []string) {
 	windowSeconds := fs.Int("metered-window-seconds", 0, "sliding window in seconds for metered failover")
 	interceptMode := fs.String("intercept-mode", "", "how Claude Code reaches the gateway: base-url (default) | transparent")
 	interceptHost := fs.String("intercept-host", "", "hostname to intercept in transparent mode (default api.anthropic.com)")
+	keepAwake := fs.String("keep-awake-lid-closed", "", "true | false: keep the Mac (and Claude Code in Ghostty, and Remote Control) running with the lid shut")
 	_ = fs.Parse(args)
 
 	if *region != "" {
@@ -389,6 +396,16 @@ func configure(args []string) {
 	if *interceptHost != "" {
 		cfg.Intercept.Host = *interceptHost
 	}
+	if *keepAwake != "" {
+		switch *keepAwake {
+		case "true":
+			cfg.KeepAwakeLidClosed = true
+		case "false":
+			cfg.KeepAwakeLidClosed = false
+		default:
+			fatal(fmt.Errorf("invalid --keep-awake-lid-closed %q (must be true or false)", *keepAwake))
+		}
+	}
 	cfg.ResolveRoutes()
 
 	if err := config.Save(cfg); err != nil {
@@ -396,6 +413,9 @@ func configure(args []string) {
 	}
 	p, _ := config.ConfigPath()
 	fmt.Printf("wrote %s\n", p)
+	if *keepAwake != "" {
+		applyKeepAwake(cfg.KeepAwakeLidClosed)
+	}
 }
 
 // baseURLForProvider derives the correct base URL and (for a primary slot)
@@ -531,6 +551,7 @@ func status() {
 	if cfg.Shunt.Enabled() {
 		fmt.Print(shuntStatusText(cfg))
 	}
+	reportKeepAwake(cfg)
 }
 
 // reportIntercept surfaces the facts that decide whether transparent mode is
@@ -858,17 +879,20 @@ Until you run this, traffic to %s on this Mac still goes to the gateway:
 // deriving the path from the executable alone printed a command that does not
 // exist -- an instruction the user cannot run is worse than no instruction,
 // because they trust it and then have to work out why it failed.
-func rootHelperPath() string {
+func rootHelperPath() string { return scriptPath("transparent-root.sh") }
+
+// scriptPath locates one of the repo's scripts; see rootHelperPath.
+func scriptPath(name string) string {
 	var candidates []string
 	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "transparent-root.sh"))
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), name))
 	}
 	if wd, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(wd, "scripts", "transparent-root.sh"))
+		candidates = append(candidates, filepath.Join(wd, "scripts", name))
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates,
-			filepath.Join(home, "Desktop", "github", "claude-burst", "scripts", "transparent-root.sh"))
+			filepath.Join(home, "Desktop", "github", "claude-burst", "scripts", name))
 	}
 	for _, c := range candidates {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {
@@ -876,7 +900,7 @@ func rootHelperPath() string {
 		}
 	}
 	// Nothing found: name the file rather than a path that would not work.
-	return "scripts/transparent-root.sh (in the claude-burst repo)"
+	return "scripts/" + name + " (in the claude-burst repo)"
 }
 
 // portOf returns the port from a host:port listen address.

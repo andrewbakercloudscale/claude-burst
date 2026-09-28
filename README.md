@@ -35,6 +35,21 @@ See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-op
 
 **Keeping Remote Control.** Pointing Claude Code at any local gateway normally costs you its Remote Control feature — Claude Code disables Remote Control the moment `ANTHROPIC_BASE_URL` names anything other than `api.anthropic.com`, and the default setup below sets exactly that variable. Claude Burst's `transparent` intercept mode solves this by never touching `ANTHROPIC_BASE_URL` at all: instead of using that config mechanism, it gets into the path a level lower, at DNS, so Claude Code's own settings never change and it believes it is still talking to `api.anthropic.com` directly. See [Keeping Remote Control: transparent intercept mode](#keeping-remote-control-transparent-intercept-mode-optional) below.
 
+## Keeping Claude Code working with the lid shut (optional)
+
+Off by default. `keep_awake_lid_closed` in `config.json` keeps a Claude Code session in Ghostty running, and Remote Control reachable, after you close the lid:
+
+```bash
+claude-burst configure --keep-awake-lid-closed true    # false undoes it
+sudo scripts/lid-awake-root.sh apply                   # printed for you if sudo is not cached
+```
+
+- **`pmset -a disablesleep 1`** (root) — the only switch that overrides clamshell sleep; `caffeinate` and `pmset sleep 0` do not. The prior value is recorded and restored by `remove`.
+- **Ghostty App Nap off** (`NSAppSleepDisabled`, no root) — with the lid shut every window is occluded, which is when macOS throttles the app. Takes effect on Ghostty's next launch.
+- `claude-burst status` shows the flag and the machine's actual state, and flags drift either way.
+
+The cost: the Mac never sleeps, lid shut or not. On battery in a bag that means heat and a flat battery.
+
 ## Why this exists
 
 Anthropic exposes materially different commercial models for access to the same Claude model families:
