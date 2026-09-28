@@ -48,7 +48,7 @@ Off by default. `keep_awake_lid_closed` in `config.json` keeps a Claude Code ses
 claude-burst configure --keep-awake-lid-closed true                 # mode ac
 claude-burst configure --keep-awake-power always                    # switch mode
 claude-burst configure --keep-awake-lid-closed false                # undo
-sudo scripts/lid-awake-root.sh apply ac                             # printed for you if sudo is not cached
+sudo scripts/lid-awake-root.sh apply ac                             # printed for you if sudo is not cached; ./install.sh re-applies it from config.json
 ```
 
 - **`pmset -a disablesleep 1`** (root) — the only switch that overrides clamshell sleep; `caffeinate` and `pmset sleep 0` do not. The prior value is recorded and restored by `remove`.

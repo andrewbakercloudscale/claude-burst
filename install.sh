@@ -26,7 +26,25 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-uninstall() {
+un# keep_awake_lid_closed (default false) keeps Claude Code in Ghostty, and
+# Remote Control, running with the lid shut; keep_awake_lid_closed_power
+# picks ac (default, plugged in only) or always. Re-applied from config.json
+# on every install, so a reinstall or a new machine with the same config ends
+# up in the same state. False touches nothing and asks for no password.
+apply_keep_awake() {
+  local cfg="$HOME/.config/claude-burst/config.json" on mode
+  on="$(python3 -c "import json;print(str(json.load(open('$cfg')).get('keep_awake_lid_closed',False)).lower())" 2>/dev/null || echo false)"
+  [[ "$on" == true ]] || return 0
+  mode="$(python3 -c "import json;print(json.load(open('$cfg')).get('keep_awake_lid_closed_power') or 'ac')" 2>/dev/null || echo ac)"
+  echo "keep_awake_lid_closed is true (mode $mode): applying; sudo will ask for your password."
+  defaults write com.mitchellh.ghostty NSAppSleepDisabled -bool YES
+  if ! sudo "$ROOT/scripts/lid-awake-root.sh" apply "$mode"; then
+    echo "WARNING: keep-awake not applied; the lid will still sleep the Mac. Run:" >&2
+    echo "  sudo $ROOT/scripts/lid-awake-root.sh apply $mode" >&2
+  fi
+}
+
+install() {
   if [[ -x "$TARGET" ]]; then
     # Token shunting puts a hook in ~/.claude/settings.json that runs this binary
     # before every Read and Bash call, and a skill telling Claude to run it. Both
@@ -38,6 +56,14 @@ uninstall() {
   fi
   launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
   rm -f "$PLIST" "$TARGET"
+  # keep_awake_lid_closed leaves a root LaunchDaemon and pmset SleepDisabled
+  # behind; an uninstall that kept a Mac that never sleeps would be a trap.
+  # Only asks for sudo when something was actually applied.
+  if [[ -f /etc/claude-burst/lid-awake.state || -f /Library/LaunchDaemons/ninja.andrewbaker.claude-burst-lidawake.plist ]]; then
+    echo "Removing the lid-closed keep-awake setting (needs sudo)..."
+    sudo "${0:A:h}/scripts/lid-awake-root.sh" remove || echo "WARNING: run: sudo ${0:A:h}/scripts/lid-awake-root.sh remove" >&2
+  fi
+  defaults delete com.mitchellh.ghostty NSAppSleepDisabled >/dev/null 2>&1 || true
   echo "Removed Claude Burst routing, the token-shunting hook and skill, and the LaunchAgent."
   echo "Kept ~/.config/claude-burst (config, state, metrics) and the macOS Keychain secret intentionally."
   echo "To purge those too: rm -rf ~/.config/claude-burst"
@@ -89,6 +115,8 @@ install() {
 
   "$TARGET" enable
 
+  apply_keep_awake
+
   mkdir -p "$HOME/Library/LaunchAgents"
   mkdir -p "$HOME/.config/claude-burst"
   cat > "$PLIST" <<PLIST
@@ -135,6 +163,9 @@ Now restart Claude Code and run:
 
 To test the local gateway itself:
   curl -s http://$gw/healthz
+
+Lid-closed keep-awake (off by default; see README):
+  claude-burst configure --keep-awake-lid-closed true [--keep-awake-power ac|always]
 
 To remove everything later:
   ./install.sh uninstall
