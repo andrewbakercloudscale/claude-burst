@@ -127,6 +127,12 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		if err != nil {
 			return nil, fmt.Errorf("secondary provider: %w", err)
 		}
+		// Set here rather than in buildProvider: pruning belongs to the
+		// secondary SLOT, and an openai-compatible primary must never be
+		// pruned. See prune.go.
+		if op, ok := secondary.(*OpenAICompatibleProvider); ok {
+			op.setPruning(cfg.SecondaryPruning)
+		}
 	}
 
 	timeout := time.Duration(cfg.ResponseHeaderTimeoutSeconds) * time.Second
@@ -761,6 +767,12 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	// against.
 	destination := req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
 
+	// What context pruning did to this request, recorded on failures as well
+	// as successes: comparing the two is how a prune that confuses the model
+	// shows up, and a row that only exists when the request worked cannot
+	// show that.
+	pruned := prunedUsage(req.Context())
+
 	// The model that actually served, for metrics and the admin view. Falls
 	// back to the requested model for passthrough providers, which serve with
 	// exactly what was asked for.
@@ -813,7 +825,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		// paid provider generating a response that nobody is left to read.
 		if in.Context().Err() != nil {
 			s.logger.Printf("req=%s client_gone route=%s err=%v (no failover, not replayed)", rid, p.Name(), err)
-			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "client cancelled: "+err.Error(), destination)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "client cancelled: "+err.Error(), destination)
 			return
 		}
 		if slot == "secondary" {
@@ -836,7 +848,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			// would arm a window blaming a model for a laptop changing WiFi.
 			s.logger.Printf("req=%s no_failover route=%s reason=%q (local network unavailable: control DNS failed)", rid, p.Name(), "network down")
 			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
-			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
 		}
 		if allowFailover {
@@ -849,7 +861,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		s.logger.Printf("req=%s error stage=upstream_call route=%s err=%v", rid, p.Name(), err)
 		http.Error(w, p.Name()+" upstream error: "+err.Error(), http.StatusBadGateway)
-		s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, tokenUsage{}, "", 0, "upstream call failed: "+err.Error(), destination)
+		s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "upstream call failed: "+err.Error(), destination)
 		return
 	}
 
@@ -870,6 +882,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		} else {
 			tok = s.relay(w, resp, model)
 		}
+		tok.prunedBytes, tok.prunedResults, tok.truncatedResults = pruned.prunedBytes, pruned.prunedResults, pruned.truncatedResults
 		s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
 			rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
 		s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tok, "", 0, note, destination)
@@ -892,7 +905,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(errBody)
-	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tokenUsage{}, "", 0, "upstream error; no failover", destination)
+	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, pruned, "", 0, "upstream error; no failover", destination)
 }
 
 // replayElsewhere is where a failover decision turns into a second hop: down
@@ -1046,7 +1059,19 @@ func copyResponseHeaders(dst http.Header, src http.Header) {
 	}
 }
 
-type tokenUsage struct{ input, output int64 }
+// tokenUsage follows Anthropic's semantics on every route: input is the
+// UNCACHED input only, and cacheRead/cacheWrite are counted separately.
+// Anthropic reports it this way natively; the OpenAI-compatible translation
+// splits cached_tokens out of prompt_tokens to match. Recording input alone
+// is what made a 150k-token primary turn show up as "input_tokens": 2.
+//
+// prunedBytes/prunedResults/truncatedResults are not usage; they ride along
+// so the secondary's context pruning (prune.go) reaches the metrics row
+// without widening writeMetric's signature for every caller.
+type tokenUsage struct {
+	input, output, cacheRead, cacheWrite         int64
+	prunedBytes, prunedResults, truncatedResults int64
+}
 
 func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string) tokenUsage {
 	defer resp.Body.Close()
@@ -1134,7 +1159,9 @@ func usageFromMessageJSON(body []byte) tokenUsage {
 	if json.Unmarshal(body, &v) != nil || v.Usage == nil {
 		return tokenUsage{}
 	}
-	return tokenUsage{input: number(v.Usage["input_tokens"]), output: number(v.Usage["output_tokens"])}
+	tok := tokenUsage{input: number(v.Usage["input_tokens"]), output: number(v.Usage["output_tokens"])}
+	readCacheUsage(v.Usage, &tok)
+	return tok
 }
 
 func parseSSEUsage(line string, tok *tokenUsage) {
@@ -1159,6 +1186,7 @@ func parseSSEUsage(line string, tok *tokenUsage) {
 			if n := number(u["output_tokens"]); n > tok.output {
 				tok.output = n
 			}
+			readCacheUsage(u, tok)
 		}
 	}
 	// message_delta: {usage:{output_tokens:...}}
@@ -1169,6 +1197,20 @@ func parseSSEUsage(line string, tok *tokenUsage) {
 		if n := number(u["output_tokens"]); n > tok.output {
 			tok.output = n
 		}
+		readCacheUsage(u, tok)
+	}
+}
+
+// readCacheUsage takes the larger of what is already recorded and what this
+// usage block says, for the same reason parseSSEUsage does: message_start
+// and message_delta can both carry the counts, and a later block restating
+// a smaller (or absent, so zero) figure must not overwrite a real one.
+func readCacheUsage(u map[string]any, tok *tokenUsage) {
+	if n := number(u["cache_read_input_tokens"]); n > tok.cacheRead {
+		tok.cacheRead = n
+	}
+	if n := number(u["cache_creation_input_tokens"]); n > tok.cacheWrite {
+		tok.cacheWrite = n
 	}
 }
 
@@ -1207,11 +1249,13 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 	// A zero that means "not priced" must not look like a zero that means
 	// "free".
 	price, priced := s.cfg.Pricing[model]
-	equiv := (float64(tok.input)/1_000_000)*price.InputPerMTok + (float64(tok.output)/1_000_000)*price.OutputPerMTok
+	cacheRead, cacheWrite := price.CacheRates(model)
+	equiv := (float64(tok.input)/1_000_000)*price.InputPerMTok + (float64(tok.output)/1_000_000)*price.OutputPerMTok +
+		(float64(tok.cacheRead)/1_000_000)*cacheRead + (float64(tok.cacheWrite)/1_000_000)*cacheWrite
 	// Only tokens make a missing price a problem. Events with no token
 	// counts (failover notes, upstream errors, control-plane passthrough)
 	// legitimately cost nothing and must not be flagged.
-	unpriced := !priced && (tok.input > 0 || tok.output > 0)
+	unpriced := !priced && (tok.input > 0 || tok.output > 0 || tok.cacheRead > 0 || tok.cacheWrite > 0)
 	if unpriced {
 		if _, seen := s.warnedUnpriced.LoadOrStore(model, true); !seen {
 			s.logger.Printf("warn stage=pricing model=%q no pricing entry; cost for this model is not being counted -- add it to `pricing` in config.json", model)
@@ -1221,7 +1265,9 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 	err := s.metrics.Write(metrics.Event{
 		Time: time.Now(), RequestID: rid, SessionID: in.Header.Get("x-claude-code-session-id"), AgentID: in.Header.Get("x-claude-code-agent-id"),
 		Slot: slot, Route: route, Model: model, RequestedModel: requestedModel, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),
-		InputTokens: tok.input, OutputTokens: tok.output, APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note, Destination: destination,
+		InputTokens: tok.input, OutputTokens: tok.output, CacheReadTokens: tok.cacheRead, CacheWriteTokens: tok.cacheWrite,
+		PrunedBytes: tok.prunedBytes, PrunedToolResults: tok.prunedResults, TruncatedToolResults: tok.truncatedResults,
+		APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note, Destination: destination,
 		PricingUnknown: unpriced,
 	})
 	if err != nil {

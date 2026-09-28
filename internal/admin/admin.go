@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/shunt", s.mutating(s.handleShunt))
 	mux.HandleFunc("/api/shunt-activity", s.readOnly(s.handleShuntActivity))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
+	mux.HandleFunc("/api/pruning", s.mutating(s.handlePruning))
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
 	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
 	mux.HandleFunc("/api/test-secondary", s.mutating(s.handleTestSecondary))
@@ -209,6 +210,10 @@ type stateResponse struct {
 	// behind it -- the useful question on this page is not "is downgrade
 	// enabled" but "what is Fable doing right now".
 	Downgrade downgradeInfo `json:"downgrade"`
+
+	// Context is prompt caching and overflow-request pruning: the switches
+	// and whether they are working. See context.go.
+	Context contextInfo `json:"context"`
 
 	// Shunt is the token-shunting feature: what is switched on, whether the
 	// pieces that enforce it are actually in place, and what it has saved.
@@ -405,6 +410,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Downgrade = s.downgradeInfo(cfg)
 	resp.Shunt = s.shuntInfo(cfg)
+	resp.Context = s.contextInfo(cfg)
 	writeJSON(w, resp)
 }
 

@@ -40,15 +40,26 @@ type Event struct {
 	// Destination is the actual outbound URL (scheme+host+path, no query)
 	// this request was sent to -- what actually answers "did this go to
 	// primary or secondary", independent of the Slot label.
-	Destination      string  `json:"destination,omitempty"`
-	HTTPStatus       int     `json:"http_status"`
-	DurationMS       int64   `json:"duration_ms"`
-	InputTokens      int64   `json:"input_tokens,omitempty"`
-	OutputTokens     int64   `json:"output_tokens,omitempty"`
-	APIEquivalentUSD float64 `json:"api_equivalent_usd,omitempty"`
-	LimitClaim       string  `json:"limit_claim,omitempty"`
-	ResetAt          int64   `json:"reset_at,omitempty"`
-	Note             string  `json:"note,omitempty"`
+	Destination  string `json:"destination,omitempty"`
+	HTTPStatus   int    `json:"http_status"`
+	DurationMS   int64  `json:"duration_ms"`
+	InputTokens  int64  `json:"input_tokens,omitempty"`
+	OutputTokens int64  `json:"output_tokens,omitempty"`
+	// InputTokens is uncached input only. The cached part of the context is
+	// here, and on a long primary session it is nearly all of it: without
+	// these, a 150k-token turn recorded as input_tokens=2.
+	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
+	// Secondary context pruning (router/prune.go): bytes of tool output
+	// removed from the request, how many old tool results were stubbed, and
+	// how many oversized ones were cut down.
+	PrunedBytes          int64   `json:"pruned_bytes,omitempty"`
+	PrunedToolResults    int64   `json:"pruned_tool_results,omitempty"`
+	TruncatedToolResults int64   `json:"truncated_tool_results,omitempty"`
+	APIEquivalentUSD     float64 `json:"api_equivalent_usd,omitempty"`
+	LimitClaim           string  `json:"limit_claim,omitempty"`
+	ResetAt              int64   `json:"reset_at,omitempty"`
+	Note                 string  `json:"note,omitempty"`
 	// PricingUnknown marks an event whose served Model had no entry in the
 	// configured pricing table while it did report tokens. Without it a
 	// zero APIEquivalentUSD is indistinguishable from a genuinely free
@@ -93,6 +104,9 @@ type Summary struct {
 	SecondaryRequests int
 	InputTokens       int64
 	OutputTokens      int64
+	CacheReadTokens   int64
+	CacheWriteTokens  int64
+	PrunedBytes       int64
 	APIEquivalentUSD  float64
 	// UnpricedRequests counts events that reported tokens but whose served
 	// model had no pricing entry, and UnpricedModels names those models with
@@ -138,6 +152,9 @@ func Summarize(path string, since time.Time) (Summary, error) {
 		}
 		s.InputTokens += e.InputTokens
 		s.OutputTokens += e.OutputTokens
+		s.CacheReadTokens += e.CacheReadTokens
+		s.CacheWriteTokens += e.CacheWriteTokens
+		s.PrunedBytes += e.PrunedBytes
 		s.APIEquivalentUSD += e.APIEquivalentUSD
 		if e.PricingUnknown {
 			s.UnpricedRequests++
@@ -151,8 +168,11 @@ func Summarize(path string, since time.Time) (Summary, error) {
 }
 
 func (s Summary) String() string {
-	out := fmt.Sprintf("requests=%d primary=%d secondary=%d input_tokens=%d output_tokens=%d api_equivalent_usd=$%.2f",
-		s.Requests, s.PrimaryRequests, s.SecondaryRequests, s.InputTokens, s.OutputTokens, s.APIEquivalentUSD)
+	out := fmt.Sprintf("requests=%d primary=%d secondary=%d input_tokens=%d cache_read_tokens=%d cache_write_tokens=%d output_tokens=%d api_equivalent_usd=$%.2f",
+		s.Requests, s.PrimaryRequests, s.SecondaryRequests, s.InputTokens, s.CacheReadTokens, s.CacheWriteTokens, s.OutputTokens, s.APIEquivalentUSD)
+	if s.PrunedBytes > 0 {
+		out += fmt.Sprintf(" pruned_bytes=%d", s.PrunedBytes)
+	}
 	if s.UnpricedRequests == 0 {
 		return out
 	}

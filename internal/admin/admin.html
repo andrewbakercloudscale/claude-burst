@@ -453,6 +453,7 @@
   <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
   <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
   <a class="navlink" data-target="sec-shunt"><span class="nd" id="nd-shunt"></span><span class="label">Token shunting</span></a>
+  <a class="navlink" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
   <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Configuration</span></a>
   <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
 
@@ -751,6 +752,57 @@
       <div class="scroll" id="shuntActivity"><div class="empty">Nothing yet.</div></div>
 
       <div class="hint" style="margin-top:8px">The worker is your configured openai-compatible secondary, so <strong>file contents are sent to that provider</strong> whenever a read is delegated. Files that look like credentials (<code>.env</code>, keys, <code>.aws/</code>, &hellip;) never are. The tokens-kept-out figure is an estimate at ~4 bytes per token.</div>
+    </div>
+  </section>
+
+  <section id="sec-context" style="scroll-margin-top:70px">
+    <h2>Context &amp; cache <span class="hint">what overflow requests cost, and trimming old tool output before it is paid for</span></h2>
+    <div class="body">
+      <div class="grid" id="ctxCards"></div>
+      <div id="ctxCacheNote" class="hint" style="margin-top:8px"></div>
+
+      <div class="row" style="align-items:flex-start;margin:16px 0 12px">
+        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
+          <input type="checkbox" id="pruneMaster" style="width:auto;margin:0;transform:scale(1.25)">
+          Prune overflow requests <span id="pruneMasterState" class="pill"></span>
+        </label>
+      </div>
+      <div class="hint" style="margin:-4px 0 12px 0">Only requests sent to the <strong>paid secondary</strong> are pruned. Every overflow request resends the whole conversation and every token of it is billed, and most of that is old tool output: files read and commands run many turns ago. Your subscription (the primary) is never touched: Anthropic caches its context, so rewriting history there would break the cache and use up your limits faster. Changes apply to the next request; no restart.</div>
+
+      <div class="row" style="align-items:flex-start">
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="pruneStub" style="width:auto;margin:0">
+          Stub old tool output &mdash; replace tool results older than the most recent few with a one-line note
+        </label>
+      </div>
+      <div class="hint" style="margin:4px 0 12px 0">The note says how much was removed and that the tool can be re-run, so the model knows the output existed and how to get it back. Results under 1&nbsp;KB are left alone. The cut-off moves in <em>steps</em>, not one result per turn, so the start of the conversation stays byte-identical for several turns in a row &mdash; that is what lets a provider that caches prompts reuse it. This is where most of the saving is.</div>
+
+      <div class="row" style="align-items:flex-start">
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="pruneCap" style="width:auto;margin:0">
+          Cap oversized tool output &mdash; keep the start and end of any single huge result, cut the middle
+        </label>
+      </div>
+      <div class="hint" style="margin:4px 0 12px 0">Applies to every tool result, recent ones included. A 200&nbsp;KB test log or page snapshot is mostly middle; the head and tail are where the command, the error and the summary usually are. The cut is marked in the text so the model knows it happened.</div>
+
+      <div class="row" style="align-items:flex-end">
+        <div>
+          <label for="pruneKeep">Keep recent results</label>
+          <input type="number" id="pruneKeep" min="1" max="200" step="1" style="width:100px">
+        </div>
+        <div>
+          <label for="pruneStep">Step</label>
+          <input type="number" id="pruneStep" min="1" max="100" step="1" style="width:90px">
+        </div>
+        <div>
+          <label for="pruneCapKB">Cap (KB)</label>
+          <input type="number" id="pruneCapKB" min="4" max="1024" step="4" style="width:100px">
+        </div>
+        <button id="pruneSave">Save settings</button>
+      </div>
+      <div class="hint" style="margin-top:6px"><strong>Keep recent</strong>: how many of the latest tool results are always sent in full (default 10). Raise it if the verdict above says pruned requests fail more often. <strong>Step</strong>: how many results the cut-off advances at a time (default 10); bigger keeps the prefix stable for longer but prunes a little less. <strong>Cap</strong>: the largest single tool result sent in full (default 40&nbsp;KB).</div>
+      <div id="pruneNote"></div>
+      <div class="hint" style="margin-top:8px">Figures cover the last 7 days of <code>metrics.jsonl</code>. "Not sent" is an estimate at ~4 bytes per token, priced at the secondary model's input rate. Cache figures come from what each provider reports; a provider that caches but does not say so shows 0%.</div>
     </div>
   </section>
 
@@ -1486,6 +1538,7 @@ async function refresh() {
     renderSecondary(s);
     renderDowngrade(s);
     renderShunt(s);
+    renderContext(s);
     renderShuntActivity(shuntAct);
     $("hero").hidden = false;
     lastCounts = {requests: reqs.length, responses: resps.length};
@@ -1735,6 +1788,90 @@ function renderShuntActivity(rows) {
       <td title="${esc(r.path || "")}">${esc(r.detail || "")}</td>
     </tr>`).join("")}</tbody></table>`;
 }
+
+let pruneBusy = false;
+
+function pct(x) { return ((x || 0) * 100).toFixed(0) + "%"; }
+
+function renderContext(s) {
+  const c = s.context || {}, p = c.pruning || {}, e = c.efficiency || {};
+  const pr = e.primary || {}, se = e.secondary || {};
+  const on = !p.disabled && !(p.no_stub && p.no_cap);
+  if (!pruneBusy) {
+    $("pruneMaster").checked = on;
+    $("pruneStub").checked = !p.no_stub;
+    $("pruneCap").checked = !p.no_cap;
+    const typing = [$("pruneKeep"), $("pruneStep"), $("pruneCapKB")].includes(document.activeElement);
+    if (!typing) {
+      $("pruneKeep").value = p.keep_recent || 10;
+      $("pruneStep").value = p.step || 10;
+      $("pruneCapKB").value = Math.round((p.max_tool_result_bytes || 40960) / 1024);
+    }
+  }
+  $("pruneMasterState").textContent = !c.applicable ? "n/a" : !on ? "off"
+    : p.no_stub ? "on · cap only" : p.no_cap ? "on · stub only" : "on";
+
+  const v = c.verdict || {level: "info", text: ""};
+  const cls = {ok: "c-ok", bad: "c-bad", info: "c-info"}[v.level] || "c-info";
+  const head = {ok: "Working", bad: "Needs attention", info: !c.applicable ? "Not applicable" : on ? "Waiting" : "Off"}[v.level];
+  const days = c.window_days || 7;
+  const lastPruned = e.last_pruned_at && !e.last_pruned_at.startsWith("0001") ? " · last pruned " + esc(stamp(e.last_pruned_at)) : "";
+  $("ctxCards").innerHTML = `
+    <div class="card ${cls}">
+      <h3>Pruning</h3>
+      <div class="stat">${esc(head)}</div>
+      <div class="sub">${esc(v.text)}</div>
+    </div>
+    <div class="card c-info">
+      <h3>Not sent · ${days} days</h3>
+      <div class="stat">≈${num(c.tokens_not_sent)} <small>tokens</small></div>
+      <div class="sub">≈${shuntUSD(c.usd_not_spent)} · ${num(e.stubbed_results)} results stubbed · ${num(e.truncated_results)} capped${lastPruned}</div>
+      <div class="sub">pruned requests ${num(e.pruned_ok)} ok / ${num(e.pruned_failed)} failed · unpruned ${num(e.unpruned_ok)} ok / ${num(e.unpruned_failed)} failed</div>
+    </div>
+    <div class="card c-info">
+      <h3>Cache hit · ${days} days</h3>
+      <div class="stat">${pct(c.primary_cache_hit)} <small>primary</small></div>
+      <div class="sub">${num(pr.requests)} requests · ${num(pr.cache_read_tokens)} read from cache · ${num(pr.input_tokens)} uncached</div>
+      <div class="sub">secondary ${pct(c.secondary_cache_hit)} · ${num(se.requests)} requests · ${num(se.input_tokens + se.cache_read_tokens)} tokens in · ${shuntUSD(se.usd)}</div>
+    </div>`;
+  const cv = c.cache_verdict || {};
+  $("ctxCacheNote").innerHTML = cv.text ? `<span style="color:var(--${cv.level === "bad" ? "bad" : "muted"})">${cv.level === "bad" ? "⚠ " : ""}${esc(cv.text)}</span>` : "";
+  setDot("nd-context", v.level === "bad" || cv.level === "bad" ? "bad" : v.level === "ok" ? "ok" : "");
+}
+
+async function savePruning() {
+  const master = $("pruneMaster").checked;
+  const body = {
+    disabled: !master,
+    no_stub: !$("pruneStub").checked,
+    no_cap: !$("pruneCap").checked,
+    keep_recent: parseInt($("pruneKeep").value, 10) || 0,
+    step: parseInt($("pruneStep").value, 10) || 0,
+    max_tool_result_bytes: (parseInt($("pruneCapKB").value, 10) || 0) * 1024,
+  };
+  pruneBusy = true;
+  try {
+    const r = await post("/api/pruning", body);
+    note($("pruneNote"), "ok", r.ok);
+  } catch (e) {
+    note($("pruneNote"), "bad", e.message);
+  } finally {
+    pruneBusy = false;
+    refresh();
+  }
+}
+
+// Turning the master on with both techniques unticked would save "on" that
+// does nothing, so it switches both back on -- the same rule as shunting.
+$("pruneMaster").onchange = () => {
+  if ($("pruneMaster").checked && !$("pruneStub").checked && !$("pruneCap").checked) {
+    $("pruneStub").checked = $("pruneCap").checked = true;
+  }
+  savePruning();
+};
+$("pruneStub").onchange = savePruning;
+$("pruneCap").onchange = savePruning;
+$("pruneSave").onclick = savePruning;
 
 async function saveShunt(extra) {
   const body = Object.assign({read: $("shuntRead").checked, write: $("shuntWrite").checked}, extra || {});

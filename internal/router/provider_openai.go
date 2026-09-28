@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 )
@@ -37,6 +38,9 @@ type OpenAICompatibleProvider struct {
 	keychainService string
 	apiKeyEnvVar    string
 	logger          *log.Logger
+	// prune is nil when pruning is off. Only ever set on the secondary
+	// slot (router.New); see prune.go.
+	prune atomic.Pointer[prunePolicy]
 }
 
 func NewOpenAICompatibleProvider(name string, base *url.URL, model string, modelMap map[string]string, keychainService, apiKeyEnvVar string) *OpenAICompatibleProvider {
@@ -58,6 +62,15 @@ func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request
 
 	targetModel := p.targetFor(requestedModel)
 
+	var st pruneStats
+	if pol := p.prune.Load(); pol != nil {
+		body, st = pruneAnthropicRequest(body, *pol)
+		if st.bytesRemoved > 0 && p.logger != nil {
+			p.logger.Printf("req=%s prune route=%s stubbed=%d truncated=%d bytes_removed=%d",
+				requestIDFrom(ctx), p.name, st.stubbed, st.truncated, st.bytesRemoved)
+		}
+	}
+
 	openaiBody, droppedTools, err := translateAnthropicRequest(body, targetModel)
 	if err != nil {
 		return nil, "", &ProviderError{Status: http.StatusBadGateway, Stage: "request_translation", Model: requestedModel, Err: err}
@@ -69,7 +82,7 @@ func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request
 
 	u := *p.base
 	u.Path = strings.TrimRight(u.Path, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(openaiBody))
+	req, err := http.NewRequestWithContext(withPruneStats(ctx, st), http.MethodPost, u.String(), bytes.NewReader(openaiBody))
 	if err != nil {
 		return nil, "", &ProviderError{Status: http.StatusBadGateway, Stage: "build_request", Model: requestedModel, Err: err}
 	}
@@ -385,10 +398,7 @@ func translateOpenAINonStream(w http.ResponseWriter, body io.Reader, model strin
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-		} `json:"usage"`
+		Usage openaiUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return tokenUsage{}, fmt.Errorf("upstream response is not valid JSON")
@@ -418,7 +428,7 @@ func translateOpenAINonStream(w http.ResponseWriter, body io.Reader, model strin
 	out := map[string]any{
 		"id": "msg_" + newRequestID(), "type": "message", "role": "assistant", "model": model,
 		"content": content, "stop_reason": mapFinishReason(choice.FinishReason), "stop_sequence": nil,
-		"usage": map[string]any{"input_tokens": resp.Usage.PromptTokens, "output_tokens": resp.Usage.CompletionTokens},
+		"usage": resp.Usage.tokens().anthropicUsage(),
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -427,7 +437,40 @@ func translateOpenAINonStream(w http.ResponseWriter, body io.Reader, model strin
 	w.Header().Set("content-type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(b)
-	return tokenUsage{input: resp.Usage.PromptTokens, output: resp.Usage.CompletionTokens}, nil
+	return resp.Usage.tokens(), nil
+}
+
+// openaiUsage is the usage block of an OpenAI-compatible response. The
+// standard place for the cached share of the prompt is
+// prompt_tokens_details.cached_tokens; some servers put cached_tokens at the
+// top level instead, so both are read.
+type openaiUsage struct {
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CompletionTokens    int64 `json:"completion_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// tokens converts to Anthropic semantics. OpenAI's prompt_tokens INCLUDES
+// the cached tokens; Anthropic's input_tokens excludes them, so the cached
+// share is moved out of input and into cacheRead.
+func (u openaiUsage) tokens() tokenUsage {
+	cached := u.PromptTokensDetails.CachedTokens
+	if cached == 0 {
+		cached = u.CachedTokens
+	}
+	if cached > u.PromptTokens {
+		cached = u.PromptTokens
+	}
+	return tokenUsage{input: u.PromptTokens - cached, output: u.CompletionTokens, cacheRead: cached}
+}
+
+// anthropicUsage is the usage block written back to the client, so Claude
+// Code's transcript records the cached share the way it would from Anthropic.
+func (t tokenUsage) anthropicUsage() map[string]any {
+	return map[string]any{"input_tokens": t.input, "output_tokens": t.output, "cache_read_input_tokens": t.cacheRead}
 }
 
 type openaiStreamChunk struct {
@@ -445,10 +488,7 @@ type openaiStreamChunk struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-	} `json:"usage"`
+	Usage *openaiUsage `json:"usage"`
 }
 
 // translateOpenAIStream reads OpenAI SSE chunks and writes an equivalent
@@ -523,8 +563,7 @@ func translateOpenAIStream(w http.ResponseWriter, body io.Reader, model string) 
 			continue // tolerate a malformed/unrecognized line rather than aborting the whole stream
 		}
 		if chunk.Usage != nil {
-			tok.input = chunk.Usage.PromptTokens
-			tok.output = chunk.Usage.CompletionTokens
+			tok = chunk.Usage.tokens()
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -595,7 +634,7 @@ func translateOpenAIStream(w http.ResponseWriter, body io.Reader, model string) 
 	writeEvent("message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
-		"usage": map[string]any{"input_tokens": tok.input, "output_tokens": tok.output},
+		"usage": tok.anthropicUsage(),
 	})
 	writeEvent("message_stop", map[string]any{"type": "message_stop"})
 	return tok, nil

@@ -43,9 +43,51 @@ func HostsRedirectActive(hostsContent []byte, host string) bool {
 	return false
 }
 
+// PruneConfig tunes SecondaryPruning. Everything is on unless switched off:
+// Disabled is the master switch, NoStub and NoCap turn off one technique
+// each. Zero numbers take the defaults in router/prune.go (keep the last 10
+// tool results intact, move the pruning boundary 10 results at a time, only
+// stub results of 1 KB or more, cap any single result at 40 KB).
+type PruneConfig struct {
+	Disabled           bool `json:"disabled,omitempty"`
+	NoStub             bool `json:"no_stub,omitempty"`
+	NoCap              bool `json:"no_cap,omitempty"`
+	KeepRecent         int  `json:"keep_recent,omitempty"`
+	Step               int  `json:"step,omitempty"`
+	StubMinBytes       int  `json:"stub_min_bytes,omitempty"`
+	MaxToolResultBytes int  `json:"max_tool_result_bytes,omitempty"`
+}
+
 type ModelPrice struct {
 	InputPerMTok  float64 `json:"input_per_mtok"`
 	OutputPerMTok float64 `json:"output_per_mtok"`
+	// Cache rates are optional. When absent, CacheRates derives them: for a
+	// Claude model from Anthropic's published multipliers (reads 0.1x input,
+	// 5-minute writes 1.25x), for anything else at the full input rate --
+	// an unknown discount is priced as no discount, so spend is overstated
+	// rather than hidden.
+	CacheReadPerMTok  float64 `json:"cache_read_per_mtok,omitempty"`
+	CacheWritePerMTok float64 `json:"cache_write_per_mtok,omitempty"`
+}
+
+// CacheRates returns the per-MTok price of cache reads and cache writes for
+// model. See ModelPrice for the defaults.
+func (p ModelPrice) CacheRates(model string) (read, write float64) {
+	read, write = p.CacheReadPerMTok, p.CacheWritePerMTok
+	claude := strings.Contains(model, "claude")
+	if read == 0 {
+		read = p.InputPerMTok
+		if claude {
+			read = p.InputPerMTok * 0.1
+		}
+	}
+	if write == 0 {
+		write = p.InputPerMTok
+		if claude {
+			write = p.InputPerMTok * 1.25
+		}
+	}
+	return read, write
 }
 
 // RouteConfig describes one provider slot (primary or secondary). Provider
@@ -229,6 +271,11 @@ type Config struct {
 	// generation are handed to the secondary provider so the frontier model
 	// never carries them in its context. Off unless explicitly enabled.
 	Shunt ShuntConfig `json:"shunt,omitempty"`
+
+	// SecondaryPruning trims old and oversized tool output from requests sent
+	// to an openai-compatible secondary, where every token is paid for and
+	// nothing is cached for us. On unless Disabled; see router/prune.go.
+	SecondaryPruning PruneConfig `json:"secondary_pruning,omitempty"`
 
 	// AdminListen is the local control panel's address. Deliberately a
 	// separate listener from Listen: in transparent mode the gateway serves
