@@ -1,3 +1,76 @@
+# Handover — 2026-09-28: Burst breaks on network reconnect
+
+Written at session close. **Verify before acting** — true at the time, nothing keeps it true.
+All times local (SAST).
+
+## State right now
+
+- **Transparent mode is installed and live.** Reinstalled 10:37 via
+  `~/.config/claude-burst/install-transparent.command` after the user rolled back at 10:18.
+  Watchdog confirmed healthy at 10:38:42; `https://api.anthropic.com/healthz` answers from the
+  gateway; local CA trusted in the System keychain; `rolled-back` marker absent.
+- **pf-heal is the new version:** running, heartbeat fresh, `install-pf-heal.sh status`
+  reports no STALE, installed plist has the WatchPaths below.
+- Pushed: `d636d70` (the fix) and `1a9f3e4` (test fix). Working tree clean.
+
+## What happened
+
+User on a phone hotspot walked away from the laptop; on return Claude Code showed
+`502 local network unavailable (DNS is failing ...)` and the dashboard showed
+`FAILED · transparent proxy ... dial tcp 127.0.0.1:443: connect: connection refused`.
+Two different things, from `claude-burst.log` and `/var/log/claude-burst-pf.log`:
+
+1. **10:06–10:16 the network really was gone.** Snapshots show no IPv4 uplink (the hotspot's
+   `172.20.10.2` disappears) and `www.apple.com` failing in 1–2 ms. The 502 and "not failing
+   over" were **correct** — the secondary is behind the same dead network. Nothing to fix.
+2. **On every reconnect the redirect broke.** Six times 09:30–10:18 pf-heal logged
+   `BROKEN ... (rdr rule: loaded, main ruleset: referenced, gateway on :17777: listening)`,
+   and one `reload-anchor` (which also flushes this anchor's states — 10 and 123 cleared)
+   healed it every time. The outage length was just pf-heal's **120 s** timer: up to ~2 min
+   of machine-wide "connection refused" per reconnect. At 10:18:04 it had healed; the user's
+   rollback ran 14 s later without knowing.
+
+## The fix (`d636d70`)
+
+- LaunchDaemon also fires on `WatchPaths`: `/var/run/resolv.conf` (configd rewrites it on
+  every network change — its mtime was 10:17, the reconnect) and `/etc/pf.conf`.
+  `StartInterval` 120 → 30 as backstop (a healthy cycle is one local curl).
+- After a network change, `pf-heal.sh` keeps cycling for 90 s (`run_with_settle`), because pf
+  breaks a few seconds *after* the change and one probe at the moment of the change passes.
+  Change detection is the marker's mtime vs `/etc/claude-burst/pf-heal.network-seen`.
+- `BROKEN` lines now include `pf: enabled|DISABLED|unknown`.
+- Self-tests: pf-heal 26/26 (new: break appears after the change and heals in the same run;
+  no settle without a change; no probing while rolled back), install-pf-heal 14/14.
+
+`1a9f3e4`: `TestStateReportsRejectedModelsAndWhereTheyGo` had failed since `fee840f` (default
+Fable fallback moved to `claude-opus-5-5`, test hardcoded `claude-opus-5`), which meant
+`deploy.sh` refused every deploy. Test now reads `config.Default()`.
+
+## Open
+
+1. **Not yet proven on a real disconnect.** Next hotspot drop, expect in
+   `/var/log/claude-burst-pf.log`: `network changed -- watching the intercept for 90s`, then
+   `BROKEN` / `HEALED` within seconds (or nothing, if it did not break). If a break still sits
+   for ~30 s+, the WatchPaths trigger did not fire — check the plist actually loaded
+   (`sudo launchctl print system/ninja.andrewbaker.claude-burst-pfheal`).
+2. **Mechanism still unknown.** Why is 443 refused with the rule loaded and referenced?
+   Candidates: pf disabled by whatever reloads it (Zscaler/CrowdStrike), or stale states.
+   The new `pf:` field in the next `BROKEN` line answers the first. Do not guess — see
+   `claude_burst_pf_anchor_loss` and the direct-port investigation's four wrong guesses.
+   The fix heals regardless of which it is.
+3. **During a real outage Claude Code still shows the 502.** Correct behaviour; no hold/retry
+   in the gateway would survive a 10-minute outage. Only revisit if short blips (<30 s) turn
+   out to be common.
+
+## Unrelated machine change this session
+
+Removed 5 stale `Claude Traffic Light` hooks from `~/.claude/settings.json` (app was
+uninstalled; every prompt/stop threw `Cannot find module .../set-status.js`). Backup:
+`~/.claude/settings.json.bak-20260928-114932-traffic-light`. The other two hooks
+(panel session hook, cost alert) untouched.
+
+---
+
 # Update 2026-09-21 (evening): the 18:04 failure, and what is still open
 
 The 502 "resolve api.anthropic.com over DoH ... no such host" was **the machine's network**,
