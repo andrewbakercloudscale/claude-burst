@@ -252,6 +252,7 @@ func serve(args []string) {
 	// open with nothing on it; a server-side deadline would sever exactly that
 	// and present as Remote Control dropping repeatedly for no visible reason.
 	server := &http.Server{Addr: cfg.Listen, Handler: srv, TLSConfig: tlsConfig}
+	go exitWhenIdleOnSignal(srv.InFlight, logger)
 	if tlsConfig != nil {
 		err = server.ServeTLS(ln, "", "") // certificates come from TLSConfig; ln is already bound above
 	} else {

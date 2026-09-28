@@ -1338,3 +1338,49 @@ func TestCappedBufferStopsRecordingWithoutFailing(t *testing.T) {
 		t.Fatalf("overflowed buffer must be marked and emptied: overflow=%v len=%d", c.overflow, c.buf.Len())
 	}
 }
+
+// InFlight is what a graceful restart waits on (cmd/claude-burst/drain.go):
+// it must count a streaming inference request for as long as it streams,
+// and must not count health checks or other control-plane traffic, which
+// would keep a restart waiting on requests that have nothing at stake.
+func TestInFlightCountsStreamingInferenceOnly(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(started)
+		<-release
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer primary.Close()
+
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = primary.URL
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","stream":true,"messages":[]}`))
+		s.ServeHTTP(httptest.NewRecorder(), req)
+		close(done)
+	}()
+	<-started
+	if n := s.InFlight(); n != 1 {
+		t.Fatalf("mid-stream InFlight = %d, want 1", n)
+	}
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://local/healthz", nil))
+	if n := s.InFlight(); n != 1 {
+		t.Fatalf("a health check must not be counted: InFlight = %d", n)
+	}
+	close(release)
+	<-done
+	if n := s.InFlight(); n != 0 {
+		t.Fatalf("after the stream ended InFlight = %d, want 0", n)
+	}
+}

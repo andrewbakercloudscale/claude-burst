@@ -132,6 +132,11 @@ install() {
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- Seconds launchd waits after SIGTERM before SIGKILL (default 20, and
+       launchd caps it at 60 for an agent). The gateway drains in-flight
+       replies for up to 50s on SIGTERM (cmd/claude-burst/drain.go); this
+       must stay above that. -->
+  <key>ExitTimeOut</key><integer>60</integer>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>$HOME/.config/claude-burst/launchd.out.log</string>
   <key>StandardErrorPath</key><string>$HOME/.config/claude-burst/launchd.err.log</string>

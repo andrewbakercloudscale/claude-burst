@@ -86,6 +86,43 @@ source "$ROOT/scripts/health-diagnostics.sh"
 # health-diagnostics.sh -- see its comment for why probing 127.0.0.1:7777
 # alone rolled back a healthy build on 2026-09-03. Kept as a loop here because
 # a just-restarted gateway legitimately needs a moment to bind.
+# restart_gateway restarts the LaunchAgent and waits until a NEW process is
+# running, before any health check. On SIGTERM the gateway drains: it keeps
+# serving until no reply is streaming (up to 50s, cmd/claude-burst/drain.go),
+# so the old process goes on answering /healthz for a while. A health check
+# that started straight after the kickstart could pass against the OLD binary
+# and call the deploy good. The pid changing is what proves the new one runs.
+#
+# It also gives the plist its ExitTimeOut if it predates it: launchd's default
+# of 20s would SIGKILL a drain that runs longer. A plist edit only takes
+# effect through bootout + bootstrap (kickstart reuses the cached definition),
+# so that one restart goes that way.
+DRAIN_TIMEOUT=70
+restart_gateway() {
+  local plist="$HOME/Library/LaunchAgents/$LABEL.plist" old_pid pid waited=0
+  old_pid="$(launchagent_pid)"
+  if [[ -f "$plist" ]] && ! /usr/libexec/PlistBuddy -c "Print :ExitTimeOut" "$plist" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Add :ExitTimeOut integer 60" "$plist"
+    log "added ExitTimeOut=60 to $plist so launchd lets a drain finish; reloading the job to apply it"
+    launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1
+    launchctl bootstrap "gui/$UID" "$plist" >/dev/null 2>&1
+  fi
+  launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
+  [[ -z "$old_pid" ]] && return 0
+  while (( waited < DRAIN_TIMEOUT )); do
+    pid="$(launchagent_pid)"
+    if [[ -n "$pid" && "$pid" != "$old_pid" ]]; then
+      (( waited > 0 )) && log "old gateway (pid $old_pid) finished its in-flight replies after ~${waited}s; new pid $pid"
+      return 0
+    fi
+    (( waited == 0 )) && log "waiting for the old gateway (pid $old_pid) to finish replies that are streaming..."
+    sleep 1
+    (( waited += 1 ))
+  done
+  log "WARNING: pid still $old_pid after ${DRAIN_TIMEOUT}s -- the old process has not exited"
+  return 1
+}
+
 wait_healthy() {
   local waited=0
   while (( waited < HEALTH_TIMEOUT )); do
@@ -202,7 +239,7 @@ log "restarting gateway..."
 # misattribute that to a broken build -- see ensure_launchagent_loaded's
 # doc comment in health-diagnostics.sh for the 2026-09-03 incident this fixes.
 ensure_launchagent_loaded || log "WARNING: could not load $LABEL into launchd automatically -- the health check below will fail for that reason, not because of this build"
-launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
+restart_gateway
 
 # NO pf state flush here. It was wired in on 2026-09-03 while stale anchor
 # states were the leading suspect for direct connections to the gateway port
@@ -232,7 +269,7 @@ if [[ -f "$BACKUP_DIR/claude-burst-bin.latest.bak" ]]; then
   cp "$BACKUP_DIR/claude-burst-bin.latest.bak" "$TARGET"
   chmod 755 "$TARGET"
   ensure_launchagent_loaded || true
-  launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
+  restart_gateway
   if wait_healthy; then
     if [[ "$DISABLED_FOR_SWAP" -eq 1 ]]; then
       "$TARGET" enable

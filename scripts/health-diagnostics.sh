@@ -149,6 +149,12 @@ launchagent_running() {
   launchctl print "gui/$UID/$svc_label" 2>/dev/null | grep -qE '^[[:space:]]*pid = [0-9]+'
 }
 
+# launchagent_pid prints the job's pid, or nothing when it has none.
+launchagent_pid() {
+  local svc_label="${LABEL:-ninja.andrewbaker.claude-burst}"
+  launchctl print "gui/$UID/$svc_label" 2>/dev/null | awk '/^[[:space:]]*pid = [0-9]+/ {print $3; exit}'
+}
+
 # ensure_launchagent_loaded recovers from the one failure mode that looks
 # exactly like a broken build but isn't: the LaunchAgent disabled or
 # unloaded entirely in launchd's own database. `launchctl kickstart -k`

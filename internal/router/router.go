@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,7 +91,11 @@ type Server struct {
 	primary         Provider
 	primaryDetector FailoverDetector
 	secondary       Provider // nil if no secondary is configured
-	client          *http.Client
+
+	// inflight counts inference requests (/v1/messages) being served right
+	// now. A graceful restart waits for it to reach zero; see InFlight.
+	inflight atomic.Int64
+	client   *http.Client
 	// probe measures local network health after a transport failure. A field so
 	// tests can say "the network is down" or "up" without depending on the
 	// machine they run on having working DNS.
@@ -545,6 +550,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 
+	if isInference(r.URL.Path) {
+		s.inflight.Add(1)
+		defer s.inflight.Add(-1)
+	}
+
 	defer func() {
 		if rec := recover(); rec != nil {
 			s.logger.Printf("req=%s PANIC method=%q path=%q err=%v\n%s", rid, r.Method, r.URL.Path, rec, debug.Stack())
@@ -599,6 +609,12 @@ func (sw *statusWriter) Flush() {
 
 // isInference reports whether a path carries a model call, as opposed to the
 // control-plane and probe traffic that is simply passed through.
+// InFlight is how many inference requests are being served right now. Only
+// inference counts: a Remote Control long-poll or a heartbeat holds a
+// connection open with nothing at stake, reconnects on its own, and would
+// otherwise keep a restart waiting forever.
+func (s *Server) InFlight() int64 { return s.inflight.Load() }
+
 func isInference(path string) bool {
 	return strings.HasPrefix(path, "/v1/messages")
 }
