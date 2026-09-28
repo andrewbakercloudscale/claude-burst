@@ -1261,3 +1261,80 @@ func TestControlPlaneSuccessDoesNotResetInferenceFailures(t *testing.T) {
 		t.Fatal("overflow should be armed by three inference failures inside the window")
 	}
 }
+
+// TestNonStreamingResponseRecordsUsage is issue #2. relay used to parse
+// usage from SSE only, so a stream:false response on a metered route was
+// recorded as 0 tokens and $0 -- a billed request reported as free, with no
+// INCOMPLETE flag because the model was priced. Claude Code always streams,
+// which is why the default setup never showed it.
+//
+// The count_tokens case guards the obvious over-fix: its reply has a
+// top-level input_tokens that is not a billed request and must stay zero.
+func TestNonStreamingResponseRecordsUsage(t *testing.T) {
+	cases := []struct {
+		name         string
+		path         string
+		body         string
+		wantIn       int64
+		wantOut      int64
+		wantPositive bool
+	}{
+		{"messages stream:false", "/v1/messages",
+			`{"id":"msg_1","type":"message","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":1200,"output_tokens":34}}`,
+			1200, 34, true},
+		{"count_tokens is not billed", "/v1/messages/count_tokens",
+			`{"input_tokens":1200}`, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("content-type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer primary.Close()
+
+			cfg := config.Default()
+			cfg.AnthropicBaseURL = primary.URL
+			dir := t.TempDir()
+			metricsPath := filepath.Join(dir, "metrics.jsonl")
+			s, err := New(cfg, filepath.Join(dir, "state.json"), metricsPath, log.New(io.Discard, "", 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "http://local"+tc.path,
+				strings.NewReader(`{"model":"claude-sonnet-5","stream":false,"messages":[]}`))
+			s.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK || rr.Body.String() != tc.body {
+				t.Fatalf("body must be relayed unchanged: status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			b, err := os.ReadFile(metricsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var e metrics.Event
+			if err := json.Unmarshal([]byte(strings.TrimSpace(string(b))), &e); err != nil {
+				t.Fatalf("bad metrics line %q: %v", b, err)
+			}
+			if e.InputTokens != tc.wantIn || e.OutputTokens != tc.wantOut {
+				t.Fatalf("tokens = %d/%d, want %d/%d", e.InputTokens, e.OutputTokens, tc.wantIn, tc.wantOut)
+			}
+			if (e.APIEquivalentUSD > 0) != tc.wantPositive {
+				t.Fatalf("api_equivalent_usd = %v, want positive=%v", e.APIEquivalentUSD, tc.wantPositive)
+			}
+		})
+	}
+}
+
+func TestCappedBufferStopsRecordingWithoutFailing(t *testing.T) {
+	c := &cappedBuffer{max: 8}
+	for _, chunk := range []string{"12345", "67890", "abc"} {
+		if n, err := c.Write([]byte(chunk)); err != nil || n != len(chunk) {
+			t.Fatalf("Write(%q) = %d, %v; must always report full success", chunk, n, err)
+		}
+	}
+	if !c.overflow || c.buf.Len() != 0 {
+		t.Fatalf("overflowed buffer must be marked and emptied: overflow=%v len=%d", c.overflow, c.buf.Len())
+	}
+}

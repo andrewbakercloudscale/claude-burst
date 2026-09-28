@@ -2,6 +2,7 @@ package router
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -1055,7 +1056,11 @@ func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string)
 
 	ct := strings.ToLower(resp.Header.Get("content-type"))
 	if !strings.Contains(ct, "text/event-stream") {
-		if _, err := io.Copy(w, resp.Body); err != nil {
+		// A stream:false Messages response carries its usage in the JSON
+		// body. Tee a bounded copy while relaying, so the client still gets
+		// bytes as they arrive and a billed request is not recorded as $0.
+		capture := &cappedBuffer{max: maxUsageCaptureBytes}
+		if _, err := io.Copy(w, io.TeeReader(resp.Body, capture)); err != nil {
 			// Almost always means the client (Claude Code) disconnected
 			// mid-response. Not a proxy bug, but worth having in the log
 			// when someone is debugging a truncated response.
@@ -1064,7 +1069,10 @@ func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string)
 		if fl != nil {
 			fl.Flush()
 		}
-		return tokenUsage{}
+		if capture.overflow || !strings.Contains(ct, "json") {
+			return tokenUsage{}
+		}
+		return usageFromMessageJSON(capture.buf.Bytes())
 	}
 
 	br := bufio.NewReader(resp.Body)
@@ -1089,6 +1097,44 @@ func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string)
 		}
 	}
 	return tok
+}
+
+// maxUsageCaptureBytes bounds how much of a non-streaming body relay keeps
+// for usage extraction. Message responses are far smaller; anything larger
+// is relayed in full but not parsed.
+const maxUsageCaptureBytes = 4 * 1024 * 1024
+
+// cappedBuffer records up to max bytes and then stops recording, without
+// ever returning an error, so it can never break the relay it is teed from.
+type cappedBuffer struct {
+	buf      bytes.Buffer
+	max      int
+	overflow bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if !c.overflow {
+		if c.buf.Len()+len(p) > c.max {
+			c.overflow = true
+			c.buf.Reset()
+		} else {
+			c.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+// usageFromMessageJSON reads the top-level usage block of a non-streaming
+// Messages response. Only "usage" is read: count_tokens replies carry a
+// top-level input_tokens that is not a billed request and must stay zero.
+func usageFromMessageJSON(body []byte) tokenUsage {
+	var v struct {
+		Usage map[string]any `json:"usage"`
+	}
+	if json.Unmarshal(body, &v) != nil || v.Usage == nil {
+		return tokenUsage{}
+	}
+	return tokenUsage{input: number(v.Usage["input_tokens"]), output: number(v.Usage["output_tokens"])}
 }
 
 func parseSSEUsage(line string, tok *tokenUsage) {
