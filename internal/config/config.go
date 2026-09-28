@@ -104,6 +104,12 @@ const (
 	InterceptTransparent = "transparent"
 )
 
+// Values for Config.KeepAwakeLidClosedPower.
+const (
+	KeepAwakeOnAC   = "ac"
+	KeepAwakeAlways = "always"
+)
+
 // ProviderNone marks a slot as deliberately empty.
 //
 // It has to be an explicit value rather than an absent one. The legacy flat
@@ -238,6 +244,12 @@ type Config struct {
 	// App Nap for Ghostty. `status` reports drift between this and the machine.
 	KeepAwakeLidClosed bool `json:"keep_awake_lid_closed"`
 
+	// KeepAwakeLidClosedPower picks WHEN KeepAwakeLidClosed applies:
+	// KeepAwakeOnAC (default) only while plugged in -- a root LaunchDaemon
+	// follows the power source, because SleepDisabled is one global value
+	// with no per-power-source form -- or KeepAwakeAlways.
+	KeepAwakeLidClosedPower string `json:"keep_awake_lid_closed_power"`
+
 	// AdminHostname is an optional friendly name for the admin UI, e.g.
 	// "cloudscale-claudeburst.test", paired with an /etc/hosts entry pointing
 	// it at 127.0.0.1.
@@ -260,7 +272,9 @@ func Default() Config {
 		ResetGraceSeconds:   10,
 		UnknownResetSeconds: 300,
 		MaxRequestMB:        128,
-		KeychainService:     "claude-burst-bedrock",
+
+		KeepAwakeLidClosedPower: KeepAwakeOnAC,
+		KeychainService:         "claude-burst-bedrock",
 		// Fable -> Opus only. Opus -> Sonnet is a far larger capability drop
 		// than a cost saving justifies by default, so it is left for the
 		// user to add deliberately rather than shipped on.
@@ -402,6 +416,19 @@ func (c *Config) ValidateIntercept() error {
 	}
 }
 
+// ValidateKeepAwakePower rejects an unknown power mode rather than guessing:
+// "always" read as "ac" would let the Mac sleep when the user expected it not
+// to, and the reverse would keep it awake on battery in a bag.
+func ValidateKeepAwakePower(mode string) error {
+	switch mode {
+	case KeepAwakeOnAC, KeepAwakeAlways:
+		return nil
+	default:
+		return fmt.Errorf("keep_awake_lid_closed_power %q is not recognised (want %q or %q)",
+			mode, KeepAwakeOnAC, KeepAwakeAlways)
+	}
+}
+
 func HomeDir() (string, error) {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -519,8 +546,14 @@ func Load() (Config, error) {
 	if cfg.Pricing == nil {
 		cfg.Pricing = map[string]ModelPrice{}
 	}
+	if cfg.KeepAwakeLidClosedPower == "" {
+		cfg.KeepAwakeLidClosedPower = KeepAwakeOnAC
+	}
 	cfg.ResolveRoutes()
 	if err := cfg.ValidateIntercept(); err != nil {
+		return cfg, fmt.Errorf("parse %s: %w", p, err)
+	}
+	if err := ValidateKeepAwakePower(cfg.KeepAwakeLidClosedPower); err != nil {
 		return cfg, fmt.Errorf("parse %s: %w", p, err)
 	}
 	return cfg, nil

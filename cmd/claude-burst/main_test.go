@@ -223,3 +223,26 @@ func TestParseSleepDisabled(t *testing.T) {
 		}
 	}
 }
+
+func TestKeepAwakePowerMode(t *testing.T) {
+	ac := "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t59%; charging; present: true\n"
+	batt := "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t59%; discharging; present: true\n"
+	if !onACPower(ac) || onACPower(batt) {
+		t.Fatal("onACPower misread the power source")
+	}
+	cases := []struct {
+		mode string
+		onAC bool
+		want bool
+	}{
+		{config.KeepAwakeOnAC, true, true},
+		{config.KeepAwakeOnAC, false, false}, // the default must let a laptop on battery sleep
+		{config.KeepAwakeAlways, true, true},
+		{config.KeepAwakeAlways, false, true},
+	}
+	for _, c := range cases {
+		if got := wantSleepDisabled(c.mode, c.onAC); got != c.want {
+			t.Errorf("wantSleepDisabled(%s, onAC=%v) = %v, want %v", c.mode, c.onAC, got, c.want)
+		}
+	}
+}

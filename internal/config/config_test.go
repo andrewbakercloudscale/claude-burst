@@ -208,3 +208,34 @@ func TestKeepAwakeLidClosedDefaultsFalseAndIsVisible(t *testing.T) {
 		t.Fatalf("keep_awake_lid_closed missing from marshalled config: %s", b)
 	}
 }
+
+// The power mode defaults to mains-only, both for a fresh config and for one
+// written before the field existed, and an unknown value is refused.
+func TestKeepAwakePowerDefaultsToACAndRejectsUnknown(t *testing.T) {
+	if got := Default().KeepAwakeLidClosedPower; got != KeepAwakeOnAC {
+		t.Fatalf("default power mode = %q, want %q", got, KeepAwakeOnAC)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "claude-burst")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"keep_awake_lid_closed": true}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.KeepAwakeLidClosedPower != KeepAwakeOnAC {
+		t.Fatalf("legacy config power mode = %q, want %q", cfg.KeepAwakeLidClosedPower, KeepAwakeOnAC)
+	}
+	write(`{"keep_awake_lid_closed_power": "battery"}`)
+	if _, err := Load(); err == nil {
+		t.Fatal("unknown keep_awake_lid_closed_power was accepted")
+	}
+}

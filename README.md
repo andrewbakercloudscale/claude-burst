@@ -37,18 +37,26 @@ See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-op
 
 ## Keeping Claude Code working with the lid shut (optional)
 
-Off by default. `keep_awake_lid_closed` in `config.json` keeps a Claude Code session in Ghostty running, and Remote Control reachable, after you close the lid:
+Off by default. `keep_awake_lid_closed` in `config.json` keeps a Claude Code session in Ghostty running, and Remote Control reachable, after you close the lid. `keep_awake_lid_closed_power` picks when:
+
+| `keep_awake_lid_closed_power` | Lid shut, plugged in | Lid shut, on battery |
+| --- | --- | --- |
+| `ac` **(default)** | stays awake | sleeps as normal |
+| `always` | stays awake | stays awake |
 
 ```bash
-claude-burst configure --keep-awake-lid-closed true    # false undoes it
-sudo scripts/lid-awake-root.sh apply                   # printed for you if sudo is not cached
+claude-burst configure --keep-awake-lid-closed true                 # mode ac
+claude-burst configure --keep-awake-power always                    # switch mode
+claude-burst configure --keep-awake-lid-closed false                # undo
+sudo scripts/lid-awake-root.sh apply ac                             # printed for you if sudo is not cached
 ```
 
 - **`pmset -a disablesleep 1`** (root) — the only switch that overrides clamshell sleep; `caffeinate` and `pmset sleep 0` do not. The prior value is recorded and restored by `remove`.
+- **Mode `ac` needs a root LaunchDaemon** (`ninja.andrewbaker.claude-burst-lidawake`): SleepDisabled is one global value with no per-power-source form, so the daemon follows `pmset -g pslog` and sets it on plug-in and unplug. It runs a root-owned copy in `/usr/local/libexec/claude-burst`; re-run `apply` after editing the script. Log: `/var/log/claude-burst-lidawake.log`.
 - **Ghostty App Nap off** (`NSAppSleepDisabled`, no root) — with the lid shut every window is occluded, which is when macOS throttles the app. Takes effect on Ghostty's next launch.
-- `claude-burst status` shows the flag and the machine's actual state, and flags drift either way.
+- `claude-burst status` shows the flag, the mode, the power source and the machine's actual state, and flags drift either way.
 
-The cost: the Mac never sleeps, lid shut or not. On battery in a bag that means heat and a flat battery.
+With `always`, a closed laptop never sleeps: on battery in a bag that means heat and a flat battery. That is why `ac` is the default.
 
 ## Why this exists
 

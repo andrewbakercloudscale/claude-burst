@@ -119,10 +119,11 @@ Keeping Claude Code's Remote Control (optional):
   Undo with: sudo scripts/transparent-root.sh remove
 
 Keeping Claude Code working with the lid shut (optional, default off):
-  claude-burst configure --keep-awake-lid-closed true
+  claude-burst configure --keep-awake-lid-closed true [--keep-awake-power ac|always]
   Sets pmset SleepDisabled (one sudo step) and turns off App Nap for Ghostty,
-  so the session and Remote Control survive closing the lid. The Mac then
-  never sleeps -- mind the battery and heat in a bag. Undo with false.
+  so the session and Remote Control survive closing the lid. Power mode "ac"
+  (the default) does this only while plugged in -- on battery the lid sleeps
+  the Mac as normal; "always" also keeps it awake on battery. Undo with false.
 
 Setup with a Claude Max/Pro subscription (default), Together AI overflow:
   claude-burst configure --secondary openai-compatible \
@@ -284,6 +285,7 @@ func configure(args []string) {
 	interceptMode := fs.String("intercept-mode", "", "how Claude Code reaches the gateway: base-url (default) | transparent")
 	interceptHost := fs.String("intercept-host", "", "hostname to intercept in transparent mode (default api.anthropic.com)")
 	keepAwake := fs.String("keep-awake-lid-closed", "", "true | false: keep the Mac (and Claude Code in Ghostty, and Remote Control) running with the lid shut")
+	keepAwakePower := fs.String("keep-awake-power", "", "when --keep-awake-lid-closed applies: ac (default, only while plugged in) | always")
 	_ = fs.Parse(args)
 
 	if *region != "" {
@@ -406,6 +408,12 @@ func configure(args []string) {
 			fatal(fmt.Errorf("invalid --keep-awake-lid-closed %q (must be true or false)", *keepAwake))
 		}
 	}
+	if *keepAwakePower != "" {
+		if err := config.ValidateKeepAwakePower(*keepAwakePower); err != nil {
+			fatal(fmt.Errorf("invalid --keep-awake-power: %w", err))
+		}
+		cfg.KeepAwakeLidClosedPower = *keepAwakePower
+	}
 	cfg.ResolveRoutes()
 
 	if err := config.Save(cfg); err != nil {
@@ -413,8 +421,10 @@ func configure(args []string) {
 	}
 	p, _ := config.ConfigPath()
 	fmt.Printf("wrote %s\n", p)
-	if *keepAwake != "" {
-		applyKeepAwake(cfg.KeepAwakeLidClosed)
+	// A power-mode change only needs applying while the feature is on; while
+	// it is off it is just remembered for the next time it is switched on.
+	if *keepAwake != "" || (*keepAwakePower != "" && cfg.KeepAwakeLidClosed) {
+		applyKeepAwake(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower)
 	}
 }
 
