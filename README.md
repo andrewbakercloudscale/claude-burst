@@ -1,11 +1,13 @@
 # Claude Burst
 
-**Your Claude subscription as the engine. Together AI's GLM as cheap overflow — and as a worker that keeps the boring work out of Claude's context.**
+**Your Claude subscription as the engine. Together AI's GLM as cheap overflow, with the overflow trimmed before it is paid for.**
 
-Claude Burst is a Mac-only local gateway for Claude Code. One inexpensive metered model does two jobs:
+Claude Burst is a Mac-only local gateway for Claude Code:
 
 1. **Overflow.** It keeps your normal Claude Pro/Max login as the primary credential, watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests to a secondary — this README works through **Together AI serving GLM** — then returns to the subscription when the reset timestamp arrives.
-2. **Token shunting.** The same secondary reads large files and generates boilerplate *instead of* Claude, so your allowance is spent on judgment rather than I/O. A hook refuses whole-file reads above a threshold and redirects them to the worker. See [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context).
+2. **Overflow pruning.** Every overflow request resends the whole conversation to a metered provider, and most of it is old tool output. Before it is sent, tool results older than the most recent 10 are replaced with a one-line note, and any single result over 40 KB keeps only its start and end. The subscription is never pruned: Anthropic caches its context, and rewriting it would break the cache. The dashboard's **Context & cache** panel has the switches, what was not sent, the cache hit rate per route, and a verdict that turns red if pruned requests fail more often than unpruned ones.
+
+Token shunting, an earlier second job for the secondary, was switched off on 2026-09-21 because it saved nothing, and has been removed from the dashboard; see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context).
 
 The secondary is a pluggable slot. **Together AI** and **OpenRouter** (or any other OpenAI-compatible chat-completions endpoint) can do both jobs. **Amazon Bedrock** is supported for overflow only and cannot be a shunt worker. A direct Anthropic API key is available if you would rather stay on Anthropic's own billing. See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-openrouter-or-any-openai-compatible-secondary).
 
@@ -83,7 +85,9 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 > instead, which the guard deliberately allows. Full reasoning and the evidence:
 > [DECISION-token-shunting-off.md](DECISION-token-shunting-off.md), including how it compares
 > with the article it was built from (the design matches; the workload and the test did not).
-> What follows documents how it works, for anyone re-enabling it.
+> It has been removed from the dashboard; the `claude-burst shunt` commands remain so an
+> old install's hook and skill can still be removed (`./install.sh uninstall` does this).
+> What follows documents how it works, for anyone re-enabling it from the command line.
 
 
 Most of what a coding agent does is I/O, not judgment: reading 25,000 tokens of source to produce 300 tokens of understanding. `claude-burst shunt` hands that to your **configured openai-compatible secondary** — Together AI serving GLM in the worked example — so Opus/Fable never carry it. It is the [Spotify technique](https://andrewbaker.ninja/2026/09/17/shunting-the-boring-work-how-spotify-cut-claude-code-token-usage-by-90-and-how-to-do-the-same-without-their-plugin/) built into the gateway you already run, reusing the secondary's Keychain key and base URL.
@@ -105,8 +109,6 @@ claude-burst shunt doctor            # proves the worker sees a whole prompt
 claude-burst shunt status            # what is on, and what it has saved
 claude-burst shunt disable --write   # switch one part off; disable alone removes everything
 ```
-
-The dashboard has a **Token shunting** panel (rail → Control) with the same two switches, the threshold, and what it has saved. It shows the hook, skill and worker separately and turns red when a switch is on over something that is not actually in place (for example the hook wiped from `settings.json`), with a one-click repair.
 
 Restart Claude Code after enabling. Four parts, installed for you:
 
@@ -143,7 +145,7 @@ claude-burst shunt log --json           # raw events
 claude-burst shunt status               # totals, plus the last problems
 ```
 
-One shunt is **one row**. The guard hook and `shunt read` are separate processes that log separately — a *redirect* when a direct read is blocked, and the delegated read a few seconds later — and the dashboard and `shunt log` fold the pair into a single `SHUNTED` row (raw events stay in `shunt.jsonl`, and `shunt log --json` prints them unfolded). Tags: **`SHUNTED`** (the read went to the worker instead of Claude; if Claude tried a direct read first the row says how many times), `WRITE` (generated straight to disk), **`REDIRECTED`** (a direct read was blocked and Claude has not yet followed up — grey, and turns into `SHUNTED` or `NO-SHUNT`), **`NO-SHUNT`** (a direct read was blocked but no delegated read followed: usually Claude read a window of the file or moved on — amber, not a failure), **`LOOP`** (the same session was blocked three or more times with no answer in between: it is retrying instead of running `shunt read`; the third and later attempts also tell the model so), `SHUNT-FAIL` / `WRITE-FAIL` (**with the stage it failed at**: `disabled`, `args`, `worker_init`, `worker_call`, `validate`, `write_file`), and `GUARD-ERR` (the guard could not decide and **allowed** the call; it fails open, and says so). Only the last three kinds and `LOOP` are red. Every exit path logs, including the ones that used to leave no trace: the feature being off, no worker key, bad arguments. The dashboard's *Recent activity* table shows the same tags with project and session columns, and turns the card red only while a session is looping.
+One shunt is **one row**. The guard hook and `shunt read` are separate processes that log separately — a *redirect* when a direct read is blocked, and the delegated read a few seconds later — and `shunt log` folds the pair into a single `SHUNTED` row (raw events stay in `shunt.jsonl`, and `shunt log --json` prints them unfolded). Tags: **`SHUNTED`** (the read went to the worker instead of Claude; if Claude tried a direct read first the row says how many times), `WRITE` (generated straight to disk), **`REDIRECTED`** (a direct read was blocked and Claude has not yet followed up — grey, and turns into `SHUNTED` or `NO-SHUNT`), **`NO-SHUNT`** (a direct read was blocked but no delegated read followed: usually Claude read a window of the file or moved on — amber, not a failure), **`LOOP`** (the same session was blocked three or more times with no answer in between: it is retrying instead of running `shunt read`; the third and later attempts also tell the model so), `SHUNT-FAIL` / `WRITE-FAIL` (**with the stage it failed at**: `disabled`, `args`, `worker_init`, `worker_call`, `validate`, `write_file`), and `GUARD-ERR` (the guard could not decide and **allowed** the call; it fails open, and says so). Only the last three kinds and `LOOP` are red. Every exit path logs, including the ones that used to leave no trace: the feature being off, no worker key, bad arguments.
 
 **How it is tested.** Each piece has unit tests (the guard's rules, the worker, code-write validation, the `settings.json` hook editor, the dashboard endpoints). On top of those, `internal/integration/shunt_e2e_test.go` builds the real binary and drives it the way Claude Code does — the hook's stdin/exit-code protocol, a `settings.json` that already holds someone else's hook, and a fake openai-compatible worker — through enable, blocking and passing the right calls, a delegated read (a credentials file never reaches the worker), a generated file, the log, and disable restoring `settings.json` exactly. It also checks that enabling refuses without a worker, that a failing worker is reported and logged, and that the guard fails open on a broken config. Breaking the guard, or skipping the worker check on enable, makes it fail.
 

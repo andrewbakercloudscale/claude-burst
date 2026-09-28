@@ -452,7 +452,6 @@
   <div class="navgroup">Control</div>
   <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
   <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
-  <a class="navlink" data-target="sec-shunt"><span class="nd" id="nd-shunt"></span><span class="label">Token shunting</span></a>
   <a class="navlink" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
   <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Configuration</span></a>
   <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
@@ -699,59 +698,6 @@
         <button class="primary" id="save">✓ Save</button>
       </div>
       <div id="cfgNote"></div>
-    </div>
-  </section>
-
-  <section id="sec-shunt" style="scroll-margin-top:70px">
-    <h2>Token shunting <span class="hint">bulk reads and boilerplate go to the secondary, not to Claude</span></h2>
-    <div class="body">
-      <!-- The master switch is "either part is on". It is derived from the two
-           switches below rather than stored: ticking one of them turns it on,
-           unticking the last one turns it off, so the three can never disagree.
-           Turning it ON enables both; that is the default enable, and the two
-           below are how you narrow it. -->
-      <div class="row" style="align-items:flex-start;margin-bottom:12px">
-        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
-          <input type="checkbox" id="shuntMaster" style="width:auto;margin:0;transform:scale(1.25)">
-          Token shunting <span id="shuntMasterState" class="pill"></span>
-        </label>
-      </div>
-      <div class="grid" id="shuntCards"></div>
-
-      <div style="margin-top:14px">
-        <div class="row" style="align-items:flex-start">
-        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
-          <input type="checkbox" id="shuntRead" style="width:auto;margin:0">
-          Bulk read &mdash; redirect whole-file reads of large files to the worker instead
-        </label>
-        </div>
-        <div class="hint" style="margin:4px 0 12px 0">A hook in Claude Code's settings blocks <code>Read</code> and plain <code>cat</code>/<code>head</code>/<code>tail</code> at or above the threshold and points Claude at <code>claude-burst shunt read</code>. Windowed reads (offset + limit) are never blocked. This is where nearly all of the saving is.</div>
-
-        <div class="row" style="align-items:flex-start">
-        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
-          <input type="checkbox" id="shuntWrite" style="width:auto;margin:0">
-          Code write &mdash; let the worker generate boilerplate straight to disk
-        </label>
-        </div>
-        <div class="hint" style="margin:4px 0 12px 0">Test classes, DTOs, config files that mirror an existing pattern. The generated file never enters Claude's context, so Claude has to review it. An existing file is kept as <code>.bak</code>.</div>
-      </div>
-
-      <div class="row" style="align-items:flex-end">
-        <div>
-          <label for="shuntMin">Delegate reads at or above</label>
-          <input type="number" id="shuntMin" min="20" max="100000" step="10" style="width:120px">
-        </div>
-        <button id="shuntSetMin">Set threshold</button>
-        <button class="warn" id="shuntReinstall" hidden>Repair hook &amp; skill</button>
-      </div>
-      <div class="hint" style="margin-top:6px">Lines, not tokens. Below this a delegated read costs more than it saves &mdash; each one takes 10&ndash;30 seconds.</div>
-      <div id="shuntState" class="hint" style="margin-top:8px"></div>
-      <div id="shuntNote"></div>
-
-      <h3 style="margin:18px 0 6px;font-size:13px">Recent activity <span class="hint">last 20 &mdash; one row per shunt, plus the times a shunt did not happen</span></h3>
-      <div class="scroll" id="shuntActivity"><div class="empty">Nothing yet.</div></div>
-
-      <div class="hint" style="margin-top:8px">The worker is your configured openai-compatible secondary, so <strong>file contents are sent to that provider</strong> whenever a read is delegated. Files that look like credentials (<code>.env</code>, keys, <code>.aws/</code>, &hellip;) never are. The tokens-kept-out figure is an estimate at ~4 bytes per token.</div>
     </div>
   </section>
 
@@ -1373,7 +1319,7 @@ function renderRequests(rows) {
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
         <td class="num">${num(e.output_tokens)}</td>
-        <td class="num">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? shuntUSD(e.api_equivalent_usd) : "\u2014"}</td>
+        <td class="num">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? smallUSD(e.api_equivalent_usd) : "\u2014"}</td>
         <td>${esc(e.note || "")}${e.session_id ? ` <span style="color:var(--muted)" title="${esc(e.session_id)}">\u00b7 session ${esc(e.session_id.slice(0, 8))}</span>` : ""}</td>
       </tr>`;
       }
@@ -1449,12 +1395,10 @@ function renderResponses(rows) {
 
 async function refresh() {
   try {
-    const [s, reqs, resps, shuntAct] = await Promise.all([
+    const [s, reqs, resps] = await Promise.all([
       fetch("/api/state").then(r => r.json()),
       fetch("/api/requests?limit=50").then(r => r.json()),
       fetch("/api/responses").then(r => r.json()),
-      // Its own panel's list; a failure here must not take the page down.
-      fetch("/api/shunt-activity?limit=20").then(r => r.json()).catch(() => []),
       // Sets lastHistory as a side effect rather than returning it: the
       // window buttons reload it on their own, without a full refresh.
       loadHistory(),
@@ -1537,9 +1481,7 @@ async function refresh() {
     }
     renderSecondary(s);
     renderDowngrade(s);
-    renderShunt(s);
     renderContext(s);
-    renderShuntActivity(shuntAct);
     $("hero").hidden = false;
     lastCounts = {requests: reqs.length, responses: resps.length};
     renderActivity();
@@ -1690,104 +1632,8 @@ $("save").onclick = async () => {
   } catch (e) { note($("cfgNote"), "bad", e.message); }
 };
 
-// Token shunting. The switches are claims; the hook, the skill and the worker
-// are what make them true, so the page shows all four and says loudly when a
-// switch is on over something that is not actually in place.
-let shuntBusy = false;
-
-function shuntHealth(sh) {
-  const on = !!(sh.read || sh.write);
-  const problems = [];
-  // Only drift between config and what is installed can be fixed by
-  // re-applying it; a missing worker or key cannot.
-  const repairable = (sh.read && !sh.hook_installed) || (!sh.read && sh.hook_installed) || (on && !sh.skill_installed);
-  if (on && !sh.worker_ready) problems.push(sh.worker_error || "the worker is not ready");
-  if (sh.repeat_refusals_1h > 0) problems.push(sh.repeat_refusals_1h + " retry loop(s) in the last hour — a Claude session keeps retrying a blocked read instead of running shunt read (rows tagged LOOP below name the project and session)");
-  if (sh.problems_24h > 0) problems.push(sh.problems_24h + " failed delegation(s) or guard error(s) in the last 24 hours (see the rows in red below, or run: claude-burst shunt log --problems)");
-  if (sh.read && !sh.hook_installed) problems.push("bulk read is on but the guard hook is not in ~/.claude/settings.json, so nothing is refusing whole-file reads");
-  if (!sh.read && sh.hook_installed) problems.push("bulk read is off but the guard hook is still installed");
-  if (on && !sh.skill_installed) problems.push("the skill that tells Claude when to delegate is not installed");
-  return {on, problems, repairable};
-}
-
-function shuntUSD(n) { return "$" + (n || 0).toFixed((n || 0) < 1 ? 4 : 2); }
-
-function renderShunt(s) {
-  const sh = s.shunt || {};
-  const {on, problems, repairable} = shuntHealth(sh);
-  if (!shuntBusy) {
-    $("shuntRead").checked = !!sh.read;
-    $("shuntWrite").checked = !!sh.write;
-    $("shuntMaster").checked = on;
-  }
-  $("shuntMasterState").textContent = !on ? "off" : sh.read && sh.write ? "on" : "on \u00b7 " + (sh.read ? "read only" : "write only");
-  if (document.activeElement !== $("shuntMin")) $("shuntMin").value = sh.min_lines || 350;
-  $("shuntReinstall").hidden = !repairable;
-
-  const t = sh.today || {}, m = sh.last30 || {};
-  const parts = [sh.read ? "read" : null, sh.write ? "write" : null].filter(Boolean).join(" · ");
-  const cls = !on ? "c-info" : problems.length ? "c-bad" : "c-ok";
-  const failed = m.failures ? ` · <strong>${num(m.failures)} failed</strong>` : "";
-  const unpriced = m.unpriced
-    ? `<div class="sub"><strong>${num(m.unpriced)} call(s) unpriced</strong> — add ${esc(sh.model || "the worker model")} to <code>pricing</code> in config.json; this total is a lower bound.</div>` : "";
-  $("shuntCards").innerHTML = `
-    <div class="card ${cls}">
-      <h3>Shunting</h3>
-      <div class="stat">${!on ? "Off" : problems.length ? "Needs attention" : "On"}</div>
-      <div class="sub">${on ? esc(parts) + " · worker " + esc(sh.model || "—") : "Claude reads everything itself"}</div>
-    </div>
-    <div class="card c-info">
-      <h3>Kept out of context · 30 days</h3>
-      <div class="stat">≈${num(m.kept_out_tokens)} <small>tokens</small></div>
-      <div class="sub">${num(m.reads)} reads · ${num(m.writes)} writes · ${num(m.denials)} direct reads redirected${failed}</div>
-      <div class="sub">last 24 hours: ≈${num(t.kept_out_tokens)} tokens</div>
-    </div>
-    <div class="card c-info">
-      <h3>Worker cost · 30 days</h3>
-      <div class="stat">${shuntUSD(m.worker_usd)}</div>
-      <div class="sub">${num(m.worker_input_tokens)} in · ${num(m.worker_output_tokens)} out · today ${shuntUSD(t.worker_usd)}</div>
-      ${unpriced}
-    </div>`;
-
-  const lines = [];
-  lines.push(`Guard hook: <strong>${sh.hook_installed ? "installed" : "not installed"}</strong> · Skill: <strong>${sh.skill_installed ? "installed" : "not installed"}</strong> · Worker: <strong>${sh.worker_ready ? "ready" : "not ready"}</strong>`);
-  problems.forEach(p => lines.push(`<span style="color:var(--bad)">⚠ ${esc(p)}</span>`));
-  $("shuntState").innerHTML = lines.join("<br>");
-
-  setDot("nd-shunt", !on && !problems.length ? "" : problems.length ? "bad" : "ok");
-}
-
-function renderShuntActivity(rows) {
-  if (!Array.isArray(rows) || !rows.length) {
-    $("shuntActivity").innerHTML = `<div class="empty">Nothing yet. Once Claude Code has been restarted with this on, shunted reads, generated files and the times a shunt did not happen show up here, with the project and session that caused them.</div>`;
-    return;
-  }
-  // The tag and the sentence both come from the server (shunt.Event), the same
-  // wording `claude-burst shunt log` prints, so the page and the terminal say
-  // the same thing. Problems are coloured; everything else stays quiet.
-  // SHUNTED is the feature working and stays quiet. NO-SHUNT is the one
-  // that is not a shunt and not a failure, so it gets the amber of "look if
-  // you like" rather than the red of "something broke".
-  // REDIRECTED is a shunt still in flight: neither success nor anything to
-  // worry about yet, so it is grey, and turns into SHUNTED or NO-SHUNT.
-  const tagClass = r => r.problem ? "st-5" : r.tag === "NO-SHUNT" ? "st-4" : r.tag === "REDIRECTED" ? "st-wait" : "st-2";
-  $("shuntActivity").innerHTML = `<table><thead><tr>
-      <th>Time</th><th>Event</th><th>Project</th><th>Session</th><th class="num">Kept out</th>
-      <th class="num">Worker in</th><th class="num">Worker out</th><th class="num">Cost</th><th>Model</th><th class="num">ms</th><th>What happened</th>
-    </tr></thead><tbody>${rows.map(r => `<tr${r.problem ? ' style="background:var(--bad-bg)"' : ""}>
-      <td class="mono">${esc(stamp(r.time))}</td>
-      <td class="mono ${tagClass(r)}" title="${esc(r.stage ? "stage: " + r.stage : "")}"><strong>${esc(r.tag || r.kind)}</strong></td>
-      <td class="mono">${esc(r.project || "\u2014")}</td>
-      <td class="mono" title="${esc(r.session_id || "")}">${esc(r.session || "\u2014")}</td>
-      <td class="num">${r.kept_out_tokens ? "\u2248" + num(r.kept_out_tokens) : "\u2014"}</td>
-      <td class="num">${r.input_tokens ? num(r.input_tokens) : "\u2014"}</td>
-      <td class="num">${r.output_tokens ? num(r.output_tokens) : "\u2014"}</td>
-      <td class="num">${r.pricing_unknown ? "unpriced" : r.usd ? shuntUSD(r.usd) : "\u2014"}</td>
-      <td class="mono" title="${esc(r.destination || "")}">${esc(r.model || "\u2014")}</td>
-      <td class="num">${r.duration_ms ? num(r.duration_ms) : "\u2014"}</td>
-      <td title="${esc(r.path || "")}">${esc(r.detail || "")}</td>
-    </tr>`).join("")}</tbody></table>`;
-}
+// Dollars with enough precision to see small overflow spend: four decimals under $1.
+function smallUSD(n) { return "$" + (n || 0).toFixed((n || 0) < 1 ? 4 : 2); }
 
 let pruneBusy = false;
 
@@ -1825,14 +1671,14 @@ function renderContext(s) {
     <div class="card c-info">
       <h3>Not sent · ${days} days</h3>
       <div class="stat">≈${num(c.tokens_not_sent)} <small>tokens</small></div>
-      <div class="sub">≈${shuntUSD(c.usd_not_spent)} · ${num(e.stubbed_results)} results stubbed · ${num(e.truncated_results)} capped${lastPruned}</div>
+      <div class="sub">≈${smallUSD(c.usd_not_spent)} · ${num(e.stubbed_results)} results stubbed · ${num(e.truncated_results)} capped${lastPruned}</div>
       <div class="sub">pruned requests ${num(e.pruned_ok)} ok / ${num(e.pruned_failed)} failed · unpruned ${num(e.unpruned_ok)} ok / ${num(e.unpruned_failed)} failed</div>
     </div>
     <div class="card c-info">
       <h3>Cache hit · ${days} days</h3>
       <div class="stat">${pct(c.primary_cache_hit)} <small>primary</small></div>
       <div class="sub">${num(pr.requests)} requests · ${num(pr.cache_read_tokens)} read from cache · ${num(pr.input_tokens)} uncached</div>
-      <div class="sub">secondary ${pct(c.secondary_cache_hit)} · ${num(se.requests)} requests · ${num(se.input_tokens + se.cache_read_tokens)} tokens in · ${shuntUSD(se.usd)}</div>
+      <div class="sub">secondary ${pct(c.secondary_cache_hit)} · ${num(se.requests)} requests · ${num(se.input_tokens + se.cache_read_tokens)} tokens in · ${smallUSD(se.usd)}</div>
     </div>`;
   const cv = c.cache_verdict || {};
   $("ctxCacheNote").innerHTML = cv.text ? `<span style="color:var(--${cv.level === "bad" ? "bad" : "muted"})">${cv.level === "bad" ? "⚠ " : ""}${esc(cv.text)}</span>` : "";
@@ -1862,7 +1708,7 @@ async function savePruning() {
 }
 
 // Turning the master on with both techniques unticked would save "on" that
-// does nothing, so it switches both back on -- the same rule as shunting.
+// does nothing, so it switches both back on.
 $("pruneMaster").onchange = () => {
   if ($("pruneMaster").checked && !$("pruneStub").checked && !$("pruneCap").checked) {
     $("pruneStub").checked = $("pruneCap").checked = true;
@@ -1872,38 +1718,6 @@ $("pruneMaster").onchange = () => {
 $("pruneStub").onchange = savePruning;
 $("pruneCap").onchange = savePruning;
 $("pruneSave").onclick = savePruning;
-
-async function saveShunt(extra) {
-  const body = Object.assign({read: $("shuntRead").checked, write: $("shuntWrite").checked}, extra || {});
-  shuntBusy = true;
-  try {
-    const r = await post("/api/shunt", body);
-    note($("shuntNote"), "ok", r.ok);
-  } catch (e) {
-    // Put the boxes back to what the server actually holds: leaving them
-    // showing a state it rejected is the same lie as a green tick over a
-    // failed save.
-    note($("shuntNote"), "bad", e.message);
-  } finally {
-    shuntBusy = false;
-    refresh();
-  }
-}
-
-// Both flags are sent explicitly, so this cannot race with the two switches
-// below it: the request says exactly what state is wanted.
-$("shuntMaster").onchange = () => {
-  const on = $("shuntMaster").checked;
-  saveShunt({read: on, write: on});
-};
-$("shuntRead").onchange = () => saveShunt();
-$("shuntWrite").onchange = () => saveShunt();
-$("shuntSetMin").onclick = () => {
-  const n = parseInt($("shuntMin").value, 10);
-  if (!(n >= 20 && n <= 100000)) { note($("shuntNote"), "bad", "threshold must be between 20 and 100000 lines"); return; }
-  saveShunt({min_lines: n});
-};
-$("shuntReinstall").onclick = () => saveShunt();
 
 // Renders what the chain would actually do right now. The toggle on its own
 // is a claim; the open windows below it are the evidence -- and they are the
@@ -2283,7 +2097,7 @@ function renderNav(s, counts) {
 }
 
 function clearNav() {
-  ["overview", "activity", "responses", "requests", "guards", "secondary", "shunt", "config", "install"]
+  ["overview", "activity", "responses", "requests", "guards", "secondary", "context", "config", "install"]
     .forEach(k => setDot("nd-" + k, ""));
   ["overview", "activity", "responses", "requests", "guards"].forEach(k => setCount("nc-" + k, null));
 }
