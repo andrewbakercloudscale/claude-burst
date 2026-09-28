@@ -219,7 +219,7 @@ echo "other software on this Mac (VPN and endpoint-security clients reload pf"
 echo "on network change and on wake). When that happens while /etc/hosts still"
 echo "redirects, EVERY process here is refused for the intercepted host."
 echo
-echo "This installs a root LaunchDaemon that checks every 2 minutes and:"
+echo "This installs a root LaunchDaemon that checks every 30s and on every network change, and:"
 echo "  - reloads the rule if it has gone missing"
 echo "  - removes the redirect entirely if it cannot, so this Mac can still"
 echo "    reach Anthropic directly"

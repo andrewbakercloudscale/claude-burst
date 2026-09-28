@@ -115,6 +115,20 @@ LOG_MAX_BYTES=1048576
 # race, and short enough that nobody sits through it twice.
 MAX_FAILURES="${CLAUDE_BURST_PF_HEAL_MAX_FAILURES:-4}"
 
+# Network-change settle window. On 2026-09-28 the redirect broke on six
+# reconnects in 50 minutes (a phone hotspot dropping and returning), always
+# with the rule loaded and referenced, always fixed by one reload -- but each
+# time the Mac refused api.anthropic.com until the next timer tick. The
+# LaunchDaemon now also fires when /var/run/resolv.conf changes (configd
+# rewrites it on every network change), and whatever reloads pf does so a few
+# seconds AFTER that, so one probe at the moment of the change would pass and
+# miss the break. When the network has changed since the last cycle, keep
+# re-running the cycle for SETTLE_SECS.
+NETWORK_MARKER="${CLAUDE_BURST_NETWORK_MARKER:-/var/run/resolv.conf}"
+NETWORK_SEEN_FILE="$STATE_DIR/pf-heal.network-seen"
+SETTLE_SECS="${CLAUDE_BURST_PF_HEAL_SETTLE_SECS:-90}"
+SETTLE_STEP="${CLAUDE_BURST_PF_HEAL_SETTLE_STEP:-5}"
+
 CHECK_ONLY=0
 case "${1:-}" in
   --check)     CHECK_ONLY=1 ;;
@@ -240,6 +254,19 @@ rdr_rule_loaded() {
   "$PFCTL" -a "$ANCHOR_NAME" -s nat 2>/dev/null | grep -qE '^[[:space:]]*rdr[[:space:]]'
 }
 
+# Recorded in the BROKEN line only. The reconnect breaks on 2026-09-28 showed
+# rdr loaded, anchor referenced and gateway listening, yet 443 was refused
+# until a reload -- so the one pf fact that line did not yet name is whether
+# pf itself was still enabled. Evidence for next time, not a trigger.
+pf_status() {
+  local s; s="$("$PFCTL" -s info 2>/dev/null | head -1)"
+  case "$s" in
+    *Enabled*)  echo enabled ;;
+    *Disabled*) echo DISABLED ;;
+    *)          echo unknown ;;
+  esac
+}
+
 anchor_referenced() {
   "$PFCTL" -s nat 2>/dev/null | grep -q "rdr-anchor \"$ANCHOR_NAME\""
 }
@@ -296,7 +323,8 @@ gport="$(gateway_port)"
 if rdr_rule_loaded;   then rdr=loaded;     else rdr=MISSING;        fi
 if anchor_referenced; then ref=referenced; else ref=NOT-REFERENCED; fi
 if gateway_listening; then gw=listening;   else gw=DOWN;           fi
-log "BROKEN: /etc/hosts redirects $INTERCEPT_HOST here but it does not answer from this gateway -- every process on this Mac is affected (rdr rule: $rdr, main ruleset: $ref, gateway on :$gport: $gw)"
+pf="$(pf_status)"
+log "BROKEN: /etc/hosts redirects $INTERCEPT_HOST here but it does not answer from this gateway -- every process on this Mac is affected (pf: $pf, rdr rule: $rdr, main ruleset: $ref, gateway on :$gport: $gw)"
 
 if (( CHECK_ONLY )); then
   log "check: --check given, so nothing was repaired."
@@ -376,6 +404,38 @@ notify "claude-burst: could not repair OR remove the redirect. Run: sudo transpa
 return 1
 }
 
+# Has the network changed since the last cycle looked? The marker's mtime is
+# the signal; the first cycle ever records it without settling.
+network_changed() {
+  local now seen
+  now="$(stat -f %m "$NETWORK_MARKER" 2>/dev/null)" || return 1
+  seen="$(cat "$NETWORK_SEEN_FILE" 2>/dev/null)"
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  echo "$now" > "$NETWORK_SEEN_FILE" 2>/dev/null || true
+  [[ -n "$seen" && "$now" != "$seen" ]]
+}
+
+# One cycle, then -- only after a network change -- keep cycling for the
+# settle window. Stops early if the hosts redirect is not installed (a rollback must stay rolled back: cycle() already
+# no-ops without the hosts block, so this just avoids a pointless minute).
+# Not named run(): self_test defines its own run().
+run_with_settle() {
+  local rc
+  if ! network_changed; then
+    cycle; return $?
+  fi
+  (( CHECK_ONLY )) || log "network changed -- watching the intercept for ${SETTLE_SECS}s"
+  cycle; rc=$?
+  local waited=0
+  while (( waited < SETTLE_SECS )) && hosts_redirect_present; do
+    sleep "$SETTLE_STEP"
+    waited=$((waited + SETTLE_STEP))
+    network_changed || true   # absorb further changes inside this window
+    cycle; rc=$?
+  done
+  return $rc
+}
+
 # --- entrypoint --------------------------------------------------------------
 
 # self_test drives every branch of cycle() against a fake /etc/hosts, a fake
@@ -437,6 +497,9 @@ self_test() {
   cat > "$PFCTL" <<'STUB'
 #!/bin/zsh
 d="$(dirname "$0")"
+if [[ "$1 $2" == "-s info" ]]; then
+  echo "Status: Enabled for 0 days 01:00:00"; exit 0
+fi
 if [[ "$1" == "-a" ]]; then
   echo "no rdr on lo0 inet proto tcp from any to 127.0.0.1 port 7777"
   [[ -f "$d/rdr" ]] && echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7777"
@@ -445,7 +508,16 @@ else
 fi
 exit 0
 STUB
-  printf '#!/bin/zsh\nd="$(dirname "$0")"\n[[ -f "$d/rdr" && -f "$d/ref" && -f "$d/gw" ]] && { echo "{\\"overflow\\":false}"; exit 0; }\nexit 7\n' > "$CURL"
+  # break-at: the Nth probe finds pf broken, the way the 2026-09-28
+  # reconnects did a few seconds after the network change.
+  cat > "$CURL" <<'STUB'
+#!/bin/zsh
+d="$(dirname "$0")"
+n=$(( $(cat "$d/curlcalls" 2>/dev/null || echo 0) + 1 )); echo $n > "$d/curlcalls"
+[[ -f "$d/break-at" && "$(cat "$d/break-at")" == "$n" ]] && { rm -f "$d/rdr"; exit 7; }
+[[ -f "$d/rdr" && -f "$d/ref" && -f "$d/gw" ]] && { echo '{"overflow":false}'; exit 0; }
+exit 7
+STUB
   printf '#!/bin/zsh\n[[ -f "$(dirname "$0")/gw" ]] && exit 0\nexit 1\n' > "$LSOF"
   cat > "$ROOT_HELPER" <<'STUB'
 #!/bin/zsh
@@ -529,6 +601,33 @@ STUB
   run
   want "recovered" && ok "recovery after failures is logged" || bad "recovery was silent" show
 
+  # 7b. Diagnosis records whether pf itself is enabled.
+  rm -f "$tmp/rdr"
+  run
+  want "pf: enabled" && ok "diagnosis names pf's enabled state" || bad "diagnosis omitted pf status" show
+
+  # 7c. THE 2026-09-28 SHAPE: network changes, path still fine at that moment,
+  #     breaks a few seconds later. The settle window must catch and heal it
+  #     inside the same run, not leave it for the next timer tick.
+  NETWORK_MARKER="$tmp/resolv.conf"; NETWORK_SEEN_FILE="$STATE_DIR/network-seen"
+  SETTLE_SECS=2; SETTLE_STEP=1
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/ref" "$tmp/gw"; rm -f "$FAIL_COUNT_FILE"
+  touch -t 202601010000 "$NETWORK_MARKER"
+  out="$(run_with_settle 2>&1)"
+  printf '%s' "$out" | grep -q "network changed" && bad "first-ever run treated as a network change" show || ok "first run records the network without settling"
+  rm -f "$tmp/curlcalls"; echo 2 > "$tmp/break-at"
+  out="$(run_with_settle 2>&1)"
+  [[ "$(cat "$tmp/curlcalls")" == 1 ]] && ok "no network change -> one probe, no settle" || bad "probed $(cat "$tmp/curlcalls") times without a network change"
+  rm -f "$tmp/curlcalls"; touch -t 202602020000 "$NETWORK_MARKER"
+  out="$(run_with_settle 2>&1)"
+  want "network changed" && ok "network change -> settle window" || bad "network change not noticed" show
+  want "HEALED" && ok "break after the change healed within the same run" || bad "break after the network change was left for the next tick" show
+  rm -f "$tmp/break-at"
+  rm -f "$HOSTS_FILE"; touch -t 202603030000 "$NETWORK_MARKER"; rm -f "$tmp/curlcalls"
+  out="$(run_with_settle 2>&1)"
+  [[ ! -f "$tmp/curlcalls" ]] && ok "rolled back -> network change does not probe" || bad "probed with no redirect installed"
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; touch "$tmp/rdr" "$tmp/ref" "$tmp/gw"
+
   # 8. --check never repairs, whatever it finds.
   rm -f "$tmp/gw"; CHECK_ONLY=1; rm -f "$tmp/restarts"
   run
@@ -551,5 +650,5 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-cycle
+run_with_settle
 exit $?

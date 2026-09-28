@@ -662,7 +662,7 @@ when it last checked, and what it has caught — and arms it for you. `install-p
 also does it during a transparent install. By hand:
 
 ```bash
-sudo scripts/install-pf-heal.sh          # root LaunchDaemon, every 2 minutes
+sudo scripts/install-pf-heal.sh          # root LaunchDaemon, every 30s + on network change
 scripts/install-pf-heal.sh status        # armed? what has it caught?
 tail -f /var/log/claude-burst-pf.log     # world-readable, no sudo needed
 ```
