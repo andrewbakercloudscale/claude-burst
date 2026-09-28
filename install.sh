@@ -26,7 +26,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-un# keep_awake_lid_closed (default false) keeps Claude Code in Ghostty, and
+# keep_awake_lid_closed (default false) keeps Claude Code in Ghostty, and
 # Remote Control, running with the lid shut; keep_awake_lid_closed_power
 # picks ac (default, plugged in only) or always. Re-applied from config.json
 # on every install, so a reinstall or a new machine with the same config ends
@@ -44,7 +44,7 @@ apply_keep_awake() {
   fi
 }
 
-install() {
+uninstall() {
   if [[ -x "$TARGET" ]]; then
     # Token shunting puts a hook in ~/.claude/settings.json that runs this binary
     # before every Read and Bash call, and a skill telling Claude to run it. Both
