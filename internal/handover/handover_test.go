@@ -162,3 +162,22 @@ func TestEveryScriptIsEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestTheLegacyPairIsNotReportedAsInstalled(t *testing.T) {
+	home(t)
+	p, _ := claudesettings.Path()
+	os.MkdirAll(filepath.Dir(p), 0700)
+	os.WriteFile(p, []byte(`{"hooks":{
+	  "SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/handover-start.sh"}]}],
+	  "SessionEnd":[{"hooks":[{"type":"command","command":"~/.claude/hooks/handover-end.sh"}]}]}}`), 0600)
+	st := GetStatus()
+	if st.Installed || st.StartHook || !st.Legacy {
+		t.Fatalf("legacy hooks ignore these settings and must not read as installed: %+v", st)
+	}
+	if err := Install(); err != nil {
+		t.Fatal(err)
+	}
+	if st := GetStatus(); !st.Installed || st.Legacy {
+		t.Fatalf("after install: %+v", st)
+	}
+}

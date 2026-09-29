@@ -1825,17 +1825,19 @@ function renderHandover(s) {
     parts.push(eff.write ? `writing on close with ${eff.model}` : "writing OFF");
     if (eff.write) parts.push(eff.commit ? "committing locally" : "not committing");
     cls = "ok"; text = "INSTALLED: " + parts.join(", ") + ".";
+  } else if (h.legacy) {
+    cls = "warn"; text = "OLD HOOKS ACTIVE: the hand-installed ~/.claude/hooks/handover-*.sh pair is running and ignores the settings below. Click Install hooks to switch to these; it removes the old pair.";
   } else if (partial) {
     cls = "bad"; text = `HALF INSTALLED: only the ${h.start_hook ? "start" : "end"} hook is in settings.json. Install again to repair.`;
   } else {
     cls = "warn"; text = "NOT INSTALLED: sessions start without the handover and nothing writes it when they close.";
   }
   note($("hoStatus"), cls, text);
-  $("hoSummary").textContent = h.error ? "error" : h.installed ? (eff.write ? "on" : "briefing only") : partial ? "half installed" : "not installed";
-  setHeadState("handoverHead", h.error || partial ? "bad" : h.installed ? "ok" : "");
+  $("hoSummary").textContent = h.error ? "error" : h.installed ? (eff.write ? "on" : "briefing only") : h.legacy ? "old hooks, install to switch" : partial ? "half installed" : "not installed";
+  setHeadState("handoverHead", h.error || partial ? "bad" : h.installed ? "ok" : h.legacy ? "warn" : "");
   setDot("nd-handover", h.error || partial ? "bad" : h.installed ? "ok" : "");
   $("hoInstall").textContent = h.installed ? "⤓ Reinstall hooks" : "⤓ Install hooks";
-  $("hoUninstall").disabled = !h.start_hook && !h.end_hook;
+  $("hoUninstall").disabled = !h.start_hook && !h.end_hook && !h.legacy;
 
   if (!hoDirty) {
     $("hoBrief").checked = !!eff.brief;

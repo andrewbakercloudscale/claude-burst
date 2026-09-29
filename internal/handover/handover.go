@@ -273,6 +273,10 @@ func Install() error {
 
 func isLegacy(cmd string) bool { return strings.Contains(cmd, "/.claude/hooks/handover-") }
 
+func ours(match func(string) bool) func(string) bool {
+	return func(cmd string) bool { return match(cmd) && !isLegacy(cmd) }
+}
+
 // Uninstall removes both hooks. The scripts, settings and log stay, so
 // reinstalling restores the same setup.
 func Uninstall() error {
@@ -301,10 +305,13 @@ func editSettings(edit func(map[string]any) bool) error {
 // Status is what the dashboard shows.
 type Status struct {
 	// Installed means both hooks are in settings.json.
-	Installed bool   `json:"installed"`
-	StartHook bool   `json:"start_hook"`
-	EndHook   bool   `json:"end_hook"`
-	Config    Config `json:"config"`
+	Installed bool `json:"installed"`
+	StartHook bool `json:"start_hook"`
+	EndHook   bool `json:"end_hook"`
+	// Legacy means the hand-installed ~/.claude/hooks/handover-*.sh pair is
+	// still in settings.json. It works, but ignores the settings on this page.
+	Legacy bool   `json:"legacy"`
+	Config Config `json:"config"`
 	// Effective is Config with the defaults filled in, for the form.
 	Effective effective `json:"effective"`
 	Defaults  effective `json:"defaults"`
@@ -332,8 +339,13 @@ func GetStatus() Status {
 
 	if p, err := claudesettings.Path(); err == nil {
 		if root, err := claudesettings.Read(p); err == nil {
-			st.StartHook = claudesettings.HasCommandHook(root, "SessionStart", isStart)
-			st.EndHook = claudesettings.HasCommandHook(root, "SessionEnd", isEnd)
+			// Only our own scripts count: the legacy pair does not read these
+			// settings, so calling it installed would make every edit on the
+			// page look applied when it is not.
+			st.StartHook = claudesettings.HasCommandHook(root, "SessionStart", ours(isStart))
+			st.EndHook = claudesettings.HasCommandHook(root, "SessionEnd", ours(isEnd))
+			st.Legacy = claudesettings.HasCommandHook(root, "SessionStart", isLegacy) ||
+				claudesettings.HasCommandHook(root, "SessionEnd", isLegacy)
 		} else if st.Error == "" {
 			st.Error = err.Error()
 		}
