@@ -351,3 +351,50 @@ func TestCompactionRecordsWhatTheSwapRemoved(t *testing.T) {
 		t.Fatal("the summary call must have its own metrics row")
 	}
 }
+
+// A session that is one long prompt has no boundary to cut at, so the
+// first crossing is skipped. That skip must not start the window: the
+// user's next prompt creates a boundary, and compaction should happen
+// then, not an hour later. (Found by the live test on 2026-09-29.)
+func TestCompactionSkipDoesNotConsumeTheWindow(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	one := msgs(t, `[
+ {"role":"user","content":"one long task"},
+ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"`+strings.Repeat("x", 5000)+`"}]}]`)
+	send(t, s, "S", one[:1])
+	send(t, s, "S", one) // over threshold, no boundary: skipped
+	time.Sleep(50 * time.Millisecond)
+	if f.summaryCount() != 0 {
+		t.Fatal("nothing to summarise yet")
+	}
+	next := append(append([]json.RawMessage{}, one...),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"done"}]}`),
+		json.RawMessage(`{"role":"user","content":"second prompt"}`))
+	send(t, s, "S", next)
+	waitFor(t, func() bool { return f.summaryCount() == 1 })
+}
+
+// Claude Code appends a mid-conversation system message after the user's
+// prompt, so a fresh turn often ENDS in system[text]. That is still a
+// plain-prompt turn and the swap must apply to it. (Found by the live test:
+// a ready summary sat unapplied on "request ends in system[text]".)
+func TestEndsInPromptIgnoresTrailingSystemMessages(t *testing.T) {
+	m := msgs(t, `[
+ {"role":"user","content":"task"},
+ {"role":"assistant","content":[{"type":"text","text":"ok"}]},
+ {"role":"user","content":[{"type":"text","text":"next prompt"}]},
+ {"role":"system","content":[{"type":"text","text":"reminder"}]}]`)
+	if !endsInPrompt(m) {
+		t.Fatal("a prompt followed only by system messages is a fresh turn")
+	}
+	tool := msgs(t, `[
+ {"role":"user","content":"task"},
+ {"role":"assistant","content":[{"type":"tool_use","id":"t","name":"Read","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"x"}]},
+ {"role":"system","content":[{"type":"text","text":"reminder"}]}]`)
+	if endsInPrompt(tool) {
+		t.Fatal("a tool round followed by a system message is still mid tool round")
+	}
+}

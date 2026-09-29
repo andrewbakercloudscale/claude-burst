@@ -170,3 +170,23 @@ func summaryFromText(s string) string {
 	}
 	return strings.TrimSpace(s)
 }
+
+// endsInPrompt reports whether a request is a fresh turn: its last message,
+// ignoring trailing mid-conversation system messages (Claude Code appends
+// one after the prompt), is a plain user prompt rather than a tool result.
+func endsInPrompt(msgs []json.RawMessage) bool {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		var msg struct {
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(msgs[i], &msg) != nil {
+			return false
+		}
+		if msg.Role == "system" {
+			continue
+		}
+		b := promptBoundaries(msgs[i : i+1])
+		return len(b) == 1
+	}
+	return false
+}

@@ -35,7 +35,8 @@ const summaryTimeout = 5 * time.Minute
 type compactState struct {
 	lastContext int64
 	warnedAt    time.Time
-	startedAt   time.Time // last compaction attempt; the window runs from here
+	startedAt   time.Time // last compaction started; the window runs from here
+	skippedAt   time.Time // last "nothing to summarise" log line, to keep it to one per window
 	pending     bool
 	summary     string
 	p0          int    // original messages [0, p0) are summarised
@@ -153,7 +154,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	}
 
 	bounds := promptBoundaries(msgs)
-	endsInPrompt := len(bounds) > 0 && bounds[len(bounds)-1] == len(msgs)-1
+	fresh := endsInPrompt(msgs)
 
 	// The history as the model currently sees it: rewritten when a swap is
 	// in force. A second compaction summarises this view, old summary and
@@ -164,21 +165,29 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	}
 
 	if st.lastContext >= cfg.CompactAtTokens && !st.pending && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window) {
-		st.startedAt = now
+		// Only a compaction that actually starts opens the window. A skip
+		// (no boundary yet, typically one long prompt) must leave the next
+		// prompt free to compact.
 		p, cut := compactionBoundary(view, bounds, offset)
 		if cut > 0 {
+			st.startedAt = now
 			st.pending = true
 			prefix := append([]json.RawMessage(nil), view[:cut]...)
 			hash := prefixHash(msgs, p)
 			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages", rid, key, st.lastContext/1000, p, len(msgs))
 			go s.summarise(in.Clone(context.Background()), top, prefix, key, p, hash)
-		} else {
+		} else if st.skippedAt.IsZero() || now.Sub(st.skippedAt) >= window {
+			st.skippedAt = now
 			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no prompt boundary leaves at least %.0f%% to summarise",
 				rid, key, st.lastContext/1000, minSummarisedShare*100)
 		}
 	}
 
-	if st.summary == "" || (st.swapAt == 0 && !endsInPrompt) {
+	if st.summary != "" && st.swapAt == 0 && !fresh {
+		s.logger.Printf("req=%s compaction waiting session=%s: summary ready, request ends in %s, applies at the next plain prompt",
+			rid, key, lastMessageShape(msgs))
+	}
+	if st.summary == "" || (st.swapAt == 0 && !fresh) {
 		s.compaction.mu.Unlock()
 		return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 	}
@@ -370,4 +379,13 @@ func (s *Server) CompactionSessions() []CompactionSession {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Context > out[j].Context })
 	return out
+}
+
+// lastMessageShape names the last message's role and block types, for the
+// log: why a ready summary was not applied to this request.
+func lastMessageShape(msgs []json.RawMessage) string {
+	if len(msgs) == 0 {
+		return "no messages"
+	}
+	return messageSkeleton([]byte(`{"messages":[` + string(msgs[len(msgs)-1]) + `]}`))
 }
