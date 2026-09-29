@@ -410,10 +410,10 @@ func (f *fakeAnthropic) summaryBody() string {
 	return ""
 }
 
-// The summary call must mark the end of the history it summarises, or it
-// pays full input price for a context that is already in cache (the first
-// live run read 28k of 532k from cache).
-func TestCompactionSummaryMarksThePrefixForCaching(t *testing.T) {
+// The summary call must send the history exactly as Claude Code last sent
+// it, or it pays full input price (or a 1.25x cache write) for a context
+// that is already in cache: live runs cost $2.10 and $2.96 that way.
+func TestCompactionSummaryReusesTheCachedHistory(t *testing.T) {
 	f := &fakeAnthropic{context: 450_000}
 	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
 	all := msgs(t, session)
@@ -427,32 +427,47 @@ func TestCompactionSummaryMarksThePrefixForCaching(t *testing.T) {
 	if err := json.Unmarshal([]byte(f.summaryBody()), &req); err != nil {
 		t.Fatal(err)
 	}
-	n := len(req.Messages)
-	if n < 2 {
-		t.Fatalf("summary request has %d messages", n)
+	if len(req.Messages) != 7 {
+		t.Fatalf("want the 7 messages of the triggering request, got %d:\n%s", len(req.Messages), f.summaryBody())
 	}
-	marked := 0
-	for _, m := range req.Messages {
-		marked += strings.Count(string(m), `"cache_control"`)
+	for i := 0; i < 6; i++ {
+		if !jsonEqual(t, req.Messages[i], all[i]) {
+			t.Fatalf("message %d changed:\n got %s\nwant %s", i, req.Messages[i], all[i])
+		}
 	}
-	if marked != 1 || !strings.Contains(string(req.Messages[n-2]), `"cache_control":{"type":"ephemeral"}`) {
-		t.Fatalf("want one breakpoint, on the last summarised message; got %d:\n%s", marked, f.summaryBody())
+	last := string(req.Messages[6])
+	if !strings.Contains(last, "Summarize the transcript inside") || !strings.Contains(last, "BEFORE the user message that begins") {
+		t.Fatalf("last message must end with the bounded instruction: %s", last)
+	}
+	if strings.Count(f.summaryBody(), "cache_control") != strings.Count(string(mustJSON(t, all[:7])), "cache_control") {
+		t.Fatalf("the summary call must add no breakpoints of its own")
 	}
 }
 
-func TestCacheBreakpointSkipsThinkingAndRespectsTheLimit(t *testing.T) {
-	prefix := msgs(t, `[{"role":"assistant","content":[{"type":"text","text":"answer"},{"type":"thinking","thinking":"","signature":"s"}]}]`)
-	got := string(withCacheBreakpoint(prefix, map[string]json.RawMessage{})[0])
-	if !strings.Contains(got, `"text":"answer","type":"text"`) && !strings.Contains(got, `"cache_control":{"type":"ephemeral"},"text":"answer"`) {
-		t.Fatalf("the text block must carry the marker: %s", got)
+func TestSummaryInstructionAfterAnAssistantTurn(t *testing.T) {
+	h := msgs(t, `[{"role":"user","content":"do it"},{"role":"assistant","content":[{"type":"text","text":"done"}]}]`)
+	out := withSummaryInstruction(h, 0)
+	if len(out) != 3 || !strings.Contains(string(out[2]), `"role":"user"`) || !strings.Contains(string(out[2]), "do it") {
+		t.Fatalf("want a new user message naming the boundary: %s", out)
 	}
-	if strings.Count(got, "cache_control") != 1 || strings.Contains(got, `"signature":"s","thinking":"","type":"thinking","cache_control"`) {
-		t.Fatalf("exactly one marker, never on thinking: %s", got)
+}
+
+func jsonEqual(t *testing.T, a, b json.RawMessage) bool {
+	t.Helper()
+	var x, y any
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		t.Fatal("bad json")
 	}
-	full := map[string]json.RawMessage{"system": json.RawMessage(`[{"cache_control":{"type":"ephemeral"}},{"cache_control":{"type":"ephemeral"}},{"cache_control":{"type":"ephemeral"}},{"cache_control":{"type":"ephemeral"}}]`)}
-	if got := string(withCacheBreakpoint(prefix, full)[0]); strings.Contains(got, "cache_control") {
-		t.Fatalf("four breakpoints already: must add none: %s", got)
+	return string(mustJSON(t, x)) == string(mustJSON(t, y))
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return b
 }
 
 // A deploy must not throw away a summary that cost a full context read.

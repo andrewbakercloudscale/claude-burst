@@ -259,10 +259,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			st.startedAt = now
 			st.pending = true
 			dirty = true
-			prefix := append([]json.RawMessage(nil), view[:cut]...)
+			history := append([]json.RawMessage(nil), view...)
 			hash := prefixHash(msgs, p)
 			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages", rid, key, st.lastContext/1000, p, len(msgs))
-			go s.summarise(in.Clone(context.Background()), top, prefix, key, p, hash)
+			go s.summarise(in.Clone(context.Background()), top, history, cut, key, p, hash)
 		} else if st.skippedAt.IsZero() || now.Sub(st.skippedAt) >= window {
 			st.skippedAt = now
 			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no prompt boundary leaves at least %.0f%% to summarise",
@@ -332,8 +332,8 @@ func compactionBoundary(view []json.RawMessage, bounds []int, offset int) (p, cu
 // summarise makes one summary request through the primary, with the
 // session's own auth, model, system prompt and tools, and stores the
 // summary for key when it succeeds.
-func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, prefix []json.RawMessage, key string, p0 int, hash string) {
-	summary, err := s.requestSummary(in, top, prefix)
+func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int, key string, p0 int, hash string) {
+	summary, err := s.requestSummary(in, top, history, cut)
 	s.compaction.mu.Lock()
 	defer s.compaction.mu.Unlock()
 	st := s.compaction.state(key)
@@ -347,16 +347,14 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, pre
 	s.logger.Printf("compaction summary ready session=%s: %d messages summarised into %d characters; applies from the next plain prompt", key, p0, len(summary))
 }
 
-func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage, prefix []json.RawMessage) (string, error) {
+func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int) (string, error) {
 	req := map[string]json.RawMessage{}
 	for _, k := range []string{"model", "system", "tools", "thinking", "metadata"} {
 		if v, ok := top[k]; ok {
 			req[k] = v
 		}
 	}
-	prefix = withCacheBreakpoint(prefix, req)
-	instr, _ := json.Marshal(map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": compactionSummaryPrompt}}})
-	msgs, _ := json.Marshal(append(prefix, instr))
+	msgs, _ := json.Marshal(withSummaryInstruction(history, cut))
 	req["messages"] = msgs
 	req["max_tokens"] = json.RawMessage("16000")
 	req["stream"] = json.RawMessage("true")
@@ -399,60 +397,58 @@ func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage
 	return summary, nil
 }
 
-// withCacheBreakpoint marks the prefix's last cacheable block so the summary
-// call reads the session's history from cache instead of paying for it in
-// full. Claude Code's own marker sits on the last message of each request,
-// which the prefix cuts off, so without this the first live summary read
-// 28k of 532k tokens from cache and paid full input price for the rest
-// ($2.10 where ~$0.25 was available). The API looks back up to 20 blocks
-// from a breakpoint for an existing entry, and the entry Claude Code wrote
-// for the turn before the boundary is a few blocks away. Left alone when
-// the request already carries the API's maximum of four breakpoints, and a
-// thinking block is never marked (the API rejects that).
-func withCacheBreakpoint(prefix []json.RawMessage, req map[string]json.RawMessage) []json.RawMessage {
-	if len(prefix) == 0 {
-		return prefix
+// withSummaryInstruction returns the request's own history with the summary
+// instruction appended after its last block, so the summary call reads the
+// whole history from the cache entry Claude Code wrote a moment earlier.
+// Cutting the history at the boundary instead cost full price twice live:
+// the first run read 28k of 532k from cache ($2.10), and a breakpoint at the
+// cut found no entry within the API's 20-block lookback and wrote 577k to
+// cache at 1.25x ($2.96). The messages from the boundary on stay in the
+// request, so the instruction names where the summary must stop.
+func withSummaryInstruction(history []json.RawMessage, cut int) []json.RawMessage {
+	text := compactionSummaryPrompt
+	if ex := promptExcerpt(history[min(cut, len(history)-1)]); cut < len(history) && ex != "" {
+		text = "Stop reading here and do not answer or continue the conversation. " +
+			"Only the part of this conversation BEFORE the user message that begins \"" + ex +
+			"\" is being replaced; that message and everything after it is kept word for word, so leave it out of the summary. " +
+			compactionSummaryPrompt
 	}
-	used := 0
-	for _, k := range []string{"system", "tools"} {
-		used += strings.Count(string(req[k]), `"cache_control"`)
-	}
-	for _, m := range prefix {
-		used += strings.Count(string(m), `"cache_control"`)
-	}
-	if used >= 4 {
-		return prefix
-	}
-	var msg map[string]any
-	last := prefix[len(prefix)-1]
-	if json.Unmarshal(last, &msg) != nil {
-		return prefix
-	}
-	blocks := contentBlocks(msg["content"])
-	for i := len(blocks) - 1; i >= 0; i-- {
-		b, ok := blocks[i].(map[string]any)
-		if !ok {
-			continue
-		}
-		switch b["type"] {
-		case "thinking", "redacted_thinking":
-			continue
-		case "text":
-			if t, _ := b["text"].(string); t == "" {
-				continue
+	instr := map[string]any{"type": "text", "text": text}
+	out := append([]json.RawMessage(nil), history...)
+	if n := len(out); n > 0 {
+		var msg map[string]any
+		if json.Unmarshal(out[n-1], &msg) == nil && msg["role"] == "user" {
+			msg["content"] = append(contentBlocks(msg["content"]), instr)
+			if b, err := json.Marshal(msg); err == nil {
+				out[n-1] = b
+				return out
 			}
 		}
-		b["cache_control"] = map[string]any{"type": "ephemeral"}
-		msg["content"] = blocks
-		nb, err := json.Marshal(msg)
-		if err != nil {
-			return prefix
-		}
-		out := append([]json.RawMessage(nil), prefix...)
-		out[len(out)-1] = nb
-		return out
 	}
-	return prefix
+	b, _ := json.Marshal(map[string]any{"role": "user", "content": []any{instr}})
+	return append(out, b)
+}
+
+// promptExcerpt returns the start of a message's first text that is not a
+// <system-reminder>, for naming it in the summary instruction.
+func promptExcerpt(m json.RawMessage) string {
+	var msg map[string]any
+	if json.Unmarshal(m, &msg) != nil {
+		return ""
+	}
+	for _, b := range contentBlocks(msg["content"]) {
+		bm, _ := b.(map[string]any)
+		t, _ := bm["text"].(string)
+		t = strings.TrimSpace(t)
+		if bm["type"] != "text" || t == "" || strings.HasPrefix(t, "<system-reminder>") {
+			continue
+		}
+		if r := []rune(t); len(r) > 120 {
+			t = string(r[:120])
+		}
+		return t
+	}
+	return ""
 }
 
 // readSSEText collects a streamed Messages response's text, stop reason and
