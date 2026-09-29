@@ -32,6 +32,7 @@ import (
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/handover"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
@@ -104,6 +105,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/shunt-activity", s.readOnly(s.handleShuntActivity))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/pruning", s.mutating(s.handlePruning))
+	mux.HandleFunc("/api/handover", s.mutating(s.handleHandover))
+	mux.HandleFunc("/api/handover-install", s.mutating(s.handleHandoverInstall))
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
 	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
 	mux.HandleFunc("/api/test-secondary", s.mutating(s.handleTestSecondary))
@@ -214,6 +217,10 @@ type stateResponse struct {
 	// Context is prompt caching and overflow-request pruning: the switches
 	// and whether they are working. See context.go.
 	Context contextInfo `json:"context"`
+
+	// Handover is the HANDOFF.md hooks: installed or not, their settings,
+	// and the log of what they wrote. See handover.go.
+	Handover handover.Status `json:"handover"`
 
 	// Shunt is the token-shunting feature: what is switched on, whether the
 	// pieces that enforce it are actually in place, and what it has saved.
@@ -411,6 +418,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	resp.Downgrade = s.downgradeInfo(cfg)
 	resp.Shunt = s.shuntInfo(cfg)
 	resp.Context = s.contextInfo(cfg)
+	resp.Handover = handover.GetStatus()
 	writeJSON(w, resp)
 }
 

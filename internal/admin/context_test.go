@@ -88,3 +88,32 @@ func TestCacheVerdict(t *testing.T) {
 		t.Fatalf("got %+v", v)
 	}
 }
+
+func TestHandoverSaveInstallAndState(t *testing.T) {
+	s := newTestServer(t)
+	writeConfig(t, os.Getenv("HOME"))
+
+	if h := stateOf(t, s).Handover; h.Installed || h.Effective.Model != "opus" {
+		t.Fatalf("fresh state %+v", h)
+	}
+	if rr := mutate(t, s, "/api/handover-install", `{"install":true}`); rr.Code != http.StatusOK {
+		t.Fatalf("install: %d %s", rr.Code, rr.Body.String())
+	}
+	rr := mutate(t, s, "/api/handover", `{"model":"sonnet","min_prompts":4,"no_commit":true}`)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "next session") {
+		t.Fatalf("save: %d %s", rr.Code, rr.Body.String())
+	}
+	h := stateOf(t, s).Handover
+	if !h.Installed || h.Effective.Model != "sonnet" || h.Effective.MinPrompts != 4 || h.Effective.Commit {
+		t.Fatalf("state after save %+v", h)
+	}
+	if rr := mutate(t, s, "/api/handover", `{"model":"x; y"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad model: status %d", rr.Code)
+	}
+	if rr := mutate(t, s, "/api/handover-install", `{"install":false}`); rr.Code != http.StatusOK {
+		t.Fatalf("uninstall: %d", rr.Code)
+	}
+	if stateOf(t, s).Handover.Installed {
+		t.Fatal("still installed after removal")
+	}
+}

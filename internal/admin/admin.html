@@ -179,6 +179,13 @@
      field and wrong for a checkbox: the box itself became 210px wide with the
      tick floating in the middle, pushing its label away. */
   input[type="checkbox"] { min-width: 0; }
+  textarea {
+    font: 12px/1.5 var(--mono); color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px;
+    width: 100%; box-sizing: border-box; resize: vertical;
+  }
+  textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
+  pre.hoLog { font: 12px/1.5 var(--mono); background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; margin: 6px 0 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
   input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
 
   button {
@@ -457,6 +464,7 @@
   <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
   <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
   <a class="navlink" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
+  <a class="navlink" data-target="handoverSection"><span class="nd" id="nd-handover"></span><span class="label">Session handover</span></a>
   <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Configuration</span></a>
   <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
 
@@ -751,6 +759,64 @@
       <div class="hint" style="margin-top:6px"><strong>Keep recent</strong>: how many of the latest tool results are always sent in full (default 10). Raise it if the verdict above says pruned requests fail more often. <strong>Step</strong>: how many results the cut-off advances at a time (default 10); bigger keeps the prefix stable for longer but prunes a little less. <strong>Cap</strong>: the largest single tool result sent in full (default 40&nbsp;KB).</div>
       <div id="pruneNote"></div>
       <div class="hint" style="margin-top:8px">Figures cover the last 7 days of <code>metrics.jsonl</code>. "Removed" is the share of the secondary's input pruning took out, estimated at ~4 bytes per token and priced at the secondary model's input rate. A <strong>re-run</strong> is the model calling a tool again, with the same input, after its output was stubbed: pruning cost a round trip there instead of saving one. If more than a quarter of stubbed calls are re-run, the verdict turns red. Cache figures come from what each provider reports; a provider that caches but does not say so shows 0%.</div>
+    </div>
+  </section>
+
+  <!-- Starts closed in the markup, like Guards: settings nobody changes day
+       to day, and the header carries the state. -->
+  <section id="handoverSection" class="collapsible collapsed" style="scroll-margin-top:70px">
+    <h2 id="handoverHead">Session handover <span class="hint">Claude reads HANDOFF.md when a session starts and updates it when you close the window</span>
+      <span class="spacer"></span>
+      <span id="hoSummary" class="hint"></span>
+      <button class="h2btn primary" id="handoverToggle" aria-expanded="false" aria-controls="handoverBody">Show</button>
+    </h2>
+    <div class="body" id="handoverBody">
+      <div id="hoStatus"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="hoInstall">⤓ Install hooks</button>
+        <button id="hoUninstall">✕ Remove hooks</button>
+      </div>
+      <div class="hint" style="margin-top:8px">Two Claude Code hooks in <code>~/.claude/settings.json</code>. They only act in a repo whose root has a <code>HANDOFF.md</code>: create that file (even empty) to opt a repo in, delete it to opt out. Nothing here is related to routing; it lives on this page so you can see and adapt it.</div>
+
+      <h3 style="margin:18px 0 6px;font-size:13px">When a session starts</h3>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="hoBrief" style="width:auto;margin:0">
+        Brief Claude from HANDOFF.md
+      </label>
+      <div class="hint" style="margin:4px 0 8px">On a new session or <code>/clear</code> (not on resume or compaction, which already carry the conversation), Claude gets the text below, then the newest handover section, the commits since HANDOFF.md last changed, <code>git status</code> and the repo's layout. <code>{{file}}</code> becomes the HANDOFF.md path.</div>
+      <textarea id="hoBriefing" rows="6" spellcheck="false"></textarea>
+
+      <h3 style="margin:18px 0 6px;font-size:13px">When a session ends</h3>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="hoWrite" style="width:auto;margin:0">
+        Write the handover when a session closes
+      </label>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600;font-size:13px;color:var(--text);margin-top:6px">
+        <input type="checkbox" id="hoCommit" style="width:auto;margin:0">
+        Commit HANDOFF.md locally afterwards (never pushed)
+      </label>
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label for="hoMin">Minimum typed prompts</label>
+          <input type="number" id="hoMin" min="1" max="50" step="1" style="width:100px;min-width:0">
+        </div>
+        <div>
+          <label for="hoModel">Writer model</label>
+          <input id="hoModel" list="hoModels" style="width:200px" spellcheck="false">
+          <datalist id="hoModels"><option value="opus"><option value="sonnet"><option value="haiku"><option value="fable"></datalist>
+        </div>
+      </div>
+      <div class="hint" style="margin:6px 0 8px">Ending means <code>/exit</code>, Ctrl-D, <code>/clear</code> or closing the Ghostty window or tab. A background job then reopens a copy of the finished session with the writer model, so it has the whole conversation, and gives it the instructions below. It takes about a minute and a macOS notification says when it is done. Sessions with fewer typed prompts than the minimum are skipped. The writer can only read, edit HANDOFF.md and run read-only git commands. <strong>Cost</strong>: the writer re-reads the whole session, so a long session costs as much as one more turn of it; a cheaper model costs less and writes a thinner handover. Placeholders: <code>{{file}}</code>, <code>{{now}}</code> (local time), <code>{{session}}</code>.</div>
+      <textarea id="hoInstructions" rows="16" spellcheck="false"></textarea>
+
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="hoSave">✓ Save handover settings</button>
+        <button id="hoReset">↺ Reset texts to default</button>
+      </div>
+      <div id="hoNote"></div>
+
+      <h3 style="margin:18px 0 0;font-size:13px">Recent activity <span class="hint" style="font-weight:400">newest last; <span id="hoLogPath"></span></span></h3>
+      <pre class="hoLog" id="hoLog"></pre>
     </div>
   </section>
 
@@ -1493,6 +1559,7 @@ async function refresh() {
     renderSecondary(s);
     renderDowngrade(s);
     renderContext(s);
+    renderHandover(s);
     $("hero").hidden = false;
     lastCounts = {requests: reqs.length, responses: resps.length};
     renderActivity();
@@ -1730,6 +1797,101 @@ $("pruneMaster").onchange = () => {
 $("pruneStub").onchange = savePruning;
 $("pruneCap").onchange = savePruning;
 $("pruneSave").onclick = savePruning;
+
+// Session handover. The form is filled from /api/state only while it is not
+// being edited, the same rule the Configuration and Secondary forms follow:
+// a 2-second refresh must never overwrite text someone is typing.
+let hoDirty = false, hoDefaults = null;
+function setHandoverOpen(open) {
+  $("handoverSection").classList.toggle("collapsed", !open);
+  $("handoverToggle").textContent = open ? "Hide" : "Show";
+  $("handoverToggle").setAttribute("aria-expanded", String(open));
+}
+$("handoverHead").onclick = () =>
+  setHandoverOpen($("handoverSection").classList.contains("collapsed"));
+
+function renderHandover(s) {
+  const h = s.handover;
+  if (!h) return;
+  const eff = h.effective || {};
+  hoDefaults = h.defaults || null;
+  const partial = h.start_hook !== h.end_hook;
+  let cls, text;
+  if (h.error) {
+    cls = "bad"; text = h.error;
+  } else if (h.installed) {
+    const parts = [];
+    parts.push(eff.brief ? "briefing on start" : "briefing OFF");
+    parts.push(eff.write ? `writing on close with ${eff.model}` : "writing OFF");
+    if (eff.write) parts.push(eff.commit ? "committing locally" : "not committing");
+    cls = "ok"; text = "INSTALLED: " + parts.join(", ") + ".";
+  } else if (partial) {
+    cls = "bad"; text = `HALF INSTALLED: only the ${h.start_hook ? "start" : "end"} hook is in settings.json. Install again to repair.`;
+  } else {
+    cls = "warn"; text = "NOT INSTALLED: sessions start without the handover and nothing writes it when they close.";
+  }
+  note($("hoStatus"), cls, text);
+  $("hoSummary").textContent = h.error ? "error" : h.installed ? (eff.write ? "on" : "briefing only") : partial ? "half installed" : "not installed";
+  setHeadState("handoverHead", h.error || partial ? "bad" : h.installed ? "ok" : "");
+  setDot("nd-handover", h.error || partial ? "bad" : h.installed ? "ok" : "");
+  $("hoInstall").textContent = h.installed ? "⤓ Reinstall hooks" : "⤓ Install hooks";
+  $("hoUninstall").disabled = !h.start_hook && !h.end_hook;
+
+  if (!hoDirty) {
+    $("hoBrief").checked = !!eff.brief;
+    $("hoWrite").checked = !!eff.write;
+    $("hoCommit").checked = !!eff.commit;
+    $("hoMin").value = eff.min_prompts || 2;
+    $("hoModel").value = eff.model || "opus";
+    $("hoBriefing").value = eff.briefing || "";
+    $("hoInstructions").value = eff.instructions || "";
+  }
+  $("hoCommit").disabled = !$("hoWrite").checked;
+  $("hoLogPath").textContent = (h.dir || "") + "/handover.log";
+  const lines = h.log || [];
+  $("hoLog").textContent = lines.length ? lines.join("\n") : "Nothing yet. A line appears here each time a session in an opted-in repo ends.";
+}
+
+for (const id of ["hoBrief", "hoWrite", "hoCommit", "hoMin", "hoModel", "hoBriefing", "hoInstructions"]) {
+  $(id).addEventListener("input", () => { hoDirty = true; $("hoCommit").disabled = !$("hoWrite").checked; });
+}
+
+$("hoSave").onclick = async () => {
+  const body = {
+    no_brief: !$("hoBrief").checked,
+    no_write: !$("hoWrite").checked,
+    no_commit: !$("hoCommit").checked,
+    min_prompts: parseInt($("hoMin").value, 10) || 0,
+    model: $("hoModel").value.trim(),
+    briefing: $("hoBriefing").value,
+    instructions: $("hoInstructions").value,
+  };
+  try {
+    const r = await post("/api/handover", body);
+    hoDirty = false;
+    note($("hoNote"), "ok", r.ok);
+    refresh();
+  } catch (e) { note($("hoNote"), "bad", e.message); }
+};
+
+$("hoReset").onclick = () => {
+  if (!hoDefaults) return;
+  $("hoBriefing").value = hoDefaults.briefing;
+  $("hoInstructions").value = hoDefaults.instructions;
+  hoDirty = true;
+  note($("hoNote"), "warn", "Texts reset to the defaults in the form. Save to keep them.");
+};
+
+async function handoverInstall(install) {
+  if (!install && !confirm("Remove the handover hooks from ~/.claude/settings.json?\n\nNew sessions will no longer be briefed and closing a session will no longer write HANDOFF.md. Your settings and the log are kept.")) return;
+  try {
+    const r = await post("/api/handover-install", {install});
+    note($("hoNote"), "ok", r.ok);
+    refresh();
+  } catch (e) { note($("hoNote"), "bad", e.message); }
+}
+$("hoInstall").onclick = () => handoverInstall(true);
+$("hoUninstall").onclick = () => handoverInstall(false);
 
 // Renders what the chain would actually do right now. The toggle on its own
 // is a claim; the open windows below it are the evidence -- and they are the
@@ -2126,6 +2288,7 @@ document.addEventListener("click", e => {
   // section that scrolls into view and says nothing is not an answer.
   if (el.id === "guardsSection") setGuardsOpen(true);
   if (el.id === "secondarySection") setSecondaryOpen(true);
+  if (el.id === "handoverSection") setHandoverOpen(true);
   if (el.id === "installSection" && el.hidden) $("installRevealBtn").click();
   scrollToEl(el, "start");
   // The rail's highlight is otherwise driven by the scroll listener, which
