@@ -418,17 +418,29 @@ func withSummaryInstruction(history []json.RawMessage, cut int) []json.RawMessag
 	}
 	instr := map[string]any{"type": "text", "text": text}
 	out := append([]json.RawMessage(nil), history...)
+	role := "user"
 	if n := len(out); n > 0 {
 		var msg map[string]any
-		if json.Unmarshal(out[n-1], &msg) == nil && msg["role"] == "user" {
-			msg["content"] = append(contentBlocks(msg["content"]), instr)
-			if b, err := json.Marshal(msg); err == nil {
-				out[n-1] = b
-				return out
+		if json.Unmarshal(out[n-1], &msg) == nil {
+			switch msg["role"] {
+			case "user":
+				msg["content"] = append(contentBlocks(msg["content"]), instr)
+				if b, err := json.Marshal(msg); err == nil {
+					out[n-1] = b
+					return out
+				}
+			case "system":
+				// Claude Code often ends a turn with a mid-conversation
+				// system message, which the API accepts only last or before
+				// an assistant turn: a user message after it is a 400 (the
+				// first live run of this code, 2026-09-29 22:26). Another
+				// system message keeps it last and leaves the history, and
+				// its cache entry, untouched.
+				role = "system"
 			}
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"role": "user", "content": []any{instr}})
+	b, _ := json.Marshal(map[string]any{"role": role, "content": []any{instr}})
 	return append(out, b)
 }
 

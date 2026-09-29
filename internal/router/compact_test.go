@@ -455,6 +455,22 @@ func TestSummaryInstructionAfterAnAssistantTurn(t *testing.T) {
 	}
 }
 
+// A history ending in a mid-conversation system message must stay valid:
+// a user message after it is rejected by the API.
+func TestSummaryInstructionAfterATrailingSystemMessage(t *testing.T) {
+	h := msgs(t, `[{"role":"user","content":"do it"},{"role":"assistant","content":[{"type":"text","text":"done"}]},
+ {"role":"user","content":"next"},{"role":"system","content":[{"type":"text","text":"reminder"}]}]`)
+	out := withSummaryInstruction(h, 2)
+	if len(out) != 5 || !strings.Contains(string(out[4]), `"role":"system"`) || !strings.Contains(string(out[4]), "Summarize the transcript") {
+		t.Fatalf("want the instruction as a final system message: %s", out)
+	}
+	for i := 0; i < 4; i++ {
+		if string(out[i]) != string(h[i]) {
+			t.Fatalf("message %d changed", i)
+		}
+	}
+}
+
 func jsonEqual(t *testing.T, a, b json.RawMessage) bool {
 	t.Helper()
 	var x, y any

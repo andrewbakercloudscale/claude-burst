@@ -319,7 +319,13 @@
     border-left: 2px solid transparent;
   }
   .navlink:hover { background: var(--panel-2); color: var(--text); }
-  .navlink.on { color: var(--text); font-weight: 600; border-left-color: var(--accent); background: var(--panel-2); }
+  /* The section you are reading, as the page scrolls: a solid accent bar,
+     so it reads at a glance. Text takes the panel colour, which is white
+     in light mode and near black on the lighter dark-mode accent. */
+  .navlink.on { color: var(--panel); font-weight: 650; border-left-color: var(--accent); background: var(--accent); }
+  .navlink.on .count { color: var(--panel); opacity: .85; }
+  .navlink.on .nd { box-shadow: 0 0 0 1.5px var(--panel); }
+  .navlink.on.nav-pc .label { background: none; color: var(--panel); }
   .navlink .nd { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex: none; }
   .navlink .nd.ok { background: var(--ok); } .navlink .nd.warn { background: var(--warn); }
   .navlink .nd.bad { background: var(--bad); }
@@ -627,7 +633,7 @@
     <h2>Analytics <span class="hint" id="analyticsWindow">latency, errors, and where the spend goes, over the Daily activity window</span></h2>
     <div class="tiles" id="activityTiles"></div>
     <div id="modelSplit"></div>
-    <div id="repoSplit"></div>
+    <div id="repoSplit" style="padding-bottom:6px"></div>
   </section>
 
   <section id="sec-compaction" class="standout" style="scroll-margin-top:70px">
@@ -662,7 +668,7 @@
         <button id="compactSave">Save settings</button>
       </div>
       <div class="hint" style="margin-top:6px"><strong>Warn at</strong>: a line in the gateway log and a flag in the table below (default 300k). <strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>At most once per</strong>: the least time between two compactions of the same session (default 60 minutes), so a session that grows fast is not summarised over and over.</div>
-      <div class="hint" style="margin-top:6px"><strong>Before</strong> and <strong>After</strong>: the session's context on the last request without its latest summary and the first request with it. <strong>Saved per turn</strong>: the difference, which every later request no longer resends, priced at the model's cache-read rate. <strong>Saved since</strong>: that, over every request since the summary applied. The Saved view of the Daily activity chart shows the same savings per day.</div>
+      <div class="hint" style="margin-top:6px"><strong>Before</strong>: the context the session would have had at its latest summary without any of its summaries (every earlier summary's drop is added back, capped at the 1M window, where Claude Code would have compacted on its own). <strong>After</strong>: what it actually sent on the first request with the summary. <strong>Saved per turn</strong>: the difference, which every later request no longer resends, priced at the model's cache-read rate. <strong>Saved since</strong>: that, over every request since the summary applied. The Saved view of the Daily activity chart shows the same savings per day.</div>
       <div id="compactNote"></div>
       <div class="scroll" id="compactSessions" style="margin-top:10px"></div>
     </div>
@@ -1897,7 +1903,7 @@ function renderCompaction(s) {
     [cs.compactions || 0, `compaction${cs.compactions === 1 ? "" : "s"} in ${days} days`],
     [cs.largest_before ? `${kk(cs.largest_before)} &rarr; ${kk(cs.largest_after)}` : "-", "biggest single drop in context"],
     [cs.tokens_not_resent ? kk(cs.tokens_not_resent) : "-", `tokens not resent, across ${num(cs.compacted_requests || 0)} requests`],
-    [cs.compactions ? "$" + (cs.summary_usd || 0).toFixed(2) : "-", "summaries cost (API-equivalent)"],
+    [cs.compacted_requests ? "$" + (cs.saved_usd || 0).toFixed(2) : "-", cs.compactions ? `not spent, after $${(cs.summary_usd || 0).toFixed(2)} of summaries` : "not spent (API-equivalent)"],
   ].map(([v, t]) => `<div class="pc-stat"><div class="v">${v}</div><div class="k">${esc(t)}</div></div>`).join("");
   setDot("nd-compaction", k.enabled ? "ok" : "");
   if (!rows.length) {
@@ -1925,7 +1931,7 @@ function renderCompaction(s) {
       <td class="num">${x ? tok(x.after) : "-"}</td>
       <td class="num">${x ? `<b style="color:var(--pc-a)">${tok(x.per_turn_tokens)}</b> <span class="hint">${esc(smallUSD(x.per_turn_usd))}</span>` : "-"}</td>
       <td class="num">${x ? `${esc(smallUSD(x.saved_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
-      <td class="mono">${r.compacted_at && !r.compacted_at.startsWith("0001") ? esc(stamp(r.compacted_at)) : "-"}</td>
+      <td class="mono">${x ? esc(stamp(x.at)) : "-"}</td>
     </tr>`;
     }).join("")}</tbody></table>`;
 }
