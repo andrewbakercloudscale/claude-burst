@@ -47,3 +47,34 @@ func TestCacheHitRateWithNoTraffic(t *testing.T) {
 		t.Fatal("no traffic must be a 0 hit rate, not NaN")
 	}
 }
+
+// SavedShare is "how successful": of the input the secondary would have
+// been sent, the fraction pruning removed. Estimated at 4 bytes per token,
+// the same estimate the admin page uses.
+func TestEfficiencySavedShareAndReruns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.jsonl")
+	w := New(path)
+	now := time.Now()
+	for _, e := range []Event{
+		{Time: now, Slot: "secondary", Model: "glm", HTTPStatus: 200, InputTokens: 60_000, PrunedBytes: 160_000, RepeatedCalls: 1, RerunsAfterStub: 1},
+		{Time: now, Slot: "secondary", Model: "glm", HTTPStatus: 200, InputTokens: 20_000, RepeatedCalls: 1},
+	} {
+		if err := w.Write(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eff, err := EfficiencySince(path, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 160k bytes = 40k tokens not sent, 80k sent: 40 / 120 = 1/3.
+	if got := eff.SavedShare(); got < 0.333 || got > 0.334 {
+		t.Fatalf("SavedShare = %v, want 1/3", got)
+	}
+	if eff.RerunsAfterStub != 1 || eff.RepeatedCalls != 2 {
+		t.Fatalf("reruns=%d repeats=%d, want 1 and 2", eff.RerunsAfterStub, eff.RepeatedCalls)
+	}
+	if (Efficiency{}).SavedShare() != 0 {
+		t.Fatal("no traffic must be 0, not NaN")
+	}
+}

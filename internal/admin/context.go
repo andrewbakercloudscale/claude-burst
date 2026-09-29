@@ -16,9 +16,6 @@ import (
 
 const contextWindow = 7 * 24 * time.Hour
 
-// bytesPerToken is the same rough estimate the shunting figures use.
-const bytesPerToken = 4
-
 type contextInfo struct {
 	// Applicable is false when the secondary is not openai-compatible, so
 	// there is nothing for pruning to act on.
@@ -30,7 +27,10 @@ type contextInfo struct {
 	PrimaryCacheHit   float64 `json:"primary_cache_hit"`
 	SecondaryCacheHit float64 `json:"secondary_cache_hit"`
 	TokensNotSent     int64   `json:"tokens_not_sent"`
-	USDNotSpent       float64 `json:"usd_not_spent"`
+	// SavedPct is the share of the secondary's input that pruning removed,
+	// 0-100: the one number for "how successful".
+	SavedPct    int     `json:"saved_pct"`
+	USDNotSpent float64 `json:"usd_not_spent"`
 
 	// Verdict is the one line that answers "is it working": ok, info
 	// (nothing to judge yet, or off) or bad.
@@ -53,7 +53,8 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 
 		PrimaryCacheHit:   eff.Primary.CacheHitRate(),
 		SecondaryCacheHit: eff.Secondary.CacheHitRate(),
-		TokensNotSent:     eff.PrunedBytes / bytesPerToken,
+		TokensNotSent:     eff.PrunedBytes / metrics.BytesPerToken,
+		SavedPct:          int(eff.SavedShare()*100 + 0.5),
 	}
 	ci.USDNotSpent = float64(ci.TokensNotSent) / 1_000_000 * cfg.Pricing[cfg.Secondary.Model].InputPerMTok
 	ci.Verdict = pruneVerdict(ci)
@@ -74,6 +75,10 @@ func failRate(ok, failed int) float64 {
 // swing the verdict.
 const minComparable = 5
 
+// maxRerunShare is the share of stubbed calls the model may fetch again
+// before the verdict says the cut-off is too aggressive.
+const maxRerunShare = 0.25
+
 func pruneVerdict(ci contextInfo) verdict {
 	e, p := ci.Efficiency, ci.Pruning
 	switch {
@@ -90,8 +95,15 @@ func pruneVerdict(ci contextInfo) verdict {
 	if e.PrunedRequests >= minComparable && pf > uf+0.10 {
 		return verdict{"bad", fmt.Sprintf("Pruned requests fail %.0f%% of the time vs %.0f%% unpruned: pruning may be removing context the model needs. Raise \"keep recent\" or turn stubbing off.", pf*100, uf*100)}
 	}
-	return verdict{"ok", fmt.Sprintf("Working: pruned %d of %d overflow requests, ≈%s tokens (≈$%.2f) not sent. Failure rate %.0f%% pruned vs %.0f%% unpruned.",
-		e.PrunedRequests, e.Secondary.Requests, humanCount(ci.TokensNotSent), ci.USDNotSpent, pf*100, uf*100)}
+	// A stub the model fetches again costs a round trip instead of saving
+	// one. Occasional re-runs are the price of stubbing; a quarter or more
+	// means the cut-off is removing output that is still in use.
+	if e.StubbedResults >= minComparable && float64(e.RerunsAfterStub) > maxRerunShare*float64(e.StubbedResults) {
+		return verdict{"bad", fmt.Sprintf("The model re-ran %d of %d stubbed tool calls to get their output back: the cut-off is removing output still in use. Raise \"keep recent\".",
+			e.RerunsAfterStub, e.StubbedResults)}
+	}
+	return verdict{"ok", fmt.Sprintf("Working: removed %d%% of overflow input (≈%s tokens, ≈$%.2f) across %d of %d requests. Failure rate %.0f%% pruned vs %.0f%% unpruned; %d stubbed call(s) re-run.",
+		ci.SavedPct, humanCount(ci.TokensNotSent), ci.USDNotSpent, e.PrunedRequests, e.Secondary.Requests, pf*100, uf*100, e.RerunsAfterStub)}
 }
 
 func cacheVerdict(e metrics.Efficiency) verdict {

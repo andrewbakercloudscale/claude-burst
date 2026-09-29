@@ -29,6 +29,27 @@ type Efficiency struct {
 	StubbedResults   int64     `json:"stubbed_results"`
 	TruncatedResults int64     `json:"truncated_results"`
 	LastPrunedAt     time.Time `json:"last_pruned_at,omitempty"`
+
+	// RerunsAfterStub counts the model's calls that asked again for output a
+	// stub had removed; RepeatedCalls counts every exact repeat of an
+	// earlier call, the base rate to compare it with.
+	RerunsAfterStub int64 `json:"reruns_after_stub"`
+	RepeatedCalls   int64 `json:"repeated_calls"`
+}
+
+// BytesPerToken is the rough bytes-to-tokens estimate for removed text.
+const BytesPerToken = 4
+
+// SavedShare is the fraction of the secondary's input that pruning removed:
+// tokens not sent over tokens not sent plus tokens sent. It answers "how
+// successful" in one number, over every secondary request in the window.
+func (e Efficiency) SavedShare() float64 {
+	notSent := float64(e.PrunedBytes / BytesPerToken)
+	sent := float64(e.Secondary.InputTokens + e.Secondary.CacheReadTokens + e.Secondary.CacheWriteTokens)
+	if notSent+sent == 0 {
+		return 0
+	}
+	return notSent / (notSent + sent)
 }
 
 type RouteEfficiency struct {
@@ -95,6 +116,8 @@ func EfficiencySince(path string, since time.Time) (Efficiency, error) {
 		if e.Slot != "secondary" {
 			continue
 		}
+		eff.RepeatedCalls += e.RepeatedCalls
+		eff.RerunsAfterStub += e.RerunsAfterStub
 		wasPruned := e.PrunedBytes > 0
 		switch {
 		case wasPruned && ok(e):

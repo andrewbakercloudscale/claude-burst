@@ -53,13 +53,17 @@ type Event struct {
 	// Secondary context pruning (router/prune.go): bytes of tool output
 	// removed from the request, how many old tool results were stubbed, and
 	// how many oversized ones were cut down.
-	PrunedBytes          int64   `json:"pruned_bytes,omitempty"`
-	PrunedToolResults    int64   `json:"pruned_tool_results,omitempty"`
-	TruncatedToolResults int64   `json:"truncated_tool_results,omitempty"`
-	APIEquivalentUSD     float64 `json:"api_equivalent_usd,omitempty"`
-	LimitClaim           string  `json:"limit_claim,omitempty"`
-	ResetAt              int64   `json:"reset_at,omitempty"`
-	Note                 string  `json:"note,omitempty"`
+	PrunedBytes          int64 `json:"pruned_bytes,omitempty"`
+	PrunedToolResults    int64 `json:"pruned_tool_results,omitempty"`
+	TruncatedToolResults int64 `json:"truncated_tool_results,omitempty"`
+	// The request's latest tool calls: how many repeat an earlier call, and
+	// how many repeat one whose output this request stubbed. See prune.go.
+	RepeatedCalls    int64   `json:"repeated_calls,omitempty"`
+	RerunsAfterStub  int64   `json:"reruns_after_stub,omitempty"`
+	APIEquivalentUSD float64 `json:"api_equivalent_usd,omitempty"`
+	LimitClaim       string  `json:"limit_claim,omitempty"`
+	ResetAt          int64   `json:"reset_at,omitempty"`
+	Note             string  `json:"note,omitempty"`
 	// PricingUnknown marks an event whose served Model had no entry in the
 	// configured pricing table while it did report tokens. Without it a
 	// zero APIEquivalentUSD is indistinguishable from a genuinely free

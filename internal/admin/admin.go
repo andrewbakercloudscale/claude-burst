@@ -680,6 +680,9 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 
 type forceRequest struct {
 	Minutes int `json:"minutes"`
+	// Model, when set, forces only that requested model to the secondary;
+	// every other model stays on the primary. Empty forces everything.
+	Model string `json:"model"`
 }
 
 func (s *Server) handleForce(w http.ResponseWriter, r *http.Request) {
@@ -709,6 +712,14 @@ func (s *Server) handleForce(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Minutes > 720 {
 		http.Error(w, "maximum is 720 minutes", http.StatusBadRequest)
+		return
+	}
+	if req.Model != "" {
+		until := s.gateway.ForceModelOverflow(req.Model, time.Duration(req.Minutes)*time.Minute, "forced from the admin UI")
+		writeJSON(w, map[string]string{
+			"ok": fmt.Sprintf("%s now goes to %s (%s) until %s; other models stay on the primary. Clear it any time with Back to primary.",
+				req.Model, cfg.Secondary.Provider, cfg.Secondary.Model, until.Format("15:04:05")),
+		})
 		return
 	}
 	until := s.gateway.ForceOverflow(time.Duration(req.Minutes)*time.Minute, "forced from the admin UI")

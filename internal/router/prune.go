@@ -72,6 +72,12 @@ type pruneStatsKey struct{}
 
 type pruneStats struct {
 	bytesRemoved, stubbed, truncated int64
+	// The model's latest tool calls, compared with its earlier ones:
+	// repeatedCalls is how many repeat an earlier call exactly (the base
+	// rate at which the model repeats itself), rerunsAfterStub how many
+	// repeat a call whose output this request stubbed -- pruning costing a
+	// round trip instead of saving one.
+	repeatedCalls, rerunsAfterStub int64
 }
 
 type prunePolicy struct {
@@ -110,13 +116,33 @@ func pruneAnthropicRequest(body []byte, p prunePolicy) ([]byte, pruneStats) {
 	msgs, _ := req["messages"].([]any)
 
 	var results []map[string]any
+	callKey := map[string]string{} // tool_use id -> name + canonical input
+	var earlier, latest []string   // call keys before, and in, the last assistant turn
 	for _, m := range msgs {
 		mm, _ := m.(map[string]any)
 		blocks, _ := mm["content"].([]any)
+		var calls []string
 		for _, b := range blocks {
-			if bm, ok := b.(map[string]any); ok && bm["type"] == "tool_result" {
-				results = append(results, bm)
+			bm, ok := b.(map[string]any)
+			if !ok {
+				continue
 			}
+			switch bm["type"] {
+			case "tool_result":
+				results = append(results, bm)
+			case "tool_use":
+				// json.Marshal sorts map keys, so equal inputs give equal keys.
+				in, _ := json.Marshal(bm["input"])
+				k := fmt.Sprint(bm["name"]) + " " + string(in)
+				if id, _ := bm["id"].(string); id != "" {
+					callKey[id] = k
+				}
+				calls = append(calls, k)
+			}
+		}
+		if mm["role"] == "assistant" && len(calls) > 0 {
+			earlier = append(earlier, latest...)
+			latest = calls
 		}
 	}
 
@@ -126,12 +152,16 @@ func pruneAnthropicRequest(body []byte, p prunePolicy) ([]byte, pruneStats) {
 	}
 
 	var st pruneStats
+	stubbedCalls := map[string]bool{}
 	for i, r := range results {
 		// The text translation would send: the OpenAI side flattens tool
 		// results to text and drops images anyway.
 		text := flattenTextContent(r["content"])
 		switch {
 		case p.stub && i < boundary && len(text) >= p.stubMinBytes:
+			if id, _ := r["tool_use_id"].(string); callKey[id] != "" {
+				stubbedCalls[callKey[id]] = true
+			}
 			r["content"] = fmt.Sprintf("[claude-burst: this earlier tool output (%d bytes) was removed to save overflow cost. Re-run the tool if you need it again.]", len(text))
 			st.bytesRemoved += int64(len(text))
 			st.stubbed++
@@ -143,6 +173,18 @@ func pruneAnthropicRequest(body []byte, p prunePolicy) ([]byte, pruneStats) {
 			r["content"] = head + fmt.Sprintf("\n\n[claude-burst: %d bytes cut from the middle of this tool output to save overflow cost]\n\n", cut) + tail
 			st.bytesRemoved += int64(cut)
 			st.truncated++
+		}
+	}
+	seen := map[string]bool{}
+	for _, k := range earlier {
+		seen[k] = true
+	}
+	for _, k := range latest {
+		if seen[k] {
+			st.repeatedCalls++
+		}
+		if stubbedCalls[k] {
+			st.rerunsAfterStub++
 		}
 	}
 	if st.stubbed == 0 && st.truncated == 0 {
@@ -168,5 +210,6 @@ func pruneStatsFrom(ctx context.Context) pruneStats {
 // writeMetric takes on every path.
 func prunedUsage(ctx context.Context) tokenUsage {
 	st := pruneStatsFrom(ctx)
-	return tokenUsage{prunedBytes: st.bytesRemoved, prunedResults: st.stubbed, truncatedResults: st.truncated}
+	return tokenUsage{prunedBytes: st.bytesRemoved, prunedResults: st.stubbed, truncatedResults: st.truncated,
+		repeatedCalls: st.repeatedCalls, rerunsAfterStub: st.rerunsAfterStub}
 }

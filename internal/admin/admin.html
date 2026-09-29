@@ -748,7 +748,7 @@
       </div>
       <div class="hint" style="margin-top:6px"><strong>Keep recent</strong>: how many of the latest tool results are always sent in full (default 10). Raise it if the verdict above says pruned requests fail more often. <strong>Step</strong>: how many results the cut-off advances at a time (default 10); bigger keeps the prefix stable for longer but prunes a little less. <strong>Cap</strong>: the largest single tool result sent in full (default 40&nbsp;KB).</div>
       <div id="pruneNote"></div>
-      <div class="hint" style="margin-top:8px">Figures cover the last 7 days of <code>metrics.jsonl</code>. "Not sent" is an estimate at ~4 bytes per token, priced at the secondary model's input rate. Cache figures come from what each provider reports; a provider that caches but does not say so shows 0%.</div>
+      <div class="hint" style="margin-top:8px">Figures cover the last 7 days of <code>metrics.jsonl</code>. "Removed" is the share of the secondary's input pruning took out, estimated at ~4 bytes per token and priced at the secondary model's input rate. A <strong>re-run</strong> is the model calling a tool again, with the same input, after its output was stubbed: pruning cost a round trip there instead of saving one. If more than a quarter of stubbed calls are re-run, the verdict turns red. Cache figures come from what each provider reports; a provider that caches but does not say so shows 0%.</div>
     </div>
   </section>
 
@@ -765,12 +765,21 @@
             <option value="240">4 hours</option>
           </select>
         </div>
+        <div>
+          <label for="forceModel">Which models</label>
+          <select id="forceModel" style="min-width:150px">
+            <option value="">All models</option>
+            <option value="claude-sonnet-5">claude-sonnet-5 only</option>
+            <option value="claude-haiku-4-5">claude-haiku-4-5 only</option>
+          </select>
+        </div>
         <button class="warn" id="force">⇉ Force → secondary</button>
         <button class="primary" id="reset">↩ Back to primary</button>
         <button class="warn" id="restart">⟳ Restart gateway</button>
         <button class="success" id="testConn">⇌ Test connection</button>
         <button id="viewLog">▤ View log file</button>
       </div>
+      <div class="hint" style="margin-top:6px"><strong>Which models</strong>: forcing a single model sends only requests for that model to the secondary; everything else stays on your subscription. That is how to test overflow pruning on purpose: run a test session with <code>claude --model claude-sonnet-5</code> while your normal sessions carry on untouched. Back to primary clears it.</div>
       <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now — the config above can look correct while requests quietly go straight to Anthropic instead.</div>
       <div id="actNote"></div>
 
@@ -1669,10 +1678,11 @@ function renderContext(s) {
       <div class="sub">${esc(v.text)}</div>
     </div>
     <div class="card c-info">
-      <h3>Not sent · ${days} days</h3>
-      <div class="stat">≈${num(c.tokens_not_sent)} <small>tokens</small></div>
-      <div class="sub">≈${smallUSD(c.usd_not_spent)} · ${num(e.stubbed_results)} results stubbed · ${num(e.truncated_results)} capped${lastPruned}</div>
+      <h3>Overflow input removed · ${days} days</h3>
+      <div class="stat">${c.saved_pct || 0}% <small>≈${num(c.tokens_not_sent)} tokens · ≈${smallUSD(c.usd_not_spent)}</small></div>
+      <div class="sub">${num(e.stubbed_results)} results stubbed · ${num(e.truncated_results)} capped${lastPruned}</div>
       <div class="sub">pruned requests ${num(e.pruned_ok)} ok / ${num(e.pruned_failed)} failed · unpruned ${num(e.unpruned_ok)} ok / ${num(e.unpruned_failed)} failed</div>
+      <div class="sub" title="A re-run is the model's latest tool call asking again for output a stub removed. Repeats are every exact repeat of an earlier call, the base rate to compare it with.">stubbed calls re-run: ${num(e.reruns_after_stub)} of ${num(e.stubbed_results)} · all repeated calls: ${num(e.repeated_calls)}</div>
     </div>
     <div class="card c-info">
       <h3>Cache hit · ${days} days</h3>
@@ -1763,7 +1773,7 @@ $("downgrade").onchange = async () => {
 
 $("force").onclick = async () => {
   try {
-    const r = await post("/api/force", {minutes: parseInt($("forceMins").value, 10)});
+    const r = await post("/api/force", {minutes: parseInt($("forceMins").value, 10), model: $("forceModel").value});
     note($("actNote"), "warn", r.ok);
     // Marks this note as a claim about the overflow window being active, so
     // refresh() knows to clear it once that stops being true -- see the

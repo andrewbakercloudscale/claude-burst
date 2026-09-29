@@ -372,3 +372,41 @@ func TestGenuineSubscriptionLimitTriggersAutomaticFailover(t *testing.T) {
 		t.Fatalf("second request within the overflow window: status=%d servedBy=%q, want 200/secondary", status, servedBy)
 	}
 }
+
+func (h *harness) requestFor(model string) (servedBy string) {
+	h.t.Helper()
+	body := []byte(`{"model":"` + model + `","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	req, _ := http.NewRequest(http.MethodPost, h.gwSrv.URL+"/v1/messages", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer test-oauth-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatalf("gateway request: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.Header.Get("X-Test-Upstream")
+}
+
+// Forcing ONE model to the secondary is how overflow pruning gets tested
+// on purpose: a test session runs on that model while every other session
+// on the machine stays on the subscription. A force that leaked to other
+// models would move the user's own work to the secondary mid-test.
+func TestForceOneModelLeavesOtherModelsOnPrimary(t *testing.T) {
+	h := newHarness(t)
+	if status, body := h.adminPost(t, "/api/force", map[string]any{"minutes": 5, "model": "claude-sonnet-5"}); status != http.StatusOK {
+		t.Fatalf("force: %d %v", status, body)
+	}
+	if got := h.requestFor("claude-sonnet-5"); got != "secondary" {
+		t.Fatalf("forced model served by %q, want secondary", got)
+	}
+	if got := h.requestFor("claude-opus-5-5"); got != "primary" {
+		t.Fatalf("an unforced model was served by %q, want primary", got)
+	}
+	if status, _ := h.adminPost(t, "/api/reset", map[string]any{}); status != http.StatusOK {
+		t.Fatalf("reset: %d", status)
+	}
+	if got := h.requestFor("claude-sonnet-5"); got != "primary" {
+		t.Fatalf("after Back to primary the model was served by %q", got)
+	}
+}

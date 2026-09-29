@@ -197,3 +197,50 @@ func TestSetSecondaryPruningIsLive(t *testing.T) {
 		t.Fatal("the primary must never be pruned")
 	}
 }
+
+// withLastCall appends a final assistant turn calling Bash with command,
+// plus its result, to a conversation built by conversation(). Every earlier
+// call in conversation() is Bash {"command":"ls"}, so a final call with
+// "ls" repeats all of them and anything else repeats none.
+func withLastCall(t *testing.T, body []byte, command string) []byte {
+	t.Helper()
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+	msgs := req["messages"].([]any)
+	msgs = append(msgs,
+		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "toolu_last", "name": "Bash", "input": map[string]any{"command": command}}}},
+		map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_last", "content": "ok"}}},
+	)
+	req["messages"] = msgs
+	out, _ := json.Marshal(req)
+	return out
+}
+
+// The quality signal for stubbing: when the model's latest tool call asks
+// again for exactly what a stub removed, pruning cost a round trip instead
+// of saving one. Repeats of calls whose output is still visible are the
+// base rate the model repeats itself anyway, counted separately so the two
+// can be compared.
+func TestPruneCountsRerunsOfStubbedCalls(t *testing.T) {
+	p := defaultPolicy(t)
+
+	// 25 earlier "ls" calls: the first 10 are stubbed, so repeating "ls"
+	// asks again for stubbed output.
+	_, st := pruneAnthropicRequest(withLastCall(t, conversation(t, 25, 5000), "ls"), p)
+	if st.rerunsAfterStub != 1 || st.repeatedCalls != 1 {
+		t.Fatalf("repeat of a stubbed call: %+v, want rerunsAfterStub=1 repeatedCalls=1", st)
+	}
+
+	_, st = pruneAnthropicRequest(withLastCall(t, conversation(t, 25, 5000), "git status"), p)
+	if st.rerunsAfterStub != 0 || st.repeatedCalls != 0 {
+		t.Fatalf("a new call is not a rerun: %+v", st)
+	}
+
+	// Only 5 earlier calls: nothing stubbed, so a repeat is a plain repeat.
+	_, st = pruneAnthropicRequest(withLastCall(t, conversation(t, 5, 5000), "ls"), p)
+	if st.rerunsAfterStub != 0 || st.repeatedCalls != 1 {
+		t.Fatalf("repeat with nothing stubbed: %+v, want only repeatedCalls=1", st)
+	}
+}

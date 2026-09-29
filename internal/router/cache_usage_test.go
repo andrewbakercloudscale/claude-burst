@@ -98,7 +98,8 @@ func TestWriteMetricRecordsCacheAndPruning(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
 	s.writeMetric(req, "primary", "anthropic", "claude-opus-5", "claude-opus-5", 200, time.Now(),
-		tokenUsage{input: 1_000_000, cacheRead: 1_000_000, cacheWrite: 1_000_000, prunedBytes: 9, prunedResults: 2, truncatedResults: 1}, "", 0, "", "")
+		tokenUsage{input: 1_000_000, cacheRead: 1_000_000, cacheWrite: 1_000_000, prunedBytes: 9, prunedResults: 2, truncatedResults: 1,
+			repeatedCalls: 3, rerunsAfterStub: 1}, "", 0, "", "")
 	b, _ := os.ReadFile(path)
 	var e metrics.Event
 	if err := json.Unmarshal(b, &e); err != nil {
@@ -108,7 +109,7 @@ func TestWriteMetricRecordsCacheAndPruning(t *testing.T) {
 	if e.CacheReadTokens != 1_000_000 || e.CacheWriteTokens != 1_000_000 || e.APIEquivalentUSD != 11.75 {
 		t.Fatalf("cache: %+v", e)
 	}
-	if e.PrunedBytes != 9 || e.PrunedToolResults != 2 || e.TruncatedToolResults != 1 {
+	if e.PrunedBytes != 9 || e.PrunedToolResults != 2 || e.TruncatedToolResults != 1 || e.RepeatedCalls != 3 || e.RerunsAfterStub != 1 {
 		t.Fatalf("pruning: %+v", e)
 	}
 }

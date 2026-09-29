@@ -492,6 +492,28 @@ func (s *Server) ForceOverflow(d time.Duration, reason string) time.Time {
 	return until
 }
 
+// ForceModelOverflow routes one requested model to the secondary for d and
+// leaves every other model where it is. It uses the same per-model window a
+// real rejection opens, so routing, the dashboard and Back to primary treat
+// it exactly like one. It is how overflow pruning is tested on purpose: a
+// test session on this model spends secondary tokens while the user's own
+// sessions on other models stay on the subscription.
+func (s *Server) ForceModelOverflow(model string, d time.Duration, reason string) time.Time {
+	if d <= 0 {
+		d = 15 * time.Minute
+	}
+	until := time.Now().Add(d)
+	s.mu.Lock()
+	if s.state.ModelOverflow == nil {
+		s.state.ModelOverflow = map[string]int64{}
+	}
+	s.state.ModelOverflow[model] = until.Unix()
+	s.saveStateLocked()
+	s.mu.Unlock()
+	s.logger.Printf("FORCED model=%q to secondary until %s reason=%s", model, until.Format(time.RFC3339), reason)
+	return until
+}
+
 // activateOverflow records that ONE model was refused, until resetAt. It no
 // longer touches the account-wide window: see State.ModelOverflow for why a
 // claim header is not evidence about models it does not name.
@@ -899,6 +921,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			tok = s.relay(w, resp, model)
 		}
 		tok.prunedBytes, tok.prunedResults, tok.truncatedResults = pruned.prunedBytes, pruned.prunedResults, pruned.truncatedResults
+		tok.repeatedCalls, tok.rerunsAfterStub = pruned.repeatedCalls, pruned.rerunsAfterStub
 		s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
 			rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
 		s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tok, "", 0, note, destination)
@@ -1087,6 +1110,7 @@ func copyResponseHeaders(dst http.Header, src http.Header) {
 type tokenUsage struct {
 	input, output, cacheRead, cacheWrite         int64
 	prunedBytes, prunedResults, truncatedResults int64
+	repeatedCalls, rerunsAfterStub               int64
 }
 
 func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string) tokenUsage {
@@ -1283,6 +1307,7 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 		Slot: slot, Route: route, Model: model, RequestedModel: requestedModel, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),
 		InputTokens: tok.input, OutputTokens: tok.output, CacheReadTokens: tok.cacheRead, CacheWriteTokens: tok.cacheWrite,
 		PrunedBytes: tok.prunedBytes, PrunedToolResults: tok.prunedResults, TruncatedToolResults: tok.truncatedResults,
+		RepeatedCalls: tok.repeatedCalls, RerunsAfterStub: tok.rerunsAfterStub,
 		APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note, Destination: destination,
 		PricingUnknown: unpriced,
 	})
