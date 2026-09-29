@@ -1,3 +1,41 @@
+# Handover, 2026-09-29 20:20: session handover hooks, peer-log outage, flashing restart banner
+<!-- session: 5f048949-f3ee-463c-87ca-cba36b3b7a01 -->
+
+## State right now
+
+- Written at session close. Verify before acting.
+- **Session handover hooks are installed and live** (the user clicked Install on the dashboard ~13:15). `~/.claude/settings.json` has SessionStart `~/.config/claude-burst/handover/start.sh` and SessionEnd `.../end.sh`, beside the user's own panel and cost-alert hooks. Settings are the defaults (brief on, write on, commit on, min 2 prompts, writer model `opus` = Opus 5.5). Check: dashboard "Session handover" section says INSTALLED, or `curl -s 127.0.0.1:7788/api/state` field `handover.installed`.
+- The hand-installed first version (`~/.claude/hooks/handover-*.sh`, `~/.claude/handover/`) is **deleted**; nothing references it.
+- **Peer-log is OFF** since ~13:04 (was armed since 28 Sep 22:48). See Things that will bite you.
+- Deployed binary: built from `29d0c39` at ~13:08 from a clean git worktree of HEAD. Whether the later compaction commit `fcb1ef1` (another session, 20:14) was deployed is **unverified**.
+- Pushed: everything up to `92992e0`. `main` is 1 ahead with `fcb1ef1` (not this session's). Uncommitted: `internal/router/compact_run.go`, `compact_test.go` (not this session's; leave them to whoever owns the compaction work).
+- Panel repo `~/Desktop/github/claudecode-cost-usage-panel`: pushed through `f150372`, clean. Live `~/.local/bin/ccusage-panel.sh` matched the heredoc in `claude-panel-setup.sh` at ~14:00.
+
+## What was done
+
+- `88a779a` Session handover feature: `internal/handover` (scripts embedded from `internal/handover/scripts/{start,end,write}.sh`, installed to `~/.config/claude-burst/handover/`), dashboard section "Session handover" (`/api/handover`, `/api/handover-install`), README section. Opt-in per repo: only acts where the git root has `HANDOFF.md`.
+  - Start: on startup or `/clear`, injects a briefing, the top HANDOFF.md section, commits since HANDOFF.md last changed, `git status` and the tracked layout.
+  - End: SessionEnd (closing a Ghostty window arrives as reason `other`, proven by closing a pty) queues `write.sh` under perl `POSIX::setsid` so SIGHUP cannot kill it. It runs `claude -p --resume <sid> --fork-session --model <model>`, updates HANDOFF.md, commits only that file, posts a macOS notification. Lock: `.git/handover.lock`. Log: `~/.config/claude-burst/handover/handover.log`; writer reply: `last-run.json`.
+- `29d0c39` The legacy hand-installed pair no longer counts as "installed" (it ignores the dashboard settings); it shows "old hooks active" instead.
+- Fixed the 13:00 dashboard FAILED state by running `scripts/peer-log.sh off` (cause below).
+- Panel repo: `159a37b` tried SGR 5 blink (Ghostty 1.3.1 ignores it); `f150372` flashes the RESTART DUE TO HIGH CONTEXT line by rewriting that one row once a second between refreshes. The user confirmed it flashes.
+
+## Open
+
+1. **First real Ghostty-close handover in this repo**: this section is it. Check `tail ~/.config/claude-burst/handover/handover.log` shows `queue`, `write`, then `wrote ... committed <hash>`; and `git log -1 -- HANDOFF.md`.
+2. **Writer model**: the user asked what `opus` means; I recommended `sonnet` to save cost. No change made. Check the dashboard field.
+3. **`fcb1ef1` unpushed**: another session's compaction commit. Ask the user before pushing.
+
+## Things that will bite you
+
+- **Peer-log armed during the working day causes an outage.** `lsof` per accepted connection took ~1 s under load (not 40-70 ms), accept is serial, the :17777 listen queue backed up (`netstat -Lan | grep 17777` showed qlen 19), healthz timed out, pf-heal called it BROKEN and its reload made it worse. Gateway logs still showed 200s, which is the tell. Only arm it overnight.
+- `claude -p --allowedTools a b "prompt"`: the flag is variadic and eats the prompt (error "No deferred tool marker found"). write.sh uses `--allowedTools=a,b` and the prompt on stdin.
+- Installed handover scripts are generated: edit `internal/handover/scripts/`, not `~/.config/claude-burst/handover/`; `GetStatus` rewrites them when they differ.
+- `scripts/deploy.sh` builds the working tree. Another session had untracked Go files in `internal/router/`, so I deployed from `git worktree add --detach <dir> HEAD`. Do the same while other sessions are mid-change.
+- Models sometimes write em dashes despite the instructions; write.sh strips them from HANDOFF.md after the run.
+
+---
+
 # Handover, 2026-09-29: overflow pruning, cache accounting, graceful restart
 
 Written at session close (28 Sep evening to 29 Sep midday). **Verify before acting**: true at
