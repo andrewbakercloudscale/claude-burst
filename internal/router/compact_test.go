@@ -190,6 +190,9 @@ func compactServer(t *testing.T, f *fakeAnthropic, c config.CompactionConfig) *S
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A summary still saving state when the test ends would race the
+	// TempDir cleanup ("directory not empty"). Cleanups run last-in first.
+	t.Cleanup(s.compaction.running.Wait)
 	return s
 }
 
@@ -484,6 +487,7 @@ func TestCompactionStateSurvivesARestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(s.compaction.running.Wait)
 		return s
 	}
 	all := msgs(t, session)

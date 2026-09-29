@@ -54,6 +54,7 @@ type compactor struct {
 	sessions map[string]*compactState // keyed by session id + "|" + model
 	path     string                   // where sessions survive a restart; "" = memory only
 	logger   *log.Logger
+	running  sync.WaitGroup // summary calls in flight
 }
 
 func newCompactor(c config.CompactionConfig, path string, logger *log.Logger) *compactor {
@@ -262,6 +263,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			history := append([]json.RawMessage(nil), view...)
 			hash := prefixHash(msgs, p)
 			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages", rid, key, st.lastContext/1000, p, len(msgs))
+			s.compaction.running.Add(1)
 			go s.summarise(in.Clone(context.Background()), top, history, cut, key, p, hash)
 		} else if st.skippedAt.IsZero() || now.Sub(st.skippedAt) >= window {
 			st.skippedAt = now
@@ -333,6 +335,7 @@ func compactionBoundary(view []json.RawMessage, bounds []int, offset int) (p, cu
 // session's own auth, model, system prompt and tools, and stores the
 // summary for key when it succeeds.
 func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int, key string, p0 int, hash string) {
+	defer s.compaction.running.Done()
 	summary, err := s.requestSummary(in, top, history, cut)
 	s.compaction.mu.Lock()
 	defer s.compaction.mu.Unlock()
