@@ -14,8 +14,11 @@ user's standing instruction (see the memory `feedback-no-em-en-dashes`).
   last storm was 22 Sep. It costs 40-70 ms per connection. When a storm fires, read it with
   `scripts/peer-log.sh status`. `EOF` handshake errors around deploys are restarts, not the
   storm.
-- Everything is pushed; `main` matches origin. The user asks for pushes explicitly each time;
-  ask before pushing.
+- `main` is 1 commit ahead of origin: `b1afafc`, part 1 of proxy-side compaction (not wired in,
+  no behaviour change, not deployed). Everything else is pushed. The user asks for pushes
+  explicitly each time; ask before pushing.
+- **In progress when the session paused: proxy-side compaction of primary sessions.** See the
+  section of that name below; it is the next thing to pick up.
 - Live `config.json` edited by hand this session (backed up first): Opus 5.5 pricing
   (`4 / 20`, `cache_read_per_mtok 0.2`) and Fable 5.1 `cache_read_per_mtok 0.25`;
   `ExitTimeOut 60` added to the LaunchAgent plist.
@@ -82,9 +85,68 @@ Every one was deployed with `scripts/deploy.sh` and the full suite passed first.
    rows in an hour), which have no cost by nature. Offered a "model calls only" filter; the
    user has not answered.
 
+## In progress: proxy-side compaction of primary sessions (experimental)
+
+**What the user asked for:** auto compact at 400k tokens of context, a warning at 300k, and at
+most one compaction per session per time window (default 1 hour). Offered three routes; the
+user chose "proxy compaction (experimental)" over "block the prompt once" and "warnings only".
+Their follow-up ideas, and why neither works: appending `/compact` to a request (it is a Claude
+Code client command; in a request it is just text) and having the proxy send its own request
+(yes: that is the design below).
+
+**Constraints, sourced** (claude-code-guide agent over code.claude.com docs, and the claude-api
+skill's `shared/model-migration.md` Breaking change 3):
+- Claude Code's auto-compact threshold is not configurable (not documented), and no hook or
+  proxy can run `/compact`. Hooks can only show `systemMessage` / add `additionalContext`.
+- Server-side compaction (`compact-2026-01-12`) returns a block the client must send back;
+  Claude Code is not documented to do that, so it was rejected.
+- Opus 5.5 binds thinking blocks to the unedited history (enforced for accounts created on or
+  after 2026-08-31; older accounts record it and restart the cache). Documented safe client
+  shape: keep-tail compaction with thinking **stripped from retained turns**; never compact
+  mid tool round.
+
+**Design (agreed in principle, stated to the user):**
+1. Per session (`x-claude-code-session-id`), track the context the last primary response
+   reported: `input + cache_read + cache_write` (from `writeMetric`).
+2. At 300k: warn (log line + dashboard). At 400k, if no compaction for that session in the
+   window: in the background, send one summary request through the primary provider with the
+   inbound auth headers, the same model, system and tools, messages `[0, p0)` where `p0` is
+   the last plain user prompt, plus the Anthropic-recommended summarisation prompt (quoted in
+   `shared/model-migration.md` near line 1840; its last sentence, "Do not call any tools...",
+   is load-bearing because tools stay in the request). Stream it and keep the text inside
+   `<summary>`. Require `p0`'s prefix to be at least ~30% of the bytes, else skip and log.
+3. Apply the swap first on a request that **ends in a plain user prompt** (`swapAt` = its
+   message count), then on every later request of that session:
+   `rewriteWithSummary(msgs, summary, p0, swapAt)`. Before applying, check
+   `prefixHash(msgs, p0)` still matches; if not (`/clear`, `/compact`, rewind), drop the state.
+4. Config block, **off by default**: enabled, warn_at_tokens 300000, compact_at_tokens
+   400000, window_minutes 60. Admin toggle with explanation in the Context & cache panel,
+   plus a per-session table (context size, compacted at, state).
+5. Metrics: a row for the summary call (note "compaction summary") and a field on rewritten
+   requests so the dashboard can show compactions and tokens no longer sent.
+
+**Done (`b1afafc`, tested):** `promptBoundaries`, `prefixHash`, `rewriteWithSummary` (carries
+the first message's `<system-reminder>` blocks, where CLAUDE.md lives, verbatim),
+`summaryFromText`, with tests in `internal/router/compact_test.go`.
+
+**Not done:** the per-session tracker (a half-written test for it was removed so the tree
+builds), the summary call, the hook point (in `handle()` after `reqModel := requestModel(body)`,
+before routing, skipping `count_tokens`), config, admin UI, metrics fields, deploy.
+
+**Must test before enabling for real:** with `compact_at_tokens` set low (say 60k) on a
+throwaway headless session (`claude -p` in a scratch clone, as the pruning test did), never
+the user's live sessions. Check the swap produces no 400s, the model continues sensibly, and
+the next turns' `cache_read_tokens` fall. In-memory state is lost on restart (the session then
+re-compacts after the window); persisting it is a follow-up.
+
+**Why this pays, unlike pruning the primary:** it rewrites the history once per window instead
+of every step. One summary call (400k cached read ~$0.08, a few thousand output tokens) plus
+one cache write of the smaller new prefix, then every later turn reads ~350k fewer tokens
+(~$0.07 per turn at Opus 5.5 rates), so it pays back within about 7-10 turns.
+
 ## Asked and answered: is there any context optimisation for the primary?
 
-No, deliberately. This session only improved the primary's **measurement** (cached tokens
+At the time of asking: no, deliberately (and the user then asked for compaction, above). This session only improved the primary's **measurement** (cached tokens
 recorded, Opus 5.5 priced). Requests to the primary pass through unchanged. Reasoning, in
 API-equivalent dollars for Opus 5.5 ($4 input): the primary reads ~98% of its context from
 cache at $0.20/MTok (0.05x), and any rewrite of history re-writes the whole context to cache
