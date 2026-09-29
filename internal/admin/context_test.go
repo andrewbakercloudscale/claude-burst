@@ -117,3 +117,36 @@ func TestHandoverSaveInstallAndState(t *testing.T) {
 		t.Fatal("still installed after removal")
 	}
 }
+
+func TestCompactionToggleSavesAppliesLiveAndValidates(t *testing.T) {
+	s := newTestServer(t)
+	writeConfig(t, os.Getenv("HOME"))
+	if stateOf(t, s).Context.Compaction.Enabled {
+		t.Fatal("experimental: off by default")
+	}
+	rr := mutate(t, s, "/api/compaction", `{"enabled":true,"warn_at_tokens":200000,"compact_at_tokens":350000,"window_minutes":30}`)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "compaction on") {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.CompactionConfig{Enabled: true, WarnAtTokens: 200000, CompactAtTokens: 350000, WindowMinutes: 30}
+	if cfg.PrimaryCompaction != want {
+		t.Fatalf("config.json has %+v", cfg.PrimaryCompaction)
+	}
+	if got := stateOf(t, s).Context.Compaction; got != want {
+		t.Fatalf("state reports %+v", got)
+	}
+	for _, body := range []string{
+		`{"enabled":true,"warn_at_tokens":400000,"compact_at_tokens":300000}`, // warn above compact
+		`{"enabled":true,"compact_at_tokens":10}`,                             // absurdly low
+		`{"enabled":true,"window_minutes":-5}`,
+		`not json`,
+	} {
+		if rr := mutate(t, s, "/api/compaction", body); rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status=%d, want 400", body, rr.Code)
+		}
+	}
+}

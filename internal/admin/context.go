@@ -8,6 +8,7 @@ import (
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 )
 
 // The "Context & cache" section: switches for pruning overflow requests,
@@ -36,6 +37,11 @@ type contextInfo struct {
 	// (nothing to judge yet, or off) or bad.
 	Verdict      verdict `json:"verdict"`
 	CacheVerdict verdict `json:"cache_verdict"`
+
+	// Compaction is proxy-side compaction of long primary sessions, and
+	// Sessions the sessions it is tracking, largest context first.
+	Compaction config.CompactionConfig    `json:"compaction"`
+	Sessions   []router.CompactionSession `json:"sessions"`
 }
 
 type verdict struct {
@@ -57,6 +63,8 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 		SavedPct:          int(eff.SavedShare()*100 + 0.5),
 	}
 	ci.USDNotSpent = float64(ci.TokensNotSent) / 1_000_000 * cfg.Pricing[cfg.Secondary.Model].InputPerMTok
+	ci.Compaction = cfg.PrimaryCompaction
+	ci.Sessions = s.gateway.CompactionSessions()
 	ci.Verdict = pruneVerdict(ci)
 	ci.CacheVerdict = cacheVerdict(eff)
 	return ci
@@ -174,4 +182,48 @@ func (s *Server) handlePruning(w http.ResponseWriter, r *http.Request) {
 		state = "pruning on"
 	}
 	writeJSON(w, map[string]string{"ok": state + " - " + msg})
+}
+
+// Bounds for compaction thresholds. Below minCompactAt a summary would cost
+// more than it saves; the model's window is the ceiling.
+const (
+	minCompactAt = 50_000
+	maxCompactAt = 900_000
+	maxWindow    = 24 * 60
+)
+
+func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
+	var req config.CompactionConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	res := req.Resolved()
+	switch {
+	case res.CompactAtTokens < minCompactAt || res.CompactAtTokens > maxCompactAt:
+		http.Error(w, fmt.Sprintf("compact threshold must be between %dk and %dk tokens", minCompactAt/1000, maxCompactAt/1000), http.StatusBadRequest)
+		return
+	case res.WarnAtTokens >= res.CompactAtTokens:
+		http.Error(w, "the warning must come before the compaction threshold", http.StatusBadRequest)
+		return
+	case req.WindowMinutes < 0 || res.WindowMinutes > maxWindow:
+		http.Error(w, fmt.Sprintf("window must be between 1 and %d minutes", maxWindow), http.StatusBadRequest)
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		http.Error(w, "config.json does not parse, fix it before changing this: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cfg.PrimaryCompaction = req
+	if err := config.Save(cfg); err != nil {
+		http.Error(w, "saving config.json: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.gateway.SetCompaction(req)
+	state := "compaction off"
+	if req.Enabled {
+		state = fmt.Sprintf("compaction on: warn at %dk, compact at %dk, at most once per %d minutes per session", res.WarnAtTokens/1000, res.CompactAtTokens/1000, res.WindowMinutes)
+	}
+	writeJSON(w, map[string]string{"ok": state + "; applied to the running gateway"})
 }

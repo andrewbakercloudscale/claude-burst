@@ -95,7 +95,11 @@ type Server struct {
 	// inflight counts inference requests (/v1/messages) being served right
 	// now. A graceful restart waits for it to reach zero; see InFlight.
 	inflight atomic.Int64
-	client   *http.Client
+
+	// compaction is proxy-side compaction of long primary sessions
+	// (compact.go, compact_run.go). Always present; off unless enabled.
+	compaction *compactor
+	client     *http.Client
 	// probe measures local network health after a transport failure. A field so
 	// tests can say "the network is down" or "up" without depending on the
 	// machine they run on having working DNS.
@@ -156,6 +160,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	}
 
 	s := &Server{
+		compaction:      newCompactor(cfg.PrimaryCompaction),
 		cfg:             cfg,
 		primary:         primary,
 		primaryDetector: primaryDetector,
@@ -713,6 +718,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
+	// Before routing, so a compacted history goes wherever the request
+	// goes. count_tokens returned above: it must see what Claude Code sent.
+	body, r = s.applyCompaction(r, body)
 	reqModel := requestModel(body)
 	ladder := s.ladderFor(reqModel, now)
 
@@ -922,6 +930,9 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		tok.prunedBytes, tok.prunedResults, tok.truncatedResults = pruned.prunedBytes, pruned.prunedResults, pruned.truncatedResults
 		tok.repeatedCalls, tok.rerunsAfterStub = pruned.repeatedCalls, pruned.rerunsAfterStub
+		if slot == "primary" {
+			s.noteSessionContext(in, tok)
+		}
 		s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
 			rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
 		s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tok, "", 0, note, destination)
@@ -1365,7 +1376,8 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 		InputTokens: tok.input, OutputTokens: tok.output, CacheReadTokens: tok.cacheRead, CacheWriteTokens: tok.cacheWrite,
 		PrunedBytes: tok.prunedBytes, PrunedToolResults: tok.prunedResults, TruncatedToolResults: tok.truncatedResults,
 		RepeatedCalls: tok.repeatedCalls, RerunsAfterStub: tok.rerunsAfterStub,
-		PrunedUSD:        float64(tok.prunedBytes/metrics.BytesPerToken) / 1_000_000 * price.InputPerMTok,
+		PrunedUSD:         float64(tok.prunedBytes/metrics.BytesPerToken) / 1_000_000 * price.InputPerMTok,
+		CompactedMessages: int64(compactInfoFrom(in.Context()).removedMsgs), CompactedBytes: compactInfoFrom(in.Context()).removedBytes,
 		APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note, Destination: destination,
 		PricingUnknown: unpriced,
 	})

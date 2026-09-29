@@ -58,6 +58,36 @@ type PruneConfig struct {
 	MaxToolResultBytes int  `json:"max_tool_result_bytes,omitempty"`
 }
 
+// CompactionConfig tunes PrimaryCompaction. Zero numbers take the defaults
+// below: warn at 300k tokens of context, compact at 400k, and compact any
+// one session at most once per 60 minutes.
+type CompactionConfig struct {
+	Enabled         bool  `json:"enabled,omitempty"`
+	WarnAtTokens    int64 `json:"warn_at_tokens,omitempty"`
+	CompactAtTokens int64 `json:"compact_at_tokens,omitempty"`
+	WindowMinutes   int   `json:"window_minutes,omitempty"`
+}
+
+const (
+	DefaultCompactionWarnAt    = 300_000
+	DefaultCompactionCompactAt = 400_000
+	DefaultCompactionWindow    = 60
+)
+
+// Resolved returns c with its zero numbers replaced by the defaults.
+func (c CompactionConfig) Resolved() CompactionConfig {
+	if c.WarnAtTokens <= 0 {
+		c.WarnAtTokens = DefaultCompactionWarnAt
+	}
+	if c.CompactAtTokens <= 0 {
+		c.CompactAtTokens = DefaultCompactionCompactAt
+	}
+	if c.WindowMinutes <= 0 {
+		c.WindowMinutes = DefaultCompactionWindow
+	}
+	return c
+}
+
 type ModelPrice struct {
 	InputPerMTok  float64 `json:"input_per_mtok"`
 	OutputPerMTok float64 `json:"output_per_mtok"`
@@ -276,6 +306,11 @@ type Config struct {
 	// to an openai-compatible secondary, where every token is paid for and
 	// nothing is cached for us. On unless Disabled; see router/prune.go.
 	SecondaryPruning PruneConfig `json:"secondary_pruning,omitempty"`
+
+	// PrimaryCompaction summarises the old part of a long primary session
+	// once and sends the summary in place of those messages from then on.
+	// Experimental and off by default; see router/compact.go.
+	PrimaryCompaction CompactionConfig `json:"primary_compaction,omitempty"`
 
 	// AdminListen is the local control panel's address. Deliberately a
 	// separate listener from Listen: in transparent mode the gateway serves

@@ -712,7 +712,7 @@
   </section>
 
   <section id="sec-context" style="scroll-margin-top:70px">
-    <h2>Context &amp; cache <span class="hint">what overflow requests cost, and trimming old tool output before it is paid for</span></h2>
+    <h2>Context &amp; cache <span class="hint">what context costs on your subscription and on overflow, and keeping it small</span></h2>
     <div class="body">
       <div class="grid" id="ctxCards"></div>
       <div id="ctxCacheNote" class="hint" style="margin-top:8px"></div>
@@ -758,6 +758,33 @@
       </div>
       <div class="hint" style="margin-top:6px"><strong>Keep recent</strong>: how many of the latest tool results are always sent in full (default 10). Raise it if the verdict above says pruned requests fail more often. <strong>Step</strong>: how many results the cut-off advances at a time (default 10); bigger keeps the prefix stable for longer but prunes a little less. <strong>Cap</strong>: the largest single tool result sent in full (default 40&nbsp;KB).</div>
       <div id="pruneNote"></div>
+
+      <h3 style="margin:26px 0 6px;font-size:14px">Your subscription: long sessions</h3>
+      <div class="row" style="align-items:flex-start;margin:8px 0 12px">
+        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
+          <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
+          Auto-compact long sessions <span class="pill">experimental</span> <span id="compactState" class="pill"></span>
+        </label>
+      </div>
+      <div class="hint" style="margin:-4px 0 12px 0">On the subscription, every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and eats your limits four times as fast. Claude Code only compacts near the end of its 1M window. With this on, when a session's context passes the threshold, Burst asks the same model (your subscription, your session's own login) to summarise everything before your latest prompt, once, in the background. From your next prompt it sends that summary in place of those messages; Claude Code keeps its full history and sees no difference. Your CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes. If you run <code>/clear</code> or <code>/compact</code>, or rewind, the summary no longer fits and requests go through untouched. Each compaction costs one summary call and one cache rewrite, and pays for itself within about ten turns.</div>
+      <div class="row" style="align-items:flex-end">
+        <div>
+          <label for="compactWarn">Warn at (k tokens)</label>
+          <input type="number" id="compactWarn" min="10" max="890" step="10" style="width:110px">
+        </div>
+        <div>
+          <label for="compactAt">Compact at (k tokens)</label>
+          <input type="number" id="compactAt" min="50" max="900" step="10" style="width:110px">
+        </div>
+        <div>
+          <label for="compactWindow">At most once per (minutes)</label>
+          <input type="number" id="compactWindow" min="1" max="1440" step="5" style="width:110px">
+        </div>
+        <button id="compactSave">Save settings</button>
+      </div>
+      <div class="hint" style="margin-top:6px"><strong>Warn at</strong>: a line in the gateway log and a flag in the table below (default 300k). <strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>At most once per</strong>: the least time between two compactions of the same session (default 60 minutes), so a session that grows fast is not summarised over and over.</div>
+      <div id="compactNote"></div>
+      <div class="scroll" id="compactSessions" style="margin-top:10px"></div>
       <div class="hint" style="margin-top:8px">Figures cover the last 7 days of <code>metrics.jsonl</code>. "Removed" is the share of the secondary's input pruning took out, estimated at ~4 bytes per token and priced at the secondary model's input rate. A <strong>re-run</strong> is the model calling a tool again, with the same input, after its output was stubbed: pruning cost a round trip there instead of saving one. If more than a quarter of stubbed calls are re-run, the verdict turns red. Cache figures come from what each provider reports; a provider that caches but does not say so shows 0%.</div>
     </div>
   </section>
@@ -1559,6 +1586,7 @@ async function refresh() {
     renderSecondary(s);
     renderDowngrade(s);
     renderContext(s);
+    renderCompaction(s);
     renderHandover(s);
     $("hero").hidden = false;
     lastCounts = {requests: reqs.length, responses: resps.length};
@@ -1797,6 +1825,58 @@ $("pruneMaster").onchange = () => {
 $("pruneStub").onchange = savePruning;
 $("pruneCap").onchange = savePruning;
 $("pruneSave").onclick = savePruning;
+
+let compactBusy = false;
+
+function renderCompaction(s) {
+  const c = s.context || {}, k = c.compaction || {}, rows = c.sessions || [];
+  if (!compactBusy) {
+    $("compactOn").checked = !!k.enabled;
+    const typing = [$("compactWarn"), $("compactAt"), $("compactWindow")].includes(document.activeElement);
+    if (!typing) {
+      $("compactWarn").value = Math.round((k.warn_at_tokens || 300000) / 1000);
+      $("compactAt").value = Math.round((k.compact_at_tokens || 400000) / 1000);
+      $("compactWindow").value = k.window_minutes || 60;
+    }
+  }
+  $("compactState").textContent = k.enabled ? "on" : "off";
+  if (!rows.length) {
+    $("compactSessions").innerHTML = `<div class="empty">No sessions tracked yet. A session appears here after its first reply since the gateway started${k.enabled ? "" : " (tracking only runs while this is on)"}.</div>`;
+    return;
+  }
+  const warnAt = k.warn_at_tokens || 300000, at = k.compact_at_tokens || 400000;
+  $("compactSessions").innerHTML = `<table><thead><tr>
+      <th>Session</th><th>Model</th><th class="num">Context</th><th>State</th><th class="num">Summarised</th><th>Last compaction</th>
+    </tr></thead><tbody>${rows.map(r => `<tr>
+      <td class="mono" title="${esc(r.session)}">${esc(r.session.slice(0, 8))}</td>
+      <td class="mono">${esc(r.model || "-")}</td>
+      <td class="num ${r.context >= at ? "st-5" : r.context >= warnAt ? "st-4" : ""}">${esc(num(Math.round(r.context / 1000)))}k</td>
+      <td>${esc(r.state)}</td>
+      <td class="num">${r.summarised_messages ? esc(num(r.summarised_messages)) + " msgs" : "-"}</td>
+      <td class="mono">${r.compacted_at && !r.compacted_at.startsWith("0001") ? esc(stamp(r.compacted_at)) : "-"}</td>
+    </tr>`).join("")}</tbody></table>`;
+}
+
+async function saveCompaction() {
+  const body = {
+    enabled: $("compactOn").checked,
+    warn_at_tokens: (parseInt($("compactWarn").value, 10) || 0) * 1000,
+    compact_at_tokens: (parseInt($("compactAt").value, 10) || 0) * 1000,
+    window_minutes: parseInt($("compactWindow").value, 10) || 0,
+  };
+  compactBusy = true;
+  try {
+    const r = await post("/api/compaction", body);
+    note($("compactNote"), "ok", r.ok);
+  } catch (e) {
+    note($("compactNote"), "bad", e.message);
+  } finally {
+    compactBusy = false;
+    refresh();
+  }
+}
+$("compactOn").onchange = saveCompaction;
+$("compactSave").onclick = saveCompaction;
 
 // Session handover. The form is filled from /api/state only while it is not
 // being edited, the same rule the Configuration and Secondary forms follow:

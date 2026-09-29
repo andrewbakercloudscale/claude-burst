@@ -62,11 +62,15 @@ type Event struct {
 	RerunsAfterStub int64 `json:"reruns_after_stub,omitempty"`
 	// PrunedUSD is what the removed input would have cost at the served
 	// model's input rate, priced when the request was logged.
-	PrunedUSD        float64 `json:"pruned_usd,omitempty"`
-	APIEquivalentUSD float64 `json:"api_equivalent_usd,omitempty"`
-	LimitClaim       string  `json:"limit_claim,omitempty"`
-	ResetAt          int64   `json:"reset_at,omitempty"`
-	Note             string  `json:"note,omitempty"`
+	PrunedUSD float64 `json:"pruned_usd,omitempty"`
+	// Proxy-side compaction (router/compact.go): how many messages a
+	// summary replaced in this request, and the bytes that took out.
+	CompactedMessages int64   `json:"compacted_messages,omitempty"`
+	CompactedBytes    int64   `json:"compacted_bytes,omitempty"`
+	APIEquivalentUSD  float64 `json:"api_equivalent_usd,omitempty"`
+	LimitClaim        string  `json:"limit_claim,omitempty"`
+	ResetAt           int64   `json:"reset_at,omitempty"`
+	Note              string  `json:"note,omitempty"`
 	// PricingUnknown marks an event whose served Model had no entry in the
 	// configured pricing table while it did report tokens. Without it a
 	// zero APIEquivalentUSD is indistinguishable from a genuinely free
