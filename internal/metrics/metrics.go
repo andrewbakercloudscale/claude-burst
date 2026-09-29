@@ -58,8 +58,11 @@ type Event struct {
 	TruncatedToolResults int64 `json:"truncated_tool_results,omitempty"`
 	// The request's latest tool calls: how many repeat an earlier call, and
 	// how many repeat one whose output this request stubbed. See prune.go.
-	RepeatedCalls    int64   `json:"repeated_calls,omitempty"`
-	RerunsAfterStub  int64   `json:"reruns_after_stub,omitempty"`
+	RepeatedCalls   int64 `json:"repeated_calls,omitempty"`
+	RerunsAfterStub int64 `json:"reruns_after_stub,omitempty"`
+	// PrunedUSD is what the removed input would have cost at the served
+	// model's input rate, priced when the request was logged.
+	PrunedUSD        float64 `json:"pruned_usd,omitempty"`
 	APIEquivalentUSD float64 `json:"api_equivalent_usd,omitempty"`
 	LimitClaim       string  `json:"limit_claim,omitempty"`
 	ResetAt          int64   `json:"reset_at,omitempty"`
@@ -277,6 +280,13 @@ type Day struct {
 	SecondaryTokens int64   `json:"secondary_tokens"`
 	PrimaryUSD      float64 `json:"primary_usd"`
 	SecondaryUSD    float64 `json:"secondary_usd"`
+
+	// The Saved view: what the secondary was sent (cached input included:
+	// it was sent, only billed less) and what pruning removed from it, so a
+	// bar's full height is what would have been sent without pruning.
+	SecondarySentTokens int64   `json:"secondary_sent_tokens"`
+	PrunedTokens        int64   `json:"pruned_tokens"`
+	PrunedUSD           float64 `json:"pruned_usd"`
 }
 
 // ModelUse is one served model's share of the window. This is the answer to
@@ -387,6 +397,9 @@ func Daily(path string, days int) (History, error) {
 				d.SecondaryRequests++
 				d.SecondaryTokens += e.InputTokens + e.OutputTokens
 				d.SecondaryUSD += e.APIEquivalentUSD
+				d.SecondarySentTokens += e.InputTokens + e.CacheReadTokens + e.CacheWriteTokens
+				d.PrunedTokens += e.PrunedBytes / BytesPerToken
+				d.PrunedUSD += e.PrunedUSD
 			}
 			if e.HTTPStatus >= 400 {
 				d.Errors++

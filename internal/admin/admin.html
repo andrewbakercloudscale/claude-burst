@@ -370,9 +370,13 @@
    * orange), stepped separately for the dark surface; they clear the CVD
    * and normal-vision separation floors in both modes.
    * ===================================================================== */
-  :root { --s-primary: #2a78d6; --s-secondary: #eb6834; --grid: #e9ecef; }
+  /* --s-saved is categorical slot 3 (aqua), for input pruning removed. The
+     orange/aqua pair was run through the dataviz validator in both modes:
+     CVD dE 9.2 light / 9.4 dark. Aqua is under 3:1 against the light
+     surface, so the Saved view relies on its legend and the table view. */
+  :root { --s-primary: #2a78d6; --s-secondary: #eb6834; --s-saved: #1baf7a; --grid: #e9ecef; }
   @media (prefers-color-scheme: dark) {
-    :root { --s-primary: #3987e5; --s-secondary: #d95926; --grid: #23272f; }
+    :root { --s-primary: #3987e5; --s-secondary: #d95926; --s-saved: #199e70; --grid: #23272f; }
   }
   .chart-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
                 padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -563,6 +567,7 @@
         <button data-metric="requests" class="on">Requests</button>
         <button data-metric="tokens">Tokens</button>
         <button data-metric="spend">Spend</button>
+        <button data-metric="saved" title="Overflow input: what the secondary was sent, and what pruning removed before it was sent">Saved</button>
       </span>
       <span class="seg" id="daysSeg">
         <button data-days="7">7d</button>
@@ -570,10 +575,7 @@
         <button data-days="30">30d</button>
       </span>
       <span class="spacer" style="flex:1"></span>
-      <span class="legend">
-        <span><i style="background:var(--s-primary)"></i>Primary</span>
-        <span><i style="background:var(--s-secondary)"></i>Secondary</span>
-      </span>
+      <span class="legend" id="chartLegend"></span>
       <button class="h2btn" id="tableToggle" aria-pressed="false">Table</button>
     </div>
     <div class="chart-wrap" id="chartWrap">
@@ -2179,7 +2181,39 @@ const METRICS = {
     p: d => d.primary_usd, s: d => d.secondary_usd,
     fmt: money, axis: axisMoney,
   },
+  // Pruning's effect on overflow input: the bottom segment is what the
+  // secondary was sent, the top what pruning removed, so the full bar is
+  // what would have been sent without it.
+  saved: {
+    label: "Overflow input",
+    p: d => d.secondary_sent_tokens, s: d => d.pruned_tokens,
+    fmt: n => num(Math.round(n)), axis: compact,
+    pName: "Sent to secondary", sName: "Removed by pruning",
+    pColor: "var(--s-secondary)", sColor: "var(--s-saved)",
+    extra: d => {
+      const total = d.secondary_sent_tokens + d.pruned_tokens;
+      if (!total) return "";
+      return `<div class="r"><span>Removed</span><b>${esc(Math.round(100 * d.pruned_tokens / total) + "%")}</b></div>` +
+             `<div class="r"><span>Not spent</span><b>${esc(smallUSD(d.pruned_usd))}</b></div>`;
+    },
+  },
 };
+
+// Series names and colours default to the primary/secondary split every
+// metric but Saved uses.
+function seriesOf(M) {
+  return {
+    pName: M.pName || "Primary", sName: M.sName || "Secondary",
+    pColor: M.pColor || "var(--s-primary)", sColor: M.sColor || "var(--s-secondary)",
+  };
+}
+
+function renderLegend() {
+  const S = seriesOf(METRICS[chartMetric]);
+  $("chartLegend").innerHTML =
+    `<span><i style="background:${S.pColor}"></i>${esc(S.pName)}</span>` +
+    `<span><i style="background:${S.sColor}"></i>${esc(S.sName)}</span>`;
+}
 
 // niceMax rounds an axis top up to a number a person would have chosen, so
 // the gridline labels read 0 / 5K / 10K rather than 0 / 4,317 / 8,634.
@@ -2207,6 +2241,8 @@ function drawChart() {
   if (!lastHistory) { host.innerHTML = ""; return; }
   const days = lastHistory.days;
   const M = METRICS[chartMetric];
+  const S = seriesOf(M);
+  renderLegend();
   // Days before the oldest surviving event are not zero days -- they are
   // days this machine has no record of, because metrics.jsonl rotated. They
   // are drawn as a hatched band, never as an empty bar.
@@ -2246,11 +2282,11 @@ function drawChart() {
     if (pv > 0) {
       const top = base - pH;
       const r = sv > 0 ? 0 : Math.min(4, pH);
-      parts.push(rounded(x, top, barW, pH, r, "var(--s-primary)"));
+      parts.push(rounded(x, top, barW, pH, r, S.pColor));
     }
     if (sv > 0) {
       const top = base - pH - gap - sH;
-      parts.push(rounded(x, top, barW, sH, Math.min(4, sH), "var(--s-secondary)"));
+      parts.push(rounded(x, top, barW, sH, Math.min(4, sH), S.sColor));
     }
   });
 
@@ -2274,7 +2310,7 @@ function drawChart() {
   });
 
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"
-      aria-label="${esc(M.label)} per day, primary and secondary stacked">
+      aria-label="${esc(M.label)} per day, ${esc(S.pName)} and ${esc(S.sName)} stacked">
     <defs>
       <pattern id="nodata" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
         <line x1="0" y1="0" x2="0" y2="6" stroke="var(--grid)" stroke-width="3"/>
@@ -2293,8 +2329,9 @@ function drawChart() {
       } else {
         const pv = M.p(d), sv = M.s(d);
         tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
-          `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s-primary);margin-right:6px"></i>Primary</span><b>${esc(M.fmt(pv))}</b></div>` +
-          `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s-secondary);margin-right:6px"></i>Secondary</span><b>${esc(M.fmt(sv))}</b></div>` +
+          `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${S.pColor};margin-right:6px"></i>${esc(S.pName)}</span><b>${esc(M.fmt(pv))}</b></div>` +
+          `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${S.sColor};margin-right:6px"></i>${esc(S.sName)}</span><b>${esc(M.fmt(sv))}</b></div>` +
+          (M.extra ? M.extra(d) : "") +
           `<div class="r"><span>Sessions</span><b>${esc(num(d.sessions))}</b></div>` +
           (d.errors ? `<div class="r"><span style="color:var(--bad)">Errors</span><b>${esc(num(d.errors))}</b></div>` : "");
       }
@@ -2323,8 +2360,9 @@ function rounded(x, y, w, h, r, fill) {
 function renderChartTable() {
   if (!lastHistory) { $("chartTable").innerHTML = ""; return; }
   const M = METRICS[chartMetric];
+  const S = seriesOf(M);
   $("chartTable").innerHTML = `<table><thead><tr>
-      <th>Day</th><th class="num">Primary</th><th class="num">Secondary</th>
+      <th>Day</th><th class="num">${esc(S.pName)}</th><th class="num">${esc(S.sName)}</th>
       <th class="num">Sessions</th><th class="num">Errors</th>
     </tr></thead><tbody>${lastHistory.days.map(d => `<tr>
       <td class="mono">${esc(d.date)}</td>

@@ -164,3 +164,28 @@ func TestDefaultPricingCoversCurrentModels(t *testing.T) {
 		t.Fatalf("fable 5.1 cache read = %v, want 0.25", r)
 	}
 }
+
+// Dollars saved by pruning are priced when the request is logged, at the
+// served model's input rate, because only then is the price known.
+func TestWriteMetricPricesPrunedTokens(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metrics.jsonl")
+	cfg := config.Default()
+	cfg.Pricing["zai-org/GLM-5.3"] = config.ModelPrice{InputPerMTok: 1.4, OutputPerMTok: 4.4}
+	s, err := New(cfg, filepath.Join(dir, "state.json"), path, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	s.writeMetric(req, "secondary", "together", "zai-org/GLM-5.3", "claude-sonnet-5", 200, time.Now(),
+		tokenUsage{input: 1000, prunedBytes: 4_000_000}, "", 0, "", "")
+	b, _ := os.ReadFile(path)
+	var e metrics.Event
+	if err := json.Unmarshal(b, &e); err != nil {
+		t.Fatal(err)
+	}
+	// 4,000,000 bytes / 4 = 1M tokens at $1.40/MTok.
+	if e.PrunedUSD < 1.3999 || e.PrunedUSD > 1.4001 {
+		t.Fatalf("PrunedUSD = %v, want 1.40", e.PrunedUSD)
+	}
+}

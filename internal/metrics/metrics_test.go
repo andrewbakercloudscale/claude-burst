@@ -414,3 +414,35 @@ func TestDailyOnMissingFile(t *testing.T) {
 		t.Errorf("no data must not claim coverage: %+v", h)
 	}
 }
+
+// The Saved view of the daily chart stacks what the secondary was sent on
+// what pruning removed, so each bar's height is what would have been sent
+// without it. Sent counts cached input too: it was sent, only billed less.
+func TestDailyCarriesPruningSavings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.jsonl")
+	w := New(path)
+	now := time.Now()
+	for _, e := range []Event{
+		{Time: now, Slot: "secondary", Model: "glm", HTTPStatus: 200, InputTokens: 50_000, CacheReadTokens: 10_000, PrunedBytes: 80_000, PrunedUSD: 0.028},
+		{Time: now, Slot: "secondary", Model: "glm", HTTPStatus: 200, InputTokens: 40_000},
+		{Time: now, Slot: "primary", Model: "claude-opus-5-5", HTTPStatus: 200, InputTokens: 5, CacheReadTokens: 300_000},
+	} {
+		if err := w.Write(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := Daily(path, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := h.Days[len(h.Days)-1]
+	if d.SecondarySentTokens != 100_000 {
+		t.Fatalf("SecondarySentTokens = %d, want 100000 (uncached + cached, secondary only)", d.SecondarySentTokens)
+	}
+	if d.PrunedTokens != 20_000 {
+		t.Fatalf("PrunedTokens = %d, want 20000 (80000 bytes / 4)", d.PrunedTokens)
+	}
+	if d.PrunedUSD != 0.028 {
+		t.Fatalf("PrunedUSD = %v, want 0.028", d.PrunedUSD)
+	}
+}
