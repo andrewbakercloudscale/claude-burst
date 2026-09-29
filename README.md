@@ -5,7 +5,9 @@
 Claude Burst is a Mac-only local gateway for Claude Code:
 
 1. **Overflow.** It keeps your normal Claude Pro/Max login as the primary credential, watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests to a secondary, this README works through **Together AI serving GLM**, then returns to the subscription when the reset timestamp arrives.
-2. **Overflow pruning.** Every overflow request resends the whole conversation to a metered provider, and most of it is old tool output. Before it is sent, tool results older than the most recent 10 are replaced with a one-line note, and any single result over 40 KB keeps only its start and end. The subscription is never pruned: Anthropic caches its context, and rewriting it would break the cache. The dashboard's **Context & cache** panel has the switches, what was not sent, the cache hit rate per route, and a verdict that turns red if pruned requests fail more often than unpruned ones.
+2. **Overflow pruning.** Every overflow request resends the whole conversation to a metered provider, and most of it is old tool output. Before it is sent, tool results older than the most recent 10 are replaced with a one-line note, and any single result over 40 KB keeps only its start and end. The subscription is never pruned: Anthropic caches its context, and rewriting it on every request would break the cache (pauseless compaction, below, rewrites it once, on purpose). The dashboard's **Context & cache** panel has the switches, what was not sent, the cache hit rate per route, and a verdict that turns red if pruned requests fail more often than unpruned ones.
+
+3. **Pauseless compaction** (experimental, off by default). **Long subscription sessions are compacted in the background, with no pause.** When a session's context passes a threshold (default 400k), Burst has the same model summarise the older history while you keep working, and swaps the summary in on your next prompt. See [Pauseless compaction](#pauseless-compaction-long-sessions-without-the-pause-experimental).
 
 Token shunting, an earlier second job for the secondary, was switched off on 2026-09-21 because it saved nothing, and has been removed from the dashboard; see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context).
 
@@ -36,6 +38,20 @@ Bedrock speaks Anthropic's Messages format natively and is relayed byte-for-byte
 See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-openrouter-or-any-openai-compatible-secondary) for the worked examples, and [Configuration](#configuration) for every field.
 
 **Keeping Remote Control.** Pointing Claude Code at any local gateway normally costs you its Remote Control feature, Claude Code disables Remote Control the moment `ANTHROPIC_BASE_URL` names anything other than `api.anthropic.com`, and the default setup below sets exactly that variable. Claude Burst's `transparent` intercept mode solves this by never touching `ANTHROPIC_BASE_URL` at all: instead of using that config mechanism, it gets into the path a level lower, at DNS, so Claude Code's own settings never change and it believes it is still talking to `api.anthropic.com` directly. See [Keeping Remote Control: transparent intercept mode](#keeping-remote-control-transparent-intercept-mode-optional) below.
+
+## Pauseless compaction: long sessions without the pause (experimental)
+
+**Claude Code's `/compact` stops the session while it summarises. Burst's compaction never does.**
+
+On the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window. With pauseless compaction on:
+
+- When a session's context passes **Compact at** (default 400k), Burst sends one background request, on your subscription with the session's own login, asking the same model to summarise everything before your latest prompt. It takes about 40 seconds and you keep working.
+- The summary request resends the history exactly as Claude Code last sent it, so it reads from cache rather than paying for the whole context again.
+- From your next prompt, Burst sends the summary in place of those messages. Claude Code keeps its full local history and sees no difference. CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.
+- `/clear`, `/compact` or a rewind make the summary stop fitting, and requests then go through untouched.
+- A session is compacted at most once per window (default 60 minutes), a warning is logged at **Warn at** (default 300k), and state survives a gateway restart.
+
+In a live test a 536k session dropped to 47k in one step with its recall intact. Switch it on, and set the thresholds, in the dashboard's **Context & cache** section. The [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel) marks each compaction in its turn table.
 
 ## Keeping Claude Code working with the lid shut (optional)
 

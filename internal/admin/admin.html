@@ -763,10 +763,15 @@
       <div class="row" style="align-items:flex-start;margin:8px 0 12px">
         <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
           <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
-          Auto-compact long sessions <span class="pill">experimental</span> <span id="compactState" class="pill"></span>
+          <span style="font-size:17px;letter-spacing:.02em"><strong>PAUSELESS COMPACTION</strong></span> <span class="pill">experimental</span> <span id="compactState" class="pill"></span>
         </label>
       </div>
-      <div class="hint" style="margin:-4px 0 12px 0">On the subscription, every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and eats your limits four times as fast. Claude Code only compacts near the end of its 1M window. With this on, when a session's context passes the threshold, Burst asks the same model (your subscription, your session's own login) to summarise everything before your latest prompt, once, in the background. From your next prompt it sends that summary in place of those messages; Claude Code keeps its full history and sees no difference. Your CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes. If you run <code>/clear</code> or <code>/compact</code>, or rewind, the summary no longer fits and requests go through untouched. Each compaction costs one summary call and one cache rewrite, and pays for itself within about ten turns.</div>
+      <div class="hint" style="margin:-4px 0 12px 0;font-size:14px;line-height:1.55">
+        <p style="margin:0 0 8px"><strong>Your session never stops to compact.</strong> Claude Code's own <code>/compact</code> makes you wait while it summarises. Burst writes the summary in the background while you keep working, and swaps it in on your next prompt. <strong>No pause, no lost place, nothing to type.</strong></p>
+        <p style="margin:0 0 8px"><strong>Why it matters:</strong> on the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window.</p>
+        <p style="margin:0 0 8px"><strong>How:</strong> when a session's context passes <em>Compact at</em>, Burst asks the same model, on your subscription and your session's own login, to summarise everything before your latest prompt (about 40 seconds, in the background). From your next prompt it sends that summary in place of those messages. Claude Code keeps its full history and sees no difference. Your CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.</p>
+        <p style="margin:0">If you run <code>/clear</code> or <code>/compact</code>, or rewind, the summary no longer fits and requests go through untouched. Each compaction costs one summary call, which reads the session from cache, and one cache rewrite, and pays for itself within a few turns. The usage panel marks each one with Started and Finished rows and a green drop in context.</p>
+      </div>
       <div class="row" style="align-items:flex-end">
         <div>
           <label for="compactWarn">Warn at (k tokens)</label>
