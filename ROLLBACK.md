@@ -1,11 +1,11 @@
-# Rollback notes — transparent intercept mode
+# Rollback notes, transparent intercept mode
 
 Written 2026-08-30. Covers every change made while building the optional
 transparent intercept mode, and how to undo each one independently.
 
-## TL;DR — what is on my machine right now?
+## TL;DR, what is on my machine right now?
 
-Updated 2026-09-08. **Transparent mode is installed and live** — the opposite of what
+Updated 2026-09-08. **Transparent mode is installed and live**, the opposite of what
 this section said on 2026-08-31, when only base-url mode had ever been enabled. Every
 line below was verified against the machine, not inferred from config.
 
@@ -16,7 +16,7 @@ line below was verified against the machine, not inferred from config.
   (see INVESTIGATION-TLS-STORM.md update (b)), and the shipped default went back to 7777
   while this machine stayed on 17777. `config.json` names it explicitly, so nothing infers it.
 - **Do not health-check the gateway by connecting to its port directly.** While the pf
-  redirect is installed, the rdr rule makes its own target port very nearly unreachable — a
+  redirect is installed, the rdr rule makes its own target port very nearly unreachable, a
   direct `curl https://127.0.0.1:17777/healthz` times out roughly nineteen times in twenty,
   with the gateway perfectly healthy. Note the *roughly*: an occasional probe succeeds, which
   is precisely what makes this so good at wasting a morning. Probe the real path instead:
@@ -27,7 +27,7 @@ line below was verified against the machine, not inferred from config.
   `subscription-limit+metered-failures`. Secondary `openai-compatible` → Together AI
   (`zai-org/GLM-5.3`), key in Keychain service `claude-burst-together`.
 
-**Transparent intercept mode — installed, all four parts present:**
+**Transparent intercept mode, installed, all four parts present:**
 - `intercept.mode` is `transparent`, host `api.anthropic.com`.
 - `/etc/hosts` has the `# BEGIN claude-burst hosts` block redirecting
   `api.anthropic.com` → `127.0.0.1`.
@@ -37,23 +37,23 @@ line below was verified against the machine, not inferred from config.
   2036-08-28; leaf for `api.anthropic.com`, valid to 2027-10-02). Trusted **twice**, and
   the two are removed separately: inside the `# BEGIN claude-burst CA` block of
   `~/.claude/certs/node-extra-ca-certs.pem` (13 certificates, 12 of them the
-  corporate ones — see *The CA bundle* below), and as a trusted root in the **System
+  corporate ones, see *The CA bundle* below), and as a trusted root in the **System
   keychain** (`scripts/trust-ca-systemwide.sh`, added because Claude Desktop's updater
-  has no idea about `NODE_EXTRA_CA_CERTS` — see INVESTIGATION-TLS-STORM.md).
+  has no idea about `NODE_EXTRA_CA_CERTS` - see INVESTIGATION-TLS-STORM.md).
 - `~/.claude/settings.json` has **no** `ANTHROPIC_BASE_URL`, which is the whole point:
   Remote Control keeps working. Do not set it while this mode is installed.
 - Live path confirmed, not just configured: the dashboard's **Test connection** reports
   `https://api.anthropic.com/healthz` resolving to this gateway.
 
 **Both guards armed and beating:**
-- `ninja.andrewbaker.claude-burst-pfheal` — root LaunchDaemon, guards the pf rdr rule,
+- `ninja.andrewbaker.claude-burst-pfheal` - root LaunchDaemon, guards the pf rdr rule,
   log `/var/log/claude-burst-pf.log` (empty, which is the good case).
-- `ninja.andrewbaker.claude-burst-selfheal` — user LaunchAgent, guards the gateway
+- `ninja.andrewbaker.claude-burst-selfheal` - user LaunchAgent, guards the gateway
   process, log `~/.config/claude-burst/self-heal.log`.
 - Both write a heartbeat every ~2 min; the dashboard reads the heartbeat, never
   launchd's opinion. No `rolled-back` marker is present, so neither is standing down.
 
-**If Claude Code — or this Mac — is broken and you want out fast:**
+**If Claude Code, or this Mac, is broken and you want out fast:**
 
 ```sh
 scripts/rollback.sh                       # /etc/hosts + pf FIRST, then System-keychain
@@ -99,7 +99,7 @@ emergency. That command would have silently done nothing. Invoke by path
 ## Why any of this exists
 
 Claude Code disables Remote Control whenever `ANTHROPIC_BASE_URL` names a host
-other than `api.anthropic.com` — a check on the literal variable value, not on
+other than `api.anthropic.com` - a check on the literal variable value, not on
 where traffic ends up (documented, since v2.1.196). So enabling the gateway
 costs `/remote-control`.
 
@@ -114,7 +114,7 @@ did before any of this existed.
 
 ## What changed, and how to undo each piece
 
-### 1. Committed and pushed — `8a96ea9`
+### 1. Committed and pushed, `8a96ea9`
 
 | file | change |
 |---|---|
@@ -147,17 +147,17 @@ git reset --hard 3b94faf && git push --force-with-lease origin main
 All are inert with respect to transparent mode until `intercept.mode` is set. The admin UI
 is the one user-visible change from deploying, and it binds loopback only.
 
-### 3. The pf spike — already reverted
+### 3. The pf spike, already reverted
 
 `pf-spike.sh` (in the session scratchpad, not in the repo) loaded a temporary
 rdr rule into a sub-anchor of `com.apple/*` to prove the redirect works on
 macOS 26.5.2. It flushed the anchor and released pf's enable token on exit, and
-its own output confirmed `pf now: Status: Disabled` — the state it started in.
+its own output confirmed `pf now: Status: Disabled` - the state it started in.
 **Nothing to undo.** `/etc/pf.conf` was never touched.
 
 ## Rolling back each piece of transparent mode
 
-All of this is **in play** — transparent mode is installed on this machine (see
+All of this is **in play**, transparent mode is installed on this machine (see
 the TL;DR). This section was written while it was still hypothetical, so that
 the recovery path existed before the thing it recovers; it is now the live
 undo procedure, not a contingency. Each piece below can be removed on its own,
@@ -180,7 +180,7 @@ To check without changing anything:
 ```sh
 sudo scripts/transparent-root.sh status
 ```
-Watch for `live rdr rule : MISSING` while the hosts entry is present — that is
+Watch for `live rdr rule : MISSING` while the hosts entry is present, that is
 the one genuinely bad state (DNS redirects, nothing listens), and it means
 every process on the Mac that talks to Anthropic will get connection refused.
 The fix is `remove`.
@@ -205,7 +205,7 @@ that block. `scripts/rollback.sh` restores the whole file from the backup taken
 by `backup-config.sh`.
 
 If this file is ever lost, corporate TLS breaks machine-wide, not just Claude
-Code — treat it as the most sensitive file this tool goes near.
+Code, treat it as the most sensitive file this tool goes near.
 
 ### The binary
 
@@ -262,12 +262,12 @@ listening and killed a live session with `Connection refused`.
 - **TLS interception is assumed not to break Remote Control.** The evidence is
   that it works on the Capitec/Zscaler network. That could not be verified in
   session: Zscaler was off, and all sampled hosts returned genuine issuers.
-  Settle it with `scripts/check-interception.sh` while the tunnel is on —
+  Settle it with `scripts/check-interception.sh` while the tunnel is on -
   it distinguishes *intercepted* from *bypassed* from *not enrolled*, which a
   bare issuer check cannot.
 - ~~`internal/keychain` has one failing test on this machine.~~ **Fixed in
   `850a59a`.** The test asserted against the real `claude-burst-together`
   service name, so it passed or failed depending on whether this Mac happened
-  to have that credential stored — a result that depended on the developer's
+  to have that credential stored, a result that depended on the developer's
   machine rather than on the code. It now uses a deliberately nonexistent
   service name. `go test ./...` is green locally and in CI.

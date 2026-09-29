@@ -175,7 +175,7 @@ func (s *Server) handleShunt(w http.ResponseWriter, r *http.Request) {
 	// call, so nothing is refused from this moment -- and only unloading the
 	// skill from an already-running session needs a restart. Turning it on is
 	// the reverse: the hook and skill load at session start.
-	msg := "shunt off — the guard stops refusing reads immediately; restart Claude Code sessions to unload the skill"
+	msg := "shunt off, the guard stops refusing reads immediately; restart Claude Code sessions to unload the skill"
 	restart := false
 	switch {
 	case cfg.Shunt.Read && cfg.Shunt.Write:
@@ -186,7 +186,7 @@ func (s *Server) handleShunt(w http.ResponseWriter, r *http.Request) {
 		msg, restart = "shunt on: code write only", true
 	}
 	if restart {
-		msg += " — restart Claude Code sessions for the hook and skill to load"
+		msg += " - restart Claude Code sessions for the hook and skill to load"
 	}
 	writeJSON(w, map[string]string{"ok": msg})
 }

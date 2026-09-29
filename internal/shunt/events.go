@@ -104,13 +104,13 @@ func (e Event) Describe() string {
 		s := fmt.Sprintf("blocked a direct %s of %s (%s, %d+ lines, threshold %d) and pointed Claude at shunt read", orDefault(e.Tool, "read"), orDefault(file, "a file"), humanBytes(e.BytesIn), e.Lines, e.Threshold)
 		switch {
 		case e.Repeat >= 2:
-			s += fmt.Sprintf(" — attempt #%d on this file with no answer in between: the session is retrying instead of running shunt read", e.Repeat+1)
+			s += fmt.Sprintf(" - attempt #%d on this file with no answer in between: the session is retrying instead of running shunt read", e.Repeat+1)
 		case e.Repeat == 1:
-			s += " — second attempt on this file"
+			s += " - second attempt on this file"
 		}
 		return s
 	case KindGuardError:
-		return fmt.Sprintf("guard could not decide (%s): %s — the call was ALLOWED through", orDefault(e.Stage, "error"), orDefault(e.Note, "no detail"))
+		return fmt.Sprintf("guard could not decide (%s): %s, the call was ALLOWED through", orDefault(e.Stage, "error"), orDefault(e.Note, "no detail"))
 	case KindRead:
 		if !e.OK {
 			return fmt.Sprintf("delegated read FAILED at %s: %s", orDefault(e.Stage, "error"), orDefault(e.Note, "no detail"))

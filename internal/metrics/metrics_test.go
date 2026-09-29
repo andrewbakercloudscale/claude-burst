@@ -290,7 +290,7 @@ func TestDailyBucketsByLocalDay(t *testing.T) {
 	// The 500 is excluded: a failed request's duration is not a measure of
 	// how fast the gateway serves.
 	if h.LatencyP50MS != 100 || h.LatencyP95MS != 300 {
-		t.Errorf("latency p50=%d p95=%d, want the two 2xx durations (100,300) — "+
+		t.Errorf("latency p50=%d p95=%d, want the two 2xx durations (100,300), "+
 			"the 5000ms 500 must not be in there", h.LatencyP50MS, h.LatencyP95MS)
 	}
 	if len(h.Models) != 2 || h.Models[0].Model != "claude-opus-5" {
@@ -375,7 +375,7 @@ func TestDailyReadsRotatedBackups(t *testing.T) {
 		t.Errorf("read %d files, want 2 (the live one and its backup)", h.Files)
 	}
 	if h.Window.Requests != 2 {
-		t.Errorf("window requests = %d, want 2 — the backup's event was dropped", h.Window.Requests)
+		t.Errorf("window requests = %d, want 2, the backup's event was dropped", h.Window.Requests)
 	}
 }
 
@@ -398,7 +398,7 @@ func TestDailySkipsBackupsOlderThanWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if h.Files != 1 {
-		t.Errorf("read %d files, want 1 — the 40-day-old backup should not be opened", h.Files)
+		t.Errorf("read %d files, want 1, the 40-day-old backup should not be opened", h.Files)
 	}
 }
 

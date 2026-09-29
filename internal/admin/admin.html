@@ -507,7 +507,7 @@
           <circle class="fill" id="meterFill" cx="42" cy="42" r="36" fill="none" stroke-width="8"
                   stroke-dasharray="226.19" stroke-dashoffset="226.19"></circle>
         </svg>
-        <div class="mid"><span class="n" id="meterNum">&ndash;</span><span class="of" id="meterOf">checks</span></div>
+        <div class="mid"><span class="n" id="meterNum">-</span><span class="of" id="meterOf">checks</span></div>
       </div>
       <div class="hero-id">
         <h2 id="heroTitle">Claude Burst</h2>
@@ -535,12 +535,12 @@
              this is FOR: base-url makes Claude Code disable Remote Control,
              which is the feature transparent mode exists to preserve. Listing
              the fallback first read as a recommendation of it. -->
-        <button class="primary" id="installTransparent">⤓ Install — transparent proxy <small style="opacity:.75">(recommended)</small></button>
-        <button id="installBaseUrl">⤓ Install — base-url <small style="opacity:.75">(fallback)</small></button>
+        <button class="primary" id="installTransparent">⤓ Install: transparent proxy <small style="opacity:.75">(recommended)</small></button>
+        <button id="installBaseUrl">⤓ Install: base-url <small style="opacity:.75">(fallback)</small></button>
       </div>
       <div class="hint" style="margin-top:8px">
-        <b>transparent proxy — recommended.</b> Redirects at the DNS layer, so Claude Code still believes it reached Anthropic and <b>Remote Control keeps working</b>. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac — which is why it comes with the two guards below.<br>
-        <b>base-url — fallback.</b> Writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password and nothing machine-wide, so it is the right choice when you cannot or would rather not touch system files — but Claude Code <b>turns Remote Control off</b> while that variable names a non-Anthropic host.<br>
+        <b>transparent proxy, recommended.</b> Redirects at the DNS layer, so Claude Code still believes it reached Anthropic and <b>Remote Control keeps working</b>. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac, which is why it comes with the two guards below.<br>
+        <b>base-url, fallback.</b> Writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password and nothing machine-wide, so it is the right choice when you cannot or would rather not touch system files, but Claude Code <b>turns Remote Control off</b> while that variable names a non-Anthropic host.<br>
         Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
       </div>
       <div id="installNote"></div>
@@ -603,7 +603,7 @@
       <!-- Gateway watchdog: shown in both modes. A dead gateway breaks
            base-url mode too; it just breaks it for one user rather than
            for every process on the Mac. -->
-      <h3 style="margin:0 0 6px;font-size:13px">Gateway watchdog <span class="hint" style="font-weight:400">restarts the gateway if its process dies — no password needed</span></h3>
+      <h3 style="margin:0 0 6px;font-size:13px">Gateway watchdog <span class="hint" style="font-weight:400">restarts the gateway if its process dies; no password needed</span></h3>
       <div id="selfHealStatus"></div>
       <div class="row" style="margin-top:8px">
         <button class="primary" id="armSelfHeal">⤓ Arm the watchdog</button>
@@ -620,7 +620,7 @@
       </div>
 
       <div class="hint" style="margin-top:12px">
-        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks the gateway is actually running — having a pid, not merely being registered with launchd, which keeps answering for a job whose process has died. The <b>pf guard</b> checks the real path end to end: that <code>api.anthropic.com</code> answers, <i>and answers from this gateway</i>. Neither touches anything while no <code>/etc/hosts</code> redirect is installed, so a rollback stays rolled back. If the guard cannot repair the path after four tries it removes the redirect entirely, because a Mac that reaches Anthropic directly beats one that cannot reach it at all.
+        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks the gateway is actually running, having a pid, not merely being registered with launchd, which keeps answering for a job whose process has died. The <b>pf guard</b> checks the real path end to end: that <code>api.anthropic.com</code> answers, <i>and answers from this gateway</i>. Neither touches anything while no <code>/etc/hosts</code> redirect is installed, so a rollback stays rolled back. If the guard cannot repair the path after four tries it removes the redirect entirely, because a Mac that reaches Anthropic directly beats one that cannot reach it at all.
       </div>
       <div id="pfHealNote"></div>
     </div>
@@ -629,7 +629,7 @@
   <!-- Starts closed in the MARKUP for the same reason Guards does: set in
        script it would render open for a frame and then jump shut. -->
   <section id="secondarySection" class="collapsible collapsed" style="scroll-margin-top:70px">
-    <h2 id="secondaryHead">Secondary provider <span class="hint">where inference goes when the primary is out &mdash; endpoint, model and API key</span>
+    <h2 id="secondaryHead">Secondary provider <span class="hint">where inference goes when the primary is out: endpoint, model and API key</span>
       <span class="spacer"></span>
       <span id="secSummary" class="hint"></span>
       <button class="h2btn primary" id="secondaryToggle" aria-expanded="false" aria-controls="secondaryBody">Show</button>
@@ -640,9 +640,9 @@
         <div>
           <label for="secProvider">Provider</label>
           <select id="secProvider">
-            <option value="openai-compatible">openai-compatible — GLM, OpenRouter, Together, any /v1 endpoint</option>
-            <option value="bedrock">bedrock — Claude models via AWS</option>
-            <option value="none">none — no failover target at all</option>
+            <option value="openai-compatible">openai-compatible: GLM, OpenRouter, Together, any /v1 endpoint</option>
+            <option value="bedrock">bedrock: Claude models via AWS</option>
+            <option value="none">none: no failover target at all</option>
           </select>
         </div>
         <div class="secField">
@@ -667,10 +667,10 @@
         <button class="primary" id="saveSecondary">✓ Save secondary</button>
         <button class="success secField" id="testSecondary">⇌ Test secondary</button>
       </div>
-      <div class="hint secField" style="margin-top:6px">The test sends one real, capped request through the secondary exactly as a failover would &mdash; same auth, same model translation &mdash; asking the model which version it is. It costs a fraction of a cent on a metered provider.</div>
+      <div class="hint secField" style="margin-top:6px">The test sends one real, capped request through the secondary exactly as a failover would, same auth, same model translation, asking the model which version it is. It costs a fraction of a cent on a metered provider.</div>
       <div id="secTestNote"></div>
       <div class="hint" style="margin-top:8px" id="secKeyHint"></div>
-      <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json — which only stores the service name. It is never sent back to this page, so the box above stays blank even when a key is stored; the green line at the top of this panel is how you check one is there.</div>
+      <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json, which only stores the service name. It is never sent back to this page, so the box above stays blank even when a key is stored; the green line at the top of this panel is how you check one is there.</div>
       <div id="secNote"></div>
     </div>
   </section>
@@ -691,8 +691,8 @@
         <div>
           <label for="mode">Intercept mode</label>
           <select id="mode">
-            <option value="transparent">transparent — recommended (keeps Remote Control)</option>
-            <option value="base-url">base-url — fallback (no Remote Control)</option>
+            <option value="transparent">transparent, recommended (keeps Remote Control)</option>
+            <option value="base-url">base-url, fallback (no Remote Control)</option>
           </select>
         </div>
         <button class="primary" id="save">✓ Save</button>
@@ -718,15 +718,15 @@
       <div class="row" style="align-items:flex-start">
         <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
           <input type="checkbox" id="pruneStub" style="width:auto;margin:0">
-          Stub old tool output &mdash; replace tool results older than the most recent few with a one-line note
+          Stub old tool output: replace tool results older than the most recent few with a one-line note
         </label>
       </div>
-      <div class="hint" style="margin:4px 0 12px 0">The note says how much was removed and that the tool can be re-run, so the model knows the output existed and how to get it back. Results under 1&nbsp;KB are left alone. The cut-off moves in <em>steps</em>, not one result per turn, so the start of the conversation stays byte-identical for several turns in a row &mdash; that is what lets a provider that caches prompts reuse it. This is where most of the saving is.</div>
+      <div class="hint" style="margin:4px 0 12px 0">The note says how much was removed and that the tool can be re-run, so the model knows the output existed and how to get it back. Results under 1&nbsp;KB are left alone. The cut-off moves in <em>steps</em>, not one result per turn, so the start of the conversation stays byte-identical for several turns in a row. That is what lets a provider that caches prompts reuse it. This is where most of the saving is.</div>
 
       <div class="row" style="align-items:flex-start">
         <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600">
           <input type="checkbox" id="pruneCap" style="width:auto;margin:0">
-          Cap oversized tool output &mdash; keep the start and end of any single huge result, cut the middle
+          Cap oversized tool output: keep the start and end of any single huge result, cut the middle
         </label>
       </div>
       <div class="hint" style="margin:4px 0 12px 0">Applies to every tool result, recent ones included. A 200&nbsp;KB test log or page snapshot is mostly middle; the head and tail are where the command, the error and the summary usually are. The cut is marked in the text so the model knows it happened.</div>
@@ -780,7 +780,7 @@
         <button id="viewLog">▤ View log file</button>
       </div>
       <div class="hint" style="margin-top:6px"><strong>Which models</strong>: forcing a single model sends only requests for that model to the secondary; everything else stays on your subscription. That is how to test overflow pruning on purpose: run a test session with <code>claude --model claude-sonnet-5</code> while your normal sessions carry on untouched. Back to primary clears it.</div>
-      <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now — the config above can look correct while requests quietly go straight to Anthropic instead.</div>
+      <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now. The config above can look correct while requests quietly go straight to Anthropic instead.</div>
       <div id="actNote"></div>
 
       <div class="row" style="margin-top:14px;align-items:flex-start">
@@ -789,19 +789,19 @@
           Try another Claude model before the secondary
         </label>
       </div>
-      <div class="hint" style="margin-top:4px">Anthropic meters Fable separately from Opus, so a refused Fable request is no evidence about Opus. With this on, a refused model falls down the chain in <code>fallback_chain</code> first — still on your subscription, still free — and only reaches the paid secondary when every rung has been refused too. Off, a refused model goes straight to the secondary.</div>
+      <div class="hint" style="margin-top:4px">Anthropic meters Fable separately from Opus, so a refused Fable request is no evidence about Opus. With this on, a refused model falls down the chain in <code>fallback_chain</code> first, still on your subscription, still free, and only reaches the paid secondary when every rung has been refused too. Off, a refused model goes straight to the secondary.</div>
       <div id="downgradeState" class="hint" style="margin-top:6px"></div>
       <div id="dgNote"></div>
     </div>
   </section>
 
   <section id="sec-responses" style="scroll-margin-top:70px">
-    <h2>Recent responses <span class="hint">last 20, in memory only &mdash; headers that drive failover are highlighted</span></h2>
+    <h2>Recent responses <span class="hint">last 20, in memory only; headers that drive failover are highlighted</span></h2>
     <div id="responses"><div class="empty">No responses yet.</div></div>
   </section>
 
   <section id="sec-requests" style="scroll-margin-top:70px">
-    <h2>Recent requests <span class="hint">metadata only &mdash; no prompt or response content is stored or shown</span></h2>
+    <h2>Recent requests <span class="hint">metadata only; no prompt or response content is stored or shown</span></h2>
     <div class="scroll" id="requests"><div class="empty">No requests yet.</div></div>
   </section>
 </div>
@@ -882,7 +882,7 @@ function effectiveKeychainService() {
 function keySentence(sec) {
   if (!sec.key_env_var) return "";
   if (sec.key_source === "environment") {
-    return ` Key found in $${sec.key_env_var} (the environment, not the Keychain — it will be gone at next login unless something sets it).`;
+    return ` Key found in $${sec.key_env_var} (the environment, not the Keychain, it will be gone at next login unless something sets it).`;
   }
   const when = sec.key_updated ? ` last saved ${stamp(sec.key_updated)}` : "";
   return ` Key found in the Keychain under "${sec.keychain_service}"${when}.`;
@@ -912,7 +912,7 @@ function renderSecondary(s) {
   const none = sec.provider === "none" || !sec.provider;
   const missingKey = !none && sec.key_env_var && !sec.key_present;
   if (none) {
-    note(el, "warn", "No secondary provider is configured. When the primary runs out, requests just fail — there is nowhere to fail over to.");
+    note(el, "warn", "No secondary provider is configured. When the primary runs out, requests just fail: there is nowhere to fail over to.");
   } else if (missingKey) {
     note(el, "bad", `Secondary is ${sec.provider} (${sec.base_url}) but NO API KEY was found: nothing in the Keychain under "${sec.keychain_service}", and $${sec.key_env_var} is unset. It will fail the first time it is used.`);
   } else {
@@ -927,8 +927,8 @@ function renderSecondary(s) {
   // that one is always broken, it just has not failed yet.
   setHeadState("secondaryHead", missingKey ? "bad" : none ? "warn" : "ok");
   $("secSummary").textContent = none ? "none configured"
-    : missingKey ? "no API key — will fail when used"
-    : `${sec.model || sec.provider} — key ok`;
+    : missingKey ? "no API key: will fail when used"
+    : `${sec.model || sec.provider}, key ok`;
 
   // Opens itself on the TRANSITION into a bad state, never on every render:
   // re-opening each refresh would take the panel away from someone who read
@@ -1008,7 +1008,7 @@ function renderCards(s) {
   } else if (s.intercept.settings_base_url) {
     interceptDetail = "ANTHROPIC_BASE_URL is set to " + s.intercept.settings_base_url;
   } else {
-    interceptDetail = "ANTHROPIC_BASE_URL unset — the gateway is not enabled";
+    interceptDetail = "ANTHROPIC_BASE_URL unset: the gateway is not enabled";
   }
 
   // Routing is green on the primary and amber on the secondary, because
@@ -1026,7 +1026,7 @@ function renderCards(s) {
     <div class="card ${routingClass}">
       <h3>Routing</h3>
       <div class="stat">${s.overflow ? "Secondary" : "Primary"}</div>
-      <div class="sub">${esc(s.overflow ? (s.secondary.provider || "—") : (s.primary.provider || "—"))}${
+      <div class="sub">${esc(s.overflow ? (s.secondary.provider || "-") : (s.primary.provider || "-"))}${
         s.until ? " · until " + esc(s.until) : ""}</div>
     </div>
     <div class="card ${rcClass}">
@@ -1068,7 +1068,7 @@ function renderCards(s) {
   if (s.intercept.active) {
     installSection.classList.remove("alert");
     $("installTitle").textContent = "Install";
-    $("installHint").textContent = "already in use \u2014 these re-run the install, or switch between modes";
+    $("installHint").textContent = "already in use: these re-run the install, or switch between modes";
     $("inuse").innerHTML = "";
     $("installTop").hidden = true;
     // Nothing to install, so the panel collapses behind its reveal link --
@@ -1226,13 +1226,13 @@ function renderLiveAlert(s, verdict) {
 // refuses to answer us about system daemons at all.
 function renderGuards(s) {
   renderGuard("selfHeal", s, s.intercept.self_heal, "watchdog",
-    "the gateway has no watchdog — if its process dies, nothing restarts it");
+    "the gateway has no watchdog, if its process dies, nothing restarts it");
   const ph = s.intercept.pf_heal;
   const showPf = s.intercept.mode === "transparent" && ph;
   $("pfHealBlock").hidden = !showPf;
   if (showPf) {
     renderGuard("pfHeal", s, ph, "guard",
-      "the redirect has no guard — if traffic stops reaching the gateway, nothing repairs it");
+      "the redirect has no guard, if traffic stops reaching the gateway, nothing repairs it");
   }
   const bad = isBad(s, s.intercept.self_heal) || (showPf && isBad(s, ph));
   $("guardsSection").classList.toggle("alert", bad);
@@ -1243,7 +1243,7 @@ function renderGuards(s) {
   const guards = [s.intercept.self_heal].concat(showPf ? [ph] : []);
   const armed = guards.filter(g => g && g.running).length;
   $("guardsSummary").textContent = bad
-    ? "not armed — traffic is unprotected"
+    ? "not armed, traffic is unprotected"
     : armed === guards.length ? (guards.length === 1 ? "armed" : "both armed")
     : `${armed} of ${guards.length} armed`;
 
@@ -1285,20 +1285,20 @@ function renderGuard(id, s, ph, noun, notArmedText) {
 
   let cls, headline;
   if (ph.running) {
-    cls = "ok"; headline = `ARMED — last checked ${ago}`;
+    cls = "ok"; headline = `ARMED, last checked ${ago}`;
   } else if (ph.installed) {
     cls = "bad";
-    headline = "INSTALLED BUT NOT RUNNING" + (ago ? ` — last checked ${ago}` : " — it has never reported in");
+    headline = "INSTALLED BUT NOT RUNNING" + (ago ? ` - last checked ${ago}` : " - it has never reported in");
   } else {
     cls = isBad(s, ph) ? "bad" : "warn";
-    headline = "NOT ARMED — " + notArmedText;
+    headline = "NOT ARMED, " + notArmedText;
   }
 
   let body = headline;
   if (ph.events && ph.events.length) {
     body += "\n\nWhat it has caught:\n" + ph.events.map(e => "  " + e).join("\n");
   } else if (ph.running) {
-    body += "\n\nNothing to report — it has not had to act since this was armed.";
+    body += "\n\nNothing to report, it has not had to act since this was armed.";
   }
   if (!ph.running && ph.install_cmd) {
     body += "\n\nArm it with the button below, or from a terminal:\n" + ph.install_cmd;
@@ -1323,12 +1323,12 @@ function renderRequests(rows) {
         <td class="mono">${esc(stamp(e.time))}</td>
         <td><span class="pill t">Token Shunt</span></td>
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
-        <td class="mono">${esc(e.model || "\u2014")}<div style="font-size:10.5px;color:var(--muted)">${esc(e.shunt || "")}</div></td>
+        <td class="mono">${esc(e.model || "-")}<div style="font-size:10.5px;color:var(--muted)">${esc(e.shunt || "")}</div></td>
         <td class="mono ${ok ? "st-2" : "st-5"}">${ok ? "ok" : "failed"}</td>
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
         <td class="num">${num(e.output_tokens)}</td>
-        <td class="num">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? smallUSD(e.api_equivalent_usd) : "\u2014"}</td>
+        <td class="num">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? smallUSD(e.api_equivalent_usd) : "-"}</td>
         <td>${esc(e.note || "")}${e.session_id ? ` <span style="color:var(--muted)" title="${esc(e.session_id)}">\u00b7 session ${esc(e.session_id.slice(0, 8))}</span>` : ""}</td>
       </tr>`;
       }
@@ -1337,12 +1337,12 @@ function renderRequests(rows) {
         <td class="mono">${esc(stamp(e.time))}</td>
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
-        <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "—")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--muted)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
+        <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "-")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--muted)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
         <td class="mono st-${String(e.http_status)[0]}">${esc(e.http_status)}</td>
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
         <td class="num">${num(e.output_tokens)}</td>
-        <td class="num">${e.api_equivalent_usd ? money(e.api_equivalent_usd) : "—"}</td>
+        <td class="num">${e.api_equivalent_usd ? money(e.api_equivalent_usd) : "-"}</td>
         <td>${esc(e.note || "")}</td>
       </tr>`;
     }).join("")}</tbody></table>`;
@@ -1352,14 +1352,14 @@ function renderRequests(rows) {
 // part that actually answers "primary or secondary" at a glance -- the full
 // URL is still available in the title attribute on hover.
 function destHost(url) {
-  if (!url) return "—";
+  if (!url) return "-";
   try { return new URL(url).host; } catch { return url; }
 }
 
 // controlPlaneLabel names the non-inference calls that dominate this table
 // (session heartbeats, event batches, worker updates) and never carry a
-// model, since "—" alone doesn't say why. Falls back to null (renders as
-// "—") for anything not recognized, rather than guessing.
+// model, since "-" alone doesn't say why. Falls back to null (renders as
+// "-") for anything not recognized, rather than guessing.
 function controlPlaneLabel(destination) {
   if (!destination) return null;
   let path;
@@ -1460,7 +1460,7 @@ async function refresh() {
       renderRequests(reqs);
       renderResponses(resps);
       renderActivity();
-      $("updated").textContent = "config error — " + new Date().toLocaleTimeString();
+      $("updated").textContent = "config error, " + new Date().toLocaleTimeString();
       return;
     }
 
@@ -1512,7 +1512,7 @@ async function refresh() {
     lastState = null;
     $("hero").hidden = true;
     clearNav();
-    $("updated").textContent = "gateway unreachable — " + e.message;
+    $("updated").textContent = "gateway unreachable, " + e.message;
   }
 }
 
@@ -1574,7 +1574,7 @@ $("testSecondary").onclick = async () => {
     // does NOT stream, so this duration is FULL generation time; real
     // Claude Code traffic streams and starts arriving long before this.
     const tps = d.duration_ms && d.output_tokens
-      ? ` (${(d.output_tokens / (d.duration_ms / 1000)).toFixed(1)} tok/sec — generation speed, not gateway overhead;\n     the probe waits for the whole answer, while real traffic streams)`
+      ? ` (${(d.output_tokens / (d.duration_ms / 1000)).toFixed(1)} tok/sec, generation speed, not gateway overhead;\n     the probe waits for the whole answer, while real traffic streams)`
       : "";
     const where = [
       `provider: ${d.provider || "?"}`,
@@ -1591,7 +1591,7 @@ $("testSecondary").onclick = async () => {
       // as evidence that the wrong model is configured.
       note($("secTestNote"), "ok",
         `The secondary answered:\n\n    ${d.reply}\n\n${where}\ntokens: ${d.input_tokens} in / ${d.output_tokens} out\n\n` +
-        `(models are unreliable at naming themselves — "served by" above is the authoritative answer, taken from config and the provider's own translation.)`);
+        `(models are unreliable at naming themselves, "served by" above is the authoritative answer, taken from config and the provider's own translation.)`);
     } else {
       note($("secTestNote"), "bad",
         `${r.error}\n\n${where}${d.detail ? "\n\nupstream said:\n" + d.detail : ""}`);
@@ -1793,7 +1793,7 @@ $("restart").onclick = async () => {
   if (!confirm("Restart the gateway?\n\nIn-flight requests will be dropped. If it is managed by launchd it comes straight back; if you started it by hand, it will simply stop.")) return;
   delete $("actNote").dataset.overflowClaim;
   try {
-    note($("actNote"), "warn", (await post("/api/restart")).ok + " — waiting for it to come back...");
+    note($("actNote"), "warn", (await post("/api/restart")).ok + " - waiting for it to come back...");
   } catch (e) { note($("actNote"), "bad", e.message); return; }
   awaitGatewayBack();
 };
@@ -1830,7 +1830,7 @@ async function awaitGatewayBack() {
     `launchctl list ninja.andrewbaker.claude-burst\n` +
     `tail -40 ~/.config/claude-burst/launchd.err.log\n` +
     `If it's not managed by launchd, it simply stopped -- run: claude-burst serve`);
-  $("updated").textContent = "gateway unreachable — restart did not come back";
+  $("updated").textContent = "gateway unreachable, restart did not come back";
 }
 
 $("testConn").onclick = async () => {
@@ -1867,7 +1867,7 @@ $("secondaryHead").onclick = () =>
   setSecondaryOpen($("secondarySection").classList.contains("collapsed"));
 
 $("armSelfHeal").onclick = async () => {
-  if (!confirm("Arm the gateway watchdog?\n\nA Terminal window will open. No password needed — it is a user LaunchAgent.\n\nIt checks every 2 minutes that the gateway is actually running and reloads it if not, and stands down while a rollback marker is present so it never undoes a deliberate rollback.")) return;
+  if (!confirm("Arm the gateway watchdog?\n\nA Terminal window will open. No password needed, it is a user LaunchAgent.\n\nIt checks every 2 minutes that the gateway is actually running and reloads it if not, and stands down while a rollback marker is present so it never undoes a deliberate rollback.")) return;
   $("armSelfHeal").disabled = true;
   try {
     const r = await post("/api/self-heal-install");
@@ -1950,7 +1950,7 @@ function readinessChecks(s, verdict) {
   out.push({
     key: "watchdog", label: "Gateway watchdog", target: "guardsSection",
     ok: !!(sh && sh.running), critical: false,
-    detail: sh && sh.running ? "armed" : "not armed — nothing restarts the gateway if it dies",
+    detail: sh && sh.running ? "armed" : "not armed, nothing restarts the gateway if it dies",
   });
 
   if (transparent && s.intercept.pf_heal) {
@@ -1958,7 +1958,7 @@ function readinessChecks(s, verdict) {
     out.push({
       key: "pfguard", label: "pf redirect guard", target: "guardsSection",
       ok: !!ph.running, critical: false,
-      detail: ph.running ? "armed" : "not armed — nothing repairs the redirect if it is dropped",
+      detail: ph.running ? "armed" : "not armed, nothing repairs the redirect if it is dropped",
     });
   }
 
@@ -1967,9 +1967,9 @@ function readinessChecks(s, verdict) {
   out.push({
     key: "secondary", label: "Secondary ready", target: "secondarySection",
     ok: !noSecondary && !(sec.key_env_var && !sec.key_present), critical: false,
-    detail: noSecondary ? "no secondary configured — overflow has nowhere to go"
+    detail: noSecondary ? "no secondary configured, overflow has nowhere to go"
       : (sec.key_env_var && !sec.key_present) ? "configured, but no API key was found"
-      : `${sec.model || sec.provider} — key ok`,
+      : `${sec.model || sec.provider}, key ok`,
   });
 
   // Error rate over the charted window. Uses the same numbers the chart
@@ -2289,7 +2289,7 @@ function drawChart() {
       const d = days[+r.dataset.i];
       if (unknown(d)) {
         tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
-          `<div class="r">no data — older than this machine's metrics log</div>`;
+          `<div class="r">no data, older than this machine's metrics log</div>`;
       } else {
         const pv = M.p(d), sv = M.s(d);
         tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
@@ -2356,7 +2356,7 @@ function renderActivity() {
   $("coverage").textContent = !h.earliest
     ? `No requests recorded yet (read ${files}).`
     : h.covered
-      ? `Complete for this window — data goes back to ${stamp(h.earliest)} (read ${files}).`
+      ? `Complete for this window, data goes back to ${stamp(h.earliest)} (read ${files}).`
       : `Incomplete: this machine's records begin ${stamp(h.earliest)}, so the hatched days before it are "no data", not "no traffic". metrics.jsonl rotates at 10MB (read ${files}).`;
 
   const reqs = (h.window && h.window.Requests) || 0;
@@ -2365,20 +2365,20 @@ function renderActivity() {
   const busiest = h.days.reduce((a, d) => (d.requests > (a ? a.requests : -1) ? d : a), null);
   const unpriced = (h.window && h.window.UnpricedRequests) || 0;
   $("activityTiles").innerHTML = [
-    {k: "Median latency", v: h.latency_p50_ms ? num(h.latency_p50_ms) + " ms" : "—",
+    {k: "Median latency", v: h.latency_p50_ms ? num(h.latency_p50_ms) + " ms" : "-",
      h: "successful requests only"},
-    {k: "p95 latency", v: h.latency_p95_ms ? num(h.latency_p95_ms) + " ms" : "—",
+    {k: "p95 latency", v: h.latency_p95_ms ? num(h.latency_p95_ms) + " ms" : "-",
      h: "1 in 20 took longer"},
-    {k: "Error rate", v: reqs ? errPct.toFixed(1) + "%" : "—",
+    {k: "Error rate", v: reqs ? errPct.toFixed(1) + "%" : "-",
      h: `${num(errs)} of ${num(reqs)} returned 4xx/5xx`,
      cls: errPct >= 5 ? "bad" : errPct >= 2 ? "warn" : ""},
-    {k: "Busiest day", v: busiest && busiest.requests ? dayLabel(busiest.date) : "—",
+    {k: "Busiest day", v: busiest && busiest.requests ? dayLabel(busiest.date) : "-",
      h: busiest && busiest.requests ? `${num(busiest.requests)} requests` : ""},
     // Shown only when it is non-zero: a permanent "0 unpriced" tile is
     // noise, while its appearance means the spend figure above is a lower
     // bound rather than a total, and says so.
   ].concat(unpriced ? [{k: "Unpriced requests", v: num(unpriced), cls: "warn",
-      h: "spend above is a lower bound — add pricing entries in config.json"}] : [])
+      h: "spend above is a lower bound, add pricing entries in config.json"}] : [])
    .map(t => `<div class="tile"><div class="k">${esc(t.k)}</div>
       <div class="v"${t.cls ? ` style="color:var(--${t.cls})"` : ""}>${esc(t.v)}</div>
       <div class="h">${esc(t.h || "")}</div></div>`).join("");
@@ -2448,8 +2448,8 @@ async function loadHistory() {
 async function runInstall(mode, btn) {
   const machineWide = mode === "transparent";
   const warning = machineWide
-    ? "Install transparent proxy mode? (recommended)\n\nA Terminal window will open and ask for your password. It changes /etc/hosts, loads a pf rule, and trusts the local CA system-wide — this affects EVERY process on this Mac, not just Claude Code.\n\nUndo any time with: sudo transparent-root.sh remove"
-    : "Install base-url mode?\n\nThis is the FALLBACK mode — transparent proxy is the recommended one. A Terminal window will open. It backs up your settings, then points Claude Code at this gateway via ANTHROPIC_BASE_URL. No password needed.\n\nNote: Claude Code disables Remote Control while this is on.";
+    ? "Install transparent proxy mode? (recommended)\n\nA Terminal window will open and ask for your password. It changes /etc/hosts, loads a pf rule, and trusts the local CA system-wide, this affects EVERY process on this Mac, not just Claude Code.\n\nUndo any time with: sudo transparent-root.sh remove"
+    : "Install base-url mode?\n\nThis is the FALLBACK mode, transparent proxy is the recommended one. A Terminal window will open. It backs up your settings, then points Claude Code at this gateway via ANTHROPIC_BASE_URL. No password needed.\n\nNote: Claude Code disables Remote Control while this is on.";
   if (!confirm(warning)) return;
   btn.disabled = true;
   try {
@@ -2478,7 +2478,7 @@ $("installTop").onclick = async () => {
 // escalated from an unauthenticated loopback page would be worse than one that
 // asks. So this click only generates the script and asks macOS to open it.
 async function runRevert(btn) {
-  if (!confirm("Revert to normal Claude?\n\nA Terminal window will open and run scripts/rollback.sh. It asks for your password, because it removes the /etc/hosts redirect, the pf rule and the System-keychain CA trust — all machine-wide.\n\nIt also restores ~/.claude/settings.json and config.json from the most recent backup, so changes made to settings.json since then are rolled back too.\n\nIt verifies api.anthropic.com is reachable directly before reporting success. Restart Claude Code afterwards.")) return;
+  if (!confirm("Revert to normal Claude?\n\nA Terminal window will open and run scripts/rollback.sh. It asks for your password, because it removes the /etc/hosts redirect, the pf rule and the System-keychain CA trust, all machine-wide.\n\nIt also restores ~/.claude/settings.json and config.json from the most recent backup, so changes made to settings.json since then are rolled back too.\n\nIt verifies api.anthropic.com is reachable directly before reporting success. Restart Claude Code afterwards.")) return;
   delete $("actNote").dataset.overflowClaim;
   const prev = btn.disabled;
   btn.disabled = true;

@@ -1,6 +1,6 @@
-# Handover — 2026-09-28: Burst breaks on network reconnect
+# Handover, 2026-09-28: Burst breaks on network reconnect
 
-Written at session close. **Verify before acting** — true at the time, nothing keeps it true.
+Written at session close. **Verify before acting**, true at the time, nothing keeps it true.
 All times local (SAST).
 
 ## State right now
@@ -20,12 +20,12 @@ User on a phone hotspot walked away from the laptop; on return Claude Code showe
 `FAILED · transparent proxy ... dial tcp 127.0.0.1:443: connect: connection refused`.
 Two different things, from `claude-burst.log` and `/var/log/claude-burst-pf.log`:
 
-1. **10:06–10:16 the network really was gone.** Snapshots show no IPv4 uplink (the hotspot's
-   `172.20.10.2` disappears) and `www.apple.com` failing in 1–2 ms. The 502 and "not failing
-   over" were **correct** — the secondary is behind the same dead network. Nothing to fix.
-2. **On every reconnect the redirect broke.** Six times 09:30–10:18 pf-heal logged
+1. **10:06-10:16 the network really was gone.** Snapshots show no IPv4 uplink (the hotspot's
+   `172.20.10.2` disappears) and `www.apple.com` failing in 1-2 ms. The 502 and "not failing
+   over" were **correct**, the secondary is behind the same dead network. Nothing to fix.
+2. **On every reconnect the redirect broke.** Six times 09:30-10:18 pf-heal logged
    `BROKEN ... (rdr rule: loaded, main ruleset: referenced, gateway on :17777: listening)`,
-   and one `reload-anchor` (which also flushes this anchor's states — 10 and 123 cleared)
+   and one `reload-anchor` (which also flushes this anchor's states, 10 and 123 cleared)
    healed it every time. The outage length was just pf-heal's **120 s** timer: up to ~2 min
    of machine-wide "connection refused" per reconnect. At 10:18:04 it had healed; the user's
    rollback ran 14 s later without knowing.
@@ -33,7 +33,7 @@ Two different things, from `claude-burst.log` and `/var/log/claude-burst-pf.log`
 ## The fix (`d636d70`)
 
 - LaunchDaemon also fires on `WatchPaths`: `/var/run/resolv.conf` (configd rewrites it on
-  every network change — its mtime was 10:17, the reconnect) and `/etc/pf.conf`.
+  every network change, its mtime was 10:17, the reconnect) and `/etc/pf.conf`.
   `StartInterval` 120 → 30 as backstop (a healthy cycle is one local curl).
 - After a network change, `pf-heal.sh` keeps cycling for 90 s (`run_with_settle`), because pf
   breaks a few seconds *after* the change and one probe at the moment of the change passes.
@@ -51,11 +51,11 @@ Fable fallback moved to `claude-opus-5-5`, test hardcoded `claude-opus-5`), whic
 1. **Not yet proven on a real disconnect.** Next hotspot drop, expect in
    `/var/log/claude-burst-pf.log`: `network changed -- watching the intercept for 90s`, then
    `BROKEN` / `HEALED` within seconds (or nothing, if it did not break). If a break still sits
-   for ~30 s+, the WatchPaths trigger did not fire — check the plist actually loaded
+   for ~30 s+, the WatchPaths trigger did not fire, check the plist actually loaded
    (`sudo launchctl print system/ninja.andrewbaker.claude-burst-pfheal`).
 2. **Mechanism still unknown.** Why is 443 refused with the rule loaded and referenced?
    Candidates: pf disabled by whatever reloads it (Zscaler/CrowdStrike), or stale states.
-   The new `pf:` field in the next `BROKEN` line answers the first. Do not guess — see
+   The new `pf:` field in the next `BROKEN` line answers the first. Do not guess, see
    `claude_burst_pf_anchor_loss` and the direct-port investigation's four wrong guesses.
    The fix heals regardless of which it is.
 3. **During a real outage Claude Code still shows the 502.** Correct behaviour; no hold/retry
@@ -129,9 +129,9 @@ the hook.
 
 ---
 
-# Handover — 2026-09-21: token shunting
+# Handover, 2026-09-21: token shunting
 
-Written when the session closed. **Verify before acting** — everything here was true at the
+Written when the session closed. **Verify before acting**, everything here was true at the
 time and nothing keeps it true. Two older handoffs follow it: 2026-09-20 (failover fixes) and
 2026-09-08 (issue #1, TLS storm). Neither is superseded by this one.
 
@@ -139,7 +139,7 @@ time and nothing keeps it true. Two older handoffs follow it: 2026-09-20 (failov
 
 Two asks were in flight when the session ended.
 
-### 1. Make the shunt master control a toggle switch, not a checkbox — NOT STARTED
+### 1. Make the shunt master control a toggle switch, not a checkbox, NOT STARTED
 
 `internal/admin/admin.html`, the "Token shunting" section. Today it is a plain checkbox:
 
@@ -166,7 +166,7 @@ Two asks were in flight when the session ended.
   activity table). Screenshot click coordinates are in the screenshot's frame (1453 wide), not CSS
   pixels, and the first click after a page load is sometimes ignored.
 
-### 2. README audit against what the product does now — PARTLY DONE
+### 2. README audit against what the product does now, PARTLY DONE
 
 Asked: "did you rewrite the readme to reflect what the product currently does?" The honest answer
 was: reframed around Together AI + shunting, but never audited end to end. The audit found:
@@ -254,7 +254,7 @@ projects named `shunt-live-check-*`.
 - Throwaway instances used ports 27777/27788 with a scratch `HOME`. The real gateway is 17777.
 - `BLOG.md` is a dated post that says it is kept as written. Leave it.
 
-# Session handoff — 2026-09-20
+# Session handoff, 2026-09-20
 
 A point-in-time snapshot, written at 14:20 local. **Verify before acting.**
 
@@ -268,14 +268,14 @@ grep -a "replaying on the subscription\|dropped server-only tools" ~/.config/cla
 
 ## What was fixed (both deployed, both on origin/main)
 
-1. **`7d661cb` — failover to GLM died with `400 Invalid JSON data: missing field
+1. **`7d661cb` - failover to GLM died with `400 Invalid JSON data: missing field
    \`parameters\``.** Claude Code declares Anthropic's *server-side* tools
    (`web_search_20250305` …) with a name and `type` but no `input_schema`. We turned them
    into OpenAI functions with no `parameters`, and Together rejects the **whole request**
    for one such tool. Now dropped (logged as `dropped server-only tools: …`), schemas with
    `type` left implicit are normalised, and `tools`/`tool_choice` are omitted when nothing
    survives. Confirmed against the live endpoint before and after.
-2. **`6ca48b5` — one Fable rejection sent every model to the paid secondary for two days.**
+2. **`6ca48b5` - one Fable rejection sent every model to the paid secondary for two days.**
    The overflow window was account-wide. Now `State.ModelOverflow` scopes a rejection to
    the model that was refused; Anthropic's claim headers name a *bucket*, never the models
    it covers, so we do not guess. On top: `fallback_chain` (default fable → opus) replays a
@@ -287,7 +287,7 @@ grep -a "replaying on the subscription\|dropped server-only tools" ~/.config/cla
 
 Behaviour worth remembering:
 - A **forced** window (`force-secondary`, dashboard button) stays account-wide and
-  **bypasses the chain** on purpose — its only job is to exercise the secondary.
+  **bypasses the chain** on purpose, its only job is to exercise the secondary.
 - A pre-scoping state file's account-wide window is **dropped on load** (logged). That is
   what happened to the `seven_day_overage_included` window that was armed until 09-22.
 - The toggle (`DowngradeDisabled`) survives `ClearOverflow` and `ForceOverflow`; both used
@@ -298,7 +298,7 @@ Behaviour worth remembering:
 - **The chain has never fired for real.** The window was dropped at deploy, so nothing has
   been refused since. First real Fable refusal should log
   `replaying on the subscription as "claude-opus-5"` and show a `refused:` line in
-  `claude-burst status`. **If a Fable refusal goes to GLM instead, that is a bug** — pull the
+  `claude-burst status`. **If a Fable refusal goes to GLM instead, that is a bug**, pull the
   log lines around it.
 - **The dropped-tools line has not appeared in real traffic** (count 0 at 14:20) and no
   failover to Together has happened since the fix. The fix is proven by the unit tests and a
@@ -313,7 +313,7 @@ Behaviour worth remembering:
   gateway bypassed and nothing to fail over. Fixed by re-running
   `sudo scripts/transparent-root.sh install --host api.anthropic.com --gateway-port 17777`.
   The self-heal watchdog had stood down (`rolled-back` marker) and only spoke up after the
-  deploy cleared it — a rollback silences the thing that would have noticed it.
+  deploy cleared it, a rollback silences the thing that would have noticed it.
 - **Why tests missed the `parameters` bug:** every translation test asserted on JSON this
   package produced, i.e. our *belief* about what the endpoint accepts, never the endpoint.
   No fixture had a schema-less tool either. `internal/router/provider_openai_live_test.go`
@@ -340,7 +340,7 @@ logging was undeployed).
 
 ---
 
-# Previous handoff — 2026-09-08 (still accurate for issue #1 and the TLS storm)
+# Previous handoff, 2026-09-08 (still accurate for issue #1 and the TLS storm)
 
 A point-in-time snapshot, written at the end of a long session. **Everything below
 was true at 11:00 on 2026-09-08 and nothing keeps it true.** Verify before acting;
@@ -348,7 +348,7 @@ this repo's own history is mostly the story of documents that stopped matching t
 machine (see the top of ROLLBACK.md, which had described the wrong intercept mode
 for eight days).
 
-## Verify state first — one command
+## Verify state first, one command
 
 ```bash
 curl -s http://127.0.0.1:7788/api/state | python3 -m json.tool | head -30
@@ -381,12 +381,12 @@ times in twenty. The gateway is fine. Probe the real path:
 curl -sk https://api.anthropic.com/healthz     # a body containing "overflow" means it came from the gateway
 ```
 
-The occasional direct success is what makes this expensive — one lucky probe is
+The occasional direct success is what makes this expensive, one lucky probe is
 enough to convince you the port is fine and send you looking elsewhere.
 
 ## Open threads
 
-### 1. Issue #1 — direct connections to the rdr's target port (OPEN, best lead yet)
+### 1. Issue #1, direct connections to the rdr's target port (OPEN, best lead yet)
 
 Root cause is **not** identified, but the layer is. `scripts/diagnose-direct-port.sh`
 (read-only, safe mid-incident) measured across 20 failing probes:
@@ -410,35 +410,35 @@ The `no state` rule (hypothesis 4) is ruled out: direct 1/15 before, 0/15 after,
 rule `quick` and actually evaluated. Update (c).
 
 `scripts/capture-direct-port-packets.sh` then answered what four hypotheses never asked.
-Across 10 failing probes the SYN reaches lo0 every time — 11 retransmissions each — and
+Across 10 failing probes the SYN reaches lo0 every time, 11 retransmissions each, and
 **nothing comes back at all**: no RST, no SYN-ACK, zero packets. A third burst with no
 port filter confirmed nothing came back under any pair of ports either. The control down
 `:443`, same run, was 10/10 clean. **pf swallows it; the investigation stays on pf.**
 
 The 1-in-10 success is the lead. Its first SYN-ACK left the gateway addressed to
-`127.0.0.1:443` instead of the client's port — pf reverse-translating the reply of a
-connection that was never forward-translated — got a RST, and only survived because the
+`127.0.0.1:443` instead of the client's port, pf reverse-translating the reply of a
+connection that was never forward-translated, got a RST, and only survived because the
 *retransmitted* SYN-ACK escaped that. So the failure is in the **reply** direction, not
 the SYN. That is the first account consistent with all of it: zero filter counters, the
 `state-insert` rise (11/probe here vs ~14 measured, same shape), and the anomalous
 `17777 <- 17777` state. Full detail in INVESTIGATION-TLS-STORM.md, update (d).
 
-**Four hypotheses, four wrong — so this is a hypothesis, not a fix.** It is the
+**Four hypotheses, four wrong, so this is a hypothesis, not a fix.** It is the
 best-supported one yet and that is exactly what the last four felt like. The next step is
 a test of the reply-direction account, and it should revert unconditionally like
 experiment-nostate-rule.sh did.
 
-### 2. TLS handshake storm — recurred, cause unknown (OPEN)
+### 2. TLS handshake storm, recurred, cause unknown (OPEN)
 
 Root-caused and fixed 2026-09-03 (Claude Desktop's updater vs. an untrusted CA), held
 for three clean days, then returned 2026-09-07 23:20 through 2026-09-08 07:05 at about
-a tenth of the old rate — and apparently from a **different** client: Claude Desktop's
+a tenth of the old rate, and apparently from a **different** client: Claude Desktop's
 log shows no TLS-worded error after 2026-09-03. Structural suspicion recorded in
 INVESTIGATION-TLS-STORM.md: `rollback.sh` step 1b removes the System-keychain trust and
 only `install-proxy.sh` step 5 restores it, so every rollback reopens the hole.
 `CLAUDE_BURST_LOG_TLS_PEERS=1` identifies the client and needs no root.
 
-## Four wrong answers — do not re-propose them
+## Four wrong answers, do not re-propose them
 
 Issue #1 attracted four confident wrong diagnoses. All are recorded as ruled out, with
 evidence, in INVESTIGATION-TLS-STORM.md:
@@ -473,7 +473,7 @@ Three real bugs found by that auditing, all fixed, tested and deployed:
 - **Control-plane traffic was failing over to the paid secondary**, and a single dropped
   Remote Control heartbeat could arm an overflow window that routed inference to a paid
   provider. `e49bcaf`.
-- **`reset` and `force-secondary` never reached the running gateway** — they mutated
+- **`reset` and `force-secondary` never reached the running gateway**, they mutated
   their own in-process copy and reported success. In a real overflow window that means
   being told you are off the paid secondary while billing continues. `61eee30`.
 - **`install-proxy.sh` printed one port and passed another** to the root helper. `9aa478f`.
@@ -484,7 +484,7 @@ passing for the wrong reason).
 
 ## Conventions worth knowing
 
-- Run scripts **by path** (`scripts/rollback.sh`), never `bash scripts/...` — several are
+- Run scripts **by path** (`scripts/rollback.sh`), never `bash scripts/...` - several are
   zsh-only and fail at parse time under bash, doing nothing.
 - Never push without being asked. Commit locally and wait.
 - Pasting into an interactive zsh: `#` is **not** a comment there, and parentheses in a

@@ -879,7 +879,7 @@ func TestSecondaryKeyRevealRequiresMutationGuard(t *testing.T) {
 		t.Errorf("source = %q, want keychain", resp.Source)
 	}
 	if cc := rr.Header().Get("Cache-Control"); cc != "no-store" {
-		t.Errorf("Cache-Control = %q, want no-store — a secret must not settle into a cache", cc)
+		t.Errorf("Cache-Control = %q, want no-store, a secret must not settle into a cache", cc)
 	}
 }
 

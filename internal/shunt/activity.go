@@ -182,7 +182,7 @@ func (a Activity) Describe() string {
 	case a.Event.Kind == KindRead:
 		s := a.Event.Describe()
 		if a.Attempts > 0 {
-			s += " — the direct read had been blocked, so Claude has no other way to read the file"
+			s += " - the direct read had been blocked, so Claude has no other way to read the file"
 		}
 		return s
 	case a.Event.Kind == KindDeny:
@@ -231,9 +231,9 @@ func (a Activity) describeBlock() string {
 		if e.Repeat+1 > n {
 			n = e.Repeat + 1
 		}
-		return fmt.Sprintf("blocked %s — attempt #%d with no answer in between: the session is retrying instead of running shunt read", what, n)
+		return fmt.Sprintf("blocked %s, attempt #%d with no answer in between: the session is retrying instead of running shunt read", what, n)
 	case a.stale():
-		return fmt.Sprintf("not shunted: blocked %s and pointed Claude at shunt read, but no delegated read has followed — most likely Claude read a window of the file or moved on", what)
+		return fmt.Sprintf("not shunted: blocked %s and pointed Claude at shunt read, but no delegated read has followed, most likely Claude read a window of the file or moved on", what)
 	}
-	return fmt.Sprintf("blocked %s and pointed Claude at shunt read — waiting for it to run", what)
+	return fmt.Sprintf("blocked %s and pointed Claude at shunt read, waiting for it to run", what)
 }

@@ -675,7 +675,7 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	s.gateway.ClearOverflow()
-	writeJSON(w, map[string]string{"ok": "back to primary — the next request will use it"})
+	writeJSON(w, map[string]string{"ok": "back to primary, the next request will use it"})
 }
 
 type forceRequest struct {
@@ -745,7 +745,7 @@ func (s *Server) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 	}
 	s.gateway.SetDowngradeEnabled(req.Enabled)
 	if !req.Enabled {
-		writeJSON(w, map[string]string{"ok": "downgrade off — a refused model now goes straight to the secondary"})
+		writeJSON(w, map[string]string{"ok": "downgrade off, a refused model now goes straight to the secondary"})
 		return
 	}
 	cfg, err := config.Load()
@@ -764,7 +764,7 @@ func (s *Server) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.Strings(pairs)
-	writeJSON(w, map[string]string{"ok": "downgrade on — " + strings.Join(pairs, ", ")})
+	writeJSON(w, map[string]string{"ok": "downgrade on, " + strings.Join(pairs, ", ")})
 }
 
 type configRequest struct {
@@ -996,7 +996,7 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 
 	resp := secondaryResponse{}
 	if rc.Provider == config.ProviderNone {
-		resp.OK = "secondary provider removed — overflow now has nowhere to go, and requests will stay on the primary"
+		resp.OK = "secondary provider removed, overflow now has nowhere to go, and requests will stay on the primary"
 	} else {
 		resp.OK = fmt.Sprintf("saved: secondary is %s (%s)", rc.Provider, rc.BaseURL)
 		if rc.Model != "" {
@@ -1004,7 +1004,7 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 		}
 		if envVar != "" && !s.keyInfo(service, envVar).Present {
 			resp.Warning = fmt.Sprintf("no API key found for this provider: nothing is stored in the Keychain under %q and $%s is unset. "+
-				"The secondary is configured but will fail the moment it is used — paste the key above and save again.", service, envVar)
+				"The secondary is configured but will fail the moment it is used, paste the key above and save again.", service, envVar)
 		}
 	}
 	// The running gateway built its Provider set at startup (see
@@ -1012,7 +1012,7 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 	// is not boilerplate: "Force -> secondary" checks the RUNNING gateway,
 	// so without a restart it will correctly refuse to use what this form
 	// just saved.
-	resp.Restart = "the gateway reads config at startup — restart it (button below) before this secondary can actually serve anything"
+	resp.Restart = "the gateway reads config at startup, restart it (button below) before this secondary can actually serve anything"
 	writeJSON(w, resp)
 }
 

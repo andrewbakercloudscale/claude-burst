@@ -544,7 +544,7 @@ func sameDay(a, b time.Time) bool {
 
 func orDash(s string) string {
 	if s == "" {
-		return "—"
+		return "-"
 	}
 	return s
 }

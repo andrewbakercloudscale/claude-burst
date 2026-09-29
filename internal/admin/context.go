@@ -173,5 +173,5 @@ func (s *Server) handlePruning(w http.ResponseWriter, r *http.Request) {
 	if on {
 		state = "pruning on"
 	}
-	writeJSON(w, map[string]string{"ok": state + " — " + msg})
+	writeJSON(w, map[string]string{"ok": state + " - " + msg})
 }
