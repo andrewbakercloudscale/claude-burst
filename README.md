@@ -51,7 +51,13 @@ On the subscription every turn re-reads the whole conversation, so a turn at 400
 - `/clear`, `/compact` or a rewind make the summary stop fitting, and requests then go through untouched.
 - A session is compacted at most once per window (default 60 minutes), a warning is logged at **Warn at** (default 300k), and state survives a gateway restart.
 
-In a live test a 536k session dropped to 47k in one step with its recall intact. Switch it on, and set the thresholds, in the dashboard's **Context & cache** section. The [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel) marks each compaction in its turn table.
+**What it did on its first day** (2026-09-29, one long Opus 5.5 session): two compactions, 611k tokens down to 49k in one step with recall intact, so every later turn resent 562k fewer tokens. Across 148 requests that was 79M tokens not resent, **$15.88 not spent** at the cache-read rate, against $5.06 for the two summaries. Both of those summaries predate the fix that makes the summary call read the session from cache, which should bring a summary down from about $2 to about $0.20.
+
+**Where to see it:**
+
+- **Dashboard, Pauseless Compaction** (its own entry in the menu): the on/off switch and thresholds, headline figures for the last 7 days, and a table of sessions with context **before** and **after** the latest summary, the **saving per turn**, and the saving since.
+- **Dashboard, Daily activity, Saved:** compaction's tokens not resent, stacked with what overflow pruning removed, per day. The tooltip shows what each saved and what the summaries cost.
+- **[Usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel):** Started and Finished rows in the turn table, a green negative context delta on the turn where the summary landed, and the summary's cost in the session total.
 
 ## Keeping Claude Code working with the lid shut (optional)
 
