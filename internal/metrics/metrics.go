@@ -343,6 +343,23 @@ type Day struct {
 	CompactionSummaryUSD float64 `json:"compaction_summary_usd"`
 }
 
+// SessionUse is one session's requests and spend over the window.
+type SessionUse struct {
+	Requests int
+	USD      float64
+	Unpriced bool
+}
+
+// RepoUse is one repository's share of the window.
+type RepoUse struct {
+	Repo     string  `json:"repo"`
+	Path     string  `json:"path,omitempty"`
+	Sessions int     `json:"sessions"`
+	Requests int     `json:"requests"`
+	USD      float64 `json:"usd"`
+	Unpriced bool    `json:"unpriced,omitempty"`
+}
+
 // ModelUse is one served model's share of the window. This is the answer to
 // "what is the spend actually on", which neither the slot split nor the
 // total can give: primary and secondary each serve several models at prices
@@ -365,6 +382,11 @@ type History struct {
 	Window   Summary    `json:"window"`
 	Sessions int        `json:"sessions"`
 	Models   []ModelUse `json:"models"`
+	// Repos is spend per repository, filled in by the admin server, which
+	// can map a session to the directory it ran in; SessionUse is the
+	// per-session spend it works from.
+	Repos      []RepoUse             `json:"repos"`
+	SessionUse map[string]SessionUse `json:"-"`
 
 	// LatencyP50MS and LatencyP95MS are over the window's successful
 	// (2xx) requests only. Mixing in failures would average an instant
@@ -469,6 +491,14 @@ func Daily(path string, days int) (History, error) {
 			d.OutputTokens += e.OutputTokens
 			d.APIEquivalentUSD += e.APIEquivalentUSD
 			if e.SessionID != "" {
+				if h.SessionUse == nil {
+					h.SessionUse = map[string]SessionUse{}
+				}
+				su := h.SessionUse[e.SessionID]
+				su.Requests++
+				su.USD += e.APIEquivalentUSD
+				su.Unpriced = su.Unpriced || e.PricingUnknown
+				h.SessionUse[e.SessionID] = su
 				sessions[e.SessionID] = struct{}{}
 				daySessions[d.Date][e.SessionID] = struct{}{}
 			}

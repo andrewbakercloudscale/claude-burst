@@ -476,6 +476,7 @@
   <div class="navgroup">Observe</div>
   <a class="navlink" data-target="cards"><span class="nd" id="nd-overview"></span><span class="label">Overview</span><span class="count" id="nc-overview"></span></a>
   <a class="navlink" data-target="sec-activity"><span class="nd" id="nd-activity"></span><span class="label">Activity</span><span class="count" id="nc-activity"></span></a>
+  <a class="navlink" data-target="sec-analytics"><span class="nd"></span><span class="label">Analytics</span></a>
   <a class="navlink" data-target="sec-responses"><span class="nd" id="nd-responses"></span><span class="label">Responses</span><span class="count" id="nc-responses"></span></a>
   <a class="navlink" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
 
@@ -612,8 +613,13 @@
     </div>
     <div class="scroll" id="chartTable" hidden></div>
     <div class="hint" style="padding:2px 16px 12px" id="coverage"></div>
+  </section>
+
+  <section id="sec-analytics" style="scroll-margin-top:70px">
+    <h2>Analytics <span class="hint" id="analyticsWindow">latency, errors, and where the spend goes, over the Daily activity window</span></h2>
     <div class="tiles" id="activityTiles"></div>
     <div id="modelSplit"></div>
+    <div id="repoSplit"></div>
   </section>
 
   <section id="sec-compaction" class="standout" style="scroll-margin-top:70px">
@@ -2690,6 +2696,7 @@ function renderActivity() {
     $("coverage").textContent = "";
     $("activityTiles").innerHTML = "";
     $("modelSplit").innerHTML = "";
+    $("repoSplit").innerHTML = "";
     $("chart").innerHTML = "";
     $("chartTable").innerHTML = "";
     return;
@@ -2735,6 +2742,8 @@ function renderActivity() {
   // Which models the spend is actually on. The total cannot answer this and
   // the slot split cannot either: one slot serves several models at prices
   // an order of magnitude apart.
+  $("analyticsWindow").textContent = `latency, errors, and where the spend goes, over the last ${chartDays} days (the Daily activity window)`;
+  renderRepoSplit(h);
   const models = (h.models || []).slice(0, 8);
   if (!models.length) { $("modelSplit").innerHTML = ""; return; }
   const top = Math.max(...models.map(m => m.requests));
@@ -2748,6 +2757,27 @@ function renderActivity() {
       <span class="mbar"><span style="width:${(m.requests / top * 100).toFixed(1)}%;background:${
         m.slot === "secondary" ? "var(--s-secondary)" : "var(--s-primary)"}"></span></span>
       <span class="amt">${esc(num(m.requests))} · ${esc(m.unpriced ? "unpriced" : money(m.usd))}</span>
+    </div>`).join("");
+}
+
+// Spend per repository: each session's spend, filed under the repository
+// its Claude Code transcript says it ran in. Bars are by spend, since that
+// is the question; subscription spend is API-equivalent, like every figure
+// here.
+function renderRepoSplit(h) {
+  const repos = (h.repos || []).slice(0, 12);
+  if (!repos.length) { $("repoSplit").innerHTML = ""; return; }
+  const top = Math.max(...repos.map(r => r.usd), 0.0001);
+  const total = repos.reduce((t, r) => t + r.usd, 0);
+  $("repoSplit").innerHTML =
+    `<div class="mrow" style="border-top:1px solid var(--border);color:var(--faint);font-size:10px;
+        text-transform:uppercase;letter-spacing:.08em;font-weight:600">
+       <span>Repository</span><span>Share of spend</span><span class="amt">Sessions · requests · spend</span></div>` +
+    repos.map(r => `<div class="mrow">
+      <span class="mono" title="${esc(r.path || r.repo)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.repo)}</span>
+      <span class="mbar"><span style="width:${(r.usd / top * 100).toFixed(1)}%;background:var(--s-primary)"></span></span>
+      <span class="amt">${esc(num(r.sessions))} · ${esc(num(r.requests))} · ${esc(money(r.usd))}${r.unpriced ? " +unpriced" : ""}${
+        total ? ` <span style="color:var(--faint)">(${Math.round(100 * r.usd / total)}%)</span>` : ""}</span>
     </div>`).join("");
 }
 

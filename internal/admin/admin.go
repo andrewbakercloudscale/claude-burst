@@ -56,6 +56,8 @@ type Server struct {
 	// extraHost is an optional friendly hostname accepted in addition to the
 	// loopback names. See config.AdminHostname for the trade-off it makes.
 	extraHost string
+	// repos maps sessions to repositories for spend per repo.
+	repos *repoResolver
 	// rootHelper is the resolved path to transparent-root.sh, computed once
 	// by the caller (cmd/claude-burst/main.go's rootHelperPath) rather than
 	// re-derived here -- that search-the-likely-locations logic already
@@ -83,7 +85,7 @@ type Server struct {
 }
 
 func New(gateway *router.Server, metricsPath, version, extraHost, rootHelper string) *Server {
-	return &Server{gateway: gateway, metricsPath: metricsPath, version: version,
+	return &Server{gateway: gateway, metricsPath: metricsPath, version: version, repos: newRepoResolver(),
 		extraHost: strings.ToLower(extraHost), rootHelper: rootHelper,
 		storeKey: keychain.Store, keyInfo: keychain.Describe, loadKey: keychain.Load,
 		authenticate: touchid.Authenticate, shuntBin: shunt.SelfPath()}
@@ -538,6 +540,9 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if s.repos != nil {
+		h.Repos = s.repos.repoSpend(h.SessionUse)
 	}
 	writeJSON(w, h)
 }
