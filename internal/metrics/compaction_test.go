@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,4 +51,35 @@ func abs(f float64) float64 {
 		return -f
 	}
 	return f
+}
+
+// A second compaction starts from a context the first already shrank: the
+// session is credited with both drops, capped at the 1M window.
+func TestCompactionSavingAccumulatesAndCaps(t *testing.T) {
+	ev := func(min int, ctx, compacted int64, note string) string {
+		return `{"time":"2026-09-29T20:` + fmt.Sprintf("%02d", min) + `:00+02:00","session_id":"S","slot":"primary","model":"m","http_status":200,"cache_read_tokens":` +
+			fmt.Sprint(ctx) + `,"compacted_messages":` + fmt.Sprint(compacted) + `,"note":"` + note + `"}`
+	}
+	lines := []string{
+		ev(0, 500000, 0, ""),
+		ev(1, 50000, 800, ""),  // first swap: 450k per turn
+		ev(2, 600000, 800, ""), // grown back: min(450k, 1M - 600k) = 400k
+		ev(3, 60000, 990, ""),  // second swap: 450k + 540k = 990k, capped at 1M - 60k = 940k
+		ev(4, 100000, 990, ""), // later turn: min(940k, 1M - 100k) = 900k
+	}
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := CompactionStatsSince(p, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := st.Sessions[0]
+	if c.PerTurnTokens != 940000 || c.Before != 1000000 || c.After != 60000 {
+		t.Fatalf("second swap should credit both drops, capped: %+v", c)
+	}
+	if want := int64(450000 + 400000 + 940000 + 900000); st.TokensNotResent != want {
+		t.Fatalf("tokens not resent: want %d, got %d", want, st.TokensNotResent)
+	}
 }

@@ -12,6 +12,16 @@ import (
 // before it, minus the context of the first request after. The session keeps
 // growing afterwards on both sides of that line, so the drop is what every
 // later compacted request did not carry.
+//
+// Drops accumulate: a second compaction starts from a context the first had
+// already shrunk, so without either the session would carry both drops. The
+// credit is capped so that a request's context plus its saving never passes
+// maxContext, because Claude Code compacts on its own near the end of its
+// window and a session never really grows past it.
+
+// maxContext is the context window of every model compaction applies to
+// (it only starts at hundreds of thousands of tokens, past Haiku's 200k).
+const maxContext = 1_000_000
 
 // CompactionStats is the dashboard's summary of a window.
 type CompactionStats struct {
@@ -37,8 +47,11 @@ type CompactedSession struct {
 	Session string    `json:"session"`
 	Model   string    `json:"model"`
 	At      time.Time `json:"at"`
-	Before  int64     `json:"before"`
-	After   int64     `json:"after"`
+	// Before is the context the session would have had without any of its
+	// summaries at the latest swap (capped at maxContext); After is what it
+	// actually sent.
+	Before int64 `json:"before"`
+	After  int64 `json:"after"`
 	// PerTurnTokens and PerTurnUSD are what each later request saves.
 	PerTurnTokens int64   `json:"per_turn_tokens"`
 	PerTurnUSD    float64 `json:"per_turn_usd"`
@@ -109,18 +122,25 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 		t.sessions[key] = s
 	}
 	if e.CompactedMessages > 0 {
-		// A new summary took effect: measure its drop once.
+		// A new summary took effect: measure its drop once, on top of what
+		// the session's earlier summaries were already saving.
 		if e.CompactedMessages != s.lastCompacted && s.lastCtx > ctx {
-			drop := s.lastCtx - ctx
+			perTurn := s.lastCtx - ctx
+			if s.cur != nil {
+				perTurn += s.cur.PerTurnTokens
+			}
+			perTurn = min(perTurn, maxContext-ctx)
 			s.cur = &CompactedSession{
 				Session: e.SessionID, Model: e.Model, At: e.Time,
-				Before: s.lastCtx, After: ctx,
-				PerTurnTokens: drop, PerTurnUSD: cacheReadUSD(e.Model, drop),
+				Before: ctx + perTurn, After: ctx,
+				PerTurnTokens: perTurn, PerTurnUSD: cacheReadUSD(e.Model, perTurn),
 			}
 			fx.swap = s.cur
 		}
 		if s.cur != nil {
-			fx.saved, fx.savedUSD = s.cur.PerTurnTokens, s.cur.PerTurnUSD
+			if saved := min(s.cur.PerTurnTokens, maxContext-ctx); saved > 0 {
+				fx.saved, fx.savedUSD = saved, cacheReadUSD(e.Model, saved)
+			}
 		}
 	} else {
 		s.cur = nil
