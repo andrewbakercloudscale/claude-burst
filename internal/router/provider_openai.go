@@ -150,6 +150,7 @@ func translateAnthropicRequest(body []byte, targetModel string) ([]byte, []strin
 			oaiMessages = append(oaiMessages, translated...)
 		}
 	}
+	oaiMessages = demoteOrphanToolResults(oaiMessages)
 
 	out := map[string]any{
 		"model":    targetModel,
@@ -218,6 +219,34 @@ func translateAnthropicRequest(body []byte, targetModel string) ([]byte, []strin
 
 	b, err := json.Marshal(out)
 	return b, dropped, err
+}
+
+// demoteOrphanToolResults turns a tool message whose call is not in any
+// earlier assistant message into plain user text. Claude Code sends some
+// requests that begin mid-conversation with a tool_result and no tool_use
+// (seen as "user[tool_result] system[text]"); Anthropic accepts them, but an
+// OpenAI-compatible endpoint rejects the whole request -- Together returns
+// 400 invalid_tool_messages -- which failed about half of the overflow
+// requests in a 2026-09-29 test. The result's text is kept, labelled.
+func demoteOrphanToolResults(msgs []map[string]any) []map[string]any {
+	called := map[string]bool{}
+	for i, m := range msgs {
+		if calls, ok := m["tool_calls"].([]map[string]any); ok {
+			for _, c := range calls {
+				if id, _ := c["id"].(string); id != "" {
+					called[id] = true
+				}
+			}
+		}
+		if m["role"] != "tool" {
+			continue
+		}
+		if id, _ := m["tool_call_id"].(string); !called[id] {
+			msgs[i] = map[string]any{"role": "user",
+				"content": fmt.Sprintf("[Output of an earlier tool call (%s) whose request is not included here]\n%v", id, m["content"])}
+		}
+	}
+	return msgs
 }
 
 // normaliseToolSchema returns a JSON Schema that an OpenAI-compatible

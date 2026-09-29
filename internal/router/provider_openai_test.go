@@ -2,6 +2,7 @@ package router
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -617,5 +618,44 @@ func TestTranslateRequestNormalisesToolSchemas(t *testing.T) {
 		if params["type"] != "object" {
 			t.Fatalf("tool %v parameters not typed as an object: %v", fn["name"], params)
 		}
+	}
+}
+
+// Claude Code sends some requests that start mid-conversation with a
+// tool_result whose tool_use is not in the request (seen 2026-09-29 as
+// "user[tool_result:call_…] system[text]"). Anthropic accepts that; an
+// OpenAI-compatible endpoint rejects the whole request -- Together:
+// invalid_tool_messages, "tool_call_id … does not match any tool call in the
+// preceding assistant messages" -- which failed about half of a test
+// session's overflow requests. An orphaned result must go as plain user
+// text instead, keeping what it said.
+func TestOrphanToolResultBecomesUserText(t *testing.T) {
+	in := `{"model":"claude-sonnet-5","messages":[
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_gone","content":"file contents here"}]},
+		{"role":"system","content":[{"type":"text","text":"reminder"}]},
+		{"role":"assistant","content":[{"type":"tool_use","id":"call_ok","name":"Read","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_ok","content":"real result"}]}]}`
+	out, _, err := translateAnthropicRequest([]byte(in), "zai-org/GLM-5.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	first := req.Messages[0]
+	if first["role"] != "user" || !strings.Contains(fmt.Sprint(first["content"]), "file contents here") {
+		t.Fatalf("orphaned result must become user text with its content, got %v", first)
+	}
+	var tools []map[string]any
+	for _, m := range req.Messages {
+		if m["role"] == "tool" {
+			tools = append(tools, m)
+		}
+	}
+	if len(tools) != 1 || tools[0]["tool_call_id"] != "call_ok" {
+		t.Fatalf("a result with its call present must stay a tool message: %v", tools)
 	}
 }
