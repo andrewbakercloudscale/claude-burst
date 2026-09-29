@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"bufio"
-	"encoding/json"
 	"os"
 	"strings"
 	"time"
@@ -95,7 +94,7 @@ func EfficiencySince(path string, since time.Time) (Efficiency, error) {
 	sc.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	for sc.Scan() {
 		var e Event
-		if json.Unmarshal(sc.Bytes(), &e) != nil || e.Time.Before(since) || !isInference(e) {
+		if !decodeEvent(sc.Bytes(), &e) || e.Time.Before(since) || !isInference(e) {
 			continue
 		}
 		// Client cancellations are the caller going away, not the provider

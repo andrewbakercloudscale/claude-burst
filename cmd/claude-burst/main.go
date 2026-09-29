@@ -176,6 +176,7 @@ func serve(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	metrics.SetPricer(srv.PriceTokens)
 
 	scheme := "http"
 	var tlsConfig *tls.Config
@@ -762,6 +763,9 @@ func stats(args []string) {
 	days := fs.Int("days", 30, "days to summarize (0 = all)")
 	_ = fs.Parse(args)
 	p, _ := config.MetricsPath()
+	if cfg, err := config.Load(); err == nil {
+		metrics.SetPricer(cfg.PriceTokens)
+	}
 	var since time.Time
 	if *days > 0 {
 		since = time.Now().Add(-time.Duration(*days) * 24 * time.Hour)

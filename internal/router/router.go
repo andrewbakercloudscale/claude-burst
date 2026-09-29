@@ -160,7 +160,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	}
 
 	s := &Server{
-		compaction:      newCompactor(cfg.PrimaryCompaction),
+		compaction:      newCompactor(cfg.PrimaryCompaction, compactionStatePath(statePath), logger),
 		cfg:             cfg,
 		primary:         primary,
 		primaryDetector: primaryDetector,
@@ -1346,6 +1346,15 @@ func requestModel(body []byte) string {
 	return ""
 }
 
+// PriceTokens is the API-equivalent cost of one request's tokens at the
+// configured rates, and whether model has a pricing entry at all. writeMetric
+// prices live requests with it; metrics.SetPricer hands it to the readers so
+// events recorded before a model was priced are costed from their stored
+// token counts instead of staying "unpriced" for the life of the file.
+func (s *Server) PriceTokens(model string, input, output, cacheRead, cacheWrite int64) (float64, bool) {
+	return s.cfg.PriceTokens(model, input, output, cacheRead, cacheWrite)
+}
+
 func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedModel string, status int, start time.Time, tok tokenUsage, claim string, reset int64, note, destination string) {
 
 	// Two-value lookup, not a bare index. A missing key yields the zero
@@ -1357,9 +1366,7 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 	// A zero that means "not priced" must not look like a zero that means
 	// "free".
 	price, priced := s.cfg.Pricing[model]
-	cacheRead, cacheWrite := price.CacheRates(model)
-	equiv := (float64(tok.input)/1_000_000)*price.InputPerMTok + (float64(tok.output)/1_000_000)*price.OutputPerMTok +
-		(float64(tok.cacheRead)/1_000_000)*cacheRead + (float64(tok.cacheWrite)/1_000_000)*cacheWrite
+	equiv, _ := s.PriceTokens(model, tok.input, tok.output, tok.cacheRead, tok.cacheWrite)
 	// Only tokens make a missing price a problem. Events with no token
 	// counts (failover notes, upstream errors, control-plane passthrough)
 	// legitimately cost nothing and must not be flagged.

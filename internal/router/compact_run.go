@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -42,16 +45,96 @@ type compactState struct {
 	p0          int    // original messages [0, p0) are summarised
 	hash        string // prefixHash of those messages
 	swapAt      int    // message count when the swap was first applied; 0 = not yet
+	seen        time.Time
 }
 
 type compactor struct {
 	mu       sync.Mutex
 	cfg      config.CompactionConfig
 	sessions map[string]*compactState // keyed by session id + "|" + model
+	path     string                   // where sessions survive a restart; "" = memory only
+	logger   *log.Logger
 }
 
-func newCompactor(c config.CompactionConfig) *compactor {
-	return &compactor{cfg: c.Resolved(), sessions: map[string]*compactState{}}
+func newCompactor(c config.CompactionConfig, path string, logger *log.Logger) *compactor {
+	cp := &compactor{cfg: c.Resolved(), sessions: map[string]*compactState{}, path: path, logger: logger}
+	cp.load()
+	return cp
+}
+
+// savedCompaction is compactState on disk. Without it every deploy threw
+// away every session's summary and window: a summary that cost a full read
+// of a 500k context was lost one restart before it applied, and the next
+// request paid for it again.
+type savedCompaction struct {
+	LastContext int64     `json:"last_context"`
+	WarnedAt    time.Time `json:"warned_at"`
+	StartedAt   time.Time `json:"started_at"`
+	Pending     bool      `json:"pending,omitempty"`
+	Summary     string    `json:"summary,omitempty"`
+	P0          int       `json:"p0,omitempty"`
+	Hash        string    `json:"hash,omitempty"`
+	SwapAt      int       `json:"swap_at,omitempty"`
+	Seen        time.Time `json:"seen"`
+}
+
+// savedTTL drops sessions not seen for this long when state is saved.
+const savedTTL = 48 * time.Hour
+
+func (c *compactor) load() {
+	if c.path == "" {
+		return
+	}
+	b, err := os.ReadFile(c.path)
+	if err != nil {
+		return
+	}
+	var saved map[string]savedCompaction
+	if err := json.Unmarshal(b, &saved); err != nil {
+		if c.logger != nil {
+			c.logger.Printf("error stage=compaction_load path=%s err=%v (starting with no compaction state)", c.path, err)
+		}
+		return
+	}
+	for k, v := range saved {
+		st := &compactState{lastContext: v.LastContext, warnedAt: v.WarnedAt, startedAt: v.StartedAt,
+			summary: v.Summary, p0: v.P0, hash: v.Hash, swapAt: v.SwapAt, seen: v.Seen}
+		// A summary in flight died with the old process. Reopen its window
+		// so the next prompt starts another, rather than waiting an hour
+		// for a result that will never arrive.
+		if v.Pending {
+			st.startedAt = time.Time{}
+		}
+		c.sessions[k] = st
+	}
+}
+
+// save writes every live session to disk. Called with c.mu held, only on
+// transitions (start, ready, failed, applied, dropped), never per request.
+func (c *compactor) save() {
+	if c.path == "" {
+		return
+	}
+	now := time.Now()
+	out := map[string]savedCompaction{}
+	for k, st := range c.sessions {
+		if !st.seen.IsZero() && now.Sub(st.seen) > savedTTL {
+			delete(c.sessions, k)
+			continue
+		}
+		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
+			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt, Seen: st.seen}
+	}
+	b, err := json.Marshal(out)
+	if err == nil {
+		tmp := c.path + ".tmp"
+		if err = os.WriteFile(tmp, b, 0600); err == nil {
+			err = os.Rename(tmp, c.path)
+		}
+	}
+	if err != nil && c.logger != nil {
+		c.logger.Printf("error stage=compaction_save path=%s err=%v", c.path, err)
+	}
 }
 
 func (c *compactor) state(key string) *compactState {
@@ -140,11 +223,14 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 
 	s.compaction.mu.Lock()
 	st := s.compaction.state(key)
+	st.seen = now
+	dirty := false
 
 	// A summary only fits the history it was made from.
 	if st.summary != "" && (len(msgs) <= st.p0 || prefixHash(msgs, st.p0) != st.hash) {
 		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches (cleared, compacted or rewound)", rid, key)
 		st.summary, st.hash, st.p0, st.swapAt = "", "", 0, 0
+		dirty = true
 	}
 
 	if st.lastContext >= cfg.WarnAtTokens && (st.warnedAt.IsZero() || now.Sub(st.warnedAt) >= window) {
@@ -172,6 +258,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		if cut > 0 {
 			st.startedAt = now
 			st.pending = true
+			dirty = true
 			prefix := append([]json.RawMessage(nil), view[:cut]...)
 			hash := prefixHash(msgs, p)
 			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages", rid, key, st.lastContext/1000, p, len(msgs))
@@ -188,14 +275,21 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			rid, key, lastMessageShape(msgs))
 	}
 	if st.summary == "" || (st.swapAt == 0 && !fresh) {
+		if dirty {
+			s.compaction.save()
+		}
 		s.compaction.mu.Unlock()
 		return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 	}
 	if st.swapAt == 0 {
 		st.swapAt = len(msgs)
 		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary", rid, key, st.p0)
+		dirty = true
 	}
 	out := rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt)
+	if dirty {
+		s.compaction.save()
+	}
 	s.compaction.mu.Unlock()
 
 	nb, err := json.Marshal(out)
@@ -244,6 +338,7 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, pre
 	defer s.compaction.mu.Unlock()
 	st := s.compaction.state(key)
 	st.pending = false
+	defer s.compaction.save()
 	if err != nil {
 		s.logger.Printf("compaction failed session=%s: %v (next attempt after the window)", key, err)
 		return
@@ -259,6 +354,7 @@ func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage
 			req[k] = v
 		}
 	}
+	prefix = withCacheBreakpoint(prefix, req)
 	instr, _ := json.Marshal(map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": compactionSummaryPrompt}}})
 	msgs, _ := json.Marshal(append(prefix, instr))
 	req["messages"] = msgs
@@ -301,6 +397,62 @@ func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage
 		return "", fmt.Errorf("empty summary (stop_reason %q)", stop)
 	}
 	return summary, nil
+}
+
+// withCacheBreakpoint marks the prefix's last cacheable block so the summary
+// call reads the session's history from cache instead of paying for it in
+// full. Claude Code's own marker sits on the last message of each request,
+// which the prefix cuts off, so without this the first live summary read
+// 28k of 532k tokens from cache and paid full input price for the rest
+// ($2.10 where ~$0.25 was available). The API looks back up to 20 blocks
+// from a breakpoint for an existing entry, and the entry Claude Code wrote
+// for the turn before the boundary is a few blocks away. Left alone when
+// the request already carries the API's maximum of four breakpoints, and a
+// thinking block is never marked (the API rejects that).
+func withCacheBreakpoint(prefix []json.RawMessage, req map[string]json.RawMessage) []json.RawMessage {
+	if len(prefix) == 0 {
+		return prefix
+	}
+	used := 0
+	for _, k := range []string{"system", "tools"} {
+		used += strings.Count(string(req[k]), `"cache_control"`)
+	}
+	for _, m := range prefix {
+		used += strings.Count(string(m), `"cache_control"`)
+	}
+	if used >= 4 {
+		return prefix
+	}
+	var msg map[string]any
+	last := prefix[len(prefix)-1]
+	if json.Unmarshal(last, &msg) != nil {
+		return prefix
+	}
+	blocks := contentBlocks(msg["content"])
+	for i := len(blocks) - 1; i >= 0; i-- {
+		b, ok := blocks[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		switch b["type"] {
+		case "thinking", "redacted_thinking":
+			continue
+		case "text":
+			if t, _ := b["text"].(string); t == "" {
+				continue
+			}
+		}
+		b["cache_control"] = map[string]any{"type": "ephemeral"}
+		msg["content"] = blocks
+		nb, err := json.Marshal(msg)
+		if err != nil {
+			return prefix
+		}
+		out := append([]json.RawMessage(nil), prefix...)
+		out[len(out)-1] = nb
+		return out
+	}
+	return prefix
 }
 
 // readSSEText collects a streamed Messages response's text, stop reason and
@@ -366,8 +518,10 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			state = "compacted"
 		case st.summary != "":
 			state = "summary ready, applies at next prompt"
+		case st.lastContext >= cfg.CompactAtTokens && !st.startedAt.IsZero() && time.Since(st.startedAt) < time.Duration(cfg.WindowMinutes)*time.Minute:
+			state = "over threshold, next compaction after " + st.startedAt.Add(time.Duration(cfg.WindowMinutes)*time.Minute).Format("15:04")
 		case st.lastContext >= cfg.CompactAtTokens:
-			state = "over threshold, waiting for window"
+			state = "over threshold, compacts at the next prompt"
 		case st.lastContext >= cfg.WarnAtTokens:
 			state = "warning"
 		}
@@ -388,4 +542,12 @@ func lastMessageShape(msgs []json.RawMessage) string {
 		return "no messages"
 	}
 	return messageSkeleton([]byte(`{"messages":[` + string(msgs[len(msgs)-1]) + `]}`))
+}
+
+// compactionStatePath keeps compaction state beside the overflow state file.
+func compactionStatePath(statePath string) string {
+	if statePath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(statePath), "compaction-state.json")
 }

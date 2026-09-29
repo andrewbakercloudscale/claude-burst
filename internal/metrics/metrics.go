@@ -77,6 +77,50 @@ type Event struct {
 	// request, so an unpriced secondary reports as $0.00 spend rather than
 	// as unknown spend -- reassuring, and wrong. See writeMetric.
 	PricingUnknown bool `json:"pricing_unknown,omitempty"`
+	// Repriced is set on read, never written: the event was recorded as
+	// PricingUnknown and has since been costed from its stored tokens at
+	// the rates configured now. See SetPricer.
+	Repriced bool `json:"repriced,omitempty"`
+}
+
+// Pricer costs a request's tokens at the currently configured rates and
+// says whether model has a pricing entry.
+type Pricer func(model string, input, output, cacheRead, cacheWrite int64) (usd float64, priced bool)
+
+var (
+	pricerMu sync.RWMutex
+	pricer   Pricer
+)
+
+// SetPricer installs the pricing used to cost events that were recorded
+// before their model was priced. On 2026-09-29 claude-opus-5-5 was priced at
+// 11:39, and the 1,689 requests before that kept the dashboard's model row
+// reading "unpriced" for every window that reached back to them, hiding the
+// priced spend beside them. The stored token counts are exact, so costing
+// them now gives the real figure without rewriting the file.
+func SetPricer(p Pricer) {
+	pricerMu.Lock()
+	pricer = p
+	pricerMu.Unlock()
+}
+
+// decodeEvent unmarshals one metrics line and reprices it if it was recorded
+// unpriced and its model has a price now.
+func decodeEvent(b []byte, e *Event) bool {
+	if json.Unmarshal(b, e) != nil {
+		return false
+	}
+	if e.PricingUnknown {
+		pricerMu.RLock()
+		p := pricer
+		pricerMu.RUnlock()
+		if p != nil {
+			if usd, ok := p(e.Model, e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens); ok {
+				e.APIEquivalentUSD, e.PricingUnknown, e.Repriced = usd, false, true
+			}
+		}
+	}
+	return true
 }
 
 type Writer struct {
@@ -143,7 +187,7 @@ func Summarize(path string, since time.Time) (Summary, error) {
 	sc.Buffer(buf, 2*1024*1024)
 	for sc.Scan() {
 		var e Event
-		if json.Unmarshal(sc.Bytes(), &e) != nil {
+		if !decodeEvent(sc.Bytes(), &e) {
 			continue
 		}
 		if !since.IsZero() && e.Time.Before(since) {
@@ -228,7 +272,7 @@ func Recent(path string, limit int) ([]Event, error) {
 	sc.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	for sc.Scan() {
 		var e Event
-		if json.Unmarshal(sc.Bytes(), &e) != nil {
+		if !decodeEvent(sc.Bytes(), &e) {
 			continue
 		}
 		if len(ring) < limit {
@@ -504,7 +548,7 @@ func scanEvents(path string, fn func(Event)) error {
 	sc.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	for sc.Scan() {
 		var e Event
-		if json.Unmarshal(sc.Bytes(), &e) != nil {
+		if !decodeEvent(sc.Bytes(), &e) {
 			continue
 		}
 		fn(e)

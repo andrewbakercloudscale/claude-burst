@@ -102,6 +102,17 @@ type ModelPrice struct {
 
 // CacheRates returns the per-MTok price of cache reads and cache writes for
 // model. See ModelPrice for the defaults.
+// PriceTokens is the API-equivalent cost of tokens served by model at the
+// configured rates, and whether model has a pricing entry at all (a missing
+// entry prices at $0, which callers must not report as free).
+func (c Config) PriceTokens(model string, input, output, cacheRead, cacheWrite int64) (float64, bool) {
+	price, priced := c.Pricing[model]
+	readRate, writeRate := price.CacheRates(model)
+	usd := (float64(input)/1_000_000)*price.InputPerMTok + (float64(output)/1_000_000)*price.OutputPerMTok +
+		(float64(cacheRead)/1_000_000)*readRate + (float64(cacheWrite)/1_000_000)*writeRate
+	return usd, priced
+}
+
 func (p ModelPrice) CacheRates(model string) (read, write float64) {
 	read, write = p.CacheReadPerMTok, p.CacheWritePerMTok
 	claude := strings.Contains(model, "claude")

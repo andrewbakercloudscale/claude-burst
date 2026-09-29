@@ -398,3 +398,107 @@ func TestEndsInPromptIgnoresTrailingSystemMessages(t *testing.T) {
 		t.Fatal("a tool round followed by a system message is still mid tool round")
 	}
 }
+
+func (f *fakeAnthropic) summaryBody() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, b := range f.bodies {
+		if strings.Contains(b, "Summarize the transcript inside") {
+			return b
+		}
+	}
+	return ""
+}
+
+// The summary call must mark the end of the history it summarises, or it
+// pays full input price for a context that is already in cache (the first
+// live run read 28k of 532k from cache).
+func TestCompactionSummaryMarksThePrefixForCaching(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return f.summaryCount() == 1 })
+
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(f.summaryBody()), &req); err != nil {
+		t.Fatal(err)
+	}
+	n := len(req.Messages)
+	if n < 2 {
+		t.Fatalf("summary request has %d messages", n)
+	}
+	marked := 0
+	for _, m := range req.Messages {
+		marked += strings.Count(string(m), `"cache_control"`)
+	}
+	if marked != 1 || !strings.Contains(string(req.Messages[n-2]), `"cache_control":{"type":"ephemeral"}`) {
+		t.Fatalf("want one breakpoint, on the last summarised message; got %d:\n%s", marked, f.summaryBody())
+	}
+}
+
+func TestCacheBreakpointSkipsThinkingAndRespectsTheLimit(t *testing.T) {
+	prefix := msgs(t, `[{"role":"assistant","content":[{"type":"text","text":"answer"},{"type":"thinking","thinking":"","signature":"s"}]}]`)
+	got := string(withCacheBreakpoint(prefix, map[string]json.RawMessage{})[0])
+	if !strings.Contains(got, `"text":"answer","type":"text"`) && !strings.Contains(got, `"cache_control":{"type":"ephemeral"},"text":"answer"`) {
+		t.Fatalf("the text block must carry the marker: %s", got)
+	}
+	if strings.Count(got, "cache_control") != 1 || strings.Contains(got, `"signature":"s","thinking":"","type":"thinking","cache_control"`) {
+		t.Fatalf("exactly one marker, never on thinking: %s", got)
+	}
+	full := map[string]json.RawMessage{"system": json.RawMessage(`[{"cache_control":{"type":"ephemeral"}},{"cache_control":{"type":"ephemeral"}},{"cache_control":{"type":"ephemeral"}},{"cache_control":{"type":"ephemeral"}}]`)}
+	if got := string(withCacheBreakpoint(prefix, full)[0]); strings.Contains(got, "cache_control") {
+		t.Fatalf("four breakpoints already: must add none: %s", got)
+	}
+}
+
+// A deploy must not throw away a summary that cost a full context read.
+func TestCompactionStateSurvivesARestart(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	up := httptest.NewServer(http.HandlerFunc(f.handler))
+	t.Cleanup(up.Close)
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = up.URL
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60}
+	dir := t.TempDir()
+	start := func() *Server {
+		s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(testLogWriter{t}, "", 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	all := msgs(t, session)
+	s := start()
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+
+	s2 := start()
+	if !s2.compactionReady("S") {
+		t.Fatal("the ready summary was lost across a restart")
+	}
+	send(t, s2, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST OF THE FIRST TASK") {
+		t.Fatalf("the restarted gateway must apply the saved summary:\n%s", f.last())
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := f.summaryCount(); n != 1 {
+		t.Fatalf("the window must survive a restart too; got %d summaries", n)
+	}
+}
+
+// A summary in flight when the gateway stopped will never arrive: the
+// restarted gateway must be free to start another at once.
+func TestCompactionPendingAtRestartReopensTheWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compaction-state.json")
+	os.WriteFile(path, []byte(`{"S|m":{"last_context":450000,"started_at":"`+time.Now().Format(time.RFC3339)+`","pending":true,"seen":"`+time.Now().Format(time.RFC3339)+`"}}`), 0600)
+	c := newCompactor(config.CompactionConfig{}, path, nil)
+	st := c.sessions["S|m"]
+	if st == nil || !st.startedAt.IsZero() || st.pending || st.lastContext != 450000 {
+		t.Fatalf("got %+v", st)
+	}
+}

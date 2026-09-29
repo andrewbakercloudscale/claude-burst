@@ -446,3 +446,59 @@ func TestDailyCarriesPruningSavings(t *testing.T) {
 		t.Fatalf("PrunedUSD = %v, want 0.028", d.PrunedUSD)
 	}
 }
+
+// An event recorded before its model was priced is costed at read time from
+// its stored tokens once a price exists, and the model row stops reading
+// "unpriced". A model still without a price stays flagged.
+func TestReadersRepriceEventsRecordedUnpriced(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	w := New(path)
+	now := time.Now()
+	_ = w.Write(Event{Time: now, Slot: "primary", Model: "claude-opus-5-5", CacheReadTokens: 1_000_000, OutputTokens: 1_000_000, PricingUnknown: true})
+	_ = w.Write(Event{Time: now, Slot: "primary", Model: "claude-opus-5-5", CacheReadTokens: 1_000_000, APIEquivalentUSD: 0.2})
+	_ = w.Write(Event{Time: now, Slot: "secondary", Model: "mystery", InputTokens: 10, PricingUnknown: true})
+
+	SetPricer(func(model string, in, out, cr, cw int64) (float64, bool) {
+		if model != "claude-opus-5-5" {
+			return 0, false
+		}
+		return float64(in)/1e6*4 + float64(out)/1e6*20 + float64(cr)/1e6*0.2 + float64(cw)/1e6*5, true
+	})
+	defer SetPricer(nil)
+
+	s, err := Summarize(path, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.UnpricedRequests != 1 || s.UnpricedModels["mystery"] != 1 {
+		t.Fatalf("unpriced = %d %v, want only the mystery model", s.UnpricedRequests, s.UnpricedModels)
+	}
+	if got := s.APIEquivalentUSD; got < 20.39 || got > 20.41 {
+		t.Fatalf("usd = %v, want 20.40 (20.20 repriced + 0.20 recorded)", got)
+	}
+	h, err := Daily(path, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range h.Models {
+		if m.Model == "claude-opus-5-5" && (m.Unpriced || m.USD < 20.39) {
+			t.Fatalf("opus row = %+v, want priced at 20.40", m)
+		}
+		if m.Model == "mystery" && !m.Unpriced {
+			t.Fatalf("mystery row lost its unpriced flag")
+		}
+	}
+	ev, _ := Recent(path, 10)
+	repriced := 0
+	for _, e := range ev {
+		if e.Repriced {
+			repriced++
+			if e.Model != "claude-opus-5-5" || e.PricingUnknown {
+				t.Fatalf("repriced the wrong event: %+v", e)
+			}
+		}
+	}
+	if repriced != 1 {
+		t.Fatalf("repriced %d recent events, want 1", repriced)
+	}
+}
