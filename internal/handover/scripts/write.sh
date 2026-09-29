@@ -58,9 +58,7 @@ if [[ -n "$dirty_before" ]]; then
   say "wrote  $root (not committed: HANDOFF.md already had uncommitted edits)"
   notify "Handover updated in $(basename "$root"), left uncommitted"; exit 0
 fi
-if git -C "$root" commit -q -m "Update the handover at session close ($now)
-
-Claude-Session: $sid" -- HANDOFF.md; then
+if git -C "$root" commit -q -m "Update the handover at session close ($now)" -- HANDOFF.md; then
   say "wrote  $root, committed $(git -C "$root" rev-parse --short HEAD)"
 else
   say "wrote  $root (commit failed)"
