@@ -14,9 +14,18 @@ user's standing instruction (see the memory `feedback-no-em-en-dashes`).
   last storm was 22 Sep. It costs 40-70 ms per connection. When a storm fires, read it with
   `scripts/peer-log.sh status`. `EOF` handshake errors around deploys are restarts, not the
   storm.
-- `main` is 1 commit ahead of origin: `b1afafc`, part 1 of proxy-side compaction (not wired in,
-  no behaviour change, not deployed). Everything else is pushed. The user asks for pushes
-  explicitly each time; ask before pushing.
+- `main` is 4 commits ahead of origin, none pushed (the user asks for pushes explicitly each
+  time; ask first):
+  - `b1afafc` and the handover commit after it: this session. Part 1 of proxy-side compaction,
+    not wired in, no behaviour change.
+  - `88a779a` (12:51) and `29d0c39` (13:08): **another Claude Code session**
+    (`session_012L1QrE1i9wux83dQ5c9YXy`) working in this repo at the same time. It added
+    "Session handover": SessionStart/SessionEnd hooks that brief from HANDOFF.md and have a
+    forked session rewrite and commit HANDOFF.md on close, with a dashboard section. It
+    **deployed** (installed binary 13:09), so the running gateway includes it. Its
+    `internal/handover/scripts/write.sh` contains an em or en dash, against the user's
+    rule; left for that session or the user rather than edited mid-flight.
+  - Because that hook rewrites HANDOFF.md at session end, this section may be edited by it.
 - **In progress when the session paused: proxy-side compaction of primary sessions.** See the
   section of that name below; it is the next thing to pick up.
 - Live `config.json` edited by hand this session (backed up first): Opus 5.5 pricing
