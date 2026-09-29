@@ -901,6 +901,21 @@
 
       <h3 style="margin:18px 0 0;font-size:13px">Recent activity <span class="hint" style="font-weight:400">newest last; <span id="hoLogPath"></span></span></h3>
       <pre class="hoLog" id="hoLog"></pre>
+
+      <h3 style="margin:22px 0 4px;font-size:13px">Handover files written automatically <span class="hint" style="font-weight:400" id="hoAuditSummary"></span></h3>
+      <div class="hint" style="margin-bottom:8px">Every HANDOFF.md the writer has changed, from the handover log. <strong>View</strong> opens the document here. <strong>Delete all</strong> moves each file into a dated backup folder beside the log (with a MANIFEST.tsv of where each came from) and removes it from its repository, which also turns handover off there, since the hooks only act where HANDOFF.md exists. In a repository that tracks the file, the deletion then shows as a change to commit.</div>
+      <div class="scroll" id="hoAudit"></div>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <button id="hoDeleteAll" class="danger" hidden>Delete all</button>
+        <span id="hoDeleteNote"></span>
+      </div>
+      <div id="hoView" hidden style="margin-top:12px">
+        <div class="row" style="align-items:center;justify-content:space-between">
+          <strong class="mono" id="hoViewPath" style="font-size:12px"></strong>
+          <button id="hoViewClose">Close</button>
+        </div>
+        <pre class="hoLog" id="hoViewBody" style="max-height:560px;margin-top:6px"></pre>
+      </div>
     </div>
   </section>
 
@@ -2015,7 +2030,96 @@ function renderHandover(s) {
   $("hoLogPath").textContent = (h.dir || "") + "/handover.log";
   const lines = h.log || [];
   $("hoLog").textContent = lines.length ? lines.join("\n") : "Nothing yet. A line appears here each time a session in an opted-in repo ends.";
+  loadHandoverAudit();
 }
+
+// --- handover audit --------------------------------------------------------
+
+let hoAuditJSON = "", hoAuditRows = [], hoDeleteArmed = null;
+
+async function loadHandoverAudit() {
+  let rows;
+  try { rows = await fetch("/api/handover-audit").then(r => r.json()); } catch (e) { return; }
+  const j = JSON.stringify(rows);
+  if (j === hoAuditJSON) return; // unchanged: leave the table (and any open view) alone
+  hoAuditJSON = j;
+  hoAuditRows = rows;
+  const live = rows.filter(r => r.exists);
+  $("hoAuditSummary").textContent = rows.length
+    ? `${rows.length} repositor${rows.length === 1 ? "y" : "ies"}, ${live.length} file${live.length === 1 ? "" : "s"} present`
+    : "";
+  if (!rows.length) {
+    $("hoAudit").innerHTML = `<div class="empty">None yet. A row appears the first time the writer changes a HANDOFF.md.</div>`;
+  } else {
+    $("hoAudit").innerHTML = `<table><thead><tr>
+        <th>Repository</th><th class="num">Size</th><th class="num">Writes</th><th>Commits</th>
+        <th>First written</th><th>Last written</th><th></th>
+      </tr></thead><tbody>${rows.map((r, i) => `<tr>
+        <td class="mono" title="${esc(r.file)}">${esc(r.root)}</td>
+        <td class="num">${r.exists ? esc(num(Math.round(r.bytes / 102.4) / 10)) + " KB" : `<span class="hint">deleted</span>`}</td>
+        <td class="num">${esc(num(r.writes))}${r.failures ? ` <span style="color:var(--bad)">(${esc(num(r.failures))} failed)</span>` : ""}</td>
+        <td class="mono">${r.commits.length ? esc(r.commits.slice(-3).join(" ")) + (r.commits.length > 3 ? " &hellip;" : "") : "-"}</td>
+        <td class="mono">${esc(stamp(r.first_write))}</td>
+        <td class="mono">${esc(stamp(r.last_write))}</td>
+        <td>${r.exists ? `<button class="h2btn" data-view="${i}">View</button>` : ""}</td>
+      </tr>`).join("")}</tbody></table>`;
+  }
+  resetDeleteAll();
+}
+
+function resetDeleteAll() {
+  clearTimeout(hoDeleteArmed);
+  hoDeleteArmed = null;
+  const n = hoAuditRows.filter(r => r.exists).length;
+  $("hoDeleteAll").hidden = n === 0;
+  $("hoDeleteAll").textContent = `Delete all ${n} file${n === 1 ? "" : "s"}`;
+}
+
+$("hoAudit").onclick = async e => {
+  const b = e.target.closest("button[data-view]");
+  if (!b) return;
+  const r = hoAuditRows[+b.dataset.view];
+  $("hoViewPath").textContent = r.file;
+  $("hoViewBody").textContent = "Loading...";
+  $("hoView").hidden = false;
+  try {
+    const res = await fetch("/api/handover-file?root=" + encodeURIComponent(r.root));
+    if (!res.ok) throw new Error(await res.text());
+    $("hoViewBody").textContent = (await res.json()).content || "(empty file)";
+  } catch (err) {
+    $("hoViewBody").textContent = "Could not read it: " + err.message;
+  }
+  $("hoView").scrollIntoView({block: "nearest"});
+};
+$("hoViewClose").onclick = () => { $("hoView").hidden = true; };
+
+// Two clicks, no browser dialog: the first arms the button for five seconds.
+$("hoDeleteAll").onclick = async () => {
+  const n = hoAuditRows.filter(r => r.exists).length;
+  if (!hoDeleteArmed) {
+    $("hoDeleteAll").textContent = `Click again to delete ${n} file${n === 1 ? "" : "s"} (each is backed up)`;
+    hoDeleteArmed = setTimeout(resetDeleteAll, 5000);
+    return;
+  }
+  clearTimeout(hoDeleteArmed);
+  $("hoDeleteAll").disabled = true;
+  try {
+    const r = await post("/api/handover-delete", {confirm: "delete"});
+    const ok = r.results.filter(x => !x.error), bad = r.results.filter(x => x.error);
+    const tracked = ok.filter(x => x.tracked).length;
+    note($("hoDeleteNote"), bad.length ? "bad" : "ok",
+      `Deleted ${ok.length} file${ok.length === 1 ? "" : "s"}; backups in ${r.backup}.` +
+      (tracked ? ` ${tracked} ${tracked === 1 ? "is" : "are"} tracked by git: commit the deletion there.` : "") +
+      (bad.length ? ` Failed: ${bad.map(x => x.file + " (" + x.error + ")").join("; ")}` : ""));
+  } catch (err) {
+    note($("hoDeleteNote"), "bad", err.message);
+  } finally {
+    $("hoDeleteAll").disabled = false;
+    $("hoView").hidden = true;
+    hoAuditJSON = "";
+    loadHandoverAudit();
+  }
+};
 
 for (const id of ["hoBrief", "hoWrite", "hoCommit", "hoMin", "hoModel", "hoBriefing", "hoInstructions"]) {
   $(id).addEventListener("input", () => { hoDirty = true; $("hoCommit").disabled = !$("hoWrite").checked; });

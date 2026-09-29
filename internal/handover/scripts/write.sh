@@ -11,7 +11,10 @@ sid=$1 cwd=$2 root=$3
 file="$root/HANDOFF.md"
 out="$DIR/last-run.json"   # the writer's full reply, for when it goes wrong
 say() { echo "$(date '+%Y-%m-%d %H:%M:%S') $* [$sid]"; }
-notify() { /usr/bin/osascript -e "display notification \"$1\" with title \"Claude handover\"" >/dev/null 2>&1 || true; }
+notify() {  # CLAUDE_HANDOVER_NO_NOTIFY is for the tests, which run this script for real
+  [[ -n "${CLAUDE_HANDOVER_NO_NOTIFY:-}" ]] && return 0
+  /usr/bin/osascript -e "display notification \"$1\" with title \"Claude handover\"" >/dev/null 2>&1 || true
+}
 
 # one writer per repo at a time: closing Ghostty ends every tab's session at once
 lock="$root/.git/handover.lock"

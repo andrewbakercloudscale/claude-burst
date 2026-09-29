@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/handover"
@@ -53,4 +54,51 @@ func (s *Server) handleHandoverInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"ok": msg})
+}
+
+// handleHandoverAudit lists every HANDOFF.md the writer has changed.
+func (s *Server) handleHandoverAudit(w http.ResponseWriter, r *http.Request) {
+	entries, err := handover.Audit()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []handover.AuditEntry{}
+	}
+	writeJSON(w, entries)
+}
+
+// handleHandoverFile returns one audited HANDOFF.md. The root must be in the
+// audit, so this cannot be used to read any other file.
+func (s *Server) handleHandoverFile(w http.ResponseWriter, r *http.Request) {
+	body, err := handover.ReadAudited(r.URL.Query().Get("root"))
+	switch {
+	case errors.Is(err, handover.ErrNotAudited):
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"content": body})
+}
+
+// handleHandoverDelete deletes every audited HANDOFF.md, after backing each
+// one up. The body must say {"confirm": "delete"}: a stray POST deletes
+// nothing.
+func (s *Server) handleHandoverDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Confirm != "delete" {
+		http.Error(w, `body must be {"confirm":"delete"}`, http.StatusBadRequest)
+		return
+	}
+	backup, results, err := handover.DeleteAudited()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"backup": backup, "results": results})
 }
