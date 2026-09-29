@@ -1423,3 +1423,22 @@ func TestUpstreamErrorBodyIsLoggedAndRecorded(t *testing.T) {
 		t.Fatalf("the reason must be bounded, got %d bytes", len(e.Note))
 	}
 }
+
+// When a provider rejects a request's structure ("tool_call_id does not
+// match any tool call in the preceding assistant messages"), the fix needs
+// the shape of the conversation -- roles, block types, tool ids -- and
+// never its content. messageSkeleton gives exactly that.
+func TestMessageSkeletonHasShapeNotContent(t *testing.T) {
+	body := `{"model":"m","messages":[
+		{"role":"user","content":"secret prompt"},
+		{"role":"assistant","content":[{"type":"text","text":"secret"},{"type":"tool_use","id":"call_1","name":"Read","input":{"file_path":"/secret"}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"secret file"},{"type":"text","text":"secret reminder"}]}]}`
+	got := messageSkeleton([]byte(body))
+	want := "user[str] assistant[text tool_use:call_1] user[tool_result:call_1 text]"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	if strings.Contains(got, "secret") {
+		t.Fatal("the skeleton must never carry content")
+	}
+}

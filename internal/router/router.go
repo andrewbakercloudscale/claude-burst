@@ -942,10 +942,52 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 
 	reason := errorExcerpt(errBody)
 	s.logger.Printf("req=%s upstream_error route=%s model=%q status=%d note=%q reason=%q", rid, p.Name(), model, resp.StatusCode, note, reason)
+	if resp.StatusCode == http.StatusBadRequest && slot == "secondary" {
+		// A 400 from a translated request is usually a structure the
+		// translation got wrong; the shape (never the content) is what
+		// fixing it needs.
+		s.logger.Printf("req=%s rejected_request_shape %s", rid, messageSkeleton(body))
+	}
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(errBody)
 	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, pruned, "", 0, "upstream error; no failover: "+reason, destination)
+}
+
+// messageSkeleton describes a Messages request's shape -- each message's
+// role and its blocks' types, with tool ids -- and nothing of its content.
+func messageSkeleton(body []byte) string {
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return "(unparseable)"
+	}
+	parts := make([]string, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		var blocks []struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			ToolUseID string `json:"tool_use_id"`
+		}
+		if json.Unmarshal(m.Content, &blocks) != nil {
+			parts = append(parts, m.Role+"[str]")
+			continue
+		}
+		kinds := make([]string, 0, len(blocks))
+		for _, b := range blocks {
+			k := b.Type
+			if id := b.ID + b.ToolUseID; id != "" {
+				k += ":" + id
+			}
+			kinds = append(kinds, k)
+		}
+		parts = append(parts, m.Role+"["+strings.Join(kinds, " ")+"]")
+	}
+	return strings.Join(parts, " ")
 }
 
 // maxErrorExcerpt bounds how much of an upstream error body reaches the log
