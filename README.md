@@ -309,6 +309,8 @@ git clone https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 ```
 
+At the end, `./install.sh` offers to install the [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel) too: a live split beside Claude Code with each turn's context and cost, which also marks when Burst compacts a session. It uses a checkout beside this one if there is one, otherwise clones its own. Set `CLAUDE_BURST_PANEL=yes` or `no` to answer without the prompt (a non-interactive run skips it and says how to get it). The two stay separate repos and neither needs the other.
+
 Run `./install.sh`, then point the secondary at your provider. Together AI is the recommended path, it does overflow and can also be the shunt worker:
 
 ```bash

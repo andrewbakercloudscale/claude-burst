@@ -175,6 +175,48 @@ Lid-closed keep-awake (off by default; see README):
 To remove everything later:
   ./install.sh uninstall
 OUT
+
+  offer_panel
+}
+
+# The usage panel (a separate repo) shows each turn's context and cost next
+# to Claude Code, and reads Burst's metrics to mark auto compaction. It is
+# optional in both directions, so a failure here never fails this install.
+PANEL_REPO="https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel.git"
+offer_panel() {
+  if [[ -x "$HOME/.local/bin/ccusage-panel.sh" ]]; then
+    echo "\nUsage panel: already installed (it shows Burst's auto compaction in its turn table)."
+    return 0
+  fi
+  if [[ "${CLAUDE_BURST_PANEL:-ask}" == "no" ]]; then
+    return 0
+  fi
+  if [[ "${CLAUDE_BURST_PANEL:-ask}" != "yes" ]]; then
+    if [[ ! -t 0 ]]; then
+      echo "\nOptional usage panel (live context and cost beside Claude Code): rerun with CLAUDE_BURST_PANEL=yes, or see $PANEL_REPO"
+      return 0
+    fi
+    local answer
+    echo
+    echo "The usage panel shows each turn's context and cost in a split beside Claude Code,"
+    echo "including when Burst compacts a long session and what that saved."
+    read -r "answer?Install the usage panel too? [Y/n] "
+    [[ -z "$answer" || "$answer" == [Yy]* ]] || { echo "Skipped. Install it later from $PANEL_REPO"; return 0; }
+  fi
+
+  # A checkout beside this one wins; otherwise keep a clone of our own.
+  local dir="${ROOT:h}/claudecode-cost-usage-panel"
+  if [[ ! -f "$dir/claude-panel-setup.sh" ]]; then
+    dir="$HOME/.local/share/claude-burst/claudecode-cost-usage-panel"
+    if [[ -d "$dir/.git" ]]; then
+      git -C "$dir" pull --ff-only --quiet || echo "WARNING: could not update $dir; installing the copy already there"
+    else
+      mkdir -p "${dir:h}"
+      git clone --quiet "$PANEL_REPO" "$dir" || { echo "WARNING: could not fetch the usage panel; install it later from $PANEL_REPO"; return 0; }
+    fi
+  fi
+  echo "Installing the usage panel from $dir"
+  bash "$dir/claude-panel-setup.sh" || echo "WARNING: the usage panel installer failed (Burst itself is installed); rerun: bash $dir/claude-panel-setup.sh"
 }
 
 case "${1:-install}" in
