@@ -2194,7 +2194,9 @@ const METRICS = {
       const total = d.secondary_sent_tokens + d.pruned_tokens;
       if (!total) return "";
       return `<div class="r"><span>Removed</span><b>${esc(Math.round(100 * d.pruned_tokens / total) + "%")}</b></div>` +
-             `<div class="r"><span>Not spent</span><b>${esc(smallUSD(d.pruned_usd))}</b></div>`;
+             // pruned_usd is priced at log time and only exists from 2026-09-29
+             // 12:15; a zero next to removed tokens would claim nothing was saved.
+             `<div class="r"><span>Not spent</span><b>${d.pruned_usd ? esc(smallUSD(d.pruned_usd)) : d.pruned_tokens ? "not priced" : esc(smallUSD(0))}</b></div>`;
     },
   },
 };
