@@ -17,6 +17,29 @@ This is an experimental MVP. Test it on a non-critical development account befor
 
 **No Claude subscription?** Claude Burst also supports a direct, metered Anthropic API key as the primary route instead of subscription passthrough (see [No-subscription setup](#no-subscription-setup-metered-api-key-primary) below). In that mode there's no included allowance to burst from, so failover to the secondary is triggered by sustained failures instead of subscription-exhaustion headers, both routes are metered, so a single transient error doesn't flip traffic to a second paid provider.
 
+## Dashboard
+
+Claude Burst runs a local dashboard beside the gateway, on port **7788**:
+
+```bash
+open http://127.0.0.1:7788
+```
+
+It binds loopback only and needs no login (see [the admin UI](#the-local-admin-ui) for how it is protected). Change the address with `claude-burst configure --admin-listen 127.0.0.1:PORT`, turn it off with `--admin-listen off`, or give it a friendlier name with [a friendlier admin URL](#a-friendlier-admin-url).
+
+![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
+
+The menu down the left follows you as you scroll:
+
+- **Overview** and **Activity**: whether traffic reaches the gateway, the checks behind it, and requests, tokens, spend and savings per day.
+- **Analytics**: latency, error rate, spend per model, and **spend per repository** (each session filed under the repository its Claude Code transcript says it ran in).
+- **Pauseless Compaction**: the switch, thresholds and results for [pauseless compaction](#pauseless-compaction-long-sessions-without-the-pause-experimental).
+- **Guards, Secondary, Context & cache, Session handover, Configuration, Actions, Install**: the controls.
+
+![Analytics: latency, errors, spend per model and spend per repository](docs/screenshots/analytics.png)
+
+Screenshots are of a real dashboard with session ids, repository names and dollar figures replaced.
+
 ## Supported providers
 
 Primary and secondary are independent, pluggable slots (`internal/router/provider.go`), nothing here is tied to one vendor:
@@ -52,6 +75,10 @@ On the subscription every turn re-reads the whole conversation, so a turn at 400
 - A session is compacted at most once per window (default 60 minutes), a warning is logged at **Warn at** (default 300k), and state survives a gateway restart.
 
 **What it did on its first day** (2026-09-29, one long Opus 5.5 session): two compactions, 611k tokens down to 49k in one step with recall intact, so every later turn resent 562k fewer tokens. Across 148 requests that was 79M tokens not resent, **$15.88 not spent** at the cache-read rate, against $5.06 for the two summaries. Both of those summaries predate the fix that makes the summary call read the session from cache, which should bring a summary down from about $2 to about $0.20.
+
+![The Pauseless Compaction section: headline results, settings, and each session's context before and after, with the saving per turn](docs/screenshots/pauseless-compaction.png)
+
+![The Saved view of Daily activity: tokens removed by compaction and by pruning, per day](docs/screenshots/saved-chart.png)
 
 **Where to see it:**
 
@@ -812,6 +839,8 @@ claude-burst reset                          # back to the primary immediately
 
 The forced state is recorded with `limit_claim: "forced"`, so neither the metrics nor
 `status` ever imply Anthropic reported a limit it did not.
+
+### The local admin UI
 
 A local control panel runs alongside the gateway on `127.0.0.1:7788` (disable with
 `claude-burst configure --admin-listen off`). It shows routing state, usage, the last 50
