@@ -1,3 +1,102 @@
+# Handover, 2026-09-29: overflow pruning, cache accounting, graceful restart
+
+Written at session close (28 Sep evening to 29 Sep midday). **Verify before acting**: true at
+the time, nothing keeps it true. All times local (SAST). No em or en dashes anywhere, by the
+user's standing instruction (see the memory `feedback-no-em-en-dashes`).
+
+## State right now
+
+- Gateway healthy, route PRIMARY, no forced or per-model overflow windows (the Sonnet test
+  force was cleared with Back to primary at ~12:03).
+- **Peer-log is still ARMED** (`CLAUDE_BURST_LOG_TLS_PEERS=1`, since 28 Sep 22:48). It caught
+  nothing for #3: zero `unknown certificate` errors since arming; the last storm was 22 Sep.
+  It costs 40-70 ms per connection. Disarm with `scripts/peer-log.sh off`, or leave it for
+  another night if you still want the storm attributed.
+- `main` is 6 commits ahead of origin (`18eb1a5` onward, see below). Not pushed: the user asked
+  for pushes explicitly each time; ask before pushing.
+- Live `config.json` edited by hand this session (backed up first): Opus 5.5 pricing
+  (`4 / 20`, `cache_read_per_mtok 0.2`) and Fable 5.1 `cache_read_per_mtok 0.25`;
+  `ExitTimeOut 60` added to the LaunchAgent plist.
+
+## What shipped (in order)
+
+| commit | what |
+|---|---|
+| `d851c80` | `install.sh` fix: `fb7126e` had spliced `apply_keep_awake` into the `uninstall() {` line, so `./install.sh uninstall` did not exist |
+| `f1cec3e` | Issue #2: non-streaming responses now record usage (closed #2, replied to the reporter) |
+| `29aa154` | Cached-token accounting on every route; overflow pruning (stub old tool results, stepped cut-off, cap huge results); Context & cache panel with switches |
+| `62fd296` | Token shunting removed from the dashboard (backend kept: `install.sh uninstall` still runs `shunt disable`) |
+| `710d45e` | Graceful restart: on SIGTERM the gateway keeps serving and exits when no reply is streaming (max 50 s) |
+| `a5f5000` | Opus 5.5 priced; cache reads at Opus 5.5 $0.20 (0.05x) and Fable 5.1 $0.25 (0.025x), not the 0.1x default |
+| `2fc834e` | Share-saved figure, re-run counter, and per-model force (`/api/force` with `model`) |
+| `d92034c` | Upstream error body logged and put in the metrics note |
+| `ca0ff52` | Shape (roles, block types, tool ids; never content) of a request the secondary rejects |
+| `7bb91f2` | Orphaned `tool_result` sent to the secondary as user text (fixed Together `invalid_tool_messages`) |
+| `18eb1a5` | Every em and en dash removed (290 in 14 files) |
+| `1c7a6fb`, `3f629eb` | Saved view on the daily chart; `pruned_usd` recorded per request |
+
+Every one was deployed with `scripts/deploy.sh` and the full suite passed first.
+
+## Pruning: what is known
+
+- Only the **openai-compatible secondary** is pruned. The primary never is: it is a
+  flat-rate subscription at ~98% cache hit, and rewriting its history would break the cache
+  and burn the limit faster. Bedrock is excluded for the same reason. The user asked why it
+  "only optimises overflow traffic"; that is the reason, by design.
+- Baseline before shipping: 30 days, 255 overflow requests, ~96k input vs ~700 output tokens
+  each, $40.63.
+- **One real test run** (forced `claude-sonnet-5` only, headless `claude -p`, 30 turns,
+  reading 25 Go files, ~$2.67): 12 requests pruned, 80 results stubbed, 11 capped, ~276k
+  tokens not sent (~16% of the session's input, ~$0.39), **1 re-run** of a stubbed call, and
+  the final answers were correct, including facts from files read early and since stubbed.
+- The panel's failure-rate comparison for the last 7 days is **polluted** by the pre-fix 400s
+  (see next section): it reads 21% pruned vs 46% unpruned failures. It corrects itself as those
+  days roll out of the window.
+
+## Open
+
+1. **GLM writes tool calls as text.** Two re-runs of the same test (11:57, 12:00) stopped after
+   3 turns: GLM answered with `<tool_call>Read ... </arg_value>` in plain text instead of a
+   structured tool call, and once invented a `config.yaml`. Claude Code sees end of turn and
+   stops. The first run (11:41) made 30 structured calls without it. Unknown whether it is
+   GLM being inconsistent or something in the translated request; the orphan fix (`7bb91f2`)
+   landed between the good run and the bad ones, so **test with it reverted before blaming
+   GLM**. Candidate mitigation if it is GLM: detect `<tool_call>` text in the response and
+   convert it to a `tool_use` block. Not started.
+2. **Before `7bb91f2`, about half of all tool-using overflow requests were failing** (20 of
+   41 in the test) with Together `invalid_tool_messages`. Claude Code sends some requests that
+   start with a `tool_result` whose `tool_use` is not included (seen as
+   `user[tool_result:call_x] system[text]`). This was silently hurting every real overflow
+   session before today; worth checking the month's secondary error rate against this.
+3. **Clean pruning numbers need more overflow traffic.** One run is one data point. Watch the
+   Context & cache verdict and the Saved view; red means raise `keep_recent` first.
+4. Issue #1 (direct-port timeouts): retitled, relabelled `known-limitation`, the `no state`
+   and packet-capture results posted. Nothing changed in code.
+5. Issue #3 (TLS storm): opened this session from the #1 thread. No storm since 22 Sep.
+6. The Tokens view of the daily chart counts uncached input only, so the primary looks tiny
+   there (cache reads are ~98% of its context). Not changed; the cache card has the real
+   figure.
+7. Minor: the "Recent requests" table is mostly heartbeats and event logging (629 of 784
+   rows in an hour), which have no cost by nature. Offered a "model calls only" filter; the
+   user has not answered.
+
+## Things that will bite you
+
+- **launchd caps an agent's exit timeout at 60 s** whatever the plist says (measured: plist
+  150, `launchctl print` 60). The drain deadline is 50 s to fit. Check `launchctl print`,
+  never the plist.
+- A restart before `710d45e` cut every streaming reply on the machine; one of this session's
+  deploys cut the user's other session mid-answer. Deploys drain now, but still ask before
+  restarting while the user has sessions running.
+- `pruned_usd` only exists from 29 Sep 12:15; the Saved view says "not priced" before that.
+- Cache-read prices are model-specific (Opus 5.5 $0.20, Fable 5.1 $0.25). An unpriced cache
+  read falls back to 0.1x input for Claude models and to the full input rate for anything
+  else. Take prices from the claude-api skill, never from memory.
+- `/api/force` without `model` moves **every** session, including the one doing the testing.
+  Use the per-model force (`claude-sonnet-5`) for experiments.
+
+---
+
 # Handover, 2026-09-28: Burst breaks on network reconnect
 
 Written at session close. **Verify before acting**, true at the time, nothing keeps it true.
