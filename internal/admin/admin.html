@@ -829,11 +829,15 @@
         </div>
         <div>
           <label for="hoModel">Writer model</label>
-          <input id="hoModel" list="hoModels" style="width:200px" spellcheck="false">
-          <datalist id="hoModels"><option value="opus"><option value="sonnet"><option value="haiku"><option value="fable"></datalist>
+          <select id="hoModel" style="width:280px">
+            <option value="opus">Opus: best handover (1M context)</option>
+            <option value="fable">Fable: 1M context</option>
+            <option value="sonnet">Sonnet: cheaper, thinner (1M context)</option>
+            <option value="haiku">Haiku: cheapest, 200k context only</option>
+          </select>
         </div>
       </div>
-      <div class="hint" style="margin:6px 0 8px">Ending means <code>/exit</code>, Ctrl-D, <code>/clear</code> or closing the Ghostty window or tab. A background job then reopens a copy of the finished session with the writer model, so it has the whole conversation, and gives it the instructions below. It takes about a minute and a macOS notification says when it is done. Sessions with fewer typed prompts than the minimum are skipped. The writer can only read, edit HANDOFF.md and run read-only git commands. <strong>Cost</strong>: the writer re-reads the whole session, so a long session costs as much as one more turn of it; a cheaper model costs less and writes a thinner handover. Placeholders: <code>{{file}}</code>, <code>{{now}}</code> (local time), <code>{{session}}</code>.</div>
+      <div class="hint" style="margin:6px 0 8px">Ending means <code>/exit</code>, Ctrl-D, <code>/clear</code> or closing the Ghostty window or tab. A background job then reopens a copy of the finished session with the writer model, so it has the whole conversation, and gives it the instructions below. It takes about a minute and a macOS notification says when it is done. Sessions with fewer typed prompts than the minimum are skipped. The writer can only read, edit HANDOFF.md and run read-only git commands. <strong>Cost</strong>: the writer re-reads the whole session, so a long session costs as much as one more turn of it; a cheaper model writes a thinner handover, and only costs less when the session ran on that model too, because the re-read comes from cache only on the same model. Opus, Fable and Sonnet read up to 1M tokens; Haiku stops at 200k, so it fails on longer sessions. Placeholders: <code>{{file}}</code>, <code>{{now}}</code> (local time), <code>{{session}}</code>.</div>
       <textarea id="hoInstructions" rows="16" spellcheck="false"></textarea>
 
       <div class="row" style="margin-top:10px">
@@ -1924,7 +1928,11 @@ function renderHandover(s) {
     $("hoWrite").checked = !!eff.write;
     $("hoCommit").checked = !!eff.commit;
     $("hoMin").value = eff.min_prompts || 2;
-    $("hoModel").value = eff.model || "opus";
+    const m = eff.model || "opus", sel = $("hoModel");
+    // A model set by hand in settings.json stays selectable rather than
+    // silently turning into the first option.
+    if (![...sel.options].some(o => o.value === m)) sel.add(new Option(m, m));
+    sel.value = m;
     $("hoBriefing").value = eff.briefing || "";
     $("hoInstructions").value = eff.instructions || "";
   }
