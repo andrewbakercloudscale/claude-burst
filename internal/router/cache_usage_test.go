@@ -145,3 +145,21 @@ func TestPreparePrunesSecondaryOnly(t *testing.T) {
 		t.Fatal("the translated body sent upstream must be the pruned one")
 	}
 }
+
+// Opus 5.5 is what Claude Code runs by default here; before it was priced,
+// every one of its turns recorded pricing_unknown and $0.
+func TestDefaultPricingCoversCurrentModels(t *testing.T) {
+	p := config.Default().Pricing
+	o, ok := p["claude-opus-5-5"]
+	if !ok || o.InputPerMTok != 4 || o.OutputPerMTok != 20 {
+		t.Fatalf("claude-opus-5-5 = %+v, %v", o, ok)
+	}
+	// Anthropic lists $0.20 for Opus 5.5 cache reads; the 0.1x default would
+	// say $0.40 and double the dominant cost of every long session.
+	if r, w := o.CacheRates("claude-opus-5-5"); r != 0.20 || w != 5 {
+		t.Fatalf("opus 5.5 cache read/write = %v / %v, want 0.20 / 5", r, w)
+	}
+	if r, _ := p["claude-fable-5-1"].CacheRates("claude-fable-5-1"); r != 0.25 {
+		t.Fatalf("fable 5.1 cache read = %v, want 0.25", r)
+	}
+}
