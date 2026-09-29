@@ -778,6 +778,12 @@ func TestSecondarySwitchingVendorDoesNotInheritKeychainService(t *testing.T) {
 // Keychain entry whose overwrite silently failed. That ambiguity is what
 // made a successful save look like a lost one.
 func TestStateReportsKeySourceAndAge(t *testing.T) {
+	// Pinned to a zone with an offset: on a UTC machine (GitHub's runners)
+	// local time and UTC print the same, and the check below could neither
+	// pass nor mean anything. It failed every CI run from 2026-09-08 on.
+	prev := time.Local
+	time.Local = time.FixedZone("SAST", 2*60*60)
+	t.Cleanup(func() { time.Local = prev })
 	s, home, stored := newSecondaryTestServer(t)
 	writeConfig(t, home)
 	stored["claude-burst-zai"] = "sk-live"
@@ -806,7 +812,7 @@ func TestStateReportsKeySourceAndAge(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, st.Secondary.KeyUpdated); err != nil {
 		t.Fatalf("key_updated %q is not RFC3339: %v", st.Secondary.KeyUpdated, err)
 	}
-	if strings.HasSuffix(st.Secondary.KeyUpdated, "Z") && time.Local != time.UTC {
+	if strings.HasSuffix(st.Secondary.KeyUpdated, "Z") {
 		t.Errorf("key_updated %q is UTC, not local time", st.Secondary.KeyUpdated)
 	}
 }
