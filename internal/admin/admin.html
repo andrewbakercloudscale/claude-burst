@@ -127,6 +127,25 @@
   .stat small { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
   .sub { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
 
+  /* Pauseless compaction is the feature to notice, so its section is the one
+     with a colour of its own. */
+  :root { --pc-a: #7c3aed; --pc-b: #3b5bdb; --pc-c: #0e9f9d; }
+  @media (prefers-color-scheme: dark) { :root { --pc-a: #a78bfa; --pc-b: #7c93f5; --pc-c: #2dd4bf; } }
+  section.standout { border: 2px solid transparent;
+    background: linear-gradient(var(--panel), var(--panel)) padding-box,
+                linear-gradient(120deg, var(--pc-a), var(--pc-b), var(--pc-c)) border-box; }
+  section.standout > h2 { font-size: 17px; font-weight: 800; letter-spacing: .04em; padding: 16px 18px;
+    background: linear-gradient(120deg, color-mix(in srgb, var(--pc-a) 14%, var(--panel)), color-mix(in srgb, var(--pc-c) 12%, var(--panel))); }
+  section.standout > h2 .hint { letter-spacing: 0; font-size: 12.5px; }
+  .pc-mark { color: var(--pc-a); }
+  .pc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+  .pc-stat { border: 1px solid color-mix(in srgb, var(--pc-b) 30%, var(--border)); border-radius: var(--radius);
+    padding: 11px 13px; background: color-mix(in srgb, var(--pc-b) 5%, var(--panel)); }
+  .pc-stat .v { font-size: 24px; font-weight: 720; letter-spacing: -.02em; line-height: 1.15; color: var(--pc-a); }
+  .pc-stat .k { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .navlink.nav-pc .label { font-weight: 750; background: linear-gradient(90deg, var(--pc-a), var(--pc-c));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+
   section { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
             box-shadow: var(--shadow); margin-bottom: 18px; overflow: hidden; }
   section > h2 { margin: 0; padding: 13px 16px; font-size: 13px; font-weight: 620;
@@ -461,6 +480,7 @@
   <a class="navlink" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
 
   <div class="navgroup">Control</div>
+  <a class="navlink nav-pc" data-target="sec-compaction"><span class="nd" id="nd-compaction"></span><span class="label">Pauseless Compaction</span></a>
   <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
   <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
   <a class="navlink" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
@@ -575,7 +595,7 @@
         <button data-metric="requests" class="on">Requests</button>
         <button data-metric="tokens">Tokens</button>
         <button data-metric="spend">Spend</button>
-        <button data-metric="saved" title="Overflow input: what the secondary was sent, and what pruning removed before it was sent">Saved</button>
+        <button data-metric="saved" title="What pruning removed from overflow input, and what pauseless compaction meant was never resent">Saved</button>
       </span>
       <span class="seg" id="daysSeg">
         <button data-days="7">7d</button>
@@ -595,6 +615,45 @@
     <div class="tiles" id="activityTiles"></div>
     <div id="modelSplit"></div>
   </section>
+
+  <section id="sec-compaction" class="standout" style="scroll-margin-top:70px">
+    <h2><span class="pc-mark">&#9889;</span> PAUSELESS COMPACTION <span class="hint">long subscription sessions shrink in the background, and you never wait</span></h2>
+    <div class="body">
+      <div class="pc-stats" id="pcStats"></div>
+      <div class="row" style="align-items:flex-start;margin:16px 0 12px">
+        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
+          <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
+          On for my subscription sessions <span class="pill">experimental</span> <span id="compactState" class="pill"></span>
+        </label>
+      </div>
+      <div class="hint" style="margin:-4px 0 12px 0;font-size:14px;line-height:1.55">
+        <p style="margin:0 0 8px"><strong>Your session never stops to compact.</strong> Claude Code's own <code>/compact</code> makes you wait while it summarises. Burst writes the summary in the background while you keep working, and swaps it in on your next prompt. <strong>No pause, no lost place, nothing to type.</strong></p>
+        <p style="margin:0 0 8px"><strong>Why it matters:</strong> on the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window.</p>
+        <p style="margin:0 0 8px"><strong>How:</strong> when a session's context passes <em>Compact at</em>, Burst asks the same model, on your subscription and your session's own login, to summarise everything before your latest prompt (about 40 seconds, in the background). From your next prompt it sends that summary in place of those messages. Claude Code keeps its full history and sees no difference. Your CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.</p>
+        <p style="margin:0">If you run <code>/clear</code> or <code>/compact</code>, or rewind, the summary no longer fits and requests go through untouched. Each compaction costs one summary call, which reads the session from cache, and one cache rewrite, and pays for itself within a few turns. The usage panel marks each one with Started and Finished rows and a green drop in context.</p>
+      </div>
+      <div class="row" style="align-items:flex-end">
+        <div>
+          <label for="compactWarn">Warn at (k tokens)</label>
+          <input type="number" id="compactWarn" min="10" max="890" step="10" style="width:110px">
+        </div>
+        <div>
+          <label for="compactAt">Compact at (k tokens)</label>
+          <input type="number" id="compactAt" min="50" max="900" step="10" style="width:110px">
+        </div>
+        <div>
+          <label for="compactWindow">At most once per (minutes)</label>
+          <input type="number" id="compactWindow" min="1" max="1440" step="5" style="width:110px">
+        </div>
+        <button id="compactSave">Save settings</button>
+      </div>
+      <div class="hint" style="margin-top:6px"><strong>Warn at</strong>: a line in the gateway log and a flag in the table below (default 300k). <strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>At most once per</strong>: the least time between two compactions of the same session (default 60 minutes), so a session that grows fast is not summarised over and over.</div>
+      <div class="hint" style="margin-top:6px"><strong>Before</strong> and <strong>After</strong>: the session's context on the last request without its latest summary and the first request with it. <strong>Saved per turn</strong>: the difference, which every later request no longer resends, priced at the model's cache-read rate. <strong>Saved since</strong>: that, over every request since the summary applied. The Saved view of the Daily activity chart shows the same savings per day.</div>
+      <div id="compactNote"></div>
+      <div class="scroll" id="compactSessions" style="margin-top:10px"></div>
+    </div>
+  </section>
+
 
   <!-- Transparent mode only. The pf rdr rule is the one piece of this that
        other software on the Mac can take away, and on 2026-09-07 it did --
@@ -759,37 +818,6 @@
       <div class="hint" style="margin-top:6px"><strong>Keep recent</strong>: how many of the latest tool results are always sent in full (default 10). Raise it if the verdict above says pruned requests fail more often. <strong>Step</strong>: how many results the cut-off advances at a time (default 10); bigger keeps the prefix stable for longer but prunes a little less. <strong>Cap</strong>: the largest single tool result sent in full (default 40&nbsp;KB).</div>
       <div id="pruneNote"></div>
 
-      <h3 style="margin:26px 0 6px;font-size:14px">Your subscription: long sessions</h3>
-      <div class="row" style="align-items:flex-start;margin:8px 0 12px">
-        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
-          <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
-          <span style="font-size:17px;letter-spacing:.02em"><strong>PAUSELESS COMPACTION</strong></span> <span class="pill">experimental</span> <span id="compactState" class="pill"></span>
-        </label>
-      </div>
-      <div class="hint" style="margin:-4px 0 12px 0;font-size:14px;line-height:1.55">
-        <p style="margin:0 0 8px"><strong>Your session never stops to compact.</strong> Claude Code's own <code>/compact</code> makes you wait while it summarises. Burst writes the summary in the background while you keep working, and swaps it in on your next prompt. <strong>No pause, no lost place, nothing to type.</strong></p>
-        <p style="margin:0 0 8px"><strong>Why it matters:</strong> on the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window.</p>
-        <p style="margin:0 0 8px"><strong>How:</strong> when a session's context passes <em>Compact at</em>, Burst asks the same model, on your subscription and your session's own login, to summarise everything before your latest prompt (about 40 seconds, in the background). From your next prompt it sends that summary in place of those messages. Claude Code keeps its full history and sees no difference. Your CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.</p>
-        <p style="margin:0">If you run <code>/clear</code> or <code>/compact</code>, or rewind, the summary no longer fits and requests go through untouched. Each compaction costs one summary call, which reads the session from cache, and one cache rewrite, and pays for itself within a few turns. The usage panel marks each one with Started and Finished rows and a green drop in context.</p>
-      </div>
-      <div class="row" style="align-items:flex-end">
-        <div>
-          <label for="compactWarn">Warn at (k tokens)</label>
-          <input type="number" id="compactWarn" min="10" max="890" step="10" style="width:110px">
-        </div>
-        <div>
-          <label for="compactAt">Compact at (k tokens)</label>
-          <input type="number" id="compactAt" min="50" max="900" step="10" style="width:110px">
-        </div>
-        <div>
-          <label for="compactWindow">At most once per (minutes)</label>
-          <input type="number" id="compactWindow" min="1" max="1440" step="5" style="width:110px">
-        </div>
-        <button id="compactSave">Save settings</button>
-      </div>
-      <div class="hint" style="margin-top:6px"><strong>Warn at</strong>: a line in the gateway log and a flag in the table below (default 300k). <strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>At most once per</strong>: the least time between two compactions of the same session (default 60 minutes), so a session that grows fast is not summarised over and over.</div>
-      <div id="compactNote"></div>
-      <div class="scroll" id="compactSessions" style="margin-top:10px"></div>
       <div class="hint" style="margin-top:8px">Figures cover the last 7 days of <code>metrics.jsonl</code>. "Removed" is the share of the secondary's input pruning took out, estimated at ~4 bytes per token and priced at the secondary model's input rate. A <strong>re-run</strong> is the model calling a tool again, with the same input, after its output was stubbed: pruning cost a round trip there instead of saving one. If more than a quarter of stubbed calls are re-run, the verdict turns red. Cache figures come from what each provider reports; a provider that caches but does not say so shows 0%.</div>
     </div>
   </section>
@@ -1849,21 +1877,43 @@ function renderCompaction(s) {
     }
   }
   $("compactState").textContent = k.enabled ? "on" : "off";
+  const cs = c.compaction_stats || {}, kk = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "k";
+  const days = c.window_days || 7;
+  $("pcStats").innerHTML = [
+    [cs.compactions || 0, `compaction${cs.compactions === 1 ? "" : "s"} in ${days} days`],
+    [cs.largest_before ? `${kk(cs.largest_before)} &rarr; ${kk(cs.largest_after)}` : "-", "biggest single drop in context"],
+    [cs.tokens_not_resent ? kk(cs.tokens_not_resent) : "-", `tokens not resent, across ${num(cs.compacted_requests || 0)} requests`],
+    [cs.compactions ? "$" + (cs.summary_usd || 0).toFixed(2) : "-", "summaries cost (API-equivalent)"],
+  ].map(([v, t]) => `<div class="pc-stat"><div class="v">${v}</div><div class="k">${esc(t)}</div></div>`).join("");
+  setDot("nd-compaction", k.enabled ? "ok" : "");
   if (!rows.length) {
     $("compactSessions").innerHTML = `<div class="empty">No sessions tracked yet. A session appears here after its first reply since the gateway started${k.enabled ? "" : " (tracking only runs while this is on)"}.</div>`;
     return;
   }
   const warnAt = k.warn_at_tokens || 300000, at = k.compact_at_tokens || 400000;
+  // The live tracker says where each session is now; the metrics log says
+  // what its latest compaction took out and has saved since.
+  const saved = {};
+  for (const x of cs.sessions || []) saved[x.session + "|" + x.model] = x;
+  const tok = n => n ? esc(num(Math.round(n / 1000))) + "k" : "-";
   $("compactSessions").innerHTML = `<table><thead><tr>
-      <th>Session</th><th>Model</th><th class="num">Context</th><th>State</th><th class="num">Summarised</th><th>Last compaction</th>
-    </tr></thead><tbody>${rows.map(r => `<tr>
+      <th>Session</th><th>Model</th><th class="num">Context now</th><th>State</th>
+      <th class="num">Before</th><th class="num">After</th><th class="num">Saved per turn</th><th class="num">Saved since</th>
+      <th>Last compaction</th>
+    </tr></thead><tbody>${rows.map(r => {
+      const x = saved[r.session + "|" + r.model];
+      return `<tr>
       <td class="mono" title="${esc(r.session)}">${esc(r.session.slice(0, 8))}</td>
       <td class="mono">${esc(r.model || "-")}</td>
-      <td class="num ${r.context >= at ? "st-5" : r.context >= warnAt ? "st-4" : ""}">${esc(num(Math.round(r.context / 1000)))}k</td>
+      <td class="num ${r.context >= at ? "st-5" : r.context >= warnAt ? "st-4" : ""}">${tok(r.context)}</td>
       <td>${esc(r.state)}</td>
-      <td class="num">${r.summarised_messages ? esc(num(r.summarised_messages)) + " msgs" : "-"}</td>
+      <td class="num">${x ? tok(x.before) : "-"}</td>
+      <td class="num">${x ? tok(x.after) : "-"}</td>
+      <td class="num">${x ? `<b style="color:var(--pc-a)">${tok(x.per_turn_tokens)}</b> <span class="hint">${esc(smallUSD(x.per_turn_usd))}</span>` : "-"}</td>
+      <td class="num">${x ? `${esc(smallUSD(x.saved_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
       <td class="mono">${r.compacted_at && !r.compacted_at.startsWith("0001") ? esc(stamp(r.compacted_at)) : "-"}</td>
-    </tr>`).join("")}</tbody></table>`;
+    </tr>`;
+    }).join("")}</tbody></table>`;
 }
 
 async function saveCompaction() {
@@ -2439,40 +2489,48 @@ const METRICS = {
     p: d => d.primary_usd, s: d => d.secondary_usd,
     fmt: money, axis: axisMoney,
   },
-  // Pruning's effect on overflow input: the bottom segment is what the
-  // secondary was sent, the top what pruning removed, so the full bar is
-  // what would have been sent without it.
+  // What the two savings features took out. Bottom: what the secondary was
+  // sent, then what pruning removed from it, so those two are what overflow
+  // would have sent without pruning. Top: primary context that pauseless
+  // compaction's summaries meant was never resent.
   saved: {
-    label: "Overflow input",
-    p: d => d.secondary_sent_tokens, s: d => d.pruned_tokens,
+    label: "Saved",
+    series: [
+      {name: "Sent to secondary", color: "var(--s-secondary)", v: d => d.secondary_sent_tokens},
+      {name: "Removed by pruning", color: "var(--s-saved)", v: d => d.pruned_tokens},
+      {name: "Removed by compaction", color: "var(--pc-a)", v: d => d.compacted_tokens || 0},
+    ],
     fmt: n => num(Math.round(n)), axis: compact,
-    pName: "Sent to secondary", sName: "Removed by pruning",
-    pColor: "var(--s-secondary)", sColor: "var(--s-saved)",
     extra: d => {
       const total = d.secondary_sent_tokens + d.pruned_tokens;
-      if (!total) return "";
-      return `<div class="r"><span>Removed</span><b>${esc(Math.round(100 * d.pruned_tokens / total) + "%")}</b></div>` +
-             // pruned_usd is priced at log time and only exists from 2026-09-29
-             // 12:15; a zero next to removed tokens would claim nothing was saved.
-             `<div class="r"><span>Not spent</span><b>${d.pruned_usd ? esc(smallUSD(d.pruned_usd)) : d.pruned_tokens ? "not priced" : esc(smallUSD(0))}</b></div>`;
+      let out = "";
+      if (total) {
+        out += `<div class="r"><span>Pruning removed</span><b>${esc(Math.round(100 * d.pruned_tokens / total) + "%")}</b></div>` +
+               // pruned_usd is priced at log time and only exists from 2026-09-29
+               // 12:15; a zero next to removed tokens would claim nothing was saved.
+               `<div class="r"><span>Pruning not spent</span><b>${d.pruned_usd ? esc(smallUSD(d.pruned_usd)) : d.pruned_tokens ? "not priced" : esc(smallUSD(0))}</b></div>`;
+      }
+      if (d.compacted_tokens || d.compaction_summary_usd) {
+        out += `<div class="r"><span>Compaction not spent</span><b>${esc(smallUSD(d.compacted_usd || 0))}</b></div>` +
+               `<div class="r"><span>Summaries cost</span><b>${esc(smallUSD(d.compaction_summary_usd || 0))}</b></div>`;
+      }
+      return out;
     },
   },
 };
 
-// Series names and colours default to the primary/secondary split every
-// metric but Saved uses.
+// A metric's stacked series, bottom first. Every metric but Saved is the
+// primary/secondary split.
 function seriesOf(M) {
-  return {
-    pName: M.pName || "Primary", sName: M.sName || "Secondary",
-    pColor: M.pColor || "var(--s-primary)", sColor: M.sColor || "var(--s-secondary)",
-  };
+  return M.series || [
+    {name: "Primary", color: "var(--s-primary)", v: M.p},
+    {name: "Secondary", color: "var(--s-secondary)", v: M.s},
+  ];
 }
 
 function renderLegend() {
-  const S = seriesOf(METRICS[chartMetric]);
-  $("chartLegend").innerHTML =
-    `<span><i style="background:${S.pColor}"></i>${esc(S.pName)}</span>` +
-    `<span><i style="background:${S.sColor}"></i>${esc(S.sName)}</span>`;
+  $("chartLegend").innerHTML = seriesOf(METRICS[chartMetric])
+    .map(S => `<span><i style="background:${S.color}"></i>${esc(S.name)}</span>`).join("");
 }
 
 // niceMax rounds an axis top up to a number a person would have chosen, so
@@ -2512,7 +2570,7 @@ function drawChart() {
   const W = Math.max(320, host.clientWidth || 640), H = 200;
   const padL = 48, padR = 10, padT = 12, padB = 26;
   const plotW = W - padL - padR, plotH = H - padT - padB;
-  const max = niceMax(Math.max(...days.map(d => M.p(d) + M.s(d)), 0));
+  const max = niceMax(Math.max(...days.map(d => S.reduce((t, x) => t + x.v(d), 0)), 0));
   const y = v => padT + plotH - (v / max) * plotH;
   const band = plotW / days.length;
   const barW = Math.min(24, Math.max(3, band - 6));
@@ -2531,23 +2589,19 @@ function drawChart() {
       parts.push(`<rect x="${cx - band / 2}" y="${padT}" width="${band}" height="${plotH}" fill="url(#nodata)"/>`);
       return;
     }
-    const pv = M.p(d), sv = M.s(d);
-    if (pv <= 0 && sv <= 0) return;
-    const gap = pv > 0 && sv > 0 ? 2 : 0; // the surface gap, in the surface colour
-    const base = padT + plotH;
-    const pH = (pv / max) * plotH, sH = (sv / max) * plotH;
+    const vals = S.map(x => Math.max(0, x.v(d)));
+    const topIdx = vals.reduce((t, v, k) => v > 0 ? k : t, -1);
+    if (topIdx < 0) return;
     const x = cx - barW / 2;
-    // The topmost segment carries the 4px rounded cap; everything below it
-    // is square, and the stack grows from one baseline.
-    if (pv > 0) {
-      const top = base - pH;
-      const r = sv > 0 ? 0 : Math.min(4, pH);
-      parts.push(rounded(x, top, barW, pH, r, S.pColor));
-    }
-    if (sv > 0) {
-      const top = base - pH - gap - sH;
-      parts.push(rounded(x, top, barW, sH, Math.min(4, sH), S.sColor));
-    }
+    // Segments stack from one baseline with a 2px surface gap between them;
+    // only the topmost carries the 4px rounded cap.
+    let base = padT + plotH;
+    vals.forEach((v, k) => {
+      if (v <= 0) return;
+      const h = (v / max) * plotH, top = base - h;
+      parts.push(rounded(x, top, barW, h, k === topIdx ? Math.min(4, h) : 0, S[k].color));
+      base = top - 2;
+    });
   });
 
   // X labels, thinned so they never collide: one every nth band, always
@@ -2570,7 +2624,7 @@ function drawChart() {
   });
 
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"
-      aria-label="${esc(M.label)} per day, ${esc(S.pName)} and ${esc(S.sName)} stacked">
+      aria-label="${esc(M.label)} per day, ${esc(S.map(x => x.name).join(", "))} stacked">
     <defs>
       <pattern id="nodata" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
         <line x1="0" y1="0" x2="0" y2="6" stroke="var(--grid)" stroke-width="3"/>
@@ -2587,10 +2641,8 @@ function drawChart() {
         tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
           `<div class="r">no data, older than this machine's metrics log</div>`;
       } else {
-        const pv = M.p(d), sv = M.s(d);
         tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
-          `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${S.pColor};margin-right:6px"></i>${esc(S.pName)}</span><b>${esc(M.fmt(pv))}</b></div>` +
-          `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${S.sColor};margin-right:6px"></i>${esc(S.sName)}</span><b>${esc(M.fmt(sv))}</b></div>` +
+          S.map(x => `<div class="r"><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${x.color};margin-right:6px"></i>${esc(x.name)}</span><b>${esc(M.fmt(x.v(d)))}</b></div>`).join("") +
           (M.extra ? M.extra(d) : "") +
           `<div class="r"><span>Sessions</span><b>${esc(num(d.sessions))}</b></div>` +
           (d.errors ? `<div class="r"><span style="color:var(--bad)">Errors</span><b>${esc(num(d.errors))}</b></div>` : "");
@@ -2622,12 +2674,11 @@ function renderChartTable() {
   const M = METRICS[chartMetric];
   const S = seriesOf(M);
   $("chartTable").innerHTML = `<table><thead><tr>
-      <th>Day</th><th class="num">${esc(S.pName)}</th><th class="num">${esc(S.sName)}</th>
+      <th>Day</th>${S.map(x => `<th class="num">${esc(x.name)}</th>`).join("")}
       <th class="num">Sessions</th><th class="num">Errors</th>
     </tr></thead><tbody>${lastHistory.days.map(d => `<tr>
       <td class="mono">${esc(d.date)}</td>
-      <td class="num">${esc(M.fmt(M.p(d)))}</td>
-      <td class="num">${esc(M.fmt(M.s(d)))}</td>
+      ${S.map(x => `<td class="num">${esc(M.fmt(x.v(d)))}</td>`).join("")}
       <td class="num">${esc(num(d.sessions))}</td>
       <td class="num${d.errors ? " st-5" : ""}">${esc(num(d.errors))}</td>
     </tr>`).join("")}</tbody></table>`;

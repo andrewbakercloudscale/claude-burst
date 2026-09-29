@@ -335,6 +335,12 @@ type Day struct {
 	SecondarySentTokens int64   `json:"secondary_sent_tokens"`
 	PrunedTokens        int64   `json:"pruned_tokens"`
 	PrunedUSD           float64 `json:"pruned_usd"`
+	// Pauseless compaction's side of the Saved view: primary context that
+	// compacted requests did not resend, priced at the cache-read rate, and
+	// what the summaries that made it possible cost. See compaction.go.
+	CompactedTokens      int64   `json:"compacted_tokens"`
+	CompactedUSD         float64 `json:"compacted_usd"`
+	CompactionSummaryUSD float64 `json:"compaction_summary_usd"`
 }
 
 // ModelUse is one served model's share of the window. This is the answer to
@@ -418,12 +424,16 @@ func Daily(path string, days int) (History, error) {
 	var latencies []int64
 	var earliest time.Time
 
+	ct := newCompactionTracker()
 	for _, f := range historyFiles(path, start) {
 		h.Files++
 		err := scanEvents(f, func(e Event) {
 			if earliest.IsZero() || e.Time.Before(earliest) {
 				earliest = e.Time
 			}
+			// Before the window check: a swap just before midnight sets the
+			// saving the next day's requests are credited with.
+			fx := ct.observe(e)
 			if e.Time.Before(start) {
 				return
 			}
@@ -435,6 +445,9 @@ func Daily(path string, days int) (History, error) {
 				return
 			}
 			d := &h.Days[i]
+			d.CompactedTokens += fx.saved
+			d.CompactedUSD += fx.savedUSD
+			d.CompactionSummaryUSD += fx.summaryUSD
 			d.Requests++
 			switch slotOf(e) {
 			case "primary":

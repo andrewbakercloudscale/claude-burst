@@ -42,6 +42,8 @@ type contextInfo struct {
 	// Sessions the sessions it is tracking, largest context first.
 	Compaction config.CompactionConfig    `json:"compaction"`
 	Sessions   []router.CompactionSession `json:"sessions"`
+	// CompactionStats is what compaction did over the same window.
+	CompactionStats metrics.CompactionStats `json:"compaction_stats"`
 }
 
 type verdict struct {
@@ -65,6 +67,7 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.USDNotSpent = float64(ci.TokensNotSent) / 1_000_000 * cfg.Pricing[cfg.Secondary.Model].InputPerMTok
 	ci.Compaction = cfg.PrimaryCompaction
 	ci.Sessions = s.gateway.CompactionSessions()
+	ci.CompactionStats, _ = metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
 	ci.Verdict = pruneVerdict(ci)
 	ci.CacheVerdict = cacheVerdict(eff)
 	return ci
