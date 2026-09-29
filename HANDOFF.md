@@ -8,12 +8,14 @@ user's standing instruction (see the memory `feedback-no-em-en-dashes`).
 
 - Gateway healthy, route PRIMARY, no forced or per-model overflow windows (the Sonnet test
   force was cleared with Back to primary at ~12:03).
-- **Peer-log is still ARMED** (`CLAUDE_BURST_LOG_TLS_PEERS=1`, since 28 Sep 22:48). It caught
-  nothing for #3: zero `unknown certificate` errors since arming; the last storm was 22 Sep.
-  It costs 40-70 ms per connection. Disarm with `scripts/peer-log.sh off`, or leave it for
-  another night if you still want the storm attributed.
-- `main` is 6 commits ahead of origin (`18eb1a5` onward, see below). Not pushed: the user asked
-  for pushes explicitly each time; ask before pushing.
+- **Peer-log is ARMED and the user chose to leave it armed "for a while"**
+  (`CLAUDE_BURST_LOG_TLS_PEERS=1`, since 28 Sep 22:48). Do not disarm without asking. It had
+  caught nothing for #3 by 29 Sep midday: zero `unknown certificate` errors since arming; the
+  last storm was 22 Sep. It costs 40-70 ms per connection. When a storm fires, read it with
+  `scripts/peer-log.sh status`. `EOF` handshake errors around deploys are restarts, not the
+  storm.
+- Everything is pushed; `main` matches origin. The user asks for pushes explicitly each time;
+  ask before pushing.
 - Live `config.json` edited by hand this session (backed up first): Opus 5.5 pricing
   (`4 / 20`, `cache_read_per_mtok 0.2`) and Fable 5.1 `cache_read_per_mtok 0.25`;
   `ExitTimeOut 60` added to the LaunchAgent plist.
@@ -79,6 +81,23 @@ Every one was deployed with `scripts/deploy.sh` and the full suite passed first.
 7. Minor: the "Recent requests" table is mostly heartbeats and event logging (629 of 784
    rows in an hour), which have no cost by nature. Offered a "model calls only" filter; the
    user has not answered.
+
+## Asked and answered: is there any context optimisation for the primary?
+
+No, deliberately. This session only improved the primary's **measurement** (cached tokens
+recorded, Opus 5.5 priced). Requests to the primary pass through unchanged. Reasoning, in
+API-equivalent dollars for Opus 5.5 ($4 input): the primary reads ~98% of its context from
+cache at $0.20/MTok (0.05x), and any rewrite of history re-writes the whole context to cache
+at 1.25x. With the pruning cut-off moving every ~10 tool results, each step costs about
+1.2 x context and saves about 0.5 x removed tokens over the next 10 turns, so it only breaks
+even when pruning removes over 70% of the context. The test removed 16%. How subscription
+limits count cache reads is not known, so this is the dollar case, not a limits proof.
+
+What does shrink the primary's context is session hygiene, not the proxy: `/clear` between
+unrelated tasks, `/compact` in long sessions, subagents for noisy exploration, rewind rather
+than correct. Offered, not started: a view ranking sessions by context size (the new
+`cache_read_tokens` field makes it possible) to show where `/clear` or `/compact` would help
+most.
 
 ## Things that will bite you
 
