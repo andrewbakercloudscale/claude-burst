@@ -940,11 +940,26 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 	}
 
-	s.logger.Printf("req=%s upstream_error route=%s model=%q status=%d note=%q", rid, p.Name(), model, resp.StatusCode, note)
+	reason := errorExcerpt(errBody)
+	s.logger.Printf("req=%s upstream_error route=%s model=%q status=%d note=%q reason=%q", rid, p.Name(), model, resp.StatusCode, note, reason)
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(errBody)
-	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, pruned, "", 0, "upstream error; no failover", destination)
+	s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, pruned, "", 0, "upstream error; no failover: "+reason, destination)
+}
+
+// maxErrorExcerpt bounds how much of an upstream error body reaches the log
+// and metrics: enough for the provider's message, not a whole echoed prompt.
+const maxErrorExcerpt = 300
+
+// errorExcerpt is the start of an upstream error body on one line, the
+// provider's own statement of why the request failed.
+func errorExcerpt(body []byte) string {
+	s := strings.Join(strings.Fields(string(body)), " ")
+	if len(s) > maxErrorExcerpt {
+		s = strings.ToValidUTF8(s[:maxErrorExcerpt], "") + "..."
+	}
+	return s
 }
 
 // replayElsewhere is where a failover decision turns into a second hop: down

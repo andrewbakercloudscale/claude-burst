@@ -1384,3 +1384,42 @@ func TestInFlightCountsStreamingInferenceOnly(t *testing.T) {
 		t.Fatalf("after the stream ended InFlight = %d, want 0", n)
 	}
 }
+
+// An upstream error's body is the only statement of WHY a request failed
+// ("Invalid JSON data: missing field `parameters`", a context-length
+// limit, ...). It went back to the client and nowhere else, so a run of
+// secondary 400s during the 2026-09-29 pruning test could not be diagnosed
+// from the log or the metrics. Both now carry the start of it.
+func TestUpstreamErrorBodyIsLoggedAndRecorded(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"Input validation error: messages too long `+strings.Repeat("x", 2000)+`"}}`)
+	}))
+	defer primary.Close()
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = primary.URL
+	dir := t.TempDir()
+	var logBuf bytes.Buffer
+	metricsPath := filepath.Join(dir, "metrics.jsonl")
+	s, err := New(cfg, filepath.Join(dir, "state.json"), metricsPath, log.New(&logBuf, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`)))
+
+	if !strings.Contains(logBuf.String(), "Input validation error: messages too long") {
+		t.Fatalf("log must carry the upstream's reason:\n%s", logBuf.String())
+	}
+	b, _ := os.ReadFile(metricsPath)
+	var e metrics.Event
+	if err := json.Unmarshal(bytes.TrimSpace(b), &e); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.Note, "Input validation error") {
+		t.Fatalf("metrics note must carry the reason: %q", e.Note)
+	}
+	if len(e.Note) > 400 {
+		t.Fatalf("the reason must be bounded, got %d bytes", len(e.Note))
+	}
+}
