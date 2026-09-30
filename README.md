@@ -7,7 +7,7 @@ Claude Burst is a Mac-only local gateway for Claude Code:
 1. **Overflow.** It keeps your normal Claude Pro/Max login as the primary credential, watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests to a secondary, this README works through **Together AI serving GLM**, then returns to the subscription when the reset timestamp arrives.
 2. **Overflow pruning.** Every overflow request resends the whole conversation to a metered provider, and most of it is old tool output. Before it is sent, tool results older than the most recent 10 are replaced with a one-line note, and any single result over 40 KB keeps only its start and end. The subscription is never pruned: Anthropic caches its context, and rewriting it on every request would break the cache (pauseless compaction, below, rewrites it once, on purpose). The dashboard's **Context & cache** panel has the switches, what was not sent, the cache hit rate per route, and a verdict that turns red if pruned requests fail more often than unpruned ones.
 
-3. **Pauseless compaction** (experimental, off by default). **Long subscription sessions are compacted in the background, with no pause.** When a session's context passes a threshold (default 400k), Burst has the same model summarise the older history while you keep working, and swaps the summary in on your next prompt. See [Pauseless compaction](#pauseless-compaction-long-sessions-without-the-pause-experimental).
+3. **Pauseless compaction** (experimental, off by default). **Long subscription sessions are compacted in the background, with no pause.** When a session's context passes a threshold (default 400k), Burst has the same model summarise the older history while you keep working, and swaps the summary in on your next prompt. See [Pauseless compaction](#pauseless-compaction-compact-sessions-without-the-pause-experimental).
 
 Token shunting, an earlier second job for the secondary, was switched off on 2026-09-21 because it saved nothing, and has been removed from the dashboard; see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context).
 
@@ -34,7 +34,7 @@ It binds loopback only and needs no login (see [the admin UI](#the-local-admin-u
 The menu down the left follows you as you scroll, grouped by job:
 
 - **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, and **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in).
-- **Context**: [Pauseless Compaction](#pauseless-compaction-long-sessions-without-the-pause-experimental), Context & cache.
+- **Context**: [Pauseless Compaction](#pauseless-compaction-compact-sessions-without-the-pause-experimental), Context & cache.
 - **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
 - **Sessions**: [Session handover](#session-handover-handoffmd-read-at-start-written-at-close-optional), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
 - **This Mac**: [lid closed and hotspot](#keeping-claude-code-working-with-the-lid-shut-optional), [Notifications](#notifications).
@@ -74,7 +74,7 @@ See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-op
 
 **Keeping Remote Control.** Pointing Claude Code at any local gateway normally costs you its Remote Control feature, Claude Code disables Remote Control the moment `ANTHROPIC_BASE_URL` names anything other than `api.anthropic.com`, and the default setup below sets exactly that variable. Claude Burst's `transparent` intercept mode solves this by never touching `ANTHROPIC_BASE_URL` at all: instead of using that config mechanism, it gets into the path a level lower, at DNS, so Claude Code's own settings never change and it believes it is still talking to `api.anthropic.com` directly. See [Keeping Remote Control: transparent intercept mode](#keeping-remote-control-transparent-intercept-mode-optional) below.
 
-## Pauseless compaction: long sessions without the pause (experimental)
+## Pauseless compaction: Compact Sessions without the Pause (experimental)
 
 **Claude Code's `/compact` stops the session while it summarises. Burst's compaction never does.**
 
