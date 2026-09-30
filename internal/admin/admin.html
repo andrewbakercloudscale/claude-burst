@@ -1098,8 +1098,8 @@
         <label><input type="radio" name="kaMode" value="ac"> <b>Plugged in only</b><span>awake with the lid shut on mains power; unplugging lets it sleep again</span></label>
         <label><input type="radio" name="kaMode" value="always"> <b>Plugged in and on battery</b><span>always awake with the lid shut. Watch the battery, and do not put it in a bag like this: it will get hot</span></label>
       </div>
-      <label style="display:block;margin-top:10px">Stay awake with the lid shut
-        <select id="kaIdle" style="margin-left:6px">
+      <label style="display:block;margin-top:14px;font-size:inherit;font-weight:600;color:inherit">Stay awake with the lid shut
+        <select id="kaIdle" style="margin-left:8px;font-weight:normal">
           <option value="0">as long as the choice above applies</option>
           <option value="30">for 30 minutes after I last used it</option>
           <option value="60">for 1 hour after I last used it</option>
@@ -3495,7 +3495,11 @@ function renderMac() {
   }
   if (ka.problem) html += `<div class="note warn" style="margin-top:6px">Saved but not applied on this Mac: ${esc(ka.problem)}. Click <b>Apply</b> to apply it (the machine-wide part asks for your password in a Terminal window).</div>`;
   const bl = (lv.blockers || []).filter(b => b.process !== "powerd");
-  if (bl.length) html += `<div class="note warn" style="margin-top:6px">Also keeping this Mac awake, whatever is chosen here: ${bl.map(b => esc((b.for || b.process + " (pid " + b.pid + ")").replace(/^caffeinate asserting on behalf of /, "caffeinate for "))).join("; ")}. A program holding "prevent system sleep" can keep a closed laptop awake on battery${ka.mode !== "off" && ka.idle_minutes ? `, so the ${ka.idle_minutes >= 60 ? ka.idle_minutes / 60 + " h" : ka.idle_minutes + " min"} limit above has no effect while it runs` : ""}.</div>`;
+  const blName = b => {
+    const f = (b.for || "").replace(/^caffeinate asserting on behalf of /, "").replace(/\s*\(pid \d+\)$/, "").replace(/^'|'$/g, "");
+    return f ? `<b>${esc(f.split("/").pop())}</b> (through caffeinate)` : `<b>${esc(b.process)}</b>`;
+  };
+  if (bl.length) html += `<div class="note warn" style="margin-top:6px">${bl.map(blName).join(" and ")} ${bl.length === 1 ? "is" : "are"} also keeping this Mac awake, even with the lid shut and on battery, whatever you choose here${ka.mode !== "off" && ka.idle_minutes ? `. While ${bl.length === 1 ? "it runs" : "they run"}, the ${ka.idle_minutes >= 60 ? ka.idle_minutes / 60 + " hour" : ka.idle_minutes + " minute"} limit above does nothing` : ""}. Stop ${bl.length === 1 ? "it" : "them"} to let the Mac sleep.</div>`;
   $("kaLive").innerHTML = html;
   setDot("nd-mac", ka.problem ? "warn" : ka.mode !== "off" ? "ok" : "");
 
@@ -3555,9 +3559,18 @@ $("kaApply").onclick = async () => {
   if (mode === "always" && !confirm("Stay awake with the lid shut on battery too?\n\nThe Mac will not sleep in a bag. It keeps using the battery and can get hot.")) return;
   $("kaApply").disabled = true;
   note($("kaNote"), "warn", "Applying...");
-  try { const x = await post("/api/keep-awake", {mode, idle_minutes: mode === "off" ? 0 : Number($("kaIdle").value)}); note($("kaNote"), "ok", x.detail); kaPick = null; }
+  let viaTerminal = false;
+  try { const x = await post("/api/keep-awake", {mode, idle_minutes: mode === "off" ? 0 : Number($("kaIdle").value)}); note($("kaNote"), "ok", x.detail); kaPick = null; viaTerminal = !!x.script; }
   catch (e) { note($("kaNote"), "bad", e.message); }
-  loadMac();
+  await loadMac();
+  // The password is typed in Terminal: keep checking for two minutes, so
+  // the page updates by itself once it is applied instead of showing
+  // "not applied" until someone clicks Refresh.
+  if (viaTerminal) for (let i = 0; i < 40 && macState && macState.keep_awake.problem; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    await loadMac();
+    if (!macState.keep_awake.problem) note($("kaNote"), "ok", "Applied.");
+  }
 };
 // Ticking a box only changes the form; Save writes it. A form with unsaved
 // changes is left alone by the refreshes that would otherwise reset it.
