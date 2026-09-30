@@ -124,6 +124,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/keep-awake", s.mutating(s.handleKeepAwake))
 	mux.HandleFunc("/api/panel-options", s.mutating(s.handlePanelOptions))
 	mux.HandleFunc("/api/panel-install", s.mutating(s.handlePanelInstall))
+	mux.HandleFunc("/api/finder", s.readOnly(s.handleFinder))
+	mux.HandleFunc("/api/finder-install", s.mutating(s.handleFinderInstall))
 	mux.HandleFunc("/docs/usage-panel.png", s.readOnly(s.handlePanelShot))
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
 	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
