@@ -44,8 +44,12 @@ func TestPromptNoticeHookFollowsTheSetting(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
-	if n := strings.Count(string(b), promptNoticeScript); n != 1 {
-		t.Fatalf("installed %d times", n)
+	if n := strings.Count(string(b), promptNoticeScript); n != 2 {
+		t.Fatalf("want it once under UserPromptSubmit and once under PostToolUse, installed %d times:\n%s", n, b)
+	}
+	root, _ := claudesettings.Read(p)
+	if !claudesettings.HasCommandHook(root, "PostToolUse", isPromptNotice) {
+		t.Fatalf("the mid-turn hook is missing:\n%s", b)
 	}
 
 	cfg.PrimaryCompaction.NoPromptNotice = true
@@ -53,7 +57,7 @@ func TestPromptNoticeHookFollowsTheSetting(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(p)
-	if promptNoticeState() != "not installed" || !strings.Contains(string(b), "mine.sh") {
+	if promptNoticeState() != "not installed" || !strings.Contains(string(b), "mine.sh") || strings.Contains(string(b), promptNoticeScript) {
 		t.Fatalf("off must remove only ours:\n%s", b)
 	}
 }

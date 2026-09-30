@@ -35,7 +35,7 @@ func isPromptNotice(cmd string) bool {
 // nothing: plain text from a UserPromptSubmit hook would reach the model.
 func promptNoticeScriptText(url string) string {
 	return `#!/bin/sh
-# UserPromptSubmit hook, installed by claude-burst (internal/admin/promptnotice.go).
+# UserPromptSubmit and PostToolUse hook, installed by claude-burst (internal/admin/promptnotice.go).
 # Shows Pauseless Compaction's news under the prompt. Generated: edits are
 # overwritten; turn it off on the dashboard instead.
 curl -sf -m 1 -X POST -H 'X-Claude-Burst-Admin: 1' -H 'Content-Type: application/json' \
@@ -92,9 +92,14 @@ func SyncPromptNoticeHook(cfg config.Config) error {
 	}
 	var changed bool
 	if want {
+		// UserPromptSubmit shows news under each prompt; PostToolUse shows
+		// it inside a long turn, where a waiting summary otherwise looked
+		// like compaction had not fired.
 		changed = claudesettings.AddCommandHook(root, "UserPromptSubmit", "", script, promptNoticeTimeout, isPromptNotice)
+		changed = claudesettings.AddCommandHook(root, "PostToolUse", "", script, promptNoticeTimeout, isPromptNotice) || changed
 	} else {
 		changed = claudesettings.RemoveCommandHooks(root, "UserPromptSubmit", isPromptNotice) > 0
+		changed = claudesettings.RemoveCommandHooks(root, "PostToolUse", isPromptNotice) > 0 || changed
 	}
 	if !changed {
 		return nil
@@ -107,10 +112,11 @@ func SyncPromptNoticeHook(cfg config.Config) error {
 func (s *Server) handlePromptNotice(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		SessionID string `json:"session_id"`
+		Event     string `json:"hook_event_name"`
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	_ = json.Unmarshal(b, &in)
-	lines := s.gateway.PromptNotices(in.SessionID)
+	lines := s.gateway.PromptNotices(in.SessionID, in.Event == "PostToolUse")
 	if len(lines) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -142,7 +148,8 @@ func promptNoticeState() string {
 	if err != nil {
 		return fmt.Sprintf("settings.json: %v", err)
 	}
-	if claudesettings.HasCommandHook(root, "UserPromptSubmit", isPromptNotice) {
+	if claudesettings.HasCommandHook(root, "UserPromptSubmit", isPromptNotice) &&
+		claudesettings.HasCommandHook(root, "PostToolUse", isPromptNotice) {
 		return "installed"
 	}
 	return "not installed"

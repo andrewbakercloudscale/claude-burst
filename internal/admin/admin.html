@@ -811,7 +811,7 @@
       <div class="pc-stats" id="pcStats"></div>
       <div class="pc-chart" id="pcChartBox" hidden>
         <div class="pc-chart-head"><h3>Savings per day</h3><span class="sum" id="pcChartSum"></span>
-          <span class="legend"><span><i style="background:var(--pcs-saved)"></i>Savings from Async Compaction</span><span><i style="background:var(--pcs-cost)"></i>Cost of Async Compaction</span></span></div>
+          <span class="legend"><span><i style="background:var(--pcs-saved)"></i>Savings from Pauseless Compaction</span><span><i style="background:var(--pcs-cost)"></i>Cost of Pauseless Compaction</span></span></div>
         <div class="chart-wrap" id="pcChartWrap"><div id="pcChart"></div><div class="chart-tip" id="pcTip"></div></div>
         <details><summary>Show as a table</summary><div id="pcChartTable"></div></details>
       </div>
@@ -3461,7 +3461,7 @@ function drawSavingsChart() {
       const d = days[+r.dataset.i];
       const row = (c, k, v) => `<div class="r"><span>${c ? `<i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${c};margin-right:6px"></i>` : ""}${k}</span><b>${esc(v)}</b></div>`;
       tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
-        row("var(--pcs-saved)", "Savings from Async Compaction", "$" + d.up.toFixed(2)) +
+        row("var(--pcs-saved)", "Savings from Pauseless Compaction", "$" + d.up.toFixed(2)) +
         row("var(--pcs-cost)", "Summaries", "-$" + d.summary.toFixed(2)) +
         row("var(--pcs-cost)", "Cache rewrites", "-$" + d.rewrite.toFixed(2)) +
         row("", "<b>Net</b>", signedUSD(d.net)) +
