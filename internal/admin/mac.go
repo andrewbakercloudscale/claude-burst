@@ -30,17 +30,18 @@ var keepAwakeModes = map[string]bool{"off": true, config.KeepAwakeOnAC: true, co
 
 type keepAwakeView struct {
 	Mode    string           `json:"mode"` // off, ac, always: what config.json asks for
+	Idle    int              `json:"idle_minutes"`
 	Live    keepawake.Status `json:"live"`
 	Problem string           `json:"problem,omitempty"`
 }
 
 func readKeepAwake() keepAwakeView {
 	cfg, _ := config.Load()
-	v := keepAwakeView{Mode: "off", Live: keepawake.Read()}
+	v := keepAwakeView{Mode: "off", Live: keepawake.Read(), Idle: cfg.KeepAwakeIdleMinutes}
 	if cfg.KeepAwakeLidClosed {
 		v.Mode = cfg.KeepAwakeLidClosedPower
 	}
-	v.Problem = v.Live.Problem(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower)
+	v.Problem = v.Live.Problem(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
 	return v
 }
 
@@ -59,9 +60,14 @@ var sudoNonInteractive = func(args ...string) ([]byte, error) {
 func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Mode string `json:"mode"`
+		Idle int    `json:"idle_minutes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !keepAwakeModes[req.Mode] {
 		http.Error(w, "mode must be off, ac or always", http.StatusBadRequest)
+		return
+	}
+	if req.Idle < 0 || req.Idle > config.MaxKeepAwakeIdleMinutes {
+		http.Error(w, fmt.Sprintf("idle_minutes must be 0 to %d", config.MaxKeepAwakeIdleMinutes), http.StatusBadRequest)
 		return
 	}
 	dir, ok := s.scriptsDir()
@@ -78,6 +84,7 @@ func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 	cfg.KeepAwakeLidClosed = on
 	if on {
 		cfg.KeepAwakeLidClosedPower = req.Mode
+		cfg.KeepAwakeIdleMinutes = req.Idle
 	}
 	if err := config.Save(cfg); err != nil {
 		http.Error(w, "saving config.json: "+err.Error(), http.StatusInternalServerError)
@@ -92,7 +99,9 @@ func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 	script := filepath.Join(dir, "lid-awake-root.sh")
 	args := []string{script, "remove"}
 	if on {
-		args = []string{script, "apply", req.Mode}
+		args = []string{script, "apply", req.Mode, strconv.Itoa(req.Idle), keepawake.ActivityPath()}
+		// The window starts now, not at the next Claude turn.
+		keepawake.MarkNow()
 	}
 	if out, err := sudoNonInteractive(args...); err == nil {
 		writeJSON(w, map[string]string{"detail": strings.TrimSpace(string(out)) + napNote})

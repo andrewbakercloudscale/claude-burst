@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -25,7 +26,7 @@ const (
 
 func ghosttyAppNapDisabled() bool { return keepawake.GhosttyAppNapDisabled() }
 
-func applyKeepAwake(on bool, mode string) {
+func applyKeepAwake(on bool, mode string, idle int) {
 	// User half first: it cannot fail for lack of sudo.
 	if err := keepawake.SetGhosttyAppNap(on); err != nil {
 		fmt.Printf("warning: could not change Ghostty App Nap setting: %v\n", err)
@@ -36,7 +37,8 @@ func applyKeepAwake(on bool, mode string) {
 	script := scriptPath("lid-awake-root.sh")
 	args := []string{"-n", script, "remove"}
 	if on {
-		args = []string{"-n", script, "apply", mode}
+		args = []string{"-n", script, "apply", mode, strconv.Itoa(idle), keepawake.ActivityPath()}
+		keepawake.MarkNow()
 	}
 	// sudo -n: use cached credentials if there are any, never prompt from here.
 	out, err := exec.Command("sudo", args...).CombinedOutput()
@@ -70,6 +72,10 @@ func reportKeepAwake(cfg config.Config) {
 	}
 	script := scriptPath("lid-awake-root.sh")
 	reapply := "sudo " + script + " apply " + cfg.KeepAwakeLidClosedPower
+	if cfg.KeepAwakeIdleMinutes > 0 {
+		reapply += " " + strconv.Itoa(cfg.KeepAwakeIdleMinutes) + " " + keepawake.ActivityPath()
+		fmt.Printf("  idle window: %d minutes after Claude Code was last used or the lid was last open\n", cfg.KeepAwakeIdleMinutes)
+	}
 	if !cfg.KeepAwakeLidClosed {
 		if on {
 			fmt.Println("  -> SleepDisabled is set although this is off; the Mac will not sleep. Undo: sudo " + script + " remove")
@@ -81,9 +87,11 @@ func reportKeepAwake(cfg config.Config) {
 	switch {
 	case strings.TrimSpace(string(appliedMode)) != cfg.KeepAwakeLidClosedPower:
 		fmt.Printf("  -> the machine is not applying mode %s; run: %s\n", cfg.KeepAwakeLidClosedPower, reapply)
-	case cfg.KeepAwakeLidClosedPower == config.KeepAwakeOnAC && plistErr != nil:
-		fmt.Println("  -> mode ac but the power-source daemon is not installed; run: " + reapply)
-	case on != wantSleepDisabled(cfg.KeepAwakeLidClosedPower, onAC):
+	case (cfg.KeepAwakeLidClosedPower == config.KeepAwakeOnAC || cfg.KeepAwakeIdleMinutes > 0) && plistErr != nil:
+		fmt.Println("  -> the keep-awake daemon is not installed; run: " + reapply)
+	case keepawake.Read().AppliedIdle != cfg.KeepAwakeIdleMinutes:
+		fmt.Println("  -> the machine is not applying the idle window; run: " + reapply)
+	case cfg.KeepAwakeIdleMinutes == 0 && on != wantSleepDisabled(cfg.KeepAwakeLidClosedPower, onAC):
 		fmt.Printf("  -> SleepDisabled should be %s on %s; run: %s\n", state(!on), power, reapply)
 	case !nap:
 		fmt.Println("  -> Ghostty may App Nap; run: claude-burst configure --keep-awake-lid-closed true")

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
 
@@ -721,6 +722,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.forward(w, r, body, "primary", s.primary, nil, false, "", nil)
 		return
 	}
+
+	// A real turn: the keep-awake idle window counts from here.
+	keepawake.Touch()
 
 	now := time.Now()
 	// Before routing, so a compacted history goes wherever the request

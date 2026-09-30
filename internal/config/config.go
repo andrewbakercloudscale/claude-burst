@@ -347,6 +347,12 @@ type Config struct {
 	// with no per-power-source form -- or KeepAwakeAlways.
 	KeepAwakeLidClosedPower string `json:"keep_awake_lid_closed_power"`
 
+	// KeepAwakeIdleMinutes narrows KeepAwakeLidClosed to "while in use": the
+	// Mac stays awake with the lid shut only this many minutes after Claude
+	// Code was last used or the lid was last open, then sleeps as usual.
+	// 0 (default) keeps it awake for as long as the power mode applies.
+	KeepAwakeIdleMinutes int `json:"keep_awake_idle_minutes,omitempty"`
+
 	// AdminHostname is an optional friendly name for the admin UI, e.g.
 	// "cloudscale-claudeburst.test", paired with an /etc/hosts entry pointing
 	// it at 127.0.0.1.
@@ -595,6 +601,9 @@ func (c *Config) ValidateIntercept() error {
 	}
 }
 
+// MaxKeepAwakeIdleMinutes is a day, the most lid-awake-root.sh accepts.
+const MaxKeepAwakeIdleMinutes = 1440
+
 // ValidateKeepAwakePower rejects an unknown power mode rather than guessing:
 // "always" read as "ac" would let the Mac sleep when the user expected it not
 // to, and the reverse would keep it awake on battery in a bag.
@@ -740,6 +749,9 @@ func Load() (Config, error) {
 	}
 	if err := ValidateKeepAwakePower(cfg.KeepAwakeLidClosedPower); err != nil {
 		return cfg, fmt.Errorf("parse %s: %w", p, err)
+	}
+	if cfg.KeepAwakeIdleMinutes < 0 || cfg.KeepAwakeIdleMinutes > MaxKeepAwakeIdleMinutes {
+		return cfg, fmt.Errorf("parse %s: keep_awake_idle_minutes must be 0 to %d, got %d", p, MaxKeepAwakeIdleMinutes, cfg.KeepAwakeIdleMinutes)
 	}
 	return cfg, nil
 }

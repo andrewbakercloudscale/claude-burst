@@ -19,8 +19,13 @@ package keepawake
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
+	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
@@ -30,8 +35,68 @@ const GhosttyDomain = "com.mitchellh.ghostty"
 // Written by lid-awake-root.sh, root-owned but world-readable.
 const (
 	ModeFile = "/etc/claude-burst/lid-awake.mode"
+	IdleFile = "/etc/claude-burst/lid-awake.idle"
 	Plist    = "/Library/LaunchDaemons/ninja.andrewbaker.claude-burst-lidawake.plist"
 )
+
+// ActivityPath is the file the gateway touches on every real Claude turn.
+// The root daemon reads its mtime (never its contents) for the idle window,
+// and accepts it only at this path.
+func ActivityPath() string {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "last-activity")
+}
+
+var (
+	touchMu   sync.Mutex
+	lastTouch time.Time
+	// Off under go test, so router tests never touch the real file.
+	touchOff = testing.Testing()
+)
+
+// Touch marks Claude Code as in use now. At most once every 30 seconds: the
+// daemon checks once a minute, so finer is wasted writes.
+func Touch() {
+	touchMu.Lock()
+	defer touchMu.Unlock()
+	if touchOff || time.Since(lastTouch) < 30*time.Second {
+		return
+	}
+	lastTouch = time.Now()
+	p := ActivityPath()
+	if p == "" {
+		return
+	}
+	if err := os.Chtimes(p, lastTouch, lastTouch); os.IsNotExist(err) {
+		_ = os.WriteFile(p, nil, 0o644)
+	}
+}
+
+// MarkNow records activity now, even under go test's guard, unthrottled.
+// For applying the setting: without a file the daemon would count the Mac
+// as idle from the start. Test callers point HOME at a temporary dir.
+func MarkNow() {
+	p := ActivityPath()
+	if p == "" {
+		return
+	}
+	now := time.Now()
+	if err := os.Chtimes(p, now, now); os.IsNotExist(err) {
+		_ = os.WriteFile(p, nil, 0o644)
+	}
+}
+
+// LastActivity is when Claude Code was last used, or zero.
+func LastActivity() time.Time {
+	fi, err := os.Stat(ActivityPath())
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
+}
 
 // ParseSleepDisabled reads SleepDisabled out of `pmset -g` output.
 func ParseSleepDisabled(out string) (on, known bool) {
@@ -122,6 +187,8 @@ type Status struct {
 	OnAC               bool      `json:"on_ac"`
 	Battery            string    `json:"battery,omitempty"` // "85%; charging"
 	AppliedMode        string    `json:"applied_mode"`      // what the root half is doing: "", ac, always
+	AppliedIdle        int       `json:"applied_idle"`      // idle window the root half applies, minutes; 0 none
+	LastActivity       time.Time `json:"last_activity,omitempty"`
 	DaemonInstalled    bool      `json:"daemon_installed"`
 	GhosttyNapOff      bool      `json:"ghostty_nap_off"`
 	Blockers           []Blocker `json:"blockers"`
@@ -139,6 +206,9 @@ func Read() Status {
 	}
 	mode, _ := os.ReadFile(ModeFile)
 	st.AppliedMode = strings.TrimSpace(string(mode))
+	idle, _ := os.ReadFile(IdleFile)
+	st.AppliedIdle, _ = strconv.Atoi(strings.TrimSpace(string(idle)))
+	st.LastActivity = LastActivity()
 	_, err := os.Stat(Plist)
 	st.DaemonInstalled = err == nil
 	st.GhosttyNapOff = GhosttyAppNapDisabled()
@@ -150,7 +220,7 @@ func Read() Status {
 
 // Problem says what is wrong with the live state for a configured setting,
 // or "" when the machine is doing what the config asks.
-func (st Status) Problem(on bool, mode string) string {
+func (st Status) Problem(on bool, mode string, idle int) string {
 	if !st.SleepDisabledKnown {
 		return "could not read SleepDisabled from pmset"
 	}
@@ -163,8 +233,13 @@ func (st Status) Problem(on bool, mode string) string {
 	switch {
 	case st.AppliedMode != mode:
 		return "the machine is not applying mode " + mode
-	case mode == config.KeepAwakeOnAC && !st.DaemonInstalled:
-		return "mode ac but the power-source daemon is not installed"
+	case st.AppliedIdle != idle:
+		return "the machine is not applying the idle window"
+	case (mode == config.KeepAwakeOnAC || idle > 0) && !st.DaemonInstalled:
+		return "the keep-awake daemon is not installed"
+	case idle > 0:
+		// The daemon follows the clock too; SleepDisabled legitimately
+		// reads 0 once the window has passed.
 	case st.SleepDisabled != WantSleepDisabled(mode, st.OnAC):
 		return "SleepDisabled does not match the power source"
 	case !st.GhosttyNapOff:

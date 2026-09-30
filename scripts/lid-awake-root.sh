@@ -20,7 +20,15 @@
 #           SleepDisabled 1 on AC, 0 on battery. Unplugging therefore restores
 #           normal lid-close sleep, which is the point: a closed laptop that
 #           never sleeps, in a bag, on battery, gets hot and flat.
-#   always  SleepDisabled 1 regardless of power source. No daemon.
+#   always  SleepDisabled 1 regardless of power source.
+#
+# An optional idle window narrows either mode to "while in use": awake with the
+# lid shut only for IDLE minutes after Claude Code was last used or the lid was
+# last open, then normal lid-close sleep. The gateway touches ACTIVITY on each
+# real Claude turn; this daemon reads only that file's mtime, never its
+# contents, and only from ~/.config/claude-burst/last-activity. Opening the lid
+# wakes the Mac and starts a new window. With a window set, the daemon runs in
+# both modes and checks every minute as well as on power-source changes.
 #
 # The daemon runs a root-owned COPY in /usr/local/libexec/claude-burst, never
 # this file: a root job pointed at a user-writable script under ~/Desktop is a
@@ -32,7 +40,7 @@
 # somebody set for their own reasons. Everything is idempotent.
 #
 # Usage:
-#   sudo lid-awake-root.sh apply [ac|always]     # default ac
+#   sudo lid-awake-root.sh apply [ac|always] [IDLE_MINUTES ACTIVITY_FILE]
 #   sudo lid-awake-root.sh remove
 #        lid-awake-root.sh status                # no root
 #        lid-awake-root.sh desired [ac|always]   # no root; what reconcile would set now
@@ -44,6 +52,9 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="${CLAUDE_BURST_ROOT_STATE_DIR:-/etc/claude-burst}"
 STATE_FILE="$STATE_DIR/lid-awake.state"   # SleepDisabled before our first apply
 MODE_FILE="$STATE_DIR/lid-awake.mode"     # ac | always
+IDLE_FILE="$STATE_DIR/lid-awake.idle"     # minutes; absent or 0 = no window
+ACT_FILE="$STATE_DIR/lid-awake.activity"  # path of the gateway's activity file
+LIDOPEN_FILE="$STATE_DIR/lid-awake.lidopen" # touched while the lid is open
 LABEL="ninja.andrewbaker.claude-burst-lidawake"
 PLIST="/Library/LaunchDaemons/$LABEL.plist"
 LIBEXEC="/usr/local/libexec/claude-burst"
@@ -66,8 +77,39 @@ power_source() {
 
 valid_mode() { [[ "$1" == ac || "$1" == always ]]; }
 
+valid_idle() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 <= 1440 )); }
+# Only the gateway's own file under a user's home; read for its mtime only.
+valid_activity() { [[ "$1" =~ ^/Users/[A-Za-z0-9._-]+/\.config/claude-burst/last-activity$ ]]; }
+
+lid_closed() {
+  # CLAUDE_BURST_TEST_LID (shut|open) is for the tests only; launchd never sets it.
+  case "${CLAUDE_BURST_TEST_LID:-}" in shut) return 0 ;; open) return 1 ;; esac
+  ioreg -r -k AppleClamshellState -d 4 2>/dev/null | grep -q '"AppleClamshellState" = Yes'
+}
+
+mtime() { stat -f %m "$1" 2>/dev/null || echo 0; }
+
+# in_use: within the idle window of the last Claude turn or the last time the
+# lid was seen open. True when no window is set.
+in_use() {
+  local idle; idle="$(cat "$IDLE_FILE" 2>/dev/null)"
+  valid_idle "$idle" && (( idle > 0 )) || return 0
+  lid_closed || touch "$LIDOPEN_FILE" 2>/dev/null
+  local act; act="$(cat "$ACT_FILE" 2>/dev/null)"
+  local last; last="$(mtime "$LIDOPEN_FILE")"
+  if valid_activity "$act"; then
+    local a; a="$(mtime "$act")"; (( a > last )) && last=$a
+  fi
+  (( $(date +%s) - last < idle * 60 ))
+}
+
 desired_for() { # mode -> 0|1
-  if [[ "$1" == always || "$(power_source)" == ac ]]; then echo 1; else echo 0; fi
+  if [[ "$1" == always || "$(power_source)" == ac ]] && in_use; then echo 1; else echo 0; fi
+}
+
+needs_daemon() { # mode
+  local idle; idle="$(cat "$IDLE_FILE" 2>/dev/null)"
+  [[ "$1" == ac ]] || { valid_idle "$idle" && (( idle > 0 )); }
 }
 
 set_sleep_disabled() {
@@ -113,8 +155,10 @@ PLIST
 
 do_apply() {
   need_root apply
-  local mode="${1:-ac}"
+  local mode="${1:-ac}" idle="${2:-0}" act="${3:-}"
   valid_mode "$mode" || die "power mode must be ac or always, got '$mode'"
+  valid_idle "$idle" || die "idle minutes must be 0 to 1440, got '$idle'"
+  (( idle == 0 )) || valid_activity "$act" || die "activity file must be ~/.config/claude-burst/last-activity, got '$act'"
   local before; before="$(current)"
   [[ "$before" == 0 || "$before" == 1 ]] || die "could not read SleepDisabled from pmset -g (got '$before')"
   mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
@@ -122,17 +166,23 @@ do_apply() {
   # record our own 1 and `remove` would then restore 1.
   [[ -f "$STATE_FILE" ]] || echo "$before" > "$STATE_FILE" || die "cannot write $STATE_FILE"
   echo "$mode" > "$MODE_FILE" || die "cannot write $MODE_FILE"
+  echo "$idle" > "$IDLE_FILE" || die "cannot write $IDLE_FILE"
+  if (( idle > 0 )); then echo "$act" > "$ACT_FILE"; else rm -f "$ACT_FILE"; fi
+  touch "$LIDOPEN_FILE"   # applying counts as use: the window starts now
 
-  if [[ "$mode" == always ]]; then
-    daemon_uninstall
-  else
+  if needs_daemon "$mode"; then
     daemon_install
+  else
+    daemon_uninstall
   fi
   set_sleep_disabled "$(desired_for "$mode")" || die "pmset -a disablesleep failed"
   local want after; want="$(desired_for "$mode")"; after="$(current)"
   [[ "$after" == "$want" ]] || die "SleepDisabled reads '$after', wanted '$want'"
-  log "applied mode=$mode"
-  if [[ "$mode" == always ]]; then
+  log "applied mode=$mode idle=$idle"
+  if (( idle > 0 )); then
+    echo "lid-closed awake: ON, ${mode/ac/on mains power only}, for $idle minutes after Claude Code was last used or the lid was last open (SleepDisabled $after; was $before)"
+    echo "  daemon $LABEL checks every minute; log: $LOG"
+  elif [[ "$mode" == always ]]; then
     echo "lid-closed awake: ON, always (SleepDisabled 1; was $before)"
   else
     echo "lid-closed awake: ON, on mains power only (now on $(power_source): SleepDisabled $after; was $before)"
@@ -143,7 +193,7 @@ do_apply() {
 do_remove() {
   need_root remove
   daemon_uninstall
-  rm -f "$MODE_FILE"
+  rm -f "$MODE_FILE" "$IDLE_FILE" "$ACT_FILE" "$LIDOPEN_FILE"
   if [[ ! -f "$STATE_FILE" ]]; then
     echo "lid-closed awake: never applied by claude-burst; SleepDisabled left at $(current)"
     return 0
@@ -166,6 +216,9 @@ do_reconcile() {
 do_watch() {
   need_root watch
   do_reconcile
+  # The idle window needs a clock as well as power-source events.
+  ( while sleep 60; do do_reconcile; done ) &
+  trap 'kill $! 2>/dev/null' EXIT
   # pslog prints a line on every power-source change and keeps running.
   # If it ever exits, so do we, and launchd's KeepAlive restarts the watch.
   pmset -g pslog 2>/dev/null | while IFS= read -r _; do do_reconcile; done
@@ -174,6 +227,10 @@ do_watch() {
 do_status() {
   local mode; mode="$(cat "$MODE_FILE" 2>/dev/null)"
   echo "SleepDisabled: $(current) (power: $(power_source))"
+  local idle; idle="$(cat "$IDLE_FILE" 2>/dev/null)"
+  if valid_idle "$idle" && (( idle > 0 )); then
+    if in_use; then echo "idle window: $idle minutes, in use now"; else echo "idle window: $idle minutes, idle: lid-close sleep allowed"; fi
+  fi
   if [[ -f "$STATE_FILE" ]]; then
     echo "applied by claude-burst: yes, mode ${mode:-unknown} (restores to $(<"$STATE_FILE") on remove)"
   else
@@ -191,7 +248,7 @@ do_status() {
 }
 
 case "${1:-}" in
-  apply)     do_apply "${2:-ac}" ;;
+  apply)     do_apply "${2:-ac}" "${3:-0}" "${4:-}" ;;
   remove)    do_remove ;;
   status)    do_status ;;
   desired)   valid_mode "${2:-ac}" || die "mode must be ac or always"; desired_for "${2:-ac}" ;;

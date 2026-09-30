@@ -124,8 +124,11 @@ Off by default. `keep_awake_lid_closed` in `config.json` keeps a Claude Code ses
 | `ac` **(default)** | stays awake | sleeps as normal |
 | `always` | stays awake | stays awake |
 
+**Only while in use** (`keep_awake_idle_minutes`, 0 by default): either mode can be limited to a set time after you last used it, so a session you walked away from does not keep a closed laptop awake all night. "Used" is a Claude Code turn (from the Mac or from your phone through Remote Control) or the lid being open. Once the time passes, closing the lid sleeps the Mac as usual; opening it wakes the Mac, starts the time again, and tries the hotspot at once if there is no network. The dashboard offers 30 minutes to 8 hours and shows until when the Mac stays awake. The gateway touches `~/.config/claude-burst/last-activity` on each turn, and the root daemon, which checks every minute, reads only that file's time and only at that path.
+
 ```bash
 claude-burst configure --keep-awake-lid-closed true                 # mode ac
+claude-burst configure --keep-awake-idle-minutes 60                 # awake for an hour after last use
 claude-burst configure --keep-awake-power always                    # switch mode
 claude-burst configure --keep-awake-lid-closed false                # undo
 sudo scripts/lid-awake-root.sh apply ac                             # printed for you if sudo is not cached; ./install.sh re-applies it from config.json

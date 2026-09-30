@@ -1073,6 +1073,17 @@
         <label><input type="radio" name="kaMode" value="ac"> <b>Plugged in only</b><span>awake with the lid shut on mains power; unplugging lets it sleep again</span></label>
         <label><input type="radio" name="kaMode" value="always"> <b>Plugged in and on battery</b><span>always awake with the lid shut. Watch the battery, and do not put it in a bag like this: it will get hot</span></label>
       </div>
+      <label style="display:block;margin-top:10px">Stay awake with the lid shut
+        <select id="kaIdle" style="margin-left:6px">
+          <option value="0">as long as the choice above applies</option>
+          <option value="30">for 30 minutes after I last used it</option>
+          <option value="60">for 1 hour after I last used it</option>
+          <option value="120">for 2 hours after I last used it</option>
+          <option value="240">for 4 hours after I last used it</option>
+          <option value="480">for 8 hours after I last used it</option>
+        </select>
+      </label>
+      <div class="hint" style="margin-top:4px">"Used" is a Claude Code turn, from this Mac or from your phone through Remote Control, or the lid being open. Once the time passes the Mac sleeps as usual; opening the lid wakes it and starts the time again, and the hotspot is tried at once if there is no network.</div>
       <div class="row" style="margin-top:10px">
         <button class="primary" id="kaApply" disabled>&#x2713; Apply</button>
         <span id="kaPending" class="hint"></span>
@@ -3441,11 +3452,19 @@ function renderMac() {
   const ka = m.keep_awake, lv = ka.live;
   // A choice not yet applied survives a refresh; otherwise show what is saved.
   if (!kaPick) for (const r of document.querySelectorAll('input[name="kaMode"]')) r.checked = r.value === ka.mode;
+  if (!kaPick) $("kaIdle").value = String(ka.idle_minutes || 0);
+  $("kaIdle").disabled = ((document.querySelector('input[name="kaMode"]:checked') || {}).value || "off") === "off";
   kaUpdateApply();
   const power = lv.on_ac ? "on mains power" : "on battery";
   const bits = [`Now ${power}${lv.battery ? ` (${esc(lv.battery)})` : ""}`,
     `lid sleep is ${lv.sleep_disabled ? "<b>overridden</b>: the Mac stays awake with the lid shut" : "<b>normal</b>: closing the lid sleeps the Mac"}`];
   let html = bits.join(". ") + ".";
+  if (ka.mode !== "off" && ka.idle_minutes > 0 && lv.last_activity) {
+    const until = new Date(new Date(lv.last_activity).getTime() + ka.idle_minutes * 60000);
+    html += until > new Date()
+      ? ` Last used ${new Date(lv.last_activity).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}; with the lid shut it stays awake until at least <b>${until.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}</b>.`
+      : ` Not used for ${ka.idle_minutes >= 60 ? ka.idle_minutes / 60 + " h" : ka.idle_minutes + " min"}: closing the lid now sleeps the Mac.`;
+  }
   if (ka.problem) html += `<div class="note warn" style="margin-top:6px">Saved but not applied on this Mac: ${esc(ka.problem)}. Click <b>Apply</b> to apply it (the machine-wide part asks for your password in a Terminal window).</div>`;
   const bl = (lv.blockers || []).filter(b => b.process !== "powerd");
   if (bl.length) html += `<div class="note warn" style="margin-top:6px">Also keeping this Mac awake, whatever is chosen here: ${bl.map(b => esc((b.for || b.process + " (pid " + b.pid + ")").replace(/^caffeinate asserting on behalf of /, "caffeinate for "))).join("; ")}. A program holding "prevent system sleep" can keep a closed laptop awake on battery.</div>`;
@@ -3491,21 +3510,24 @@ function kaUpdateApply() {
   const ka = macState && macState.keep_awake;
   if (!ka) return;
   const sel = (document.querySelector('input[name="kaMode"]:checked') || {}).value;
-  const changed = sel && sel !== ka.mode;
+  const idle = sel === "off" ? 0 : Number($("kaIdle").value);
+  const changed = sel && (sel !== ka.mode || (sel !== "off" && idle !== (ka.idle_minutes || 0)));
   $("kaApply").disabled = !(changed || ka.problem);
   $("kaApply").textContent = changed ? "\u2713 Apply" : "\u2713 Apply again";
-  $("kaPending").textContent = changed ? `Not applied yet: now ${kaLabels[ka.mode] || ka.mode}.` : "";
+  const idleNow = ka.mode === "off" ? "" : ka.idle_minutes ? `, for ${ka.idle_minutes >= 60 ? ka.idle_minutes / 60 + " h" : ka.idle_minutes + " min"} after last use` : ", no time limit";
+  $("kaPending").textContent = changed ? `Not applied yet: now ${kaLabels[ka.mode] || ka.mode}${idleNow}.` : "";
 }
 for (const r of document.querySelectorAll('input[name="kaMode"]')) {
-  r.addEventListener("change", () => { kaPick = r.value; kaUpdateApply(); });
+  r.addEventListener("change", () => { kaPick = r.value; $("kaIdle").disabled = r.value === "off"; kaUpdateApply(); });
 }
+$("kaIdle").addEventListener("change", () => { kaPick = kaPick || "idle"; kaUpdateApply(); });
 $("kaApply").onclick = async () => {
   const mode = (document.querySelector('input[name="kaMode"]:checked') || {}).value;
   if (!mode) return;
   if (mode === "always" && !confirm("Stay awake with the lid shut on battery too?\n\nThe Mac will not sleep in a bag. It keeps using the battery and can get hot.")) return;
   $("kaApply").disabled = true;
   note($("kaNote"), "warn", "Applying...");
-  try { const x = await post("/api/keep-awake", {mode}); note($("kaNote"), "ok", x.detail); kaPick = null; }
+  try { const x = await post("/api/keep-awake", {mode, idle_minutes: mode === "off" ? 0 : Number($("kaIdle").value)}); note($("kaNote"), "ok", x.detail); kaPick = null; }
   catch (e) { note($("kaNote"), "bad", e.message); }
   loadMac();
 };

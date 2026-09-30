@@ -52,6 +52,15 @@ func TestInstallScriptUninstallRemovesShuntHookAndSkill(t *testing.T) {
 	dst.Close()
 	stubs := t.TempDir()
 	must(t, os.WriteFile(filepath.Join(stubs, "launchctl"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	// install.sh uninstall also runs `sudo lid-awake-root.sh remove` when
+	// this machine's /etc/claude-burst says keep-awake is applied, and
+	// `defaults delete` on Ghostty's App Nap. Neither honours HOME: unstubbed,
+	// every test run switched this Mac's Ghostty setting off, and with sudo's
+	// password cached it would have removed the real keep-awake too.
+	touched := filepath.Join(stubs, "touched")
+	for _, name := range []string{"sudo", "defaults"} {
+		must(t, os.WriteFile(filepath.Join(stubs, name), []byte("#!/bin/sh\necho \""+name+" $*\" >> "+touched+"\nexit 0\n"), 0o755))
+	}
 
 	cmd := exec.Command("zsh", "install.sh", "uninstall")
 	cmd.Dir = filepath.Join("..", "..")
@@ -75,4 +84,7 @@ func TestInstallScriptUninstallRemovesShuntHookAndSkill(t *testing.T) {
 		t.Errorf("an unrelated setting was disturbed")
 	}
 	contains(t, "uninstall output", string(out), "token-shunting")
+	if log, _ := os.ReadFile(touched); !strings.Contains(string(log), "defaults delete com.mitchellh.ghostty") {
+		t.Errorf("the defaults stub was not used, so the real one may have run: %q", log)
+	}
 }

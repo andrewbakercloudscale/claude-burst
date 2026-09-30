@@ -296,6 +296,7 @@ func configure(args []string) {
 	interceptHost := fs.String("intercept-host", "", "hostname to intercept in transparent mode (default api.anthropic.com)")
 	keepAwake := fs.String("keep-awake-lid-closed", "", "true | false: keep the Mac (and Claude Code in Ghostty, and Remote Control) running with the lid shut")
 	keepAwakePower := fs.String("keep-awake-power", "", "when --keep-awake-lid-closed applies: ac (default, only while plugged in) | always")
+	keepAwakeIdle := fs.Int("keep-awake-idle-minutes", -1, "stay awake with the lid shut only this many minutes after Claude Code was last used or the lid was last open; 0 = as long as the power mode applies")
 	_ = fs.Parse(args)
 
 	if *region != "" {
@@ -424,6 +425,12 @@ func configure(args []string) {
 		}
 		cfg.KeepAwakeLidClosedPower = *keepAwakePower
 	}
+	if *keepAwakeIdle >= 0 {
+		if *keepAwakeIdle > config.MaxKeepAwakeIdleMinutes {
+			fatal(fmt.Errorf("invalid --keep-awake-idle-minutes %d (0 to %d)", *keepAwakeIdle, config.MaxKeepAwakeIdleMinutes))
+		}
+		cfg.KeepAwakeIdleMinutes = *keepAwakeIdle
+	}
 	cfg.ResolveRoutes()
 
 	if err := config.Save(cfg); err != nil {
@@ -433,8 +440,8 @@ func configure(args []string) {
 	fmt.Printf("wrote %s\n", p)
 	// A power-mode change only needs applying while the feature is on; while
 	// it is off it is just remembered for the next time it is switched on.
-	if *keepAwake != "" || (*keepAwakePower != "" && cfg.KeepAwakeLidClosed) {
-		applyKeepAwake(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower)
+	if *keepAwake != "" || ((*keepAwakePower != "" || *keepAwakeIdle >= 0) && cfg.KeepAwakeLidClosed) {
+		applyKeepAwake(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
 	}
 }
 

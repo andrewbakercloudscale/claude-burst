@@ -88,8 +88,8 @@ func TestKeepAwakeModeIsValidatedAndSaved(t *testing.T) {
 	setGhosttyAppNap = func(on bool) error { nap = append(nap, on); return nil }
 	t.Cleanup(func() { setGhosttyAppNap = oldNap })
 	defer func() {
-		if len(nap) != 2 || !nap[0] || nap[1] {
-			t.Errorf("Ghostty App Nap calls %v, want [true false]", nap)
+		if len(nap) != 3 || !nap[0] || nap[1] || !nap[2] {
+			t.Errorf("Ghostty App Nap calls %v, want [true false true]", nap)
 		}
 	}()
 	scripts := filepath.Join(t.TempDir(), "scripts")
@@ -120,6 +120,23 @@ func TestKeepAwakeModeIsValidatedAndSaved(t *testing.T) {
 	cfg, _ = config.Load()
 	if cfg.KeepAwakeLidClosed || ran[1][1] != "remove" {
 		t.Fatalf("off: config %v, ran %v", cfg.KeepAwakeLidClosed, ran)
+	}
+
+	// The idle window reaches the root script with the activity file, and
+	// the file exists at once so the window starts now.
+	if c := post(`{"mode":"ac","idle_minutes":1441}`); c != http.StatusBadRequest {
+		t.Fatalf("idle over a day: status %d", c)
+	}
+	if c := post(`{"mode":"ac","idle_minutes":60}`); c != http.StatusOK {
+		t.Fatalf("idle 60: status %d", c)
+	}
+	cfg, _ = config.Load()
+	last := ran[len(ran)-1]
+	if cfg.KeepAwakeIdleMinutes != 60 || len(last) != 5 || last[3] != "60" || filepath.Base(last[4]) != "last-activity" {
+		t.Fatalf("idle: config %d, ran %v", cfg.KeepAwakeIdleMinutes, last)
+	}
+	if _, err := os.Stat(last[4]); err != nil {
+		t.Fatalf("activity file not created: %v", err)
 	}
 }
 
