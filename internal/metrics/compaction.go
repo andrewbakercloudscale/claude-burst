@@ -47,6 +47,11 @@ type CompactionStats struct {
 	TokensNotResent   int64   `json:"tokens_not_resent"`
 	SavedUSD          float64 `json:"saved_usd"`
 	NetUSD            float64 `json:"net_usd"`
+	// TwinTokens and TwinUSD are what the same compacted requests would
+	// have sent without Burst: the base for "what share of the context was
+	// not resent". TokensNotResent / TwinTokens is that share.
+	TwinTokens int64   `json:"twin_tokens"`
+	TwinUSD    float64 `json:"twin_usd"`
 	// TwinCompactions is how many times the twin reached Claude Code's
 	// trigger and was compacted back down.
 	TwinCompactions int `json:"twin_compactions"`
@@ -142,6 +147,8 @@ type compactionEffect struct {
 	compacted  bool  // the request carried a Burst summary
 	saved      int64 // twin minus real, may be negative
 	savedUSD   float64
+	twin       int64 // what the request would have sent without Burst
+	twinUSD    float64
 	rewriteUSD float64
 	twinReset  bool
 	swapBefore int64 // set on the request a new summary first applies to
@@ -208,6 +215,8 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 	if e.CompactedMessages > 0 {
 		fx.compacted = true
 		fx.saved = s.twin - ctx
+		fx.twin = s.twin
+		fx.twinUSD = cacheReadUSD(e.Model, s.twin)
 		fx.savedUSD = cacheReadUSD(e.Model, fx.saved)
 	}
 	s.lastCtx, s.lastCompacted = ctx, e.CompactedMessages
@@ -298,6 +307,8 @@ func CompactionStatsSince(path string, since time.Time) (CompactionStats, error)
 			st.CompactedRequests++
 			st.TokensNotResent += fx.saved
 			st.SavedUSD += fx.savedUSD
+			st.TwinTokens += fx.twin
+			st.TwinUSD += fx.twinUSD
 			st.RewriteUSD += fx.rewriteUSD
 		})
 		if err != nil {

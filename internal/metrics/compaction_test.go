@@ -32,6 +32,12 @@ func TestCompactionStats(t *testing.T) {
 	if st.Compactions != 1 || st.CompactedRequests != 2 || st.TokensNotResent != 2*drop {
 		t.Fatalf("want 1 compaction, 2 compacted requests, %d not resent; got %+v", 2*drop, st)
 	}
+	// Without Burst the compacted requests would have sent 535002, then
+	// 536002 (the twin grows by the real session's 1000): the base the
+	// dashboard's percentage is taken against.
+	if twin := int64(535002 + 536002); st.TwinTokens != twin || abs(st.TwinUSD-float64(twin)/1e6*0.2) > 1e-9 {
+		t.Fatalf("twin totals: %d tokens, $%v", st.TwinTokens, st.TwinUSD)
+	}
 	if st.LargestBefore != 535002 || st.LargestAfter != 45002 || st.SummaryUSD != 0.2 {
 		t.Fatalf("largest drop and summary cost: %+v", st)
 	}

@@ -278,3 +278,32 @@ func TestSavingsChartIsOnThePage(t *testing.T) {
 		}
 	}
 }
+
+// The savings tiles give the share of the context not resent, and the
+// money after costs with the costs as a share of the saving.
+func TestSavingsTiles(t *testing.T) {
+	type tile struct {
+		Value string `json:"value"`
+		Text  string `json:"text"`
+	}
+	var got map[string]map[string]tile
+	runPageJS(t, []string{"savingsTiles", "signedUSD", "num"}, `
+out({
+  some: savingsTiles({compacted_requests: 931, tokens_not_resent: 317.2e6, twin_tokens: 446e6,
+    saved_usd: 63.44, summary_usd: 6.84, rewrite_usd: 1.74, net_usd: 54.86, twin_usd: 89.2}),
+  none: savingsTiles({}),
+});`, &got)
+	s := got["some"]
+	if !strings.Contains(s["tokens"].Value, "317.2M") || !strings.Contains(s["tokens"].Value, "(71%)") ||
+		!strings.Contains(s["tokens"].Text, "71% of the 446.0M that would have been sent without Burst, over 931 requests") {
+		t.Errorf("tokens: %+v", s["tokens"])
+	}
+	m := s["money"]
+	if !strings.HasPrefix(m.Value, "$54.86") || !strings.Contains(m.Value, "(62%)") || !strings.HasPrefix(m.Text, "async context savings, after costs") ||
+		!strings.Contains(m.Text, "$63.44 saved, $8.58 costs (14% of the saving)") || !strings.Contains(m.Text, "62% off what these requests' context would have cost") {
+		t.Errorf("money: %+v", m)
+	}
+	if n := got["none"]; n["tokens"].Value != "-" || n["money"].Value != "-" || strings.Contains(n["money"].Text, "NaN") {
+		t.Errorf("none: %+v", n)
+	}
+}
