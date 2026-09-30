@@ -186,6 +186,7 @@ sudo scripts/lid-awake-root.sh apply ac                             # printed fo
 
 - **`pmset -a disablesleep 1`** (root), the only switch that overrides clamshell sleep; `caffeinate` and `pmset sleep 0` do not. The prior value is recorded and restored by `remove`.
 - **Mode `ac` needs a root LaunchDaemon** (`ninja.andrewbaker.claude-burst-lidawake`): SleepDisabled is one global value with no per-power-source form, so the daemon follows `pmset -g pslog` and sets it on plug-in and unplug. It runs a root-owned copy in `/usr/local/libexec/claude-burst`; re-run `apply` after editing the script. Log: `/var/log/claude-burst-lidawake.log`.
+- **The screen goes off behind the shut lid.** Keeping the Mac awake also kept the built-in screen lit behind the lid, using power and warming it for nobody. Within about 5 seconds of the lid shutting, the daemon turns the display off (`pmset displaysleepnow`: display sleep only, Claude Code keeps running), and again if anything wakes it. Not while an external monitor is connected, since that is clamshell mode with someone at the monitor. The daemon therefore runs in both modes. Log: `/var/log/claude-burst-lidawake.log` ("screen off").
 - **Ghostty App Nap off** (`NSAppSleepDisabled`, no root), with the lid shut every window is occluded, which is when macOS throttles the app. Takes effect on Ghostty's next launch.
 - `claude-burst status` shows the flag, the mode, the power source and the machine's actual state, and flags drift either way.
 
