@@ -186,3 +186,30 @@ func TestPanelInstallRunsOneAtATime(t *testing.T) {
 		t.Fatalf("json: %s", b)
 	}
 }
+
+// TestStaleLidDaemonIsAProblem: the root daemon runs its own copy of
+// lid-awake-root.sh and never rereads the repo, so a newer script in the
+// checkout must show as a problem the dashboard tells you to Apply.
+func TestStaleLidDaemonIsAProblem(t *testing.T) {
+	s := newTestServer(t)
+	scripts := filepath.Join(t.TempDir(), "scripts")
+	os.MkdirAll(scripts, 0o755)
+	s.rootHelper = filepath.Join(scripts, "transparent-root.sh")
+	os.WriteFile(filepath.Join(scripts, "lid-awake-root.sh"), []byte("new"), 0o755)
+	installed := filepath.Join(t.TempDir(), "lid-awake-root.sh")
+	old := installedLidScript
+	installedLidScript = installed
+	t.Cleanup(func() { installedLidScript = old })
+
+	if p := s.staleLidDaemon(); p != "" {
+		t.Fatalf("nothing installed: %q, want no problem", p)
+	}
+	os.WriteFile(installed, []byte("old"), 0o755)
+	if p := s.staleLidDaemon(); !strings.Contains(p, "older copy") {
+		t.Fatalf("stale copy: %q", p)
+	}
+	os.WriteFile(installed, []byte("new"), 0o755)
+	if p := s.staleLidDaemon(); p != "" {
+		t.Fatalf("current copy: %q", p)
+	}
+}

@@ -3863,10 +3863,16 @@ function kaUpdateApply() {
   const sel = (document.querySelector('input[name="kaMode"]:checked') || {}).value;
   const idle = sel === "off" ? 0 : Number($("kaIdle").value);
   const changed = sel && (sel !== ka.mode || (sel !== "off" && idle !== (ka.idle_minutes || 0)));
-  $("kaApply").disabled = !(changed || ka.problem);
+  // Never disabled: rerunning apply is how a newer lid-awake-root.sh reaches
+  // the root daemon, and it is safe to repeat.
+  $("kaApply").disabled = false;
   $("kaApply").textContent = changed ? "\u2713 Apply" : "\u2713 Apply again";
-  const idleNow = ka.mode === "off" ? "" : ka.idle_minutes ? `, for ${ka.idle_minutes >= 60 ? ka.idle_minutes / 60 + " h" : ka.idle_minutes + " min"} after last use` : ", no time limit";
-  $("kaPending").textContent = changed ? `Not applied yet: now ${kaLabels[ka.mode] || ka.mode}${idleNow}.` : "";
+  const idleText = (mode, mins) => mode === "off" ? "" : mins ? `, for ${mins >= 60 ? mins / 60 + " h" : mins + " min"} after last use` : ", no time limit";
+  // Name both sides: "now 2 h" beside a dropdown reading 1 hour looked like
+  // the page disagreeing with itself.
+  $("kaPending").textContent = changed
+    ? `Not applied yet. This Mac is using ${kaLabels[ka.mode] || ka.mode}${idleText(ka.mode, ka.idle_minutes)}; Apply switches it to ${kaLabels[sel] || sel}${idleText(sel, idle)}.`
+    : "";
 }
 for (const r of document.querySelectorAll('input[name="kaMode"]')) {
   r.addEventListener("change", () => { kaPick = r.value; $("kaIdle").disabled = r.value === "off"; kaUpdateApply(); });

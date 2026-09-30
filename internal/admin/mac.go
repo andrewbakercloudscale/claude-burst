@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -35,14 +36,42 @@ type keepAwakeView struct {
 	Problem string           `json:"problem,omitempty"`
 }
 
-func readKeepAwake() keepAwakeView {
+// installedLidScript is the root-owned copy the keep-awake daemon runs
+// (lid-awake-root.sh's $INSTALLED). A variable for tests.
+var installedLidScript = "/usr/local/libexec/claude-burst/lid-awake-root.sh"
+
+func (s *Server) readKeepAwake() keepAwakeView {
 	cfg, _ := config.Load()
 	v := keepAwakeView{Mode: "off", Live: keepawake.Read(), Idle: cfg.KeepAwakeIdleMinutes}
 	if cfg.KeepAwakeLidClosed {
 		v.Mode = cfg.KeepAwakeLidClosedPower
 	}
 	v.Problem = v.Live.Problem(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
+	if v.Problem == "" && cfg.KeepAwakeLidClosed {
+		v.Problem = s.staleLidDaemon()
+	}
 	return v
+}
+
+// staleLidDaemon reports when the daemon runs an older copy of
+// lid-awake-root.sh than the checkout's. The daemon never rereads the repo,
+// so a fix to the script (the screen going off behind a shut lid, 30 Sep)
+// did nothing until something reran apply, and with the settings unchanged
+// the dashboard's Apply button stayed disabled. A problem enables it.
+func (s *Server) staleLidDaemon() string {
+	dir, ok := s.scriptsDir()
+	if !ok {
+		return ""
+	}
+	repo, err := os.ReadFile(filepath.Join(dir, "lid-awake-root.sh"))
+	if err != nil {
+		return ""
+	}
+	live, err := os.ReadFile(installedLidScript)
+	if err != nil || bytes.Equal(repo, live) {
+		return ""
+	}
+	return "the keep-awake daemon runs an older copy of scripts/lid-awake-root.sh"
 }
 
 // setGhosttyAppNap is a variable so tests never change the real Ghostty
@@ -418,7 +447,7 @@ func tail(s string, n int) string {
 // handleMac is the section's state, read on demand: pmset and defaults
 // calls are too slow for the 2s /api/state poll.
 func (s *Server) handleMac(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"keep_awake": readKeepAwake(), "panel": s.readPanel()})
+	writeJSON(w, map[string]any{"keep_awake": s.readKeepAwake(), "panel": s.readPanel()})
 }
 
 // A masked frame of the panel (dollar figures scaled, ids replaced).
