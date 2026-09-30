@@ -225,6 +225,7 @@
   .ho-step { display: inline-block; white-space: nowrap; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border); color: var(--text); }
   .ho-step.p { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: var(--ok-bg); }
   .ho-step.muted { color: var(--muted); }
+  .ho-step.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: var(--warn-bg); }
   .ho-step.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: var(--bad-bg); }
   #hoAudit td { vertical-align: middle; }
   pre.hoLog { font: 12px/1.5 var(--mono); background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; margin: 6px 0 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
@@ -330,6 +331,19 @@
   .brand .ver { display: block; font: 10.5px var(--mono); color: var(--faint); margin-top: 2px; }
   .navgroup { font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .1em;
               color: var(--faint); padding: 14px 18px 6px; }
+  /* The byline: one accent-tinted card at the top of the rail. Every colour
+     resolves through the --ok pair, so it follows the palette edit comment
+     above and needs no own dark-mode override. */
+  .byline {
+    margin: 0 14px 4px; padding: 12px 14px; border-radius: var(--radius);
+    background: var(--ok-bg); border: 1px solid color-mix(in srgb, var(--ok) 28%, transparent);
+    border-left: 3px solid var(--ok); text-align: left;
+  }
+  .byline-title { font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .1em; color: var(--ok); }
+  .byline-name { font-size: 14.5px; font-weight: 750; color: var(--text); margin-top: 2px; letter-spacing: -.01em; }
+  .byline-link { display: inline-block; margin-top: 5px; font-size: 12px; font-weight: 600;
+                 color: var(--ok); text-decoration: none; border-bottom: 1px dotted color-mix(in srgb, var(--ok) 55%, transparent); }
+  .byline-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
   .navlink {
     display: flex; align-items: center; gap: 9px; padding: 7px 18px;
     color: var(--muted); text-decoration: none; font-size: 13px; cursor: pointer;
@@ -496,6 +510,11 @@
       border-right: none; border-bottom: 1px solid var(--border);
     }
     .brand { padding: 0 14px 0 0; }
+    .byline { margin: 0; padding: 6px 10px; border-radius: 7px; order: -1; }
+    .byline-title { display: none; }
+    .byline-name { font-size: 12.5px; margin-top: 0; }
+    .byline-name::after { content: " \00b7 "; color: var(--ok); }
+    .byline-link { margin-top: 0; font-size: 12px; }
     .navgroup { display: none; }
     .navlink { padding: 5px 9px; border-left: none; border-radius: 6px; }
     .navlink.on { border-left: none; }
@@ -565,6 +584,12 @@
   <div class="brand">
     <span class="mark">&#9889;</span>
     <span><span class="name">Claude Burst</span><span class="ver" id="ver"></span></span>
+  </div>
+
+  <div class="byline">
+    <div class="byline-title">Written and Designed by</div>
+    <div class="byline-name">Andrew Baker</div>
+    <a class="byline-link" href="https://andrewbaker.ninja" target="_blank" rel="noopener noreferrer">andrewbaker.ninja &#8599;</a>
   </div>
 
   <div class="navgroup">Observe</div>
@@ -2366,7 +2391,10 @@ let hoAuditJSON = "", hoAuditRows = [], hoDeleteArmed = null;
 let hoLogLines = [];
 const HO_STEPS = {
   queue: ["Queued", ""], write: ["Writing", ""], wrote: ["Written", "p"],
-  none: ["Nothing to hand over", "muted"], skip: ["Skipped", "muted"],
+  // "Nothing to hand over" is green, not grey: the hook looked, found the
+  // session empty, and did the right thing. "Skipped" is yellow, not grey:
+  // the handover did not happen for a reason, and a reason is worth reading.
+  none: ["Nothing to hand over", "p"], skip: ["Skipped", "warn"],
 };
 function parseHoLine(line) {
   const m = line.match(/^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\S+)\s+(.*?)(?: \[([0-9a-f-]{8,})\])?$/);
