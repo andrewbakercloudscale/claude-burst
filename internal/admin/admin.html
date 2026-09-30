@@ -522,9 +522,14 @@
 #restartBanner { margin: 0 0 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 #restartBanner[hidden] { display: none; }
 .mac-h { margin: 18px 0 6px; font-size: 14px; }
-.hs-check { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel-2); }
+.hs-check { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; background: var(--panel); color: var(--text); box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.hs-check::backdrop { background: rgba(15,20,35,.55); }
+.hs-check h3 { margin: 0 0 14px; font-size: 16px; }
 .hs-check h4 { margin: 0 0 6px; font-size: 13px; }
 .hs-check h4 + ul { margin-top: 0; }
+.hs-check ul.hs-bullets { list-style: disc; padding-left: 20px; }
+.hs-check ul.hs-bullets li { display: list-item; padding: 4px 0; line-height: 1.5; }
+.hs-check ul.hs-bullets li.bad { color: var(--bad); }
 #hsResultHead { margin-top: 14px; }
 .hs-check ul { list-style: none; margin: 0; padding: 0; font-size: 13px; }
 .hs-check li { display: flex; gap: 10px; align-items: flex-start; padding: 5px 0; }
@@ -1078,13 +1083,14 @@
       </div>
       <div id="hsLive" class="hint" style="margin-top:8px"></div>
       <div id="hsNote"></div>
-      <div id="hsCheck" class="hs-check" hidden>
-        <h4>Before the test</h4>
-        <ul id="hsItems"></ul>
+      <dialog id="hsCheck" class="hs-check" aria-labelledby="hsCheckTitle">
+        <h3 id="hsCheckTitle">Test joining the hotspot</h3>
+        <h4>Before you start, make sure:</h4>
+        <ul id="hsItems" class="hs-bullets"></ul>
         <div class="row" style="margin-top:8px"><button class="primary" id="hsStart" disabled>Start test</button><button id="hsCancel">Cancel</button></div>
         <h4 id="hsResultHead" hidden>Result</h4>
         <ul id="hsResult" class="hs-result"></ul>
-      </div>
+      </dialog>
       <pre id="hsLog" class="mac-log" hidden></pre>
     </div>
   </section>
@@ -3702,28 +3708,25 @@ $("hsForget").onclick = () => saveSettings({hotspot_password: "-"}, $("hsNote"))
 // only the phone can show, you tick. Start unlocks when every item is ticked.
 $("hsJoin").onclick = () => {
   const ssid = $("hsSsid").value; if (!ssid) return;
-  const hs = settings.hotspot, typed = !!$("hsPw").value;
+  const hs = settings.hotspot, typed = !!$("hsPw").value, known = (hs.known || []).includes(ssid);
+  const pw = typed ? "The password you typed is saved first."
+    : hs.password_stored ? "The stored password is used."
+    : "No password is stored: if the test fails, type the hotspot's password above and try again.";
   const items = [
-    {auto: (hs.known || []).includes(ssid), text: `<b>${esc(ssid)}</b> is a network this Mac has joined before`, fix: "join it once from the Wi-Fi menu first"},
-    hs.password_stored || typed
-      ? {auto: true, text: typed ? "The password typed above is saved before the test" : "Its password is stored in the Keychain"}
-      : {text: "No password stored. macOS's saved one may not be readable from here: enter it above, or tick to try without"},
-    {text: "Personal Hotspot is on, and its settings screen is open on the phone (an iPhone only broadcasts while that screen is open or something is connected)"},
-    {text: "<b>Allow Others to Join</b> is on (and <b>Maximise Compatibility</b>, on an iPhone 12 or later)"},
-    {text: "This Mac may leave its current Wi-Fi for up to a minute; open sessions reconnect afterwards"},
+    "On the phone, open <b>Settings &gt; Personal Hotspot</b> and leave that screen open: an iPhone only broadcasts while it is open or something is connected.",
+    "Turn on <b>Allow Others to Join</b>, and <b>Maximise Compatibility</b> on an iPhone 12 or later.",
+    pw,
+    "This Mac leaves its current Wi-Fi for up to a minute. Open sessions reconnect afterwards.",
   ];
-  $("hsItems").innerHTML = items.map((it, i) => it.auto !== undefined
-    ? `<li class="${it.auto ? "ok" : "bad"}"><span class="mark">${it.auto ? "&#x2713;" : "&#x2715;"}</span><span>${it.text}${it.auto ? "" : `: ${esc(it.fix)}`}</span></li>`
-    : `<li><label><input type="checkbox" data-hsi="${i}"> <span>${it.text}</span></label></li>`).join("");
-  const blocked = items.some(it => it.auto === false);
-  const update = () => { $("hsStart").disabled = blocked || [...document.querySelectorAll("[data-hsi]")].some(c => !c.checked); };
-  for (const c of document.querySelectorAll("[data-hsi]")) c.onchange = update;
-  update();
+  $("hsItems").innerHTML = (known ? "" : `<li class="bad"><b>${esc(ssid)}</b> is not a network this Mac has joined before: join it once from the Wi-Fi menu first.</li>`) +
+    items.map(t => `<li>${t}</li>`).join("");
+  $("hsStart").disabled = !known;
   $("hsResultHead").hidden = true; $("hsResult").innerHTML = "";
-  $("hsCheck").hidden = false;
-  $("hsCheck").scrollIntoView({block: "nearest"});
+  $("hsCheckTitle").textContent = `Test joining ${ssid}`;
+  $("hsCancel").textContent = "Cancel";
+  $("hsCheck").showModal();
 };
-$("hsCancel").onclick = () => { $("hsCheck").hidden = true; };
+$("hsCancel").onclick = () => $("hsCheck").close();
 $("hsStart").onclick = async () => {
   const ssid = $("hsSsid").value;
   $("hsStart").disabled = true;
@@ -3738,6 +3741,7 @@ $("hsStart").onclick = async () => {
     $("hsResult").innerHTML = `<li class="bad"><span class="mark">&#x2715;</span><span>${esc(e.message)}</span></li>`;
   }
   $("hsStart").disabled = false;
+  $("hsCancel").textContent = "Close";
   loadSettings();
 };
 $("pnSave").onclick = async () => {

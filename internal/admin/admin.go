@@ -195,6 +195,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Always fetch the page fresh: a tab kept from before a deploy ran the old
+	// script, and buttons added since did nothing.
+	w.Header().Set("Cache-Control", "no-store")
 	// No inline-script CSP exemption needed: the page's script is inline but
 	// this server is the only origin that can reach it.
 	_, _ = w.Write(indexHTML)
