@@ -146,10 +146,10 @@ func Explain(msg string) string {
 // restore gives Wi-Fi back if a failed join left the Mac offline: leaving
 // the old network is the first thing a join does. Turning Wi-Fi off and on
 // makes macOS rejoin its best known network, as it would at wake.
-var restore = func() {
+var restore = func() string {
 	for i := 0; i < 5; i++ {
 		if Online() {
-			return
+			return "macOS rejoined a known network by itself"
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -158,30 +158,63 @@ var restore = func() {
 	time.Sleep(time.Second)
 	_ = exec.Command("networksetup", "-setairportpower", dev, "on").Run()
 	logEvent("still offline after the failed join: turned Wi-Fi off and on so macOS rejoins a known network")
+	for i := 0; i < 10; i++ {
+		if Online() {
+			return "turned Wi-Fi off and on; macOS rejoined a known network"
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return "turned Wi-Fi off and on, but still offline: pick a network from the Wi-Fi menu"
 }
 
-// Join joins ssid now and reports whether the Mac is online afterwards.
-func Join(ssid string) (string, error) {
+// Step is one stage of a join, for the dashboard's test checklist.
+type Step struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// JoinSteps joins ssid now and reports each stage: the join itself, whether
+// the internet is reachable through it, and, after a failure, getting the
+// Mac back onto a network.
+func JoinSteps(ssid string) []Step {
+	var steps []Step
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
+	start := time.Now()
 	msg, err := join(ctx, ssid)
 	if err != nil {
 		logEvent("join %q failed: %v", ssid, err)
-		restore()
-		if why := Explain(err.Error() + " " + msg); why != "" {
-			return msg, fmt.Errorf("%s", why)
+		detail := Explain(err.Error() + " " + msg)
+		if detail == "" {
+			detail = err.Error()
 		}
-		return msg, err
+		steps = append(steps, Step{Name: "Join " + ssid, Detail: detail})
+		r := restore()
+		steps = append(steps, Step{Name: "Back on a network", OK: Online(), Detail: r})
+		return steps
 	}
+	steps = append(steps, Step{Name: "Join " + ssid, OK: true, Detail: fmt.Sprintf("joined in %s", time.Since(start).Round(time.Second))})
 	for i := 0; i < 10 && !Online(); i++ {
 		time.Sleep(2 * time.Second)
 	}
 	if !Online() {
 		logEvent("joined %q but still offline", ssid)
-		return msg, fmt.Errorf("joined %q but the internet is still unreachable", ssid)
+		return append(steps, Step{Name: "Internet through it", Detail: "joined, but nothing is reachable: check the phone has mobile data and Personal Hotspot is allowed on your plan"})
 	}
 	logEvent("joined %q: online", ssid)
-	return msg, nil
+	return append(steps, Step{Name: "Internet through it", OK: true, Detail: "reached 1.1.1.1 / 8.8.8.8"})
+}
+
+// Join is JoinSteps as one error, for the background watcher.
+func Join(ssid string) (string, error) {
+	steps := JoinSteps(ssid)
+	for _, st := range steps {
+		if !st.OK {
+			return "", fmt.Errorf("%s: %s", st.Name, st.Detail)
+		}
+	}
+	return "", nil
 }
 
 // --- event log -----------------------------------------------------------

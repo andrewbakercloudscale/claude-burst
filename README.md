@@ -155,7 +155,7 @@ With the lid shut macOS does not join a phone's hotspot by itself (Instant Hotsp
 - Checks every **30s**; joins after **two** failed checks in a row, and retries at most every **2 minutes**. The gateway runs the watcher and re-reads `config.json` each check, so changes need no restart.
 - **Password**: optional, stored in the login Keychain as service `claude-burst-hotspot`. Without one, `networksetup` uses the password macOS already has.
 - **On an iPhone**, turn on **Allow Others to Join** in Personal Hotspot, or the network is not visible to a Mac nobody is using.
-- **Test: join it now** joins immediately (leaving the current Wi-Fi) and reports whether the Mac is online afterwards.
+- **Test: join it now** opens a checklist first: what the dashboard can check (a network this Mac has joined, a stored password) is ticked for you; what only the phone can show (Personal Hotspot open, Allow Others to Join, Maximise Compatibility) you tick. The test then joins the network selected in the dropdown, saved or not, and reports each step: the join, internet through it, and after a failure getting back on a network (Burst turns Wi-Fi off and on if macOS has not rejoined within ten seconds). Failures say what to do: not found means the phone is not broadcasting; error -3900 usually means the password could not be read, so enter it in the form.
 - Log: `~/.config/claude-burst/hotspot.log`, also shown on the page.
 
 ### Notifications

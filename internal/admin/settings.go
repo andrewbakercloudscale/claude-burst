@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/hotspot"
@@ -379,11 +378,10 @@ func (s *Server) handleHotspotJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("%q is not a network this Mac has joined before; join it once from the Wi-Fi menu first", ssid), http.StatusBadRequest)
 		return
 	}
-	start := time.Now()
-	_, err := hotspot.Join(ssid)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Could not join %q: %v", ssid, err), http.StatusBadGateway)
-		return
+	steps := hotspot.JoinSteps(ssid)
+	ok := true
+	for _, st := range steps {
+		ok = ok && st.OK
 	}
-	writeJSON(w, map[string]string{"ok": fmt.Sprintf("joined %q and online in %s", ssid, time.Since(start).Round(time.Second))})
+	writeJSON(w, map[string]any{"ok": ok, "ssid": ssid, "steps": steps})
 }
