@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -296,33 +295,53 @@ func TestUpgradeScriptStopsOnChangesMadeAfterTheClick(t *testing.T) {
 	}
 }
 
-// The header button, from each status.
-func TestUpgradeButtonStates(t *testing.T) {
-	type b struct {
-		Disabled bool   `json:"disabled"`
-		Text     string `json:"text"`
-		Title    string `json:"title"`
+// What the Check version dialog says, from each status.
+func TestVersionMessage(t *testing.T) {
+	type m struct {
+		Title      string `json:"title"`
+		Body       string `json:"body"`
+		CanUpgrade bool   `json:"canUpgrade"`
 	}
-	var got map[string]b
-	runPageJS(t, []string{"upgradeButton"}, fmt.Sprintf(`
-const base = {running_version: "0.2.0", running_commit: "66bdcb1", checked_at: %q};
+	var got map[string]m
+	runPageJS(t, []string{"versionMessage"}, `
+const base = {running_version: "0.2.0", running_commit: "98f965b"};
 out({
-  current: upgradeButton({...base, up_to_date: true}),
-  newer: upgradeButton({...base, behind: 3, can_upgrade: true, latest_version: "0.3.0", latest_commit: "abc1234", new_commits: ["Release 0.3.0"]}),
-  blocked: upgradeButton({...base, behind: 1, can_upgrade: false, reason: "the checkout has uncommitted changes", latest_commit: "abc1234"}),
-  failed: upgradeButton({...base, error: "could not reach GitHub"}),
-});`, "2026-09-30T15:00:00Z"), &got)
+  current: versionMessage({...base, up_to_date: true}),
+  newer: versionMessage({...base, behind: 12, can_upgrade: true, latest_version: "0.3.0", latest_commit: "abc1234",
+    new_commits: ["Release 0.3.0", "Fix <b>escaping</b>"]}),
+  blocked: versionMessage({...base, behind: 1, can_upgrade: false, reason: "the checkout has uncommitted changes", latest_commit: "abc1234", new_commits: ["x"]}),
+  failed: versionMessage({...base, error: "could not reach GitHub"}),
+});`, &got)
 
-	if c := got["current"]; !c.Disabled || !strings.Contains(c.Text, "Up to date") || !strings.Contains(c.Title, "0.2.0 (66bdcb1)") {
+	if c := got["current"]; !strings.Contains(c.Title, "Up to date") || !strings.Contains(c.Body, "0.2.0 (98f965b)") || c.CanUpgrade {
 		t.Errorf("current: %+v", c)
 	}
-	if c := got["newer"]; c.Disabled || !strings.Contains(c.Text, "3 new") || !strings.Contains(c.Title, "0.3.0") || !strings.Contains(c.Title, "Release 0.3.0") {
+	c := got["newer"]
+	if !strings.Contains(c.Title, "Upgrade available") || !strings.Contains(c.Title, "0.3.0 (abc1234)") || !c.CanUpgrade {
 		t.Errorf("newer: %+v", c)
 	}
-	if c := got["blocked"]; !c.Disabled || !strings.Contains(c.Title, "uncommitted changes") {
+	if !strings.Contains(c.Body, "<b>12</b> newer commits") || !strings.Contains(c.Body, "Release 0.3.0") || !strings.Contains(c.Body, "and 10 more") {
+		t.Errorf("newer body: %s", c.Body)
+	}
+	if strings.Contains(c.Body, "<b>escaping</b>") {
+		t.Error("commit subjects must be escaped")
+	}
+	if c := got["blocked"]; c.CanUpgrade || !strings.Contains(c.Body, "uncommitted changes") {
 		t.Errorf("blocked: %+v", c)
 	}
-	if c := got["failed"]; !c.Disabled || !strings.Contains(c.Title, "could not reach GitHub") {
+	if c := got["failed"]; c.CanUpgrade || !strings.Contains(c.Body, "could not reach GitHub") {
 		t.Errorf("failed: %+v", c)
+	}
+}
+
+// The header button always reads Check version and is never disabled by a
+// status, so it can always be asked.
+func TestCheckVersionButtonIsAlwaysAvailable(t *testing.T) {
+	src := string(indexHTML)
+	if !strings.Contains(src, `<button id="upgradeTop" style="margin-left:10px">&#x27F3; Check version</button>`) {
+		t.Fatal("header button must read Check version and start enabled")
+	}
+	if strings.Contains(src, `$("upgradeTop").disabled = b.disabled`) {
+		t.Fatal("a status must not disable the button")
 	}
 }
