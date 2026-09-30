@@ -3467,7 +3467,7 @@ function renderMac() {
   }
   if (ka.problem) html += `<div class="note warn" style="margin-top:6px">Saved but not applied on this Mac: ${esc(ka.problem)}. Click <b>Apply</b> to apply it (the machine-wide part asks for your password in a Terminal window).</div>`;
   const bl = (lv.blockers || []).filter(b => b.process !== "powerd");
-  if (bl.length) html += `<div class="note warn" style="margin-top:6px">Also keeping this Mac awake, whatever is chosen here: ${bl.map(b => esc((b.for || b.process + " (pid " + b.pid + ")").replace(/^caffeinate asserting on behalf of /, "caffeinate for "))).join("; ")}. A program holding "prevent system sleep" can keep a closed laptop awake on battery.</div>`;
+  if (bl.length) html += `<div class="note warn" style="margin-top:6px">Also keeping this Mac awake, whatever is chosen here: ${bl.map(b => esc((b.for || b.process + " (pid " + b.pid + ")").replace(/^caffeinate asserting on behalf of /, "caffeinate for "))).join("; ")}. A program holding "prevent system sleep" can keep a closed laptop awake on battery${ka.mode !== "off" && ka.idle_minutes ? `, so the ${ka.idle_minutes >= 60 ? ka.idle_minutes / 60 + " h" : ka.idle_minutes + " min"} limit above has no effect while it runs` : ""}.</div>`;
   $("kaLive").innerHTML = html;
   setDot("nd-mac", ka.problem ? "warn" : ka.mode !== "off" ? "ok" : "");
 
