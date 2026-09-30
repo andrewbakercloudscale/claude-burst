@@ -618,6 +618,23 @@ func (s *Server) PromptNotices(sid string) []string {
 	return out
 }
 
+// QueueTestNotice queues a test line for session sid, or for every tracked
+// session when sid is "", and returns how many sessions got one.
+func (s *Server) QueueTestNotice(sid string) int {
+	s.compaction.mu.Lock()
+	defer s.compaction.mu.Unlock()
+	seen := map[string]bool{}
+	for k, st := range s.compaction.sessions {
+		id, _, _ := strings.Cut(k, "|")
+		if (sid != "" && id != sid) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		st.notice("test line from the dashboard. Real ones appear here when a summary starts, swaps in, or fails")
+	}
+	return len(seen)
+}
+
 // CompactionSession is one tracked session, for the admin page.
 type CompactionSession struct {
 	Session     string    `json:"session"`

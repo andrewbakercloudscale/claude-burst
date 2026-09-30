@@ -735,6 +735,7 @@
           <input type="checkbox" id="compactNotice" style="width:auto;margin:0">
           Show it under my prompt in Claude Code <span id="compactNoticeState" class="pill"></span>
         </label>
+        <button id="compactNoticeTest" class="secondary" title="Queues a test line for every tracked session; it shows under the next prompt you send">Send a test line</button>
       </div>
       <div class="hint" style="margin:-8px 0 12px 0">A line such as <code>&#9889; Pauseless compaction: done. 759 earlier messages now go as a summary; context 486k &rarr; 62k</code> appears under the prompt you send, in Claude Code's own window: when a summary starts, when it is ready and swaps in with that prompt, when the swap has cut the context, and if it fails or no longer fits. It comes from a <code>UserPromptSubmit</code> hook Burst adds to <code>~/.claude/settings.json</code> and removes when this is off. Claude does not see these lines, so they cost no context. News that happens mid-turn shows on your next prompt.</div>
       <div class="hint" style="margin:-4px 0 12px 0;font-size:14px;line-height:1.55">
@@ -2265,6 +2266,10 @@ async function saveCompaction() {
 }
 $("compactOn").onchange = saveCompaction;
 $("compactNotice").onchange = saveCompaction;
+$("compactNoticeTest").onclick = async () => {
+  try { note($("compactNote"), "ok", (await post("/api/prompt-notice-test", {})).ok); }
+  catch (e) { note($("compactNote"), "bad", e.message); }
+};
 $("compactSave").onclick = saveCompaction;
 
 // Session handover. The form is filled from /api/state only while it is not
@@ -3733,6 +3738,7 @@ $("hsJoin").onclick = () => {
   $("hsItems").innerHTML = (known ? "" : `<li class="bad"><b>${esc(ssid)}</b> is not a network this Mac has joined before: join it once from the Wi-Fi menu first.</li>`) +
     items.map(t => `<li>${t}</li>`).join("");
   $("hsStart").disabled = !known;
+  $("hsStart").textContent = "Start test"; $("hsStart").hidden = false;
   $("hsResultHead").hidden = true; $("hsResult").innerHTML = "";
   $("hsCheckTitle").textContent = `Test joining ${ssid}`;
   $("hsCancel").textContent = "Cancel";
@@ -3747,12 +3753,14 @@ $("hsStart").onclick = async () => {
   try {
     if ($("hsPw").value) { await post("/api/settings-save", {hotspot_password: $("hsPw").value}); $("hsPw").value = ""; }
     const r = await post("/api/hotspot-join", {ssid});
+    if (r.ok) $("hsStart").hidden = true;
     $("hsResult").innerHTML = r.steps.map(st => `<li class="${st.ok ? "ok" : "bad"}"><span class="mark">${st.ok ? "&#x2713;" : "&#x2715;"}</span><span><b>${esc(st.name)}</b>${st.detail ? ": " + esc(st.detail) : ""}</span></li>`).join("") +
-      `<li class="${r.ok ? "ok" : ""}"><span class="mark"></span><span>${r.ok ? `Works. Save to have Burst join ${esc(ssid)} when this Mac is offline.` : "Fix the failed step and test again."}</span></li>`;
+      `<li class="${r.ok ? "ok" : ""}"><span class="mark"></span><span>${r.ok ? `Works. Save to have Burst join ${esc(ssid)} when this Mac is offline.` : "Fix the failed step and press Retry."}</span></li>`;
   } catch (e) {
     $("hsResult").innerHTML = `<li class="bad"><span class="mark">&#x2715;</span><span>${esc(e.message)}</span></li>`;
   }
   $("hsStart").disabled = false;
+  $("hsStart").textContent = "Retry";
   $("hsCancel").textContent = "Close";
   loadSettings();
 };

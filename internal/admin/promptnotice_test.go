@@ -70,3 +70,14 @@ func TestPromptNoticeAnswersNothingWhenThereIsNothing(t *testing.T) {
 		t.Fatalf("want an empty 204, got %d %q", w.Code, w.Body.String())
 	}
 }
+
+func TestPromptNoticeTestNeedsASession(t *testing.T) {
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/prompt-notice-test", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set(mutationHeader, "1")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("no sessions tracked: want 404, got %d %q", w.Code, w.Body.String())
+	}
+}

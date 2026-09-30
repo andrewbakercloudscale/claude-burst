@@ -118,6 +118,20 @@ func (s *Server) handlePromptNotice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"systemMessage": strings.Join(lines, "\n")})
 }
 
+// handlePromptNoticeTest queues a test line for one session, or all.
+func (s *Server) handlePromptNoticeTest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	n := s.gateway.QueueTestNotice(req.Session)
+	if n == 0 {
+		http.Error(w, "no tracked session to send it to; send a prompt in Claude Code first", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]string{"ok": fmt.Sprintf("a test line is waiting for %d session(s); it appears under the next prompt you send in each", n)})
+}
+
 // promptNoticeState is the hook's line for the dashboard.
 func promptNoticeState() string {
 	p, err := claudesettings.Path()
