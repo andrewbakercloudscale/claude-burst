@@ -1663,14 +1663,38 @@ function renderActiveBadge(s, verdict) {
   // send traffic to the secondary, and a badge that only read the
   // account-wide window said PRIMARY while Opus went to GLM (2026-09-30).
   const now = Date.now();
-  const onSecondary = ((s.downgrade && s.downgrade.rejected) || [])
+  const rt = resetTopState(s, now);
+  $("resetTop").disabled = rt.disabled;
+  $("resetTop").title = rt.title;
+  $("routeBadge").innerHTML = routeBadgeHTML(s, verdict, now);
+}
+
+// The pure parts of the badge row, kept free of the DOM so page_script_test.go
+// can run them under node: each one was a dashboard that looked healthy
+// while traffic went elsewhere, on 2026-09-30.
+
+// secondaryModels lists the models whose per-model window is still open.
+function secondaryModels(s, now) {
+  return ((s.downgrade && s.downgrade.rejected) || [])
     .filter(r => Date.parse(r.until) > now).map(r => r.model);
+}
+
+// resetTopState: the header's Back to primary is always there, and enabled
+// only while something is going to the secondary.
+function resetTopState(s, now) {
+  const onSecondary = secondaryModels(s, now);
   const anySecondary = !!(s.overflow || onSecondary.length);
-  $("resetTop").disabled = !anySecondary;
-  $("resetTop").title = anySecondary
-    ? "Send " + (s.overflow ? "every model" : onSecondary.join(", ")) + " back to Anthropic now"
-    : "Already on primary: nothing is going to the secondary";
-  $("routeBadge").innerHTML = !(verdict && verdict.ok)
+  return {
+    disabled: !anySecondary,
+    title: anySecondary
+      ? "Send " + (s.overflow ? "every model" : onSecondary.join(", ")) + " back to Anthropic now"
+      : "Already on primary: nothing is going to the secondary",
+  };
+}
+
+function routeBadgeHTML(s, verdict, now) {
+  const onSecondary = secondaryModels(s, now);
+  return !(verdict && verdict.ok)
     ? ""
     : s.overflow
       ? `<span class="badge warn"><span class="dot"></span>OVERFLOW \u2192 SECONDARY</span>`
@@ -2794,6 +2818,25 @@ function axisMoney(n) {
 // scoring the page without it: the probe is the only check here that reads
 // the actual path, and a score that quietly omits it is the exact reassuring
 // half-answer this dashboard was built to stop giving.
+// primaryHealthCheck is the "Anthropic answering" check, from live primary
+// health: failing while the last failure is under 10 minutes old and no
+// answer has come since. Pure, for page_script_test.go.
+function primaryHealthCheck(ph, now) {
+  if (!ph) return null;
+  // Go sends a never-set time as year 1, not as a missing field.
+  const at = v => v && !v.startsWith("0001-") ? Date.parse(v) : 0;
+  const lastAnswer = at(ph.last_answer) ? ph.last_answer : "";
+  const failing = ph.failures > 0 && now - at(ph.last_failure) < 10 * 60 * 1000;
+  const t = v => new Date(at(v)).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  return {
+    key: "primary", label: "Anthropic answering", target: "sec-activity",
+    ok: !failing, critical: true,
+    detail: failing
+      ? `${ph.failures} request${ph.failures === 1 ? "" : "s"} failed since ${t(ph.failing_since)}${lastAnswer ? `, last answer ${t(lastAnswer)}` : ", no answer since the gateway started"}: ${(ph.last_error || "").slice(0, 240)}`
+      : lastAnswer ? `last answer ${t(lastAnswer)}` : "no request yet since the gateway started",
+  };
+}
+
 function readinessChecks(s, verdict) {
   if (verdict === undefined) return null;
   const out = [];
@@ -2835,21 +2878,8 @@ function readinessChecks(s, verdict) {
   // Is Anthropic answering NOW. Critical, because it is the one check that
   // fails while every request is failing: the error rate below averages 14
   // days, and on 2026-09-30 minutes of 502s on every request left it green.
-  const ph = s.primary_health;
-  if (ph) {
-    // Go sends a never-set time as year 1, not as a missing field.
-    const at = v => v && !v.startsWith("0001-") ? Date.parse(v) : 0;
-    ph.last_answer = at(ph.last_answer) ? ph.last_answer : "";
-    const failing = ph.failures > 0 && Date.now() - at(ph.last_failure) < 10 * 60 * 1000;
-    const t = v => new Date(at(v)).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
-    out.push({
-      key: "primary", label: "Anthropic answering", target: "sec-activity",
-      ok: !failing, critical: true,
-      detail: failing
-        ? `${ph.failures} request${ph.failures === 1 ? "" : "s"} failed since ${t(ph.failing_since)}${ph.last_answer ? `, last answer ${t(ph.last_answer)}` : ", no answer since the gateway started"}: ${(ph.last_error || "").slice(0, 240)}`
-        : ph.last_answer ? `last answer ${t(ph.last_answer)}` : "no request yet since the gateway started",
-    });
-  }
+  const primary = primaryHealthCheck(s.primary_health, Date.now());
+  if (primary) out.push(primary);
 
   // Error rate over the charted window. Uses the same numbers the chart
   // draws, so the check and the picture below it can never disagree.

@@ -45,6 +45,7 @@ TRUST_HELPER="$DIR/trust-ca-systemwide.sh"
 ROLLED_BACK_MARKER="${CLAUDE_BURST_ROLLED_BACK_MARKER:-$HOME/.config/claude-burst/rolled-back}"
 
 source "$DIR/health-diagnostics.sh"
+source "$DIR/launchagent-reload.sh"
 
 # Acquire root ONCE, UP FRONT, before anything is changed.
 #
@@ -102,34 +103,12 @@ fi
 launchctl enable "gui/$UID/$LABEL" >/dev/null 2>&1 || true
 
 # bootout first: harmless if it's not loaded, and avoids "service already
-# bootstrapped" if a previous rollback left it half-registered.
-#
-# bootout returns before the job is gone: the gateway drains on SIGTERM (up
-# to 50s with a reply streaming, ~100ms idle), and until it exits launchd
-# still holds the label. A bootstrap in that window fails with a bare
-# "Input/output error", kickstart then finds nothing loaded, and the gateway
-# stays down. That is how both Install clicks on 2026-09-30 (15:11, 15:18)
-# stopped a healthy gateway and installed nothing. So wait for the label to
-# disappear, and retry bootstrap rather than trusting one attempt.
-launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
-for i in $(seq 1 65); do
-  launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break
-  (( i == 1 )) && echo "waiting for the old gateway to finish draining and unload..."
-  sleep 1
-done
-bootstrapped=0
-for i in 1 2 3 4 5; do
-  if bootstrap_err="$(launchctl bootstrap "gui/$UID" "$PLIST" 2>&1)"; then
-    bootstrapped=1; break
-  fi
-  echo "bootstrap attempt $i failed: $bootstrap_err" >&2
-  sleep 2
-done
-if [[ "$bootstrapped" -ne 1 ]]; then
-  echo "ERROR: launchd would not load $LABEL -- nothing past this point was changed" >&2
+# bootstrapped" if a previous rollback left it half-registered. It waits for
+# the old gateway to unload before bootstrapping: see launchagent-reload.sh.
+if ! reload_launchagent "$LABEL" "$PLIST"; then
+  echo "nothing past this point was changed" >&2
   exit 1
 fi
-launchctl kickstart -k "gui/$UID/$LABEL"
 
 echo "waiting for /healthz..."
 healthy=0
