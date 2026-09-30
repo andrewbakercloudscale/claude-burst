@@ -55,6 +55,20 @@ type CompactionStats struct {
 	LargestAfter  int64 `json:"largest_after"`
 	// Sessions is every compacted session, most recently swapped first.
 	Sessions []CompactedSession `json:"sessions"`
+	// Daily is the same money by local day, every day of the window
+	// included, oldest first: the savings chart. Its days sum to the totals.
+	Daily []CompactionDay `json:"daily"`
+}
+
+// CompactionDay is one local day of CompactionStats.
+type CompactionDay struct {
+	Date        string  `json:"date"` // 2006-01-02, local
+	Compactions int     `json:"compactions"`
+	Requests    int     `json:"requests"`
+	SavedUSD    float64 `json:"saved_usd"`
+	SummaryUSD  float64 `json:"summary_usd"`
+	RewriteUSD  float64 `json:"rewrite_usd"`
+	NetUSD      float64 `json:"net_usd"`
 }
 
 // CompactedSession is one session over the window.
@@ -205,15 +219,44 @@ func CompactionStatsSince(path string, since time.Time) (CompactionStats, error)
 	t := newCompactionTracker()
 	bySession := map[string]*CompactedSession{}
 	pendingSummary := map[string]float64{} // summary cost awaiting its swap
+	dayIndex := map[string]int{}
+	// Daily covers the window, but never more than 92 days: a zero since
+	// (every event) would otherwise list every day since year 1.
+	from := since
+	if limit := time.Now().AddDate(0, 0, -92); from.Before(limit) {
+		from = limit
+	}
+	for d := from.Local(); !d.After(time.Now()); d = d.AddDate(0, 0, 1) {
+		key := d.Format("2006-01-02")
+		if _, ok := dayIndex[key]; !ok {
+			dayIndex[key] = len(st.Daily)
+			st.Daily = append(st.Daily, CompactionDay{Date: key})
+		}
+	}
+	if today := time.Now().Local().Format("2006-01-02"); len(st.Daily) == 0 || st.Daily[len(st.Daily)-1].Date != today {
+		dayIndex[today] = len(st.Daily)
+		st.Daily = append(st.Daily, CompactionDay{Date: today})
+	}
+	dayOf := func(t time.Time) *CompactionDay {
+		if i, ok := dayIndex[t.Local().Format("2006-01-02")]; ok {
+			return &st.Daily[i]
+		}
+		return nil
+	}
 	for _, f := range historyFiles(path, since) {
 		err := scanEvents(f, func(e Event) {
 			fx := t.observe(e)
 			if e.Time.Before(since) || fx.sessionKey == "" {
 				return
 			}
+			day := dayOf(e.Time)
 			if fx.isSummary {
 				st.Compactions++
 				st.SummaryUSD += fx.summaryUSD
+				if day != nil {
+					day.Compactions++
+					day.SummaryUSD += fx.summaryUSD
+				}
 				if c := bySession[fx.sessionKey]; c != nil {
 					c.SummaryUSD += fx.summaryUSD
 				} else {
@@ -247,6 +290,11 @@ func CompactionStatsSince(path string, since time.Time) (CompactionStats, error)
 			c.SavedTokens += fx.saved
 			c.SavedUSD += fx.savedUSD
 			c.RewriteUSD += fx.rewriteUSD
+			if day != nil {
+				day.Requests++
+				day.SavedUSD += fx.savedUSD
+				day.RewriteUSD += fx.rewriteUSD
+			}
 			st.CompactedRequests++
 			st.TokensNotResent += fx.saved
 			st.SavedUSD += fx.savedUSD
@@ -257,6 +305,10 @@ func CompactionStatsSince(path string, since time.Time) (CompactionStats, error)
 		}
 	}
 	st.NetUSD = st.SavedUSD - st.SummaryUSD - st.RewriteUSD
+	for i := range st.Daily {
+		d := &st.Daily[i]
+		d.NetUSD = d.SavedUSD - d.SummaryUSD - d.RewriteUSD
+	}
 	for _, c := range bySession {
 		c.NetUSD = c.SavedUSD - c.SummaryUSD - c.RewriteUSD
 		st.Sessions = append(st.Sessions, *c)

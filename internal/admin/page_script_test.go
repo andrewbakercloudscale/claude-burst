@@ -244,3 +244,37 @@ func TestStateCarriesPrimaryHealthForTheCheck(t *testing.T) {
 		}
 	}
 }
+
+// The savings chart's series: up is what was not resent, down is what the
+// summaries and cache rewrites cost, and net is kept from the server.
+func TestSavingsSeries(t *testing.T) {
+	type d struct {
+		Date string  `json:"date"`
+		Up   float64 `json:"up"`
+		Down float64 `json:"down"`
+		Net  float64 `json:"net"`
+	}
+	var got []d
+	runPageJS(t, []string{"savingsSeries"}, `
+out(savingsSeries([
+  {date: "2026-09-29", saved_usd: 10, summary_usd: 1.5, rewrite_usd: 0.5, net_usd: 8, compactions: 2, requests: 30},
+  {date: "2026-09-30"},
+]));`, &got)
+	if len(got) != 2 || got[0].Up != 10 || got[0].Down != 2 || got[0].Net != 8 {
+		t.Fatalf("got %+v", got)
+	}
+	if got[1].Up != 0 || got[1].Down != 0 || got[1].Net != 0 {
+		t.Fatalf("an empty day must be zeros, got %+v", got[1])
+	}
+}
+
+// The chart is on the page, hidden until there is something to draw, with
+// a legend and a table view.
+func TestSavingsChartIsOnThePage(t *testing.T) {
+	src := string(indexHTML)
+	for _, want := range []string{`id="pcChartBox" hidden`, "Savings per day", "Not resent", "Summaries and cache rewrites", `id="pcChartTable"`, "drawSavingsChart();"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

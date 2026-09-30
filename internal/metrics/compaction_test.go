@@ -46,6 +46,77 @@ func TestCompactionStats(t *testing.T) {
 	}
 }
 
+// The savings chart's days: every day of the window is present, oldest
+// first, and the days add up to the totals the tiles show.
+func TestCompactionStatsDaily(t *testing.T) {
+	now := time.Now()
+	day1 := now.AddDate(0, 0, -2).Truncate(time.Hour)
+	day2 := now.Truncate(time.Minute).Add(-time.Minute)
+	ev := func(at time.Time, rest string) string {
+		return `{"time":"` + at.Format(time.RFC3339) + `","session_id":"S","slot":"primary","model":"m","http_status":200,` + rest + `}`
+	}
+	lines := []string{
+		ev(day1, `"input_tokens":2,"cache_read_tokens":530000`),
+		ev(day1.Add(time.Minute), `"input_tokens":400,"cache_read_tokens":500000,"api_equivalent_usd":0.2,"note":"compaction summary"`),
+		ev(day1.Add(2*time.Minute), `"input_tokens":2,"cache_read_tokens":535000`),
+		ev(day1.Add(3*time.Minute), `"input_tokens":2,"cache_write_tokens":45000,"compacted_messages":841`),
+		ev(day2, `"input_tokens":2,"cache_read_tokens":46000,"compacted_messages":841`),
+	}
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	SetPricer(func(model string, in, out, cr, cw int64) (float64, bool) { return float64(cr) / 1e6 * 0.2, true })
+	t.Cleanup(func() { SetPricer(nil) })
+	since := now.AddDate(0, 0, -7)
+	st, err := CompactionStatsSince(p, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Daily) < 7 || len(st.Daily) > 9 {
+		t.Fatalf("want every day of a 7-day window, got %d", len(st.Daily))
+	}
+	if st.Daily[len(st.Daily)-1].Date != now.Format("2006-01-02") {
+		t.Fatalf("last day %q, want today", st.Daily[len(st.Daily)-1].Date)
+	}
+	var saved, summary, rewrite, net float64
+	var comps, reqs int
+	for i, d := range st.Daily {
+		if i > 0 && d.Date <= st.Daily[i-1].Date {
+			t.Fatalf("days out of order: %v", st.Daily)
+		}
+		saved, summary, rewrite, net = saved+d.SavedUSD, summary+d.SummaryUSD, rewrite+d.RewriteUSD, net+d.NetUSD
+		comps, reqs = comps+d.Compactions, reqs+d.Requests
+		if abs(d.NetUSD-(d.SavedUSD-d.SummaryUSD-d.RewriteUSD)) > 1e-9 {
+			t.Fatalf("net is not saved less costs on %s: %+v", d.Date, d)
+		}
+	}
+	if abs(saved-st.SavedUSD) > 1e-9 || abs(summary-st.SummaryUSD) > 1e-9 || abs(rewrite-st.RewriteUSD) > 1e-9 || abs(net-st.NetUSD) > 1e-9 {
+		t.Fatalf("days do not add up to the totals: saved %v/%v summary %v/%v rewrite %v/%v net %v/%v",
+			saved, st.SavedUSD, summary, st.SummaryUSD, rewrite, st.RewriteUSD, net, st.NetUSD)
+	}
+	if comps != st.Compactions || reqs != st.CompactedRequests {
+		t.Fatalf("counts: %d/%d compactions, %d/%d requests", comps, st.Compactions, reqs, st.CompactedRequests)
+	}
+	d1 := st.Daily[len(st.Daily)-3]
+	if d1.Date != day1.Local().Format("2006-01-02") || d1.Compactions != 1 || d1.SummaryUSD != 0.2 {
+		t.Fatalf("the summary belongs to its own day: %+v", d1)
+	}
+}
+
+// A zero since (all history) must not list every day since year 1.
+func TestCompactionStatsDailyIsBounded(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	os.WriteFile(p, nil, 0o600)
+	st, err := CompactionStatsSince(p, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(st.Daily); n < 90 || n > 94 {
+		t.Fatalf("got %d days", n)
+	}
+}
+
 func abs(f float64) float64 {
 	if f < 0 {
 		return -f
