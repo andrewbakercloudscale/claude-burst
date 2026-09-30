@@ -81,6 +81,30 @@ func newChainServer(t *testing.T, primaryURL string, chain map[string][]string) 
 	return s, &logBuf
 }
 
+// newChainServerWithSecondary is newChainServer with a secondary that has
+// its credential, so failover has somewhere to go. It listens nowhere, so a
+// replay to it fails fast and never leaves the machine.
+func newChainServerWithSecondary(t *testing.T, primaryURL string, chain map[string][]string) (*Server, *bytes.Buffer) {
+	t.Helper()
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-key")
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = primaryURL
+	cfg.BedrockBaseURL = "http://127.0.0.1:1"
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primaryURL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{}
+	cfg.FallbackChain = chain
+	dir := t.TempDir()
+	var logBuf bytes.Buffer
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(&logBuf, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasSecondary() {
+		t.Fatal("setup: the secondary should be ready")
+	}
+	return s, &logBuf
+}
+
 func messagesRequest(model string) *http.Request {
 	return httptest.NewRequest(http.MethodPost, "http://local/v1/messages",
 		strings.NewReader(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
@@ -93,7 +117,7 @@ func messagesRequest(model string) *http.Request {
 // 2026-09-20).
 func TestFableRejectionDoesNotDivertOpus(t *testing.T) {
 	up := newRecordingUpstream(t, "claude-fable-5-1")
-	s, _ := newChainServer(t, up.srv.URL, nil)
+	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
 
 	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-fable-5-1"))
 	if !s.modelInOverflow("claude-fable-5-1", time.Now()) {
@@ -158,8 +182,9 @@ func TestOpenWindowRoutesStraightToTheRung(t *testing.T) {
 }
 
 // A rung can be refused too. The chain must carry on rather than stop at the
-// first closed door, and with no secondary configured the client gets a clear
-// error instead of a hang or a nil-provider panic.
+// first closed door. With no secondary, the last refusal goes back to Claude
+// Code exactly as Anthropic sent it: it used to be replaced by a gateway 503,
+// which hid the reset time Claude Code shows on a real limit.
 func TestEveryRungRefusedAndNoSecondary(t *testing.T) {
 	up := newRecordingUpstream(t, "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5")
 	s, _ := newChainServer(t, up.srv.URL, map[string][]string{
@@ -169,8 +194,8 @@ func TestEveryRungRefusedAndNoSecondary(t *testing.T) {
 	rr := httptest.NewRecorder()
 	s.ServeHTTP(rr, messagesRequest("claude-fable-5-1"))
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 once every rung is refused, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusTooManyRequests || !strings.Contains(rr.Body.String(), "usage limit reached") {
+		t.Fatalf("expected Anthropic's own 429 once every rung is refused, got %d: %s", rr.Code, rr.Body.String())
 	}
 	got := up.models()
 	want := []string{"claude-fable-5-1", "claude-opus-5", "claude-sonnet-5"}
@@ -182,10 +207,16 @@ func TestEveryRungRefusedAndNoSecondary(t *testing.T) {
 			t.Fatalf("chain took the wrong order: got %v want %v", got, want)
 		}
 	}
-	for _, m := range want {
+	// The rungs that had somewhere after them get windows, so the next
+	// Fable request skips straight past them. The last one does not: with
+	// no secondary, a window on it would only stop Claude Code asking.
+	for _, m := range want[:2] {
 		if !s.modelInOverflow(m, time.Now()) {
 			t.Fatalf("%s was refused and should have its own window", m)
 		}
+	}
+	if s.modelInOverflow("claude-sonnet-5", time.Now()) {
+		t.Fatal("the last rung had nowhere after it; it must not be put in a window")
 	}
 }
 

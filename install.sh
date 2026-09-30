@@ -109,8 +109,9 @@ install() {
   if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
     "$TARGET" keychain-set
   else
-    echo "NOTE: AWS_BEARER_TOKEN_BEDROCK is not set, so the Bedrock key was not stored yet."
-    echo "Before you need overflow: export AWS_BEARER_TOKEN_BEDROCK='...' && claude-burst keychain-set"
+    echo "NOTE: no secondary key stored, so Claude Burst runs on your single plan (Claude Enterprise, Pro or Max)."
+    echo "Everything but overflow works, and Anthropic's own limits reach Claude Code unchanged."
+    echo "To overflow to Bedrock later: export AWS_BEARER_TOKEN_BEDROCK='...' && claude-burst keychain-set"
   fi
 
   "$TARGET" enable

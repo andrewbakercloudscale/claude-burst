@@ -38,13 +38,29 @@ type flakyTransport struct {
 	neverRecover bool
 	err          error
 	bodies       []string
+	hosts        []string
 	next         http.RoundTripper
+}
+
+// primaryAttempts counts the calls that went to the primary, leaving out a
+// replay to a secondary sharing the client.
+func (f *flakyTransport) primaryAttempts(secondaryHost string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, h := range f.hosts {
+		if h != secondaryHost {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *flakyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	b, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	f.bodies = append(f.bodies, string(b))
+	f.hosts = append(f.hosts, r.URL.Host)
 	fail := f.fail > 0 || f.neverRecover
 	if fail && f.fail > 0 {
 		f.fail--
@@ -295,7 +311,7 @@ func TestPrimaryTransportErrorsAreRetriedBeforeFailover(t *testing.T) {
 	primaryRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
 	t.Cleanup(func() { primaryRetryDelays = old })
 	up := newRecordingUpstream(t)
-	s, logBuf := newChainServer(t, up.srv.URL, nil)
+	s, logBuf := newChainServerWithSecondary(t, up.srv.URL, nil)
 	s.probe = func() netProbe { return netProbe{dnsOK: true} }
 	ft := &flakyTransport{fail: 5, err: timeoutErr{}, next: s.client.Transport}
 	s.client.Transport = ft
@@ -304,10 +320,12 @@ func TestPrimaryTransportErrorsAreRetriedBeforeFailover(t *testing.T) {
 	ft.neverRecover = true
 
 	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
-	if n := len(ft.bodies); n != len(primaryRetryDelays)+1 {
-		t.Fatalf("got %d attempts, want the original plus the ladder, no secondary replay", n)
+	if n := ft.primaryAttempts("127.0.0.1:1"); n != len(primaryRetryDelays)+1 {
+		t.Fatalf("got %d primary attempts, want the original plus the ladder", n)
 	}
-	if !s.inOverflow(time.Now()) {
+	// The secondary here listens nowhere, and a failing secondary releases
+	// an outage window, so the replay itself is the evidence.
+	if ft.primaryAttempts("") == ft.primaryAttempts("127.0.0.1:1") {
 		t.Fatal("the ladder exhausted with the network up, so the failure must count and fail over")
 	}
 	if c := strings.Count(logBuf.String(), "retry route="); c != len(primaryRetryDelays) {
@@ -321,8 +339,8 @@ func TestPrimaryTransportErrorsAreRetriedBeforeFailover(t *testing.T) {
 	ft2 := &flakyTransport{neverRecover: true, err: writeEPIPE(), next: s.client.Transport}
 	s.client.Transport = ft2
 	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
-	if len(ft2.bodies) != 2 {
-		t.Fatalf("a stale write: original plus one immediate retry, got %d", len(ft2.bodies))
+	if n := ft2.primaryAttempts("127.0.0.1:1"); n != 2 {
+		t.Fatalf("a stale write: original plus one immediate retry, got %d", n)
 	}
 }
 
@@ -335,7 +353,7 @@ func TestLadderRecoveryServesTheResponse(t *testing.T) {
 	primaryRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
 	t.Cleanup(func() { primaryRetryDelays = old })
 	up := newRecordingUpstream(t)
-	s, _ := newChainServer(t, up.srv.URL, nil)
+	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
 	s.probe = func() netProbe { return netProbe{dnsOK: true} }
 	s.client.Transport = &flakyTransport{fail: 1, err: timeoutErr{}, next: s.client.Transport}
 

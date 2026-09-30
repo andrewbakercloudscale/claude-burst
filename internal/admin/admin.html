@@ -1677,6 +1677,9 @@ function renderActiveBadge(s, verdict) {
   // send traffic to the secondary, and a badge that only read the
   // account-wide window said PRIMARY while Opus went to GLM (2026-09-30).
   const now = Date.now();
+  // Nothing to force traffic onto on a single plan; the server refuses too.
+  $("force").disabled = !s.secondary_ready;
+  $("force").title = s.secondary_ready ? "" : "No secondary with a key is set up, so there is nothing to force traffic onto";
   const rt = resetTopState(s, now);
   $("resetTop").disabled = rt.disabled;
   $("resetTop").title = rt.title;
@@ -2851,6 +2854,31 @@ function primaryHealthCheck(ph, now) {
   };
 }
 
+// secondaryCheck: a secondary is optional. Someone on one plan (Claude
+// Enterprise, or any single subscription) has none, and that is a working
+// setup, not a fault: Anthropic's own limits reach Claude Code unchanged,
+// and compaction, handover and the rest work as before. A config with no
+// secondary resolves to a Bedrock one with no key, so that reads the same.
+// Only a secondary someone chose, whose key is missing, is a warning.
+// Pure, for page_script_test.go.
+function secondaryCheck(sec) {
+  sec = sec || {};
+  const none = sec.provider === "none" || !sec.provider;
+  const keyMissing = !!(sec.key_env_var && !sec.key_present);
+  if (none || (keyMissing && sec.provider === "bedrock")) {
+    return {
+      key: "secondary", label: "Single plan", target: "secondarySection", ok: true, critical: false,
+      detail: "no secondary: Anthropic's own limits reach Claude Code unchanged. Add one under Secondary to keep working past them",
+    };
+  }
+  return {
+    key: "secondary", label: "Secondary ready", target: "secondarySection",
+    ok: !keyMissing, critical: false,
+    detail: keyMissing ? "configured, but no API key was found, so nothing fails over to it"
+      : `${sec.model || sec.provider}, key ok`,
+  };
+}
+
 function readinessChecks(s, verdict) {
   if (verdict === undefined) return null;
   const out = [];
@@ -2879,15 +2907,7 @@ function readinessChecks(s, verdict) {
     });
   }
 
-  const sec = s.secondary || {};
-  const noSecondary = sec.provider === "none" || !sec.provider;
-  out.push({
-    key: "secondary", label: "Secondary ready", target: "secondarySection",
-    ok: !noSecondary && !(sec.key_env_var && !sec.key_present), critical: false,
-    detail: noSecondary ? "no secondary configured, overflow has nowhere to go"
-      : (sec.key_env_var && !sec.key_present) ? "configured, but no API key was found"
-      : `${sec.model || sec.provider}, key ok`,
-  });
+  out.push(secondaryCheck(s.secondary));
 
   // Is Anthropic answering NOW. Critical, because it is the one check that
   // fails while every request is failing: the error rate below averages 14
