@@ -9,6 +9,14 @@ import (
 // It never decides failover; it only translates auth/model/headers for its
 // vendor. Both slots (primary, secondary) are just configured Providers --
 // neither slot is tied to a specific vendor.
+// credentialChecker is a provider that brings its own credential (Bedrock,
+// an OpenAI-compatible endpoint). A secondary whose credential is missing
+// is no secondary at all: failing over to it turns Anthropic's own answer
+// into a 503. See Server.secondaryReady.
+type credentialChecker interface {
+	CredentialReady() error
+}
+
 type Provider interface {
 	// Name identifies this provider in logs and in metrics.jsonl's "route"
 	// field. Must stay stable across refactors: existing log/metric

@@ -15,6 +15,8 @@ The secondary is a pluggable slot. **Together AI** and **OpenRouter** (or any ot
 
 This is an experimental MVP. Test it on a non-critical development account before any broader rollout.
 
+**One plan only (Claude Enterprise, or a single Pro/Max subscription)?** No secondary is needed. Pauseless compaction, fallback models on your own plan (Fable to Opus), session handover, the dashboard, the prompt notices and the usage panel all work as they are. With nowhere to overflow to, Anthropic's own responses, a limit included, reach Claude Code unchanged, so it shows the reset time and retries exactly as it would without Burst. Leave the secondary unset (or set it to `none`); the dashboard shows **Single plan** instead of a warning. Add a secondary later if you want to keep working past a limit.
+
 **No Claude subscription?** Claude Burst also supports a direct, metered Anthropic API key as the primary route instead of subscription passthrough (see [No-subscription setup](#no-subscription-setup-metered-api-key-primary) below). In that mode there's no included allowance to burst from, so failover to the secondary is triggered by sustained failures instead of subscription-exhaustion headers, both routes are metered, so a single transient error doesn't flip traffic to a second paid provider.
 
 ## Dashboard

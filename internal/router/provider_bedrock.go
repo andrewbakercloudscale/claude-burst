@@ -28,6 +28,12 @@ func NewBedrockProvider(base *url.URL, modelMap map[string]string, keychainServi
 
 func (p *BedrockProvider) Name() string { return "bedrock" }
 
+// CredentialReady reports whether the Bedrock key can be loaded.
+func (p *BedrockProvider) CredentialReady() error {
+	_, err := keychain.Load(p.keychainService, "AWS_BEARER_TOKEN_BEDROCK")
+	return err
+}
+
 func (p *BedrockProvider) Prepare(ctx context.Context, in *http.Request, body []byte) (*http.Request, string, error) {
 	requestedModel := requestModel(body)
 

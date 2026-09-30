@@ -249,6 +249,10 @@ type stateResponse struct {
 	// to the 14-day error rate, which an outage of minutes cannot move.
 	PrimaryHealth router.PrimaryHealth `json:"primary_health"`
 
+	// SecondaryReady is whether the RUNNING gateway has a secondary it can
+	// fail over to: built, with its credential. False on a single plan.
+	SecondaryReady bool `json:"secondary_ready"`
+
 	// Shunt is the token-shunting feature: what is switched on, whether the
 	// pieces that enforce it are actually in place, and what it has saved.
 	Shunt shuntInfo `json:"shunt"`
@@ -447,6 +451,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	resp.Context = s.contextInfo(cfg)
 	resp.Handover = handover.GetStatus()
 	resp.PrimaryHealth = s.gateway.Health()
+	resp.SecondaryReady = s.gateway.HasSecondary()
 	writeJSON(w, resp)
 }
 

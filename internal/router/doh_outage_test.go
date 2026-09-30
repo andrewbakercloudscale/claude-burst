@@ -198,7 +198,7 @@ func TestLookupFailureRetriesThenFailsOver(t *testing.T) {
 	primaryRetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
 	t.Cleanup(func() { primaryRetryDelays = old })
 	up := newRecordingUpstream(t)
-	s, _ := newChainServer(t, up.srv.URL, nil)
+	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
 	s.probe = func() netProbe { return netProbe{dnsOK: true} }
 	s.primaryDetector = newMeteredFailureDetector(60, 3, 1)
 	lookupFail := fmt.Errorf("resolve api.anthropic.com over DoH (x): %w",
@@ -208,11 +208,11 @@ func TestLookupFailureRetriesThenFailsOver(t *testing.T) {
 
 	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
 
-	if n := len(ft.bodies); n != len(primaryRetryDelays)+1 {
+	if n := ft.primaryAttempts("127.0.0.1:1"); n != len(primaryRetryDelays)+1 {
 		t.Fatalf("got %d primary attempts, want the original plus the ladder (%d)", n, len(primaryRetryDelays)+1)
 	}
-	if !s.inOverflow(time.Now()) {
-		t.Fatal("a lookup that kept failing through the ladder must count and fail over")
+	if ft.primaryAttempts("") == ft.primaryAttempts("127.0.0.1:1") {
+		t.Fatal("a lookup that kept failing through the ladder must count and fail over to the secondary")
 	}
 	if h := s.Health(); h.Failures == 0 || !strings.Contains(h.LastError, "every resolver failed") {
 		t.Fatalf("the dashboard's health must show the lookup failure, got %+v", h)

@@ -199,12 +199,13 @@ func TestBodyTooLargeIsLoggedAndRejected(t *testing.T) {
 	}
 }
 
-// TestKeychainMissingKeyLogsAndReturns503 verifies that when Anthropic
-// rejects the subscription allowance but no Bedrock credential is available
-// (the common misconfiguration: forgot `claude-burst keychain-set`), the
-// gateway returns a clear 503 rather than hanging, and the failure stage is
-// logged so it is diagnosable from the log file alone.
-func TestKeychainMissingKeyLogsAndReturns503(t *testing.T) {
+// TestKeychainMissingKeyPassesTheLimitThrough: Anthropic rejects the
+// subscription allowance and no Bedrock credential is available. That is
+// also what a config with no secondary at all resolves to, so it is the
+// normal state for someone on one plan. The gateway used to fail over to
+// that keyless Bedrock and answer 503; there is nowhere to go, so Anthropic's
+// own 429 goes back to Claude Code, and the log says why once.
+func TestKeychainMissingKeyPassesTheLimitThrough(t *testing.T) {
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "") // ensure no key is available on this path
 
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -222,11 +223,17 @@ func TestKeychainMissingKeyLogsAndReturns503(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusTooManyRequests || !strings.Contains(rr.Body.String(), `"message":"limit"`) {
+		t.Fatalf("want Anthropic's own 429 unchanged, got status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(logBuf.String(), "stage=keychain_load") {
-		t.Fatalf("missing keychain_load error log, got:\n%s", logBuf.String())
+	if rr.Header().Get("anthropic-ratelimit-unified-reset") == "" {
+		t.Error("the reset header Claude Code shows must pass through")
+	}
+	if !strings.Contains(logBuf.String(), "has no usable credential") {
+		t.Fatalf("missing the no-credential log line, got:\n%s", logBuf.String())
+	}
+	if s.inOverflow(time.Now()) {
+		t.Fatal("no window may be armed with nowhere to send the traffic")
 	}
 }
 
@@ -466,7 +473,7 @@ func TestNoSecondaryConfigured_NeverFailsOver(t *testing.T) {
 	}
 }
 
-// TestForcedOverflowWithNilSecondaryReturns502NotPanic guards the router
+// TestForcedOverflowWithNilSecondaryServesFromPrimary guards the router
 // half of the fix for a real bug: admin's "Force -> secondary" used to
 // validate against a freshly re-read config.json rather than this process's
 // actual s.secondary, so ForceOverflow could be armed (directly, or via
@@ -476,7 +483,7 @@ func TestNoSecondaryConfigured_NeverFailsOver(t *testing.T) {
 // recover() turns that into an opaque 500 with no indication of what went
 // wrong, and the overflow window then keeps every retry broken until
 // something clears it. This must instead be a clear, diagnosable error.
-func TestForcedOverflowWithNilSecondaryReturns502NotPanic(t *testing.T) {
+func TestForcedOverflowWithNilSecondaryServesFromPrimary(t *testing.T) {
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"type":"message"}`))
@@ -504,8 +511,10 @@ func TestForcedOverflowWithNilSecondaryReturns502NotPanic(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("expected a clean 502 when overflow is active but no secondary is configured, got %d (body=%s)", rr.Code, rr.Body.String())
+	// With nowhere else to go the request goes to the primary: a stale or
+	// forced window must not turn into a 502 for its whole length.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected the primary to serve it when overflow is active but no secondary is configured, got %d (body=%s)", rr.Code, rr.Body.String())
 	}
 }
 

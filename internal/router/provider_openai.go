@@ -49,6 +49,12 @@ func NewOpenAICompatibleProvider(name string, base *url.URL, model string, model
 
 func (p *OpenAICompatibleProvider) Name() string { return p.name }
 
+// CredentialReady reports whether the endpoint's key can be loaded.
+func (p *OpenAICompatibleProvider) CredentialReady() error {
+	_, err := keychain.Load(p.keychainService, p.apiKeyEnvVar)
+	return err
+}
+
 func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request, body []byte) (*http.Request, string, error) {
 	requestedModel := requestModel(body)
 

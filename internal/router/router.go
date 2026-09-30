@@ -121,6 +121,12 @@ type Server struct {
 
 	// health is whether the primary is answering right now, for the
 	// dashboard. Held by healthMu; not part of state.json.
+	// readyMu guards the cached answer to "does the secondary have its
+	// credential"; see secondaryReady.
+	readyMu  sync.Mutex
+	readyAt  time.Time
+	readyErr error
+
 	healthMu sync.Mutex
 	health   PrimaryHealth
 	recent   recentRing
@@ -369,8 +375,47 @@ func (s *Server) Status() State {
 // s.secondary. Callers that need to know whether failing over to the
 // secondary will actually do anything -- notably admin's "Force -> secondary"
 // button -- must check this, not a freshly re-loaded config file.
+//
+// A secondary with no credential counts as none: routing to it only turns
+// Anthropic's answer into a 503.
 func (s *Server) HasSecondary() bool {
-	return s.secondary != nil
+	return s.secondaryReady()
+}
+
+// secondaryReadyTTL bounds how stale the credential check may be: a key
+// added with keychain-set is picked up within this, without a restart.
+const secondaryReadyTTL = time.Minute
+
+// secondaryReady is whether there is a secondary that can actually serve:
+// built, and with its credential loadable.
+//
+// Someone on one plan only (Claude Enterprise, or any single subscription)
+// has no secondary, and often not even a deliberate "none": a config with
+// no secondary block resolves to a Bedrock secondary with no key. Before
+// this, a subscription limit there was "failed over" to that Bedrock, which
+// answered 503, and the window it armed sent every request after it to the
+// same dead end until the limit reset. With nowhere to go, Anthropic's own
+// response goes back to Claude Code unchanged, and Claude Code handles it
+// the way it does without Burst.
+func (s *Server) secondaryReady() bool {
+	if s.secondary == nil {
+		return false
+	}
+	c, ok := s.secondary.(credentialChecker)
+	if !ok {
+		return true
+	}
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if !s.readyAt.IsZero() && time.Since(s.readyAt) < secondaryReadyTTL {
+		return s.readyErr == nil
+	}
+	err := c.CredentialReady()
+	if err != nil && (s.readyAt.IsZero() || s.readyErr == nil) {
+		s.logger.Printf("secondary route=%s has no usable credential (%v): treating it as absent, so Anthropic's own limits pass through to Claude Code", s.secondary.Name(), err)
+	}
+	s.readyAt, s.readyErr = time.Now(), err
+	return err == nil
 }
 
 // plainReason says, in one line of plain English, why Burst started sending
@@ -850,33 +895,29 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		downgraded, err := withModel(body, rung)
 		if err == nil {
 			s.logger.Printf("req=%s downgrade model=%q -> %q reason=%q (its rejection window is still open)", rid, reqModel, rung, "window open")
-			s.forward(w, r, downgraded, "primary", s.primary, s.primaryDetector, true, "downgraded from "+reqModel, rest)
+			s.forward(w, r, downgraded, "primary", s.primary, s.primaryDetector, s.secondaryReady() || len(rest) > 0, "downgraded from "+reqModel, rest)
 			return
 		}
 		s.logger.Printf("req=%s error stage=downgrade model=%q err=%v (falling through to the secondary)", rid, reqModel, err)
 	}
 
 	if s.forcedOverflow(now) || s.modelInOverflow(reqModel, now) {
-		if s.secondary == nil {
-			// An overflow window is armed (forced from the admin UI, or left
-			// over in state.json from before a restart) but this process has
-			// no secondary Provider built -- routing "secondary" would pass a
-			// nil Provider into forward(), which panics on the first method
-			// call. Surface a clear, actionable error instead of a bare 500;
-			// see HasSecondary's doc comment for how the two can drift apart.
-			s.logger.Printf("req=%s error stage=route reason=overflow_active_no_secondary", rid)
-			http.Error(w, "gateway is in a forced/overflow window but has no secondary provider configured on this running process -- configure a secondary and restart the gateway, or clear the overflow window", http.StatusBadGateway)
-			s.writeMetric(r, "secondary", "none", "", "", 0, time.Now(), tokenUsage{}, "", 0, "overflow active but no live secondary provider", "")
+		if s.secondaryReady() {
+			s.forward(w, r, body, "secondary", s.secondary, nil, false, "overflow window active", nil)
 			return
 		}
-		s.forward(w, r, body, "secondary", s.secondary, nil, false, "overflow window active", nil)
-		return
+		// A window is open (forced from the admin UI, or left in state.json
+		// by a secondary since removed) but there is nowhere to send the
+		// request. It used to get a 502 for the rest of the window; asking
+		// Anthropic costs nothing, and its answer, a refusal included, is
+		// the right one to return.
+		s.logger.Printf("req=%s route=primary reason=%q (overflow window open, no usable secondary)", rid, "no secondary")
 	}
 	// allowFailover is true when there is anywhere to go: a secondary, or a
 	// rung on the chain. Before the chain existed this was `s.secondary !=
 	// nil`, which meant a user with no secondary configured got no downgrade
 	// either, though it costs nothing and needs no third party.
-	s.forward(w, r, body, "primary", s.primary, s.primaryDetector, s.secondary != nil || len(ladder) > 0, "", ladder)
+	s.forward(w, r, body, "primary", s.primary, s.primaryDetector, s.secondaryReady() || len(ladder) > 0, "", ladder)
 }
 
 // withModel rewrites the "model" field of an Anthropic request body, leaving
@@ -1033,7 +1074,9 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		// stalled mobile link or a DNS hiccup, and each of those sent requests
 		// to the paid secondary on 2026-09-30 when a single failure was enough.
 		// Nothing has reached the client yet at this point, so a retry is
-		// invisible to it.
+		// invisible to it. With nowhere to fail over to it does not run:
+		// the error goes straight back and Claude Code's own retries, which
+		// show on screen, do the same job.
 		for i, d := range primaryRetryDelays {
 			// Only errors with no bytes read from the server are retried at
 			// all. A read-side reset may mean the server already ran the
@@ -1213,8 +1256,11 @@ func (s *Server) replayElsewhere(w http.ResponseWriter, in *http.Request, body [
 	for len(ladder) > 0 {
 		rung := ladder[0]
 		ladder = ladder[1:]
-		if s.modelInOverflow(rung, time.Now()) {
-			continue // refused in the time this request has been in flight
+		// Skip a rung refused while this request was in flight, but only
+		// when there is somewhere after it: the last place left is always
+		// worth asking.
+		if s.modelInOverflow(rung, time.Now()) && (len(ladder) > 0 || s.secondaryReady()) {
+			continue
 		}
 		downgraded, err := withModel(body, rung)
 		if err != nil {
@@ -1225,13 +1271,14 @@ func (s *Server) replayElsewhere(w http.ResponseWriter, in *http.Request, body [
 			d.Reason+"; request replayed to "+rung, destination)
 		s.logger.Printf("req=%s failover route=%s model=%q claim=%s reason=%q (%s) -> replaying on the subscription as %q",
 			rid, p.Name(), model, d.Claim, d.Reason, trigger, rung)
-		// allowFailover stays true: the rung can be refused too, and when it
-		// is, this same path carries on to the next rung or the secondary.
-		s.forward(w, in, downgraded, "primary", s.primary, s.primaryDetector, true, "downgraded from "+model, ladder)
+		// The rung can be refused too; when it is, this same path carries on
+		// to the next rung or the secondary. With neither left, its refusal
+		// goes back to Claude Code as Anthropic sent it.
+		s.forward(w, in, downgraded, "primary", s.primary, s.primaryDetector, s.secondaryReady() || len(ladder) > 0, "downgraded from "+model, ladder)
 		return
 	}
 
-	if s.secondary == nil {
+	if !s.secondaryReady() {
 		s.logger.Printf("req=%s no_failover_target route=%s model=%q claim=%s reason=%q (%s): fallback chain exhausted and no secondary configured",
 			rid, p.Name(), model, d.Claim, d.Reason, trigger)
 		http.Error(w, p.Name()+" refused this model ("+d.Reason+") and there is no fallback chain rung or secondary provider left to try", http.StatusServiceUnavailable)

@@ -320,13 +320,13 @@ func TestForceFailover_ConfigDriftLeavesGatewayWithNoLiveSecondary(t *testing.T)
 	}
 }
 
-// TestOverflowActiveWithNilSecondary_RouterRejectsCleanly is the router-level
+// TestOverflowActiveWithNilSecondary_ServesFromPrimary is the router-level
 // half of the same fix: even if an overflow window ends up armed with no
 // live secondary Provider -- e.g. state.json survives a restart into a
 // config that removed the secondary, not just the admin-drift path above --
 // the gateway must return a clear error instead of panicking a nil Provider
 // into a bare, undiagnosable 500.
-func TestOverflowActiveWithNilSecondary_RouterRejectsCleanly(t *testing.T) {
+func TestOverflowActiveWithNilSecondary_ServesFromPrimary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	primary := newUpstream(t, "primary")
@@ -342,9 +342,11 @@ func TestOverflowActiveWithNilSecondary_RouterRejectsCleanly(t *testing.T) {
 	h := newHarnessFromConfig(t, cfg, primary, nil)
 	h.gateway.ForceOverflow(0, "test: simulating stale overflow state with no live secondary")
 
+	// Served by the primary: a stale window with nowhere to send traffic is
+	// ignored rather than turned into a 502 for its whole length.
 	status, servedBy := h.claudeCodeRequest()
-	if status != http.StatusBadGateway {
-		t.Fatalf("inference request during overflow with a nil secondary: status=%d servedBy=%q, want 502", status, servedBy)
+	if status != http.StatusOK || servedBy != "primary" {
+		t.Fatalf("inference request during overflow with a nil secondary: status=%d servedBy=%q, want 200/primary", status, servedBy)
 	}
 }
 
