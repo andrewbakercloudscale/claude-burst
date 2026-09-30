@@ -1,3 +1,40 @@
+# Handover, 2026-09-30 15:21: DoH block outage, resolver fallbacks, Back to primary button
+<!-- session: dc634997-1f9a-42b8-a980-f04d6fc1016f -->
+
+## State right now
+
+- Written at session close. Verify before acting.
+- Pushed to origin/main: `0c08eba` and `57015ce`. Working tree clean at close (git status).
+- Deployed: both builds installed via `scripts/deploy.sh`; gateway running under launchd (pid 23851 at 15:20).
+- **Burst is NOT in the traffic path.** The user clicked Revert to normal Claude at 14:49 (rollback.sh): /etc/hosts had no api.anthropic.com entry at 15:21, dashboard showed NOT ACTIVE, 5/6. Claude Code talks to Anthropic directly (a direct curl got 405 from 160.79.104.10 at 15:20).
+- The user says they clicked Install Transparent Proxy, but at 15:21 /etc/hosts still had no entry and no install process was visible. Whether the install ran, failed, or is waiting for a password in a Terminal window: unverified.
+- A `revert.command` zsh process (pid 20526) was still alive at 15:20, probably an open Terminal window from the revert.
+
+## What was done
+
+- Root cause: from about 14:18 this network reset TLS to cloudflare-dns.com and dns.google (curl exit 35), while https://1.1.1.1/dns-query and Anthropic worked. With one DoH endpoint, Opus first failed over to GLM every 70s; after `ab5005d` (lookup error treated as local network, never fail over) plus a restart that emptied the address cache, every request got 502.
+- `0c08eba`:
+  - Resolver tries the configured endpoint, then https://1.1.1.1/dns-query, https://8.8.8.8/resolve, then plain UDP DNS to 1.1.1.1:53 and 8.8.8.8:53 (hand-parsed, `internal/router/resolver_udp.go`). Remembers the endpoint that answered. Last good answer kept in `~/.config/claude-burst/resolver-cache.json`.
+  - LookupError is safe to resend (30s ladder) and counts towards failover after it; removed from isLocalConnectivityFailure.
+  - Fixed a panic: a ladder retry that succeeded fell through to `err.Error()` on a nil err.
+  - `PrimaryHealth` in router.go, `primary_health` in /api/state; new critical dashboard check "Anthropic answering".
+  - Route badge shows `SECONDARY · <model>` for per-model windows; before it read only the account-wide window, so it said PRIMARY while Opus went to GLM.
+- `57015ce`: Back to primary button beside the route badge, always visible, greyed when nothing is on the secondary. Tested in Chrome: forced haiku for 5 min, button enabled, click cleared the window.
+- Memory added: `claude_burst_doh_block.md`.
+
+## Open
+
+1. Get Burst back in the path. Check: `grep anthropic /etc/hosts` shows the 127.0.0.1 entry and the dashboard's Traffic reaching gateway is green. If the Install window failed, read its Terminal output and `~/.config/claude-burst/claude-burst.log`.
+2. After reinstall, confirm the fallback works on this network: no new `cloudflare-dns.com` 502s in the log, and `resolver-cache.json` exists.
+3. Consider making the default `resolver_doh` https://1.1.1.1/dns-query (config.go, and the user's config.json which names cloudflare-dns.com), so each process does not try the blocked endpoint first. Not done.
+
+## Things that will bite you
+
+- A named DoH host can be blocked by SNI; IP-literal endpoints were not blocked here. Compare curl by name and by IP before blaming Anthropic.
+- `PrimaryHealth` times serialise as year 1 when unset (go.mod is go 1.23, no omitzero); the dashboard JS treats `0001-` as empty.
+- deploy.sh clears the rolled-back marker, so the self-heal watchdog reloads the gateway even while the redirect is removed. The log restarts at 15:11, 15:18, 15:20 were that and deploys, not crashes.
+- With every resolver dead, each primary request waits about 30s on the ladder before failing over.
+
 # Handover, 2026-09-30 14:48: dashboard settings, hotspot, keep-awake window, compaction and failover fixes
 <!-- session: c93b899c-afc6-4902-b8d2-cba7d51999dc -->
 
