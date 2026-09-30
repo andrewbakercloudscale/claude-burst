@@ -80,7 +80,7 @@ See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-op
 
 **What is pauseless compaction?** Claude Code has no pauseless compaction mode of its own: its `/compact`, and the auto-compact near the end of its context window, stop the session while the conversation is summarised. Pauseless compaction is Claude Burst's alternative. A local gateway between Claude Code and Anthropic writes the summary in a background request while you keep working, then swaps it in on your next prompt. Claude Code is unchanged, your place in the conversation is kept, and there is nothing to type. Turn it on in the dashboard under **Pauseless Compaction**.
 
-**You see it in Claude Code itself.** A line appears under the prompt you send, for example `⚡ Claude Burst, pauseless compaction: done. Context down 88%, 666k → 78k: 1074 earlier messages now go as a summary`. There are lines for when a summary starts, when it is ready, when it has cut the context, and when it fails or no longer fits. They come from a `UserPromptSubmit` hook the dashboard installs (on by default, with a switch). Claude does not see them, so they cost no context.
+**You see it in Claude Code itself.** A line appears under the prompt you send, for example `⚡ Claude Burst, pauseless compaction: done. Context down 88%, 666k → 78k: 1074 earlier messages now go as a summary`. There are lines for when a summary starts, when it is ready, when it has cut the context, and when it fails or no longer fits. They come from a hook the dashboard installs (on by default, with a switch): under each prompt (`UserPromptSubmit`), and after each tool call inside a long turn (`PostToolUse`). A summary that is ready mid-turn waits for your next prompt, and the hook says so once, so a long turn never looks like compaction has not fired. Claude does not see these lines, so they cost no context.
 
 On the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window. With pauseless compaction on:
 
@@ -108,6 +108,27 @@ The dashboard shows the net figure in the Pauseless Compaction section (per sess
 ![The Pauseless Compaction section: headline results, settings, and each session's context before and after, with the saving per turn](docs/screenshots/pauseless-compaction.png)
 
 ![The Saved view of Daily activity: tokens removed by compaction and by pruning, per day](docs/screenshots/saved-chart.png)
+
+### Savings per day, and what a month looks like
+
+The Pauseless Compaction section charts each day: **savings** (context not resent) above the line, **cost** (the summaries and the cache rewrites after each swap) below it, on one scale. The header totals the net for the window, hovering a day shows the breakdown, and *Show as a table* lists every day.
+
+![Savings per day: savings from Pauseless Compaction above the line, its cost below, with the net total for the window. Example month scaled from real data](docs/screenshots/savings-per-day.png)
+
+**An example month, from the current data.** The chart above is not a real month: it is the first two real days of Pauseless Compaction (2026-09-29 and 30, one person, long Opus 5.5 sessions in Claude Code) repeated over 30 days. Each weekday varies by a fixed pattern around the real daily average and weekends run at 35%.
+
+| | Real, per active day | Example month (22 weekdays, 8 weekend days) |
+|---|---:|---:|
+| Savings: context not resent | $30.19 | $749.87 |
+| Cost: summaries | -$3.42 | -$84.95 |
+| Cost: cache rewrites | -$0.87 | -$21.61 |
+| **Net saved** | **$25.90** | **$643.32** |
+| Compactions | 6 | 150 |
+
+- Cost comes to about 14% of the savings, so roughly 86 cents in every dollar not resent is kept.
+- These are API-equivalent dollars. On a Max or Enterprise subscription the bill does not change; the saving is your usage limits lasting longer, because each turn re-reads a shorter context.
+- Your figure depends on how long your sessions run. A session that never passes **Compact at** (default 400k) is never compacted and saves nothing; the savings come from long sessions, and grow with them.
+- Two days is a small sample. The dashboard shows your own numbers over the last 7 days as soon as a session has been compacted.
 
 **Where to see it:**
 
