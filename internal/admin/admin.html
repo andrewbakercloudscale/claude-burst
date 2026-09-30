@@ -664,6 +664,9 @@
          the panel is the fix, and this is the fix without having to look for it. -->
     <button class="success" id="installTop" style="margin-left:10px" hidden>⤓ Install Transparent Proxy</button>
     <button class="danger" id="revertTop" style="margin-left:10px">↺ Revert to normal Claude</button>
+    <!-- Upgrade checks the version first (the running build's commit against
+         GitHub) and is enabled only when there is something newer to install. -->
+    <button id="upgradeTop" style="margin-left:10px" disabled title="Checking for a newer version...">&#x2913; Upgrade</button>
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
 
@@ -3730,6 +3733,49 @@ $("panelRemove").onclick = async () => {
   loadMac();
 };
 $("macRefresh").onclick = () => { loadMac(); loadSettings(); loadFinder(); };
+
+// Upgrade: a version check first, on load and every 30 minutes (the server
+// caches its GitHub fetch for 10), and again, fresh, on the click itself.
+let upgradeState = null;
+async function loadUpgrade(refresh) {
+  try { upgradeState = await (await fetch("/api/upgrade-status" + (refresh ? "?refresh=1" : ""))).json(); }
+  catch { return; }
+  renderUpgrade();
+}
+// upgradeButton is the button's state from a status. Pure, for
+// page_script_test.go.
+function upgradeButton(u) {
+  const running = `${u.running_version} (${u.running_commit || "unknown build"})`;
+  if (u.error) return {disabled: true, text: "\u2913 Upgrade", title: "Version check failed: " + u.error};
+  if (u.up_to_date) return {disabled: true, text: "\u2713 Up to date",
+    title: `Running ${running}, the latest on GitHub. Checked ${new Date(u.checked_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}.`};
+  const to = `${u.latest_version || ""} (${u.latest_commit})`.trim();
+  const list = (u.new_commits || []).map(c => "\u2022 " + c).join("\n");
+  return {
+    disabled: !u.can_upgrade,
+    text: `\u2913 Upgrade (${u.behind} new)`,
+    title: (u.can_upgrade ? `Install ${to} from GitHub, replacing ${running}.` : `A newer version is on GitHub, but: ${u.reason}.`) + (list ? "\n\n" + list : ""),
+  };
+}
+function renderUpgrade() {
+  if (!upgradeState) return;
+  const b = upgradeButton(upgradeState), el = $("upgradeTop");
+  el.disabled = b.disabled; el.textContent = b.text; el.title = b.title;
+  el.classList.toggle("success", !b.disabled);
+}
+$("upgradeTop").onclick = async () => {
+  const el = $("upgradeTop");
+  el.disabled = true; el.textContent = "Checking version...";
+  await loadUpgrade(true);
+  const u = upgradeState;
+  if (!u || u.up_to_date || !u.can_upgrade) return;
+  if (!confirm(`Upgrade Claude Burst from ${u.running_version} (${u.running_commit}) to ${u.latest_version || ""} (${u.latest_commit})?\n\n${u.behind} new commit(s):\n${(u.new_commits || []).map(c => "- " + c).join("\n")}\n\nA Terminal window runs it and restarts the gateway; in-flight replies finish first.`)) { renderUpgrade(); return; }
+  el.disabled = true; el.textContent = "Upgrading in Terminal...";
+  try { const r = await post("/api/upgrade"); el.title = r.detail; }
+  catch (e) { el.textContent = "\u26a0 Upgrade failed"; el.title = e.message; setTimeout(() => loadUpgrade(true), 5000); }
+};
+loadUpgrade(false);
+setInterval(() => loadUpgrade(false), 30 * 60 * 1000);
 loadMac();
 
 // Finder shortcuts. The buttons reflect what is already there: Install is
