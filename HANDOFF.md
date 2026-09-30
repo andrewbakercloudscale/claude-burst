@@ -1,3 +1,40 @@
+# Handover, 2026-09-30 14:48: dashboard settings, hotspot, keep-awake window, compaction and failover fixes
+<!-- session: c93b899c-afc6-4902-b8d2-cba7d51999dc -->
+
+## State right now
+- Written at session close. Verify before acting.
+- claude-burst: working tree clean, main == origin/main at `ab5005d` (checked with git). Last deploy (`scripts/deploy.sh`) at about 14:40 included `ab5005d`.
+- `e0d1fa1` (price claude-sonnet-5-5, handover pills, byline panel) is in history but was not made in this session; content unverified.
+- Panel repo (claudecode-cost-usage-panel): last pushed commits in this session were `adecf25` and earlier; current state not rechecked at close (unverified).
+- Live on this Mac: keep-awake mode `always` with a 120 minute idle window, applied 13:25 (`/etc/claude-burst/lid-awake.idle` = 120, daemon running). Hotspot set to "Andrews IPhone 18 ProMax", lid-closed only, password in Keychain service `claude-burst-hotspot`. Prompt-notice hook `~/.config/claude-burst/prompt-notice.sh` is in `~/.claude/settings.json`.
+- Ghostty `NSAppSleepDisabled` was set back to 1 by hand after tests had deleted it.
+
+## What was done
+- Compaction: a second summary waits without dropping the first (`8cc4166`); summary goroutine gets its own map copy, race fix (`495a7cf`); dropped summary reopens the window and logs which message changed (`318ea45`); failed summary retries after 5 min (`9b29851`); state keyed per conversation (session|model|hash of first message) so subagents no longer drop the parent's summary (`7e5c684`).
+- Prompt notice under the prompt in Claude Code (`551022d`), test line button (`0687614`), branded "Claude Burst, pauseless compaction: done. Context down N%" (`5272ae4`).
+- Dashboard: This Mac & sessions, usage panel install/remove with screenshot (`500413c`); grouped menu, failover & pricing editor, notifications, advanced, hotspot (`686df90`); Apply button for lid setting, menu/page order (`5b271ac`); handover table by repository, Save buttons (`862632f`); README screenshots (`c32b378`, `aeda3f0`); README leads with pauseless compaction (`302690a`).
+- Hotspot watcher and test: `a0f2d9a` to `2e8baff` (password required, Show via Touch ID, streamed attempts, timing fields: check 5s, 2 failed checks, 60s gap, 30 min give-up); no rejoin while still on a 172.20.10.x hotspot address, lid-open retries at once, Test button id clash fixed plus `TestPageIDsAreUnique` (`5272ae4`).
+- Keep-awake idle window `keep_awake_idle_minutes` via `scripts/lid-awake-root.sh apply MODE IDLE ACTIVITY_FILE`, gateway touches `~/.config/claude-burst/last-activity` (`afa6462`); caffeinate blocker note in plain English (`a2e3d5c`, `70625b2`).
+- Tests no longer touch the real Mac: Ghostty defaults stubbed in admin and integration uninstall tests, sudo stubbed (`bcb27d9`, `afa6462`).
+- Failover: DoH lookup falls back to the last cached address, `LookupError` never counts; primary transport errors safe to resend are retried 2s/4s/8s/16s before counting; failover and its end announced in the prompt notice (`ab5005d`).
+- Memory written: `claude_burst_next_priorities.md`, `claude_burst_tests_touch_real_mac.md`.
+
+## Open
+1. Confirm `ab5005d` in real use: next network blip should show `retry route=... attempt=` lines in `~/.config/claude-burst/claude-burst.log` and no `failures within 60s` note in metrics.jsonl for a single DoH reset. Also confirm the "Claude Burst: ... now go to the secondary" line appears under a prompt.
+2. The user's last screenshot showed Claude Code itself saying "502 anthropic upstream error ... Retrying in 18s, attempt 8/10" at about 14:45, after `ab5005d` was deployed. Not investigated: check the log around then for why requests still returned 502 (network down fast-fail path?).
+3. P0 list in memory `claude_burst_next_priorities.md`: `Status()` returns live maps (crash risk), Restart button skips drain, non-atomic writes of settings.json/config.json/state.json, secondary stream errors look like success.
+4. SleepDisabled was re-set to 1 twice at 13:23:56 and 13:24:37 by the daemon; cause not found. `/Library/Preferences/com.apple.PowerManagement.plist` was written at 13:24. Check `/var/log/claude-burst-lidawake.log` for more `-> 1` lines with no apply.
+5. User asked for a `/compact-async` slash command (not started). User also asked that requests be queued with a message "Queuing requests while restoring network connection" during network issues (not started). User said Routing nav click highlights Secondary (scroll-spy, not fixed) and could not find "force to primary" in the UI (not addressed).
+6. cf832d9d session (wordpress-cyber-devtools) compaction failed at 14:04 on the DoH error; should succeed now, check log for `compaction summary ready` on that session.
+
+## Things that will bite you
+- `defaults`, `sudo`, `pmset`, `networksetup` ignore a test's temp HOME. Stub them; after tests check `defaults read com.mitchellh.ghostty NSAppSleepDisabled` reads 1.
+- Review agents run under the same session id; before `7e5c684` they dropped the main summary. Keying now includes a first-message hash, so the first deploy after it lost a waiting summary.
+- `$(...)` in admin.html is getElementById: a duplicate id silently breaks buttons. `TestPageIDsAreUnique` guards it.
+- `cycle.sh` holds a `caffeinate -s` that keeps the Mac awake on battery regardless of the idle window; user wants it kept, it is shown in the UI.
+- A stale write gets one immediate retry only; the 30s ladder only for other resend-safe errors. `TestStaleWriteRetryIsBoundedToOne` and `TestPrimaryTransportErrorsAreRetriedBeforeFailover` pin this.
+- No em or en dashes anywhere; no Claude co-author trailers in commits.
+
 # Handover, 2026-09-29 20:23: ccusage panel label tweaks (panel repo, not claude-burst)
 <!-- session: ac015185-ea7e-44d8-acae-42272a30f68f -->
 
