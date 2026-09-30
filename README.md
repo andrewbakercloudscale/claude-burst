@@ -43,7 +43,7 @@ Every control section says where it is saved and when it applies, as a chip besi
 
 A **Needs attention** list above the overview collects everything not doing what it is set to do, each linking to its section: a guard not running, handover hooks half installed, the lid setting not applied as set, another program keeping the Mac awake, a failed usage panel install or removal, and models served without a price.
 
-![Analytics: latency, errors, spend per model and spend per repository](docs/screenshots/analytics.png)
+![Analytics: latency, errors, spend by model and spend by repository, each in its own panel](docs/screenshots/analytics.png)
 
 Screenshots are of a real dashboard with session ids, repository names and dollar figures replaced.
 
@@ -106,6 +106,8 @@ The dashboard shows the net figure in the Pauseless Compaction section (per sess
 - **[Usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel):** Started and Finished rows in the turn table, a green negative context delta on the turn where the summary landed, and the summary's cost in the session total.
 
 ## Keeping Claude Code working with the lid shut (optional)
+
+![This Mac: keep working with the lid closed (off, plugged in only, or also on battery), join a hotspot when offline, and notifications](docs/screenshots/this-mac.png)
 
 Off by default. `keep_awake_lid_closed` in `config.json` keeps a Claude Code session in Ghostty running, and Remote Control reachable, after you close the lid. `keep_awake_lid_closed_power` picks when:
 
@@ -176,6 +178,8 @@ The dashboard edits the briefing text, the writer's instructions, the writer mod
 
 ## Session options and the usage panel
 
+![Session options and the usage panel: Remote Control on start, session names, caffeinate, the handover writer, and installing or removing the panel with its settings](docs/screenshots/sessions-and-panel.png)
+
 **Session options** (Sessions menu) apply to the next session you start. The first three are carried out by the [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel)'s hooks and launcher, so they need it installed, and are saved in `~/.config/claude-panel/options`:
 
 - **Start with Remote Control**: every interactive `claude` starts with `--remote-control`.
@@ -192,11 +196,13 @@ The dashboard edits the briefing text, the writer's instructions, the writer mod
 
 ## Failover & pricing
 
+![Failover & pricing: failure thresholds, fallback models, and the price editor with unpriced models first](docs/screenshots/failover-pricing.png)
+
 Routing menu, saved in `config.json`, applies after a restart (the banner offers it):
 
 - **When Anthropic is failing**: the `metered_failover` window, error responses and connection failures, each marked when changed from its default, with **Reset to defaults**.
 - **Fallback models**: `fallback_chain`, one line per model (`requested model: fallback, next fallback`), tried on your subscription before the paid secondary.
-- **Prices**: every model with a price, plus every model served in the last 30 days, **unpriced models first**, with requests and spend per model. Add, edit or remove a price; past requests recorded as unpriced are repriced from their stored tokens once saved.
+- **Prices**: every model with a price, plus every model served in the last 30 days, **unpriced models first**, with requests and spend per model. Add, edit or remove a price (a built-in price can only be reset to its built-in value, since built-ins are merged into every load; an empty cache price is derived from the input price); past requests recorded as unpriced are repriced from their stored tokens once saved.
 
 **Advanced** (Setup menu, collapsed): `reset_grace_seconds`, `unknown_reset_seconds`, `response_header_timeout_seconds` and `max_request_mb`, each marked when changed from its default. The gateway and dashboard addresses and TLS peer logging are shown read only: they change what Claude Code connects to, so they are set with `claude-burst configure` and a reinstall.
 
