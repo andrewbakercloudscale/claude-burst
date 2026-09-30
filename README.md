@@ -7,7 +7,7 @@ Claude Burst is a Mac-only local gateway for Claude Code:
 1. **Overflow.** It keeps your normal Claude Pro/Max login as the primary credential, watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests to a secondary, this README works through **Together AI serving GLM**, then returns to the subscription when the reset timestamp arrives.
 2. **Overflow pruning.** Every overflow request resends the whole conversation to a metered provider, and most of it is old tool output. Before it is sent, tool results older than the most recent 10 are replaced with a one-line note, and any single result over 40 KB keeps only its start and end. The subscription is never pruned: Anthropic caches its context, and rewriting it on every request would break the cache (pauseless compaction, below, rewrites it once, on purpose). The dashboard's **Context & cache** panel has the switches, what was not sent, the cache hit rate per route, and a verdict that turns red if pruned requests fail more often than unpruned ones.
 
-3. **Pauseless compaction** (Leading Edge, off by default). **Compact Sessions without the Pause: subscription sessions are compacted in the background while you keep working.** When a session's context passes a threshold (default 400k), Burst has the same model summarise the older history while you keep working, and swaps the summary in on your next prompt. See [Pauseless compaction](#pauseless-compaction-compact-sessions-without-the-pause-leading-edge).
+3. **Pauseless compaction** (Leading Edge, off by default). **Compact Sessions without the Pause: subscription sessions are compacted in the background while you keep working.** When a session's context passes a threshold (default 400k), Burst has the same model summarise the older history while you keep working, and swaps the summary in on your next prompt. Type `/compact-async` to compact now, the pauseless version of `/compact`. See [Pauseless compaction](#pauseless-compaction-compact-sessions-without-the-pause-leading-edge).
 
 Token shunting, an earlier second job for the secondary, was switched off on 2026-09-21 because it saved nothing, and has been removed from the dashboard; see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context).
 
@@ -78,11 +78,10 @@ See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-op
 
 **Claude Code's `/compact` stops the session while it summarises. Burst's compaction never does.**
 
-**What is pauseless compaction?** Claude Code has no pauseless compaction mode of its own: its `/compact`, and the auto-compact near the end of its context window, stop the session while the conversation is summarised. Pauseless compaction is Claude Burst's alternative. A local gateway between Claude Code and Anthropic writes the summary in a background request while you keep working, then swaps it in on your next prompt. Claude Code is unchanged, your place in the conversation is kept, and there is nothing to type. Turn it on in the dashboard under **Pauseless Compaction**.
+**What is pauseless compaction?** Claude Code has no pauseless compaction mode of its own: its `/compact`, and the auto-compact near the end of its context window, stop the session while the conversation is summarised. Pauseless compaction is Claude Burst's alternative. A local gateway between Claude Code and Anthropic writes the summary in a background request while you keep working, then swaps it in on your next prompt. Claude Code is unchanged, your place in the conversation is kept, and there is nothing to type: it fires by itself, or on demand with [`/compact-async`](#compact-now-compact-async). Turn it on in the dashboard under **Pauseless Compaction**.
 
 **You see it in Claude Code itself.** A line appears under the prompt you send, for example `⚡ Claude Burst, pauseless compaction: done. Context down 88%, 666k → 78k: 1074 earlier messages now go as a summary`. There are lines for when a summary starts, when it is ready, when it has cut the context, and when it fails or no longer fits. They come from a hook the dashboard installs (on by default, with a switch): under each prompt (`UserPromptSubmit`), and after each tool call inside a long turn (`PostToolUse`). A summary that is ready mid-turn waits for your next prompt, and the hook says so once, so a long turn never looks like compaction has not fired. Claude does not see these lines, so they cost no context.
 
-**Compact now with `/compact-async`.** Type `/compact-async` in Claude Code to start a pauseless compaction straight away, whatever the context size and however recently the last one ran. Claude replies with one line and you keep working; the summary is written in the background and swaps in with your next prompt once it is ready. It is Burst's pauseless version of `/compact`: the dashboard installs it as `~/.claude/commands/compact-async.md` while Pauseless Compaction is on, and removes it when it is off (a command of that name you wrote yourself is never touched). It needs some conversation before the prompt to summarise; with too little, the line under your prompt says so.
 
 On the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window. With pauseless compaction on:
 
@@ -94,6 +93,32 @@ On the subscription every turn re-reads the whole conversation, so a turn at 400
 - **Limit:** Claude Code never learns that Burst shortened the history, so its own copy keeps growing. If Burst's summary stops fitting after that copy has passed the 1M window, the full history is too big to send: Anthropic refuses it and Claude Code compacts in its own way, with the pause. The gateway log says which message changed, so the cause can be found.
 
 **What it did in its first day** (one long Opus 5.5 session, 2026-09-29 to 30): three summaries, the biggest drop 611k tokens to 49k with recall intact. Over 306 requests that is **$25.12 saved net**: $30.57 of context compacted, less $5.27 for the summaries and $0.19 for cache rewrites. The first two summaries cost $2.10 and $2.96 because they did not read the session from cache; the fix brought the third down to **$0.21**.
+
+### Compact now: `/compact-async`
+
+**`/compact-async` is `/compact` without the pause.** Type it in Claude Code whenever you want the context cut, instead of waiting for **Compact at**.
+
+| | `/compact` (Claude Code) | `/compact-async` (Burst) |
+|---|---|---|
+| While the summary is written | session stops, you wait | you keep working |
+| When it takes effect | when it finishes | at your next prompt after it is ready (about 40s) |
+| Context size needed | any | any; ignores **Compact at** and the 60 minute window |
+| What Claude Code keeps | the summary only | its full local history; only what is sent is shortened |
+
+What happens:
+
+1. You type `/compact-async`. Burst sees the command's marker in the prompt and starts the background summary of everything before it.
+2. Claude replies with one line, `Pauseless compaction started: it swaps in with your next prompt, keep working.`, and uses no tools.
+3. Keep working. Under your next prompt, the Burst line says what happened, for example `/compact-async: 812 earlier messages (context 214k) are being summarised in the background`.
+4. The first prompt after the summary is ready carries it, and its line reports the drop, for example `Context down 80%, 214k → 43k`.
+
+Good to know:
+
+- **Installed for you.** The dashboard writes `~/.claude/commands/compact-async.md` while Pauseless Compaction is on and deletes it when it is off. It shows in Claude Code's `/` menu beside `/compact`. A `compact-async.md` of your own is never overwritten or removed.
+- **One at a time.** Asking again while a summary is being written, or is ready and waiting, starts nothing new; the prompt line says which.
+- **Needs something to summarise.** At the very start of a session there is too little before the prompt, and the prompt line says so instead.
+- **Only your prompt triggers it.** The marker inside a file Claude reads, or any other tool output, is ignored.
+- **Cost:** one summary request on your subscription, read from cache, typically about $0.20 API-equivalent (see [the savings](#how-the-savings-are-calculated)).
 
 ### How the savings are calculated
 
@@ -597,6 +622,9 @@ claude-burst shunt disable [--read] [--write]
 claude-burst shunt status
 claude-burst shunt doctor [--quick]          # does the worker see a whole prompt?
 claude-burst shunt log [--problems]          # what happened, with project and session
+
+# Inside Claude Code (installed while Pauseless Compaction is on)
+/compact-async                               # compact now, in the background, no pause
 
 # Amazon Bedrock secondary (overflow only)
 claude-burst configure --secondary bedrock --region us-east-1
