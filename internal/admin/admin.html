@@ -640,6 +640,11 @@
   <header>
     <span id="activeBadge"></span>
     <span id="routeBadge"></span>
+    <!-- Beside the route badge, always there so it can be found: on
+         2026-09-30 it was four cards down under Actions while Opus went to
+         GLM. Enabled only while something is on the secondary; otherwise it
+         says why it is greyed out. -->
+    <button class="warn" id="resetTop" style="margin-left:10px" disabled title="Already on primary: nothing is going to the secondary">↩ Back to primary</button>
     <span class="spacer"></span>
     <!-- Shown only while Claude Burst is actually in the traffic path, where
          the Install panel below is hidden: with nothing to fix, a permanent
@@ -657,11 +662,6 @@
          recommended button in the Install panel, put where the eye already is:
          the panel is the fix, and this is the fix without having to look for it. -->
     <button class="success" id="installTop" style="margin-left:10px" hidden>⤓ Install Transparent Proxy</button>
-    <!-- Shown only while any request is being sent to the secondary. The
-         same action as Back to primary in Actions, put where the SECONDARY
-         badge is: on 2026-09-30 the page said PRIMARY while one model's
-         traffic went to GLM, and the reset was four cards down. -->
-    <button class="warn" id="resetTop" style="margin-left:10px" hidden>↩ Back to primary</button>
     <button class="danger" id="revertTop" style="margin-left:10px">↺ Revert to normal Claude</button>
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
@@ -1665,7 +1665,11 @@ function renderActiveBadge(s, verdict) {
   const now = Date.now();
   const onSecondary = ((s.downgrade && s.downgrade.rejected) || [])
     .filter(r => Date.parse(r.until) > now).map(r => r.model);
-  $("resetTop").hidden = !(s.overflow || onSecondary.length);
+  const anySecondary = !!(s.overflow || onSecondary.length);
+  $("resetTop").disabled = !anySecondary;
+  $("resetTop").title = anySecondary
+    ? "Send " + (s.overflow ? "every model" : onSecondary.join(", ")) + " back to Anthropic now"
+    : "Already on primary: nothing is going to the secondary";
   $("routeBadge").innerHTML = !(verdict && verdict.ok)
     ? ""
     : s.overflow
@@ -2635,7 +2639,15 @@ $("reset").onclick = async () => {
   try { note($("actNote"), "ok", (await post("/api/reset")).ok); refresh(); }
   catch (e) { note($("actNote"), "bad", e.message); }
 };
-$("resetTop").onclick = () => $("reset").onclick();
+// Its own feedback on the button itself: the Actions note is four cards down.
+$("resetTop").onclick = async () => {
+  const b = $("resetTop");
+  delete $("actNote").dataset.overflowClaim;
+  b.disabled = true;
+  try { await post("/api/reset"); b.textContent = "\u2713 Back on primary"; }
+  catch (e) { b.textContent = "\u26a0 " + e.message; }
+  setTimeout(() => { b.textContent = "\u21a9 Back to primary"; refresh(); }, 2500);
+};
 
 $("restart").onclick = async () => {
   if (!confirm("Restart the gateway?\n\nIn-flight requests will be dropped. If it is managed by launchd it comes straight back; if you started it by hand, it will simply stop.")) return;
