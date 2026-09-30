@@ -92,6 +92,33 @@ func (c CompactionConfig) Resolved() CompactionConfig {
 	return c
 }
 
+// CoordinationConfig is session coordination: Claude Code hooks that let
+// sessions on this Mac share files without losing or sweeping up each
+// other's work (internal/coord). Off by default. Zero minutes take the
+// defaults: a master idle 15 minutes hands its files on, and one sitting on
+// other sessions' uncommitted changes 10 minutes is nudged to commit.
+type CoordinationConfig struct {
+	Enabled           bool `json:"enabled,omitempty"`
+	MasterIdleMinutes int  `json:"master_idle_minutes,omitempty"`
+	NudgeMinutes      int  `json:"nudge_minutes,omitempty"`
+}
+
+const (
+	DefaultCoordMasterIdle = 15
+	DefaultCoordNudge      = 10
+)
+
+// Resolved returns c with its zero numbers replaced by the defaults.
+func (c CoordinationConfig) Resolved() CoordinationConfig {
+	if c.MasterIdleMinutes <= 0 {
+		c.MasterIdleMinutes = DefaultCoordMasterIdle
+	}
+	if c.NudgeMinutes <= 0 {
+		c.NudgeMinutes = DefaultCoordNudge
+	}
+	return c
+}
+
 type ModelPrice struct {
 	InputPerMTok  float64 `json:"input_per_mtok"`
 	OutputPerMTok float64 `json:"output_per_mtok"`
@@ -326,6 +353,9 @@ type Config struct {
 	// once and sends the summary in place of those messages from then on.
 	// Experimental and off by default; see router/compact.go.
 	PrimaryCompaction CompactionConfig `json:"primary_compaction,omitempty"`
+
+	// SessionCoordination: see CoordinationConfig.
+	SessionCoordination CoordinationConfig `json:"session_coordination,omitempty"`
 
 	// AdminListen is the local control panel's address. Deliberately a
 	// separate listener from Listen: in transparent mode the gateway serves

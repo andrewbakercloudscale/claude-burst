@@ -65,6 +65,31 @@ set -uo pipefail
 # POSIX form, not zsh's ${0:A:h:h}: under bash that expands to an
 # unbound-variable error and the deploy dies before doing anything.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# One deploy at a time. Two at once (a dashboard "Install GitHub version"
+# while a checkout deploy runs, 2026-09-30 19:43) race each other's build,
+# binary swap and gateway restart, and whichever finishes last wins without
+# either saying so. A second deploy waits for the first, up to 10 minutes;
+# a lock left by a deploy that died is taken over.
+DEPLOY_LOCK="$HOME/.config/claude-burst/deploy.lock"
+mkdir -p "$HOME/.config/claude-burst"
+waited=0
+while ! mkdir "$DEPLOY_LOCK" 2>/dev/null; do
+  holder="$(cat "$DEPLOY_LOCK/pid" 2>/dev/null || true)"
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+    rm -rf "$DEPLOY_LOCK"
+    continue
+  fi
+  [ "$waited" = 0 ] && echo "[deploy] another deploy is running (pid ${holder:-?}); waiting for it to finish"
+  sleep 2
+  waited=$((waited + 2))
+  if [ "$waited" -ge 600 ]; then
+    echo "[deploy] still running after 10 minutes; nothing changed. If no deploy is running, remove $DEPLOY_LOCK" >&2
+    exit 1
+  fi
+done
+echo $$ > "$DEPLOY_LOCK/pid"
+trap 'rm -rf "$DEPLOY_LOCK"' EXIT
 LABEL="ninja.andrewbaker.claude-burst"
 INSTALL_DIR="$HOME/.local/bin"
 TARGET="$INSTALL_DIR/claude-burst"

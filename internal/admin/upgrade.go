@@ -271,7 +271,23 @@ echo "== Claude Burst: install the version on GitHub =="
 echo "running: ` + st.RunningVersion + ` (` + st.RunningCommit + `)"
 echo
 
-finish() { echo; read -k 1 "?Press any key to close this window..."; exit "$1"; }
+# On success the window closes itself after 10 seconds (a key keeps it
+# open); on failure it waits, so the error can be read. Only in a real
+# terminal: run any other way, it just exits.
+finish() {
+  echo
+  [[ -t 0 ]] || exit "$1"
+  if (( $1 == 0 )); then
+    if read -t 10 -k 1 "?Closing this window in 10 seconds; press any key to keep it open. "; then
+      echo; read -k 1 "?Press any key to close this window..."
+    fi
+    local me; me="$(tty)"
+    ( sleep 1; osascript -e 'on run {t}' -e 'tell application "Terminal" to repeat with w in windows' -e 'if tty of selected tab of w is t then close w' -e 'end repeat' -e 'end run' "$me" >/dev/null 2>&1 ) &!
+    exit 0
+  fi
+  read -k 1 "?Press any key to close this window..."
+  exit "$1"
+}
 
 git fetch origin main || { echo "could not fetch from GitHub, nothing changed" >&2; finish 1; }
 echo "installing: $(git log -1 --format='%h %s' origin/main)"
@@ -314,7 +330,23 @@ echo "== Claude Burst upgrade =="
 echo "running: ` + st.RunningVersion + ` (` + st.RunningCommit + `)"
 echo
 
-finish() { echo; read -k 1 "?Press any key to close this window..."; exit "$1"; }
+# On success the window closes itself after 10 seconds (a key keeps it
+# open); on failure it waits, so the error can be read. Only in a real
+# terminal: run any other way, it just exits.
+finish() {
+  echo
+  [[ -t 0 ]] || exit "$1"
+  if (( $1 == 0 )); then
+    if read -t 10 -k 1 "?Closing this window in 10 seconds; press any key to keep it open. "; then
+      echo; read -k 1 "?Press any key to close this window..."
+    fi
+    local me; me="$(tty)"
+    ( sleep 1; osascript -e 'on run {t}' -e 'tell application "Terminal" to repeat with w in windows' -e 'if tty of selected tab of w is t then close w' -e 'end repeat' -e 'end run' "$me" >/dev/null 2>&1 ) &!
+    exit 0
+  fi
+  read -k 1 "?Press any key to close this window..."
+  exit "$1"
+}
 
 [[ "$(git rev-parse --abbrev-ref HEAD)" == main ]] || { echo "not on main, nothing changed" >&2; finish 1; }
 [[ -z "$(git status --porcelain)" ]] || { echo "uncommitted changes in $(pwd), nothing changed" >&2; finish 1; }
