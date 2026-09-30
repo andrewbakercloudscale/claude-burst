@@ -30,7 +30,7 @@ func TestCompactionStats(t *testing.T) {
 	}
 	drop := int64(535002 - 45002)
 	if st.Compactions != 1 || st.CompactedRequests != 2 || st.TokensNotResent != 2*drop {
-		t.Fatalf("want 1 compaction, 2 compacted requests, %d not resent; got %+v", 2*drop, st)
+		t.Fatalf("want 1 compaction, 2 compacted requests, %d compacted away; got %+v", 2*drop, st)
 	}
 	// Without Burst the compacted requests would have sent 535002, then
 	// 536002 (the twin grows by the real session's 1000): the base the

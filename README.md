@@ -91,7 +91,7 @@ On the subscription every turn re-reads the whole conversation, so a turn at 400
 - A session is compacted at most once per window (default 60 minutes), a warning is logged at **Warn at** (default 300k), and state survives a gateway restart. A summary that fails is retried after 5 minutes, and a summary that stops fitting reopens the window at once, so a session is never left on its full history for the rest of the hour.
 - **Limit:** Claude Code never learns that Burst shortened the history, so its own copy keeps growing. If Burst's summary stops fitting after that copy has passed the 1M window, the full history is too big to send: Anthropic refuses it and Claude Code compacts in its own way, with the pause. The gateway log says which message changed, so the cause can be found.
 
-**What it did in its first day** (one long Opus 5.5 session, 2026-09-29 to 30): three summaries, the biggest drop 611k tokens to 49k with recall intact. Over 306 requests that is **$25.12 saved net**: $30.57 of context not resent, less $5.27 for the summaries and $0.19 for cache rewrites. The first two summaries cost $2.10 and $2.96 because they did not read the session from cache; the fix brought the third down to **$0.21**.
+**What it did in its first day** (one long Opus 5.5 session, 2026-09-29 to 30): three summaries, the biggest drop 611k tokens to 49k with recall intact. Over 306 requests that is **$25.12 saved net**: $30.57 of context compacted, less $5.27 for the summaries and $0.19 for cache rewrites. The first two summaries cost $2.10 and $2.96 because they did not read the session from cache; the fix brought the third down to **$0.21**.
 
 ### How the savings are calculated
 
@@ -111,7 +111,7 @@ The dashboard shows the net figure in the Pauseless Compaction section (per sess
 
 ### Savings per day, and what a month looks like
 
-The Pauseless Compaction section charts each day: **savings** (context not resent) above the line, **cost** (the summaries and the cache rewrites after each swap) below it, on one scale. The header totals the net for the window, hovering a day shows the breakdown, and *Show as a table* lists every day.
+The Pauseless Compaction section charts each day: **savings** (context compacted, priced at what resending it would have cost) above the line, **cost** (the summaries and the cache rewrites after each swap) below it, on one scale. The header totals the net for the window, hovering a day shows the breakdown, and *Show as a table* lists every day.
 
 ![Savings per day: savings from Pauseless Compaction above the line, its cost below, with the net total for the window. Example month scaled from real data](docs/screenshots/savings-per-day.png)
 
@@ -119,13 +119,13 @@ The Pauseless Compaction section charts each day: **savings** (context not resen
 
 | | Real, per active day | Example month (22 weekdays, 8 weekend days) |
 |---|---:|---:|
-| Savings: context not resent | $30.19 | $749.87 |
+| Savings: context compacted | $30.19 | $749.87 |
 | Cost: summaries | -$3.42 | -$84.95 |
 | Cost: cache rewrites | -$0.87 | -$21.61 |
 | **Net saved** | **$25.90** | **$643.32** |
 | Compactions | 6 | 150 |
 
-- Cost comes to about 14% of the savings, so roughly 86 cents in every dollar not resent is kept.
+- Cost comes to about 14% of the savings, so roughly 86 cents in every dollar of context compacted is kept.
 - These are API-equivalent dollars. On a Max or Enterprise subscription the bill does not change; the saving is your usage limits lasting longer, because each turn re-reads a shorter context.
 - Your figure depends on how long your sessions run. A session that never passes **Compact at** (default 400k) is never compacted and saves nothing; the savings come from long sessions, and grow with them.
 - Two days is a small sample. The dashboard shows your own numbers over the last 7 days as soon as a session has been compacted.
@@ -133,7 +133,7 @@ The Pauseless Compaction section charts each day: **savings** (context not resen
 **Where to see it:**
 
 - **Dashboard, Pauseless Compaction** (its own entry in the menu): the on/off switch and thresholds, headline figures for the last 7 days, and a table of sessions with context **before** and **after** the latest summary, the **saving per turn**, and the **net saving** after summaries and cache rewrites.
-- **Dashboard, Daily activity, Saved:** compaction's tokens not resent, stacked with what overflow pruning removed, per day. The tooltip shows what each saved and what the summaries cost.
+- **Dashboard, Daily activity, Saved:** the tokens compaction removed (context compacted), stacked with what overflow pruning removed, per day. The tooltip shows what each saved and what the summaries cost.
 - **[Usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel):** Started and Finished rows in the turn table, a green negative context delta on the turn where the summary landed, and the summary's cost in the session total.
 
 ## Keeping Claude Code working with the lid shut (optional)
