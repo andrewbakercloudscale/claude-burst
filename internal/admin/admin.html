@@ -668,9 +668,18 @@
         <button id="compactSave">Save settings</button>
       </div>
       <div class="hint" style="margin-top:6px"><strong>Warn at</strong>: a line in the gateway log and a flag in the table below (default 300k). <strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>At most once per</strong>: the least time between two compactions of the same session (default 60 minutes), so a session that grows fast is not summarised over and over.</div>
-      <div class="hint" style="margin-top:6px"><strong>Before</strong>: the context the session would have had at its latest summary without any of its summaries (every earlier summary's drop is added back, capped at the 1M window, where Claude Code would have compacted on its own). <strong>After</strong>: what it actually sent on the first request with the summary. <strong>Saved per turn</strong>: the difference, which every later request no longer resends, priced at the model's cache-read rate. <strong>Saved since</strong>: that, over every request since the summary applied. The Saved view of the Daily activity chart shows the same savings per day.</div>
+      <div class="hint" style="margin-top:6px"><strong>Before</strong>: the context the session would have had at its latest summary without Burst. <strong>After</strong>: what it actually sent. <strong>Saved per turn</strong>: the difference. <strong>Net saved</strong>: what Burst saved on the session after paying for its summaries and cache rewrites (hover for the parts). How these are worked out, including what happens when a session would have outgrown the 1M window: see <em>How the savings are calculated</em> below.</div>
       <div id="compactNote"></div>
       <div class="scroll" id="compactSessions" style="margin-top:10px"></div>
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-weight:650">How the savings are calculated</summary>
+        <div class="hint" style="margin-top:8px;font-size:13.5px;line-height:1.55">
+          <p style="margin:0 0 8px">Burst replays each compacted session from <code>metrics.jsonl</code>, request by request, beside a <strong>"without Burst" twin</strong>: a context that grows by exactly what the real session grows by, but never takes Burst's drops.</p>
+          <p style="margin:0 0 8px"><strong>Claude Code compacts the twin too.</strong> Without Burst the session would not grow forever: when the twin reaches about 950k tokens (95% of the 1M window, Claude Code's own auto-compact point, which it does not publish exactly), it is compacted back down to the size of one of Burst's summaries. So fifteen compactions can never claim more than one window's worth of saving at a time, and right after the twin is compacted it can be smaller than the real session. Those requests count <em>against</em> Burst.</p>
+          <p style="margin:0 0 8px"><strong>Per request</strong>: twin context minus real context, priced at the model's cache-read rate (in a long session every resent token is a cache read). <strong>Net</strong>: the sum of those, less every summary call, less the extra cost of writing each shortened history to cache on the request after a swap, where the twin would only have read. The twin's own compactions by Claude Code are not credited back, so the net figure errs low.</p>
+          <p style="margin:0">All figures are API-equivalent: on a subscription the real effect is slower use of your limits, not a smaller bill.</p>
+        </div>
+      </details>
     </div>
   </section>
 
@@ -1811,6 +1820,9 @@ $("save").onclick = async () => {
 };
 
 // Dollars with enough precision to see small overflow spend: four decimals under $1.
+// A saving that can be negative: "-$0.40", never "$-0.40".
+function signedUSD(n) { n = n || 0; return (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2); }
+
 function smallUSD(n) { return "$" + (n || 0).toFixed((n || 0) < 1 ? 4 : 2); }
 
 let pruneBusy = false;
@@ -1918,7 +1930,9 @@ function renderCompaction(s) {
     [cs.compactions || 0, `compaction${cs.compactions === 1 ? "" : "s"} in ${days} days`],
     [cs.largest_before ? `${kk(cs.largest_before)} &rarr; ${kk(cs.largest_after)}` : "-", "biggest single drop in context"],
     [cs.tokens_not_resent ? kk(cs.tokens_not_resent) : "-", `tokens not resent, across ${num(cs.compacted_requests || 0)} requests`],
-    [cs.compacted_requests ? "$" + (cs.saved_usd || 0).toFixed(2) : "-", cs.compactions ? `not spent, after $${(cs.summary_usd || 0).toFixed(2)} of summaries` : "not spent (API-equivalent)"],
+    [cs.compacted_requests ? signedUSD(cs.net_usd) : "-", cs.compacted_requests
+      ? `net saved: $${(cs.saved_usd || 0).toFixed(2)} not resent, less $${(cs.summary_usd || 0).toFixed(2)} of summaries and $${(cs.rewrite_usd || 0).toFixed(2)} of cache rewrites`
+      : "net saved (API-equivalent)"],
   ].map(([v, t]) => `<div class="pc-stat"><div class="v">${v}</div><div class="k">${esc(t)}</div></div>`).join("");
   setDot("nd-compaction", k.enabled ? "ok" : "");
   if (!rows.length) {
@@ -1933,7 +1947,7 @@ function renderCompaction(s) {
   const tok = n => n ? esc(num(Math.round(n / 1000))) + "k" : "-";
   $("compactSessions").innerHTML = `<table><thead><tr>
       <th>Session</th><th>Model</th><th class="num">Context now</th><th>State</th>
-      <th class="num">Before</th><th class="num">After</th><th class="num">Saved per turn</th><th class="num">Saved since</th>
+      <th class="num">Before</th><th class="num">After</th><th class="num">Saved per turn</th><th class="num">Net saved</th>
       <th>Last compaction</th>
     </tr></thead><tbody>${rows.map(r => {
       const x = saved[r.session + "|" + r.model];
@@ -1945,7 +1959,7 @@ function renderCompaction(s) {
       <td class="num">${x ? tok(x.before) : "-"}</td>
       <td class="num">${x ? tok(x.after) : "-"}</td>
       <td class="num">${x ? `<b style="color:var(--pc-a)">${tok(x.per_turn_tokens)}</b> <span class="hint">${esc(smallUSD(x.per_turn_usd))}</span>` : "-"}</td>
-      <td class="num">${x ? `${esc(smallUSD(x.saved_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
+      <td class="num" title="${x ? esc(`$${x.saved_usd.toFixed(2)} not resent, less $${x.summary_usd.toFixed(2)} summaries and $${x.rewrite_usd.toFixed(2)} cache rewrites, over ${x.requests} turns and ${x.compactions} compaction(s)`) : ""}">${x ? `${esc(signedUSD(x.net_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
       <td class="mono">${x ? esc(stamp(x.at)) : "-"}</td>
     </tr>`;
     }).join("")}</tbody></table>`;
@@ -2622,7 +2636,7 @@ const METRICS = {
     series: [
       {name: "Sent to secondary", color: "var(--s-secondary)", v: d => d.secondary_sent_tokens},
       {name: "Removed by pruning", color: "var(--s-saved)", v: d => d.pruned_tokens},
-      {name: "Removed by compaction", color: "var(--pc-a)", v: d => d.compacted_tokens || 0},
+      {name: "Removed by compaction", color: "var(--pc-a)", v: d => Math.max(0, d.compacted_tokens || 0)},
     ],
     fmt: n => num(Math.round(n)), axis: compact,
     extra: d => {
@@ -2635,8 +2649,10 @@ const METRICS = {
                `<div class="r"><span>Pruning not spent</span><b>${d.pruned_usd ? esc(smallUSD(d.pruned_usd)) : d.pruned_tokens ? "not priced" : esc(smallUSD(0))}</b></div>`;
       }
       if (d.compacted_tokens || d.compaction_summary_usd) {
-        out += `<div class="r"><span>Compaction not spent</span><b>${esc(smallUSD(d.compacted_usd || 0))}</b></div>` +
-               `<div class="r"><span>Summaries cost</span><b>${esc(smallUSD(d.compaction_summary_usd || 0))}</b></div>`;
+        const net = (d.compacted_usd || 0) - (d.compaction_summary_usd || 0) - (d.compaction_rewrite_usd || 0);
+        out += `<div class="r"><span>Compaction not resent</span><b>${esc(signedUSD(d.compacted_usd))}</b></div>` +
+               `<div class="r"><span>Summaries + rewrites</span><b>${esc(smallUSD((d.compaction_summary_usd || 0) + (d.compaction_rewrite_usd || 0)))}</b></div>` +
+               `<div class="r"><span>Compaction net</span><b>${esc(signedUSD(net))}</b></div>`;
       }
       return out;
     },
@@ -2848,6 +2864,16 @@ function renderActivity() {
      cls: errPct >= 5 ? "bad" : errPct >= 2 ? "warn" : ""},
     {k: "Busiest day", v: busiest && busiest.requests ? dayLabel(busiest.date) : "-",
      h: busiest && busiest.requests ? `${num(busiest.requests)} requests` : ""},
+    // What the two savings features were worth over the window, net of
+    // what they cost (see "How the savings are calculated").
+    ...(() => {
+      const sum = f => h.days.reduce((t, d) => t + (d[f] || 0), 0);
+      const comp = sum("compacted_usd") - sum("compaction_summary_usd") - sum("compaction_rewrite_usd");
+      const prune = sum("pruned_usd");
+      if (!comp && !prune && !sum("compaction_summary_usd")) return [];
+      return [{k: "Saved, net", v: signedUSD(comp + prune),
+        h: `compaction ${signedUSD(comp)} net of summaries and rewrites, pruning ${signedUSD(prune)}`}];
+    })(),
     // Shown only when it is non-zero: a permanent "0 unpriced" tile is
     // noise, while its appearance means the spend figure above is a lower
     // bound rather than a total, and says so.

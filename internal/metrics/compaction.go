@@ -6,22 +6,29 @@ import (
 )
 
 // What pauseless compaction (router/compact.go) saved, read back from the
-// metrics log. A compacted request does not record what it would have sent
-// without the summary, so each one is credited with the drop its session
-// saw when the summary was swapped in: the context of the last request
-// before it, minus the context of the first request after. The session keeps
-// growing afterwards on both sides of that line, so the drop is what every
-// later compacted request did not carry.
+// metrics log.
 //
-// Drops accumulate: a second compaction starts from a context the first had
-// already shrunk, so without either the session would carry both drops. The
-// credit is capped so that a request's context plus its saving never passes
-// maxContext, because Claude Code compacts on its own near the end of its
-// window and a session never really grows past it.
+// A compacted request does not record what it would have sent without
+// Burst, so each session is replayed request by request beside a "without
+// Burst" twin: a context that grows by exactly what the real one grows by,
+// but never takes Burst's drops. Where the twin would reach Claude Code's own
+// auto-compact trigger, it is compacted the way Claude Code would compact it,
+// back down to the size of a summary. The saving on each request is the
+// twin's context minus the real one, priced at the cache-read rate (every
+// resent token of a long session is a cache read). It can be negative: a
+// twin that Claude Code has just compacted can be smaller than the real
+// session, and that request is counted against Burst.
+//
+// The net saving then takes off what Burst spent to get there: the summary
+// calls, and on the first request after each swap the cache write of the
+// new, shorter history (billed as a write where the twin would have read).
+// What the twin would have spent on Claude Code's own compactions is not
+// credited back, so the net figure errs low.
 
-// maxContext is the context window of every model compaction applies to
-// (it only starts at hundreds of thousands of tokens, past Haiku's 200k).
-const maxContext = 1_000_000
+// claudeCodeTrigger is where the twin is compacted: about 95% of the 1M
+// window every model compaction applies to. Claude Code does not publish
+// its exact threshold.
+const claudeCodeTrigger = 950_000
 
 // CompactionStats is the dashboard's summary of a window.
 type CompactionStats struct {
@@ -29,55 +36,80 @@ type CompactionStats struct {
 	// they cost at API-equivalent prices.
 	Compactions int     `json:"compactions"`
 	SummaryUSD  float64 `json:"summary_usd"`
+	// RewriteUSD is the extra cost of writing each shortened history to
+	// cache, where the twin would have read it.
+	RewriteUSD float64 `json:"rewrite_usd"`
 	// CompactedRequests went out with a summary in place of older history;
-	// TokensNotResent and SavedUSD are what they did not carry, priced at
-	// the cache-read rate those tokens would have been billed at.
+	// TokensNotResent and SavedUSD are the twin's context minus the real one,
+	// summed over them (gross), and NetUSD is SavedUSD less the summaries
+	// and the rewrites.
 	CompactedRequests int     `json:"compacted_requests"`
 	TokensNotResent   int64   `json:"tokens_not_resent"`
 	SavedUSD          float64 `json:"saved_usd"`
+	NetUSD            float64 `json:"net_usd"`
+	// TwinCompactions is how many times the twin reached Claude Code's
+	// trigger and was compacted back down.
+	TwinCompactions int `json:"twin_compactions"`
 	// Largest is the biggest single drop, as before and after context.
 	LargestBefore int64 `json:"largest_before"`
 	LargestAfter  int64 `json:"largest_after"`
-	// Sessions is each compacted session's latest compaction, newest first.
+	// Sessions is every compacted session, most recently swapped first.
 	Sessions []CompactedSession `json:"sessions"`
 }
 
-// CompactedSession is one session's most recent compaction.
+// CompactedSession is one session over the window.
 type CompactedSession struct {
 	Session string    `json:"session"`
 	Model   string    `json:"model"`
 	At      time.Time `json:"at"`
-	// Before is the context the session would have had without any of its
-	// summaries at the latest swap (capped at maxContext); After is what it
-	// actually sent.
-	Before int64 `json:"before"`
-	After  int64 `json:"after"`
-	// PerTurnTokens and PerTurnUSD are what each later request saves.
+	// Before is the twin's context at the latest swap and After the real
+	// one; PerTurnTokens and PerTurnUSD are the difference.
+	Before        int64   `json:"before"`
+	After         int64   `json:"after"`
 	PerTurnTokens int64   `json:"per_turn_tokens"`
 	PerTurnUSD    float64 `json:"per_turn_usd"`
-	// Requests and SavedTokens/SavedUSD cover every request since.
+	// The rest cover every compacted request of the session in the window.
+	Compactions int     `json:"compactions"`
 	Requests    int     `json:"requests"`
 	SavedTokens int64   `json:"saved_tokens"`
 	SavedUSD    float64 `json:"saved_usd"`
+	SummaryUSD  float64 `json:"summary_usd"`
+	RewriteUSD  float64 `json:"rewrite_usd"`
+	NetUSD      float64 `json:"net_usd"`
 }
 
 // eventContext is everything a request sent: uncached, cache read and cache
 // write.
 func eventContext(e Event) int64 { return e.InputTokens + e.CacheReadTokens + e.CacheWriteTokens }
 
-// cacheReadUSD prices tokens at model's cache-read rate; 0 when unpriced.
-func cacheReadUSD(model string, tokens int64) float64 {
+func price(model string, cacheRead, cacheWrite int64) float64 {
 	pricerMu.RLock()
 	p := pricer
 	pricerMu.RUnlock()
-	if p == nil || tokens <= 0 {
+	if p == nil {
 		return 0
 	}
-	usd, _ := p(model, 0, 0, tokens, 0)
+	usd, _ := p(model, 0, 0, cacheRead, cacheWrite)
 	return usd
 }
 
-// compactionTracker follows sessions through the log in time order.
+// cacheReadUSD prices tokens at model's cache-read rate, keeping the sign.
+func cacheReadUSD(model string, tokens int64) float64 {
+	if tokens < 0 {
+		return -price(model, -tokens, 0)
+	}
+	return price(model, tokens, 0)
+}
+
+// rewriteUSD is what writing tokens to cache costs over reading them.
+func rewriteUSD(model string, tokens int64) float64 {
+	if tokens <= 0 {
+		return 0
+	}
+	return price(model, 0, tokens) - price(model, tokens, 0)
+}
+
+// compactionTracker replays sessions through the log in time order.
 type compactionTracker struct {
 	sessions map[string]*trackedSession
 }
@@ -85,21 +117,35 @@ type compactionTracker struct {
 type trackedSession struct {
 	lastCtx       int64
 	lastCompacted int64 // CompactedMessages of the previous request
-	cur           *CompactedSession
+	twin          int64 // the context without Burst; 0 until known
+	summarySize   int64 // what a compaction brings the context down to
 }
 
-// compactionEffect is what one event means for compaction: a summary's cost,
-// or a compacted request's saving (and whether it is the swap itself).
+// compactionEffect is what one event means for compaction.
 type compactionEffect struct {
-	summary    bool
 	summaryUSD float64
-	saved      int64
+	isSummary  bool
+	compacted  bool  // the request carried a Burst summary
+	saved      int64 // twin minus real, may be negative
 	savedUSD   float64
-	swap       *CompactedSession
+	rewriteUSD float64
+	twinReset  bool
+	swapBefore int64 // set on the request a new summary first applies to
+	swapAfter  int64
+	sessionKey string
 }
 
 func newCompactionTracker() *compactionTracker {
 	return &compactionTracker{sessions: map[string]*trackedSession{}}
+}
+
+func (t *compactionTracker) session(key string) *trackedSession {
+	s := t.sessions[key]
+	if s == nil {
+		s = &trackedSession{}
+		t.sessions[key] = s
+	}
+	return s
 }
 
 func (t *compactionTracker) observe(e Event) compactionEffect {
@@ -107,43 +153,48 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 	if e.Slot != "primary" || !ok(e) || e.SessionID == "" {
 		return fx
 	}
+	key := e.SessionID + "|" + e.Model
+	fx.sessionKey = key
+	s := t.session(key)
 	if e.Note == "compaction summary" {
-		fx.summary, fx.summaryUSD = true, e.APIEquivalentUSD
+		fx.isSummary, fx.summaryUSD = true, e.APIEquivalentUSD
 		return fx
 	}
 	ctx := eventContext(e)
 	if ctx == 0 {
 		return fx
 	}
-	key := e.SessionID + "|" + e.Model
-	s := t.sessions[key]
-	if s == nil {
-		s = &trackedSession{}
-		t.sessions[key] = s
+	swap := e.CompactedMessages > 0 && e.CompactedMessages != s.lastCompacted
+	switch {
+	case e.CompactedMessages == 0:
+		// No Burst summary in force (never compacted, cleared, rewound, or
+		// a summary that stopped fitting): both worlds send the same.
+		s.twin = ctx
+	case swap:
+		// Burst's drop: the twin does not take it.
+		if s.twin == 0 {
+			s.twin = max(s.lastCtx, ctx)
+		}
+		s.summarySize = ctx
+		fx.swapBefore, fx.swapAfter = s.twin, ctx
+		fx.rewriteUSD = rewriteUSD(e.Model, e.CacheWriteTokens)
+	default:
+		// Ordinary growth, which the twin shares.
+		if s.twin == 0 {
+			s.twin = ctx
+		} else {
+			s.twin += ctx - s.lastCtx
+		}
+		if s.twin >= claudeCodeTrigger {
+			// Claude Code would compact here on its own.
+			s.twin = s.summarySize
+			fx.twinReset = true
+		}
 	}
 	if e.CompactedMessages > 0 {
-		// A new summary took effect: measure its drop once, on top of what
-		// the session's earlier summaries were already saving.
-		if e.CompactedMessages != s.lastCompacted && s.lastCtx > ctx {
-			perTurn := s.lastCtx - ctx
-			if s.cur != nil {
-				perTurn += s.cur.PerTurnTokens
-			}
-			perTurn = min(perTurn, maxContext-ctx)
-			s.cur = &CompactedSession{
-				Session: e.SessionID, Model: e.Model, At: e.Time,
-				Before: ctx + perTurn, After: ctx,
-				PerTurnTokens: perTurn, PerTurnUSD: cacheReadUSD(e.Model, perTurn),
-			}
-			fx.swap = s.cur
-		}
-		if s.cur != nil {
-			if saved := min(s.cur.PerTurnTokens, maxContext-ctx); saved > 0 {
-				fx.saved, fx.savedUSD = saved, cacheReadUSD(e.Model, saved)
-			}
-		}
-	} else {
-		s.cur = nil
+		fx.compacted = true
+		fx.saved = s.twin - ctx
+		fx.savedUSD = cacheReadUSD(e.Model, fx.saved)
 	}
 	s.lastCtx, s.lastCompacted = ctx, e.CompactedMessages
 	return fx
@@ -152,41 +203,62 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 func CompactionStatsSince(path string, since time.Time) (CompactionStats, error) {
 	var st CompactionStats
 	t := newCompactionTracker()
-	latest := map[string]*CompactedSession{}
+	bySession := map[string]*CompactedSession{}
+	pendingSummary := map[string]float64{} // summary cost awaiting its swap
 	for _, f := range historyFiles(path, since) {
 		err := scanEvents(f, func(e Event) {
 			fx := t.observe(e)
-			if e.Time.Before(since) {
+			if e.Time.Before(since) || fx.sessionKey == "" {
 				return
 			}
-			switch {
-			case fx.summary:
+			if fx.isSummary {
 				st.Compactions++
 				st.SummaryUSD += fx.summaryUSD
-				return
-			case fx.saved == 0:
+				if c := bySession[fx.sessionKey]; c != nil {
+					c.SummaryUSD += fx.summaryUSD
+				} else {
+					pendingSummary[fx.sessionKey] += fx.summaryUSD
+				}
 				return
 			}
-			if fx.swap != nil {
-				latest[e.SessionID+"|"+e.Model] = fx.swap
-				if fx.swap.PerTurnTokens > st.LargestBefore-st.LargestAfter {
-					st.LargestBefore, st.LargestAfter = fx.swap.Before, fx.swap.After
+			if !fx.compacted {
+				return
+			}
+			c := bySession[fx.sessionKey]
+			if c == nil {
+				c = &CompactedSession{Session: e.SessionID, Model: e.Model}
+				bySession[fx.sessionKey] = c
+				c.SummaryUSD += pendingSummary[fx.sessionKey]
+				delete(pendingSummary, fx.sessionKey)
+			}
+			if fx.swapAfter > 0 {
+				c.Compactions++
+				c.At, c.Before, c.After = e.Time, fx.swapBefore, fx.swapAfter
+				c.PerTurnTokens = fx.swapBefore - fx.swapAfter
+				c.PerTurnUSD = cacheReadUSD(e.Model, c.PerTurnTokens)
+				if c.PerTurnTokens > st.LargestBefore-st.LargestAfter {
+					st.LargestBefore, st.LargestAfter = fx.swapBefore, fx.swapAfter
 				}
 			}
+			if fx.twinReset {
+				st.TwinCompactions++
+			}
+			c.Requests++
+			c.SavedTokens += fx.saved
+			c.SavedUSD += fx.savedUSD
+			c.RewriteUSD += fx.rewriteUSD
 			st.CompactedRequests++
 			st.TokensNotResent += fx.saved
 			st.SavedUSD += fx.savedUSD
-			if c := t.sessions[e.SessionID+"|"+e.Model].cur; c != nil {
-				c.Requests++
-				c.SavedTokens += fx.saved
-				c.SavedUSD += fx.savedUSD
-			}
+			st.RewriteUSD += fx.rewriteUSD
 		})
 		if err != nil {
 			return st, err
 		}
 	}
-	for _, c := range latest {
+	st.NetUSD = st.SavedUSD - st.SummaryUSD - st.RewriteUSD
+	for _, c := range bySession {
+		c.NetUSD = c.SavedUSD - c.SummaryUSD - c.RewriteUSD
 		st.Sessions = append(st.Sessions, *c)
 	}
 	sort.Slice(st.Sessions, func(i, j int) bool { return st.Sessions[i].At.After(st.Sessions[j].At) })

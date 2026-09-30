@@ -74,7 +74,19 @@ On the subscription every turn re-reads the whole conversation, so a turn at 400
 - `/clear`, `/compact` or a rewind make the summary stop fitting, and requests then go through untouched.
 - A session is compacted at most once per window (default 60 minutes), a warning is logged at **Warn at** (default 300k), and state survives a gateway restart.
 
-**What it did on its first day** (2026-09-29, one long Opus 5.5 session): two compactions, 611k tokens down to 49k in one step with recall intact, so every later turn resent 562k fewer tokens. Across 148 requests that was 79M tokens not resent, **$15.88 not spent** at the cache-read rate, against $5.06 for the two summaries. Both of those summaries predate the fix that makes the summary call read the session from cache, which should bring a summary down from about $2 to about $0.20.
+**What it did in its first day** (one long Opus 5.5 session, 2026-09-29 to 30): three summaries, the biggest drop 611k tokens to 49k with recall intact. Over 306 requests that is **$25.12 saved net**: $30.57 of context not resent, less $5.27 for the summaries and $0.19 for cache rewrites. The first two summaries cost $2.10 and $2.96 because they did not read the session from cache; the fix brought the third down to **$0.21**.
+
+### How the savings are calculated
+
+A compacted request does not record what it would have sent without Burst, so the dashboard works it out by replaying each session from `metrics.jsonl`, request by request, beside a **"without Burst" twin**:
+
+- **The twin grows as the session grows.** On every request the twin's context changes by exactly as much as the real one, except that it never takes Burst's drops.
+- **Claude Code compacts the twin.** Without Burst the session would not grow past the 1M window: Claude Code compacts on its own near the end of it. When the twin reaches **950k** (95% of the window; Claude Code does not publish its exact threshold), it is compacted back down to the size of one of Burst's summaries. So fifteen compactions never claim fifteen windows of saving, and just after the twin has been compacted it can be smaller than the real session; those requests count **against** Burst.
+- **Saving per request** = twin context minus real context, priced at the model's cache-read rate (in a long session every resent token is a cache read).
+- **Net saving** = the sum of those, less every summary call, less the extra cost of writing each shortened history to cache on the request after a swap (where the twin would only have read). The twin's own compactions by Claude Code are not credited back, so the net figure errs low.
+- All figures are API-equivalent: on a subscription the real effect is using your limits more slowly, not a smaller bill.
+
+The dashboard shows the net figure in the Pauseless Compaction section (per session, with the parts on hover), in the **Saved, net** tile under Analytics, and per day in the Saved chart's tooltip. The same explanation is on the page under *How the savings are calculated*.
 
 ![The Pauseless Compaction section: headline results, settings, and each session's context before and after, with the saving per turn](docs/screenshots/pauseless-compaction.png)
 
@@ -82,7 +94,7 @@ On the subscription every turn re-reads the whole conversation, so a turn at 400
 
 **Where to see it:**
 
-- **Dashboard, Pauseless Compaction** (its own entry in the menu): the on/off switch and thresholds, headline figures for the last 7 days, and a table of sessions with context **before** and **after** the latest summary, the **saving per turn**, and the saving since.
+- **Dashboard, Pauseless Compaction** (its own entry in the menu): the on/off switch and thresholds, headline figures for the last 7 days, and a table of sessions with context **before** and **after** the latest summary, the **saving per turn**, and the **net saving** after summaries and cache rewrites.
 - **Dashboard, Daily activity, Saved:** compaction's tokens not resent, stacked with what overflow pruning removed, per day. The tooltip shows what each saved and what the summaries cost.
 - **[Usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel):** Started and Finished rows in the turn table, a green negative context delta on the turn where the summary landed, and the summary's cost in the session total.
 

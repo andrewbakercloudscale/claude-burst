@@ -53,19 +53,32 @@ func abs(f float64) float64 {
 	return f
 }
 
-// A second compaction starts from a context the first already shrank: the
-// session is credited with both drops, capped at the 1M window.
-func TestCompactionSavingAccumulatesAndCaps(t *testing.T) {
-	ev := func(min int, ctx, compacted int64, note string) string {
-		return `{"time":"2026-09-29T20:` + fmt.Sprintf("%02d", min) + `:00+02:00","session_id":"S","slot":"primary","model":"m","http_status":200,"cache_read_tokens":` +
-			fmt.Sprint(ctx) + `,"compacted_messages":` + fmt.Sprint(compacted) + `,"note":"` + note + `"}`
+// A long session: two Burst compactions, and a "without Burst" twin that
+// grows until Claude Code would have compacted it on its own. The saving is
+// the twin's context minus the real one on every compacted request, and it
+// turns negative once the twin has been compacted and the real session is
+// still waiting for Burst's next one.
+func TestCompactionSavingFollowsAWithoutBurstTwin(t *testing.T) {
+	SetPricer(func(model string, in, out, cr, cw int64) (float64, bool) {
+		return float64(cr)/1e6*0.2 + float64(cw)/1e6*5, true
+	})
+	t.Cleanup(func() { SetPricer(nil) })
+	ev := func(min int, ctx, cacheWrite, compacted int64, note string) string {
+		return `{"time":"2026-09-29T20:` + fmt.Sprintf("%02d", min) + `:00+02:00","session_id":"S","slot":"primary","model":"m","http_status":200,` +
+			`"cache_read_tokens":` + fmt.Sprint(ctx-cacheWrite) + `,"cache_write_tokens":` + fmt.Sprint(cacheWrite) +
+			`,"compacted_messages":` + fmt.Sprint(compacted) + `,"note":"` + note + `","api_equivalent_usd":0.25}`
 	}
 	lines := []string{
-		ev(0, 500000, 0, ""),
-		ev(1, 50000, 800, ""),  // first swap: 450k per turn
-		ev(2, 600000, 800, ""), // grown back: min(450k, 1M - 600k) = 400k
-		ev(3, 60000, 990, ""),  // second swap: 450k + 540k = 990k, capped at 1M - 60k = 940k
-		ev(4, 100000, 990, ""), // later turn: min(940k, 1M - 100k) = 900k
+		ev(0, 400000, 0, 0, ""),                   // twin 400k
+		ev(1, 400000, 0, 0, "compaction summary"), // a summary call: $0.25
+		ev(2, 50000, 50000, 800, ""),              // swap: twin stays 400k, saved 350k, 50k rewritten
+		ev(3, 250000, 0, 800, ""),                 // +200k both: twin 600k, saved 350k
+		ev(4, 450000, 0, 800, ""),                 // twin 800k, saved 350k
+		ev(5, 450000, 0, 0, "compaction summary"), // second summary: $0.25
+		ev(6, 60000, 60000, 990, ""),              // swap: twin 800k, saved 740k (both drops)
+		ev(7, 160000, 0, 990, ""),                 // twin 900k, saved 740k
+		ev(8, 260000, 0, 990, ""),                 // twin 1000k: Claude Code compacts it to 60k, saved -200k
+		ev(9, 300000, 0, 990, ""),                 // twin 100k, saved -200k
 	}
 	p := filepath.Join(t.TempDir(), "m.jsonl")
 	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
@@ -75,11 +88,18 @@ func TestCompactionSavingAccumulatesAndCaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := st.Sessions[0]
-	if c.PerTurnTokens != 940000 || c.Before != 1000000 || c.After != 60000 {
-		t.Fatalf("second swap should credit both drops, capped: %+v", c)
+	wantTokens := int64(350000*3 + 740000*2 - 200000*2)
+	if st.TokensNotResent != wantTokens || st.CompactedRequests != 7 || st.TwinCompactions != 1 || st.Compactions != 2 {
+		t.Fatalf("want %d tokens over 7 requests, 1 twin compaction, 2 summaries; got %+v", wantTokens, st)
 	}
-	if want := int64(450000 + 400000 + 940000 + 900000); st.TokensNotResent != want {
-		t.Fatalf("tokens not resent: want %d, got %d", want, st.TokensNotResent)
+	near := func(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
+	saved := float64(wantTokens) / 1e6 * 0.2
+	rewrite := float64(50000+60000) / 1e6 * (5 - 0.2)
+	if !near(st.SavedUSD, saved) || !near(st.SummaryUSD, 0.5) || !near(st.RewriteUSD, rewrite) || !near(st.NetUSD, saved-0.5-rewrite) {
+		t.Fatalf("money: saved %v summaries %v rewrite %v net %v", st.SavedUSD, st.SummaryUSD, st.RewriteUSD, st.NetUSD)
+	}
+	c := st.Sessions[0]
+	if c.Before != 800000 || c.After != 60000 || c.PerTurnTokens != 740000 || c.Compactions != 2 || c.Requests != 7 || !near(c.NetUSD, st.NetUSD) {
+		t.Fatalf("session row: %+v", c)
 	}
 }

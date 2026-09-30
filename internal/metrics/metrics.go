@@ -335,12 +335,14 @@ type Day struct {
 	SecondarySentTokens int64   `json:"secondary_sent_tokens"`
 	PrunedTokens        int64   `json:"pruned_tokens"`
 	PrunedUSD           float64 `json:"pruned_usd"`
-	// Pauseless compaction's side of the Saved view: primary context that
-	// compacted requests did not resend, priced at the cache-read rate, and
-	// what the summaries that made it possible cost. See compaction.go.
+	// Pauseless compaction's side of the Saved view: the "without Burst"
+	// twin's context minus the real one over compacted requests, priced at
+	// the cache-read rate, and what the summaries and the cache rewrites
+	// after each swap cost. See compaction.go.
 	CompactedTokens      int64   `json:"compacted_tokens"`
 	CompactedUSD         float64 `json:"compacted_usd"`
 	CompactionSummaryUSD float64 `json:"compaction_summary_usd"`
+	CompactionRewriteUSD float64 `json:"compaction_rewrite_usd"`
 }
 
 // SessionUse is one session's requests and spend over the window.
@@ -470,6 +472,7 @@ func Daily(path string, days int) (History, error) {
 			d.CompactedTokens += fx.saved
 			d.CompactedUSD += fx.savedUSD
 			d.CompactionSummaryUSD += fx.summaryUSD
+			d.CompactionRewriteUSD += fx.rewriteUSD
 			d.Requests++
 			switch slotOf(e) {
 			case "primary":
