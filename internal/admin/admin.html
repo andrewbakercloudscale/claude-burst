@@ -664,9 +664,10 @@
          the panel is the fix, and this is the fix without having to look for it. -->
     <button class="success" id="installTop" style="margin-left:10px" hidden>⤓ Install Transparent Proxy</button>
     <button class="danger" id="revertTop" style="margin-left:10px">↺ Revert to normal Claude</button>
-    <!-- Upgrade checks the version first (the running build's commit against
-         GitHub) and is enabled only when there is something newer to install. -->
-    <button id="upgradeTop" style="margin-left:10px" disabled title="Checking for a newer version...">&#x2913; Upgrade</button>
+    <!-- Check version: compares the running build's commit with GitHub and
+         says so in a dialog, with an Upgrade button only when there is
+         something newer to install. -->
+    <button id="upgradeTop" style="margin-left:10px">&#x27F3; Check version</button>
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
 
@@ -1160,6 +1161,11 @@
       </div>
       <div id="hsLive" class="hint" style="margin-top:8px"></div>
       <div id="hsNote"></div>
+      <dialog id="verDialog" class="hs-check" aria-labelledby="verTitle">
+        <h3 id="verTitle">Checking for a newer version...</h3>
+        <div id="verBody" style="font-size:13.5px;line-height:1.55"></div>
+        <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="success" id="verUpgrade" hidden>&#x2913; Upgrade</button><button id="verClose">Close</button></div>
+      </dialog>
       <dialog id="hsDialog" class="hs-check" aria-labelledby="hsCheckTitle">
         <h3 id="hsCheckTitle">Test joining the hotspot</h3>
         <h4>Before you start, make sure:</h4>
@@ -3734,45 +3740,68 @@ $("panelRemove").onclick = async () => {
 };
 $("macRefresh").onclick = () => { loadMac(); loadSettings(); loadFinder(); };
 
-// Upgrade: a version check first, on load and every 30 minutes (the server
-// caches its GitHub fetch for 10), and again, fresh, on the click itself.
+// Check version: the header button asks the server for a fresh check (the
+// running build's commit against GitHub) and says what it found in a
+// dialog: up to date, or what is new with an Upgrade button. A quiet check
+// on load and every 30 minutes marks the button when an update is waiting.
 let upgradeState = null;
 async function loadUpgrade(refresh) {
   try { upgradeState = await (await fetch("/api/upgrade-status" + (refresh ? "?refresh=1" : ""))).json(); }
-  catch { return; }
-  renderUpgrade();
+  catch (e) { upgradeState = {error: e.message}; }
+  const el = $("upgradeTop"), newer = !!(upgradeState && !upgradeState.error && !upgradeState.up_to_date);
+  el.textContent = newer ? "\u27F3 Check version \u00b7 update available" : "\u27F3 Check version";
+  el.classList.toggle("success", newer);
 }
-// upgradeButton is the button's state from a status. Pure, for
+// versionMessage is what the dialog says for a status. Pure, for
 // page_script_test.go.
-function upgradeButton(u) {
+function versionMessage(u) {
   const running = `${u.running_version} (${u.running_commit || "unknown build"})`;
-  if (u.error) return {disabled: true, text: "\u2913 Upgrade", title: "Version check failed: " + u.error};
-  if (u.up_to_date) return {disabled: true, text: "\u2713 Up to date",
-    title: `Running ${running}, the latest on GitHub. Checked ${new Date(u.checked_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}.`};
+  if (u.error) return {title: "Could not check the version", body: `The check failed: ${esc(u.error)}`, canUpgrade: false};
+  if (u.up_to_date) return {title: "\u2713 Up to date",
+    body: `Running <b>${esc(running)}</b>, the latest on GitHub.`, canUpgrade: false};
   const to = `${u.latest_version || ""} (${u.latest_commit})`.trim();
-  const list = (u.new_commits || []).map(c => "\u2022 " + c).join("\n");
+  const list = (u.new_commits || []).map(c => `<li style="display:list-item">${esc(c)}</li>`).join("");
+  const more = u.behind > (u.new_commits || []).length ? `<div class="hint">and ${u.behind - u.new_commits.length} more</div>` : "";
   return {
-    disabled: !u.can_upgrade,
-    text: `\u2913 Upgrade (${u.behind} new)`,
-    title: (u.can_upgrade ? `Install ${to} from GitHub, replacing ${running}.` : `A newer version is on GitHub, but: ${u.reason}.`) + (list ? "\n\n" + list : ""),
+    title: `Upgrade available: ${esc(to)}`,
+    body: `Running <b>${esc(running)}</b>; GitHub has <b>${u.behind}</b> newer commit${u.behind === 1 ? "" : "s"}:` +
+      `<ul class="hs-bullets" style="margin:8px 0">${list}</ul>${more}` +
+      (u.can_upgrade
+        ? `Upgrade opens a Terminal window that updates the checkout and runs the deploy: tests, build, restart (replies in flight finish first), and a rollback by itself if the new gateway is not healthy.`
+        : `<div class="note warn">It cannot upgrade from here: ${esc(u.reason)}.</div>`),
+    canUpgrade: !!u.can_upgrade,
   };
 }
-function renderUpgrade() {
-  if (!upgradeState) return;
-  const b = upgradeButton(upgradeState), el = $("upgradeTop");
-  el.disabled = b.disabled; el.textContent = b.text; el.title = b.title;
-  el.classList.toggle("success", !b.disabled);
+function showVersion() {
+  const m = versionMessage(upgradeState || {error: "no answer"});
+  $("verTitle").innerHTML = m.title;
+  $("verBody").innerHTML = m.body;
+  $("verUpgrade").hidden = !m.canUpgrade;
+  $("verUpgrade").disabled = false;
 }
 $("upgradeTop").onclick = async () => {
   const el = $("upgradeTop");
-  el.disabled = true; el.textContent = "Checking version...";
+  el.disabled = true;
+  $("verTitle").textContent = "Checking for a newer version...";
+  $("verBody").innerHTML = `<span class="hint">Asking GitHub...</span>`;
+  $("verUpgrade").hidden = true;
+  $("verDialog").showModal();
   await loadUpgrade(true);
-  const u = upgradeState;
-  if (!u || u.up_to_date || !u.can_upgrade) return;
-  if (!confirm(`Upgrade Claude Burst from ${u.running_version} (${u.running_commit}) to ${u.latest_version || ""} (${u.latest_commit})?\n\n${u.behind} new commit(s):\n${(u.new_commits || []).map(c => "- " + c).join("\n")}\n\nA Terminal window runs it and restarts the gateway; in-flight replies finish first.`)) { renderUpgrade(); return; }
-  el.disabled = true; el.textContent = "Upgrading in Terminal...";
-  try { const r = await post("/api/upgrade"); el.title = r.detail; }
-  catch (e) { el.textContent = "\u26a0 Upgrade failed"; el.title = e.message; setTimeout(() => loadUpgrade(true), 5000); }
+  el.disabled = false;
+  showVersion();
+};
+$("verClose").onclick = () => $("verDialog").close();
+$("verUpgrade").onclick = async () => {
+  $("verUpgrade").disabled = true;
+  try {
+    const r = await post("/api/upgrade");
+    $("verTitle").textContent = "Upgrading in Terminal";
+    $("verBody").innerHTML = esc(r.detail) + `<div class="hint" style="margin-top:8px">Refresh this page when the Terminal window says it is done.</div>`;
+    $("verUpgrade").hidden = true;
+  } catch (e) {
+    $("verBody").innerHTML += `<div class="note bad">${esc(e.message)}</div>`;
+    $("verUpgrade").disabled = false;
+  }
 };
 loadUpgrade(false);
 setInterval(() => loadUpgrade(false), 30 * 60 * 1000);
