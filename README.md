@@ -36,7 +36,7 @@ The menu down the left follows you as you scroll, grouped by job:
 - **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, and **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in).
 - **Context**: [Pauseless Compaction](#pauseless-compaction-compact-sessions-without-the-pause-leading-edge), Context & cache.
 - **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
-- **Sessions**: [Session handover](#session-handover-handoffmd-read-at-start-written-at-close-optional), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
+- **Sessions**: [Session handover](#session-handover-handoffmd-read-at-start-written-at-close-optional), [Session coordination](#session-coordination-several-sessions-one-working-tree-optional), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
 - **This Mac**: [lid closed and hotspot](#keeping-claude-code-working-with-the-lid-shut-optional), [Notifications](#notifications).
 - **Health**: Guards, Actions, Advanced (timeouts and limits).
 - **Requests**: Responses and Requests, the audit trail of recent traffic.
@@ -244,6 +244,23 @@ Two Claude Code hooks, installed and adapted from the dashboard's **Session hand
 The dashboard edits the briefing text, the writer's instructions, the writer model, the minimum prompts and whether to commit, and shows the log. Settings: `~/.config/claude-burst/handover.json` (defaults stored as empty, so they follow new defaults). Scripts, the settings they read, the log and the writer's last reply: `~/.config/claude-burst/handover/`. The scripts are embedded in the binary and rewritten when they differ, so edit `internal/handover/scripts/`, not the installed copies.
 
 **Cost**: the writer re-reads the whole session, so a long session costs about one more turn of it. Pick a cheaper writer model to spend less.
+
+## Session coordination: several sessions, one working tree (optional)
+
+**Several Claude Code sessions can edit the same files without losing or sweeping up each other's work, and nobody waits.** Off by default; switch it on in the dashboard under **Session coordination** (Leading Edge).
+
+Two sessions in one repository go wrong in a few ways: one rewrites a file over the other's uncommitted change, one commits with `git add -A` and ships the other's half-done work, or one stashes or resets under the other. Coordination prevents those with Claude Code hooks, so every session on the Mac takes part without being asked:
+
+- **The first session to edit a file is its master, and commits it.** That is the only session that commits it.
+- **Another session can still edit it, with no wait.** Claude Code's Edit replaces an exact piece of text and refuses when the file changed since it was read, so two sessions' edits cannot overwrite each other. The change goes through; the master is told what changed and commits it with its own; the other session is told the file is shared and not to commit it.
+- **What is refused:** a whole-file Write over a master's uncommitted work (use Edit instead); a git add or commit by another session that names a file someone else masters; and `git add -A`, `git add .`, `git add -u` or `git commit -a` while another session has uncommitted work in the same repository. A refused call is not run, and the session is told why and what to do instead.
+- **Every session is briefed when it starts:** the rules, and which other sessions are active, in which folders, mastering which files.
+- **A file stops being shared when it is committed.** A file git keeps no record of (outside a repository, or ignored, like memory files) is let go when its master's turn ends. A master that closes, or is idle for 15 minutes, hands each file to the session that most recently changed it too, which is told it now commits it. A master sitting on other sessions' changes for 10 minutes is nudged to commit. Both times are settings.
+- **Sessions can message each other:** `claude-burst coord send <session> "message"`; it arrives at that session's next tool call or prompt. `claude-burst coord status` shows who masters what from the terminal.
+- **The dashboard shows who is editing what:** each file with its master (by session name, folder and id), the sessions coordinating with that master, and every session taking part.
+- **It fails open.** If anything in it breaks, including its state lock being busy for 3 seconds, the tool call goes through as if coordination were off.
+
+What it cannot do: stop an edit made through a shell command (sessions are told not to, and Claude Code follows that), or keep sessions sharing a working tree from seeing each other's uncommitted changes. For large parallel pieces of work, `claude --worktree` gives each session its own copy; this covers the shared-tree case.
 
 ## Session options and the usage panel
 
@@ -609,6 +626,8 @@ claude-burst status
 claude-burst reset                           # back to primary now
 claude-burst force-secondary --minutes 15    # route to the secondary on purpose (testing)
 claude-burst stats --days 30
+claude-burst coord status                    # session coordination: who masters which file
+claude-burst coord send <session> "message"  # message another session (id prefix)
 claude-burst version
 
 claude-burst configure --keep-awake-lid-closed true|false   # lid shut: keep Claude Code + Remote Control running
@@ -1055,6 +1074,12 @@ go vet ./...
 CI runs both on every push and pull request (see `.github/workflows/test.yml`).
 
 The tests include a simulated Anthropic subscription rejection that verifies the same request is replayed to the secondary, the model is remapped, the OAuth beta is removed from a Bedrock call, and the overflow reset state is persisted (the suite covers both Bedrock and the OpenAI-compatible translator), plus an equivalent suite for the metered-failures strategy (sustained-failure threshold, window expiry, success reset, and the no-subscription primary forwarding its own auth header unchanged).
+
+**Session coordination** has two layers. `go test ./internal/coord` drives the hooks with simulated sessions, including two sessions writing a sentence one word each in turn. `scripts/coord-live-test.sh` does the same with two real Claude Code sessions (about 11 short Haiku requests): it builds the binary, makes a throwaway repository and passes the hooks with `--settings`, so your own settings are not touched and coordination does not need to be on. It checks every word lands, nothing waits, the first session is master with the second recorded as coordinating with it, the second may not commit the file, and the master's commit settles it.
+
+```bash
+bash scripts/coord-live-test.sh    # KEEP=1 keeps the temp directory to look at
+```
 
 Token shunting has its own tests, including an end-to-end one that builds the binary and drives it through the hook protocol, see [How it is tested](#token-shunting-keep-the-boring-work-out-of-claudes-context).
 

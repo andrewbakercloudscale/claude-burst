@@ -664,6 +664,7 @@
 
   <div class="navgroup">Sessions</div>
   <a class="navlink" data-target="handoverSection"><span class="nd" id="nd-handover"></span><span class="label">Session handover</span></a>
+  <a class="navlink" data-target="sec-coord"><span class="nd" id="nd-coord"></span><span class="label">Session coordination</span></a>
   <a class="navlink" data-target="sec-sessions"><span class="nd" id="nd-sessions"></span><span class="label">Session options</span></a>
   <a class="navlink" data-target="sec-panel"><span class="nd" id="nd-panel"></span><span class="label">Usage panel</span></a>
   <a class="navlink" data-target="sec-finder"><span class="nd" id="nd-finder"></span><span class="label">Finder shortcuts</span></a>
@@ -1106,6 +1107,34 @@
         </div>
         <pre class="hoLog" id="hoViewBody" style="max-height:560px;margin-top:6px"></pre>
       </div>
+    </div>
+  </section>
+
+  <section id="sec-coord" style="scroll-margin-top:70px">
+    <h2>Session coordination <span class="applies" data-where="config.json" data-when="now"></span> <span class="hint">sessions share files without losing or sweeping up each other's work, and nobody waits</span></h2>
+    <div class="body">
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="coOn" style="width:auto;margin:0">
+        On for every Claude Code session on this Mac <span class="pill" title="New; report anything odd on GitHub">Leading Edge</span>
+      </label>
+      <div class="hint" style="margin:6px 0 10px">The first session to edit a file is its <strong>master</strong> and commits it. Another session can still Edit it: the change goes through, the master is told what changed and commits it with its own, and that session is told not to commit the file itself. A whole-file Write over a master's uncommitted work is refused, and so are <code>git add -A</code>, <code>git add .</code> and <code>git commit -a</code> while another session has work in the same repository. A file stops being shared when it is committed. Every session is briefed on this when it starts. It works through Claude Code hooks in <code>~/.claude/settings.json</code>, added when you switch it on and removed when you switch it off; if anything in it fails, the edit goes through as if it were off.</div>
+      <div class="row">
+        <div>
+          <label for="coIdle">Master idle, then hand on (minutes)</label>
+          <input type="number" id="coIdle" min="1" max="240" step="1" style="width:100px;min-width:0">
+        </div>
+        <div>
+          <label for="coNudge">Nudge master to commit others' changes after (minutes)</label>
+          <input type="number" id="coNudge" min="1" max="240" step="1" style="width:100px;min-width:0">
+        </div>
+      </div>
+      <div class="hint" style="margin-top:4px">A master idle for the first time hands each file to the session that most recently changed it too, which is told it now commits it; with nobody else in the file, the file is simply let go. The nudge tells a master that other sessions' changes have waited that long for its commit.</div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="coSave">&#x2713; Save</button></div>
+      <div id="coNote"></div>
+      <h3 style="margin:18px 0 6px;font-size:13px">Who is editing what <span class="hint" style="font-weight:400" id="coSummary"></span></h3>
+      <div class="scroll" id="coFiles"></div>
+      <h3 style="margin:18px 0 6px;font-size:13px">Sessions taking part</h3>
+      <div class="scroll" id="coSessions"></div>
     </div>
   </section>
 
@@ -4070,6 +4099,61 @@ $("finderRemove").onclick = () => {
   finderAction("remove");
 };
 loadFinder();
+
+// ---- Session coordination -------------------------------------------------
+function coAgo(sec) {
+  if (sec < 90) return sec + "s";
+  if (sec < 5400) return Math.round(sec / 60) + " min";
+  return (sec / 3600).toFixed(1) + " h";
+}
+// A session reads as its name in Claude Code, then its folder and id:
+// "Fix the rollback script  claude-burst e84447e0". Without a name, the
+// folder is the name.
+function coWho(label, name) {
+  const m = /^(.*) \[([\w-]+)\]$/.exec(label || "");
+  const folder = m ? m[1] : (label || "?"), id = m ? m[2] : "";
+  return name
+    ? `<b>${esc(name)}</b> <span class="hint">${esc(folder)}</span> <span class="mono hint">${esc(id)}</span>`
+    : `<b>${esc(folder)}</b> <span class="mono hint">${esc(id)}</span>`;
+}
+function coPath(p, cwds) {
+  // Shown relative to a session's folder when it is inside one.
+  for (const c of cwds) if (c && p.startsWith(c + "/")) return `<span class="hint">${esc(c.split("/").pop())}/</span>${esc(p.slice(c.length + 1))}`;
+  return esc(p.replace(/^\/Users\/[^/]+/, "~"));
+}
+async function loadCoord() {
+  let d;
+  try { d = await (await fetch("/api/coordination", {headers: H})).json(); } catch { return; }
+  const on = !!d.config.enabled;
+  if (!document.activeElement || !document.activeElement.closest("#sec-coord .row")) {
+    $("coOn").checked = on;
+    $("coIdle").value = d.resolved.master_idle_minutes;
+    $("coNudge").value = d.resolved.nudge_minutes;
+  }
+  setDot("nd-coord", on ? (d.installed ? "ok" : "warn") : "");
+  const st = d.status || {}, files = st.files || [], sess = st.sessions || [];
+  const cwds = [...new Set(sess.map(x => x.cwd))].sort((a, b) => b.length - a.length);
+  const shared = files.filter(f => (f.contributors || []).length).length;
+  $("coSummary").textContent = on
+    ? `${files.length} file${files.length === 1 ? "" : "s"} being edited, ${shared} shared, ${sess.length} session${sess.length === 1 ? "" : "s"} active` + (d.installed ? "" : ": hooks missing, save to reinstall")
+    : "off";
+  $("coFiles").innerHTML = files.length ? `<table><thead><tr><th>File</th><th>Master (commits it)</th><th>Coordinating with the master</th><th class="num">Master for</th></tr></thead><tbody>${
+    files.map(f => `<tr><td class="mono">${coPath(f.path, cwds)}</td><td>${coWho(f.master_label, f.master_name)}</td><td>${(f.contributors || []).map((c, i) => coWho(c, (f.contributor_names || [])[i])).join("<br>") || '<span class="hint">nobody else</span>'}</td><td class="num">${esc(coAgo(f.since_s))}</td></tr>`).join("")
+  }</tbody></table>` : `<div class="empty">${on ? "No uncommitted edits by any session right now." : "Switch it on to see who is editing what."}</div>`;
+  $("coSessions").innerHTML = sess.length ? `<table><thead><tr><th>Session</th><th>Folder</th><th>Master of</th><th class="num">Last active</th></tr></thead><tbody>${
+    sess.map(x => `<tr><td>${coWho(`${x.label} [${x.id.slice(0, 8)}]`, x.name)}</td><td class="mono">${esc((x.cwd || "").replace(/^\/Users\/[^/]+/, "~"))}</td><td>${(x.master_of || []).length ? (x.master_of || []).map(p => `<span class="mono">${coPath(p, cwds)}</span>`).join("<br>") : '<span class="hint">-</span>'}</td><td class="num">${esc(coAgo(x.active_ago_s))} ago</td></tr>`).join("")
+  }</tbody></table>` : `<div class="empty">No sessions seen yet${on ? "; a session appears at its next tool call or prompt" : ""}.</div>`;
+}
+$("coSave").onclick = async () => {
+  try {
+    const r = await post("/api/coordination-save", {enabled: $("coOn").checked,
+      master_idle_minutes: +$("coIdle").value || 0, nudge_minutes: +$("coNudge").value || 0});
+    note($("coNote"), "ok", r.ok);
+  } catch (e) { note($("coNote"), "err", e.message); }
+  loadCoord();
+};
+loadCoord();
+setInterval(() => { if (!document.hidden) loadCoord(); }, 10000);
 
 // ---- Settings: "stored where, applies when" chips -----------------------
 for (const el of document.querySelectorAll(".applies")) {

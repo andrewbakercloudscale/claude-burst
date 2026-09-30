@@ -77,6 +77,8 @@ func main() {
 		stats(os.Args[2:])
 	case "shunt":
 		shuntCmd(os.Args[2:])
+	case "coord":
+		coordCmd(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
@@ -102,6 +104,7 @@ Commands:
   force-secondary   Route inference to the secondary for a while (testing)
   stats             Summarize local routing/token metrics
   shunt             Keep bulk file reads and boilerplate out of Claude's context (see: shunt help)
+  coord             Session coordination: status, send, release (see: coord help)
   version           Print version
 
 Admin UI:
@@ -237,6 +240,9 @@ func serve(args []string) {
 		go a.StartNotifier(context.Background())
 		if err := admin.SyncPromptNoticeHook(cfg); err != nil {
 			logger.Printf("error stage=prompt_notice_hook err=%v", err)
+		}
+		if err := admin.SyncCoordinationHooks(cfg); err != nil {
+			logger.Printf("error stage=coordination_hooks err=%v", err)
 		}
 		fmt.Printf("admin:  %s\n", admin.Describe(cfg.AdminListen))
 		if cfg.AdminHostname != "" {
