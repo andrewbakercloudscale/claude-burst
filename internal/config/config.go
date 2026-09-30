@@ -301,7 +301,7 @@ type Config struct {
 	//
 	// Keyed by the model Claude Code asked for. An empty or absent entry
 	// means "no downgrade, go straight to the secondary".
-	FallbackChain map[string][]string `json:"fallback_chain,omitempty"`
+	FallbackChain map[string][]string `json:"fallback_chain"`
 
 	Primary         RouteConfig           `json:"primary,omitempty"`
 	Secondary       RouteConfig           `json:"secondary,omitempty"`
@@ -354,6 +354,35 @@ type Config struct {
 	// page needs a preflight this server never answers) and no CORS headers are
 	// ever returned (so responses cannot be read cross-origin).
 	AdminHostname string `json:"admin_hostname,omitempty"`
+
+	// Notify raises macOS notifications for events worth knowing about while
+	// looking elsewhere. Read live by the gateway, no restart needed.
+	Notify NotifyConfig `json:"notify,omitempty"`
+
+	// Hotspot joins a named Wi-Fi network when this Mac is offline, so a
+	// session left running with the lid shut can reach Anthropic from a
+	// phone's hotspot. Read live, no restart needed. See internal/hotspot.
+	Hotspot HotspotConfig `json:"hotspot,omitempty"`
+}
+
+type NotifyConfig struct {
+	Failover   bool `json:"failover,omitempty"`   // requests move to the secondary, and back
+	Compaction bool `json:"compaction,omitempty"` // Burst compacted a session
+	Guards     bool `json:"guards,omitempty"`     // a guard repaired or removed the redirect
+}
+
+// Values for HotspotConfig.When.
+const (
+	HotspotLidClosed = "lid-closed"
+	HotspotAlways    = "always"
+)
+
+type HotspotConfig struct {
+	// SSID is the network to join; empty turns the feature off.
+	SSID string `json:"ssid,omitempty"`
+	// When is HotspotLidClosed (default: only while the lid is shut, so an
+	// open laptop is left to the user) or HotspotAlways.
+	When string `json:"when,omitempty"`
 }
 
 func Default() Config {
@@ -607,6 +636,12 @@ func Load() (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
+	// Decoding into a map merges into what is there, so the default chain
+	// would come back on every load and a fallback removed in the dashboard
+	// could never stay removed. A chain in the file replaces the default;
+	// a file without one gets the default below. Pricing is left to merge on
+	// purpose: new built-in prices reach old config files that way.
+	cfg.FallbackChain = nil
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse %s: %w", p, err)
 	}

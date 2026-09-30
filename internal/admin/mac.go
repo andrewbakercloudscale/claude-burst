@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -134,17 +135,31 @@ var panelOptions = map[string]string{
 	"remote_control": "CLAUDE_PANEL_REMOTE_CONTROL",
 	"caffeinate":     "CLAUDE_PANEL_CAFFEINATE",
 	"session_title":  "CLAUDE_PANEL_SESSION_TITLE",
+	"cost_alerts":    "CLAUDE_PANEL_COST_ALERTS",
+}
+
+// panelNumbers are the panel's numeric options, with their defaults and the
+// range the dashboard accepts.
+var panelNumbers = map[string]struct {
+	Key     string
+	Default float64
+	Min     float64
+	Max     float64
+}{
+	"restart_tokens": {"CLAUDE_PANEL_RESTART_TOKENS", 400000, 0, 2000000},
+	"alert_min_usd":  {"CLAUDE_PANEL_ALERT_MIN_USD", 5, 0, 10000},
 }
 
 // panelDefaults are what the panel does when a key is absent.
-var panelDefaults = map[string]bool{"remote_control": false, "caffeinate": false, "session_title": true}
+var panelDefaults = map[string]bool{"remote_control": false, "caffeinate": false, "session_title": true, "cost_alerts": true}
 
 type panelView struct {
-	Installed bool            `json:"installed"`
-	RepoDir   string          `json:"repo_dir,omitempty"`
-	Options   map[string]bool `json:"options"`
-	Running   bool            `json:"running"` // an install or removal is in progress
-	LastRun   *panelRun       `json:"last_run,omitempty"`
+	Installed bool               `json:"installed"`
+	RepoDir   string             `json:"repo_dir,omitempty"`
+	Options   map[string]bool    `json:"options"`
+	Numbers   map[string]float64 `json:"numbers"`
+	Running   bool               `json:"running"` // an install or removal is in progress
+	LastRun   *panelRun          `json:"last_run,omitempty"`
 }
 
 type panelRun struct {
@@ -210,14 +225,40 @@ func readPanelOptions(path string) map[string]bool {
 	return out
 }
 
+func readPanelNumbers(path string) map[string]float64 {
+	out := map[string]float64{}
+	for name, n := range panelNumbers {
+		out[name] = n.Default
+	}
+	b, _ := os.ReadFile(path)
+	for _, l := range strings.Split(string(b), "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(l), "=")
+		if !ok {
+			continue
+		}
+		for name, n := range panelNumbers {
+			if n.Key == key {
+				if f, err := strconv.ParseFloat(strings.Trim(val, `"' `), 64); err == nil {
+					out[name] = f
+				}
+			}
+		}
+	}
+	return out
+}
+
 // setPanelOption rewrites KEY=value in place, keeping every other line and
 // comment, or appends it.
 func setPanelOption(path, key string, on bool) error {
+	return setPanelValue(path, key, strconv.FormatBool(on))
+}
+
+func setPanelValue(path, key, value string) error {
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	line := fmt.Sprintf("%s=%t", key, on)
+	line := key + "=" + value
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 	if len(b) == 0 {
 		lines = []string{"# claude-panel options -- true/false. Written by claude-panel-setup.sh and the Claude Burst dashboard."}
@@ -243,7 +284,7 @@ func setPanelOption(path, key string, on bool) error {
 
 func (s *Server) readPanel() panelView {
 	_, err := os.Stat(filepath.Join(homeDir(), ".local", "bin", "ccusage-panel.sh"))
-	v := panelView{Installed: err == nil, RepoDir: s.panelRepoDir(), Options: readPanelOptions(panelOptionsPath())}
+	v := panelView{Installed: err == nil, RepoDir: s.panelRepoDir(), Options: readPanelOptions(panelOptionsPath()), Numbers: readPanelNumbers(panelOptionsPath())}
 	panelMu.Lock()
 	if panelLast != nil {
 		c := *panelLast
@@ -254,19 +295,36 @@ func (s *Server) readPanel() panelView {
 }
 
 func (s *Server) handlePanelOptions(w http.ResponseWriter, r *http.Request) {
-	var req map[string]bool
+	var req map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req) == 0 {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
-	for name := range req {
-		if _, ok := panelOptions[name]; !ok {
+	writes := map[string]string{}
+	for name, v := range req {
+		if key, ok := panelOptions[name]; ok {
+			b, isBool := v.(bool)
+			if !isBool {
+				http.Error(w, name+" must be true or false", http.StatusBadRequest)
+				return
+			}
+			writes[key] = strconv.FormatBool(b)
+			continue
+		}
+		n, ok := panelNumbers[name]
+		if !ok {
 			http.Error(w, "unknown option "+name, http.StatusBadRequest)
 			return
 		}
+		f, isNum := v.(float64)
+		if !isNum || f < n.Min || f > n.Max {
+			http.Error(w, fmt.Sprintf("%s must be a number from %g to %g", name, n.Min, n.Max), http.StatusBadRequest)
+			return
+		}
+		writes[n.Key] = strconv.FormatFloat(f, 'f', -1, 64)
 	}
-	for name, on := range req {
-		if err := setPanelOption(panelOptionsPath(), panelOptions[name], on); err != nil {
+	for key, val := range writes {
+		if err := setPanelValue(panelOptionsPath(), key, val); err != nil {
 			http.Error(w, "saving panel options: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

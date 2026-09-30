@@ -31,7 +31,7 @@
     /* Headings stand off the white panels: a section's title bar, and a
        lighter step of the same tint for column headings. */
     --head-bg: #e4e9fa;
-    --thead-bg: #f0f3fc;
+    --thead-bg: #e9eefb;
     --shadow: 0 1px 2px rgba(16,22,32,.05), 0 4px 12px rgba(16,22,32,.04);
   }
   @media (prefers-color-scheme: dark) {
@@ -52,7 +52,7 @@
       --bad-bg: #3a1a16;
       --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
       --head-bg: #1f2745;
-      --thead-bg: #1a2036;
+      --thead-bg: #222b4a;
     }
   }
   * { box-sizing: border-box; }
@@ -231,7 +231,7 @@
 
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-       color: var(--faint); font-weight: 600; padding: 9px 12px; border-bottom: 1px solid var(--border);
+       color: var(--text); font-weight: 700; padding: 9px 12px; border-bottom: 1px solid var(--border);
        background: var(--thead-bg); }
   td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
   tr:last-child td { border-bottom: none; }
@@ -435,10 +435,11 @@
   .chart-tip {
     position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-    box-shadow: var(--shadow); padding: 8px 11px; font-size: 12px; min-width: 150px; z-index: 5;
+    box-shadow: var(--shadow); padding: 8px 11px; font-size: 12px; min-width: 150px; max-width: 320px; z-index: 5;
   }
   .chart-tip .d { font-weight: 640; margin-bottom: 5px; }
   .chart-tip .r { display: flex; justify-content: space-between; gap: 14px; padding: 1.5px 0; color: var(--muted); }
+  .chart-tip .r span { white-space: nowrap; }
   .chart-tip .r b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
   .tiles { display: grid; gap: 1px; background: var(--border);
            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border-top: 1px solid var(--border); }
@@ -450,9 +451,21 @@
   /* Model split: a bar per served model, widest first. Answers the question
      the spend total cannot -- the models behind it differ in price by an
      order of magnitude, so "$38" says nothing about what to change. */
-  .mrow { display: grid; grid-template-columns: minmax(120px, 1.4fr) 1fr auto; gap: 12px;
+  /* Fixed column widths, the same for every row: with an auto-width amount
+     column each row sized itself, and the bars started at a different x on
+     every line. */
+  .mrow { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 2fr) var(--amt-w, 200px); gap: 16px;
           align-items: center; padding: 7px 16px; font-size: 12.5px; }
-  .mrow.mhead { background: var(--thead-bg); }
+  #repoSplit { --amt-w: 270px; }
+  .mrow.mhead { background: var(--thead-bg); color: var(--text) !important;
+                border-top: 0 !important; border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+  .mrow.mhead .amt { color: var(--text); font: inherit; }
+  .mrow.mhead + .mrow { border-top: 0; }
+  @media (max-width: 720px) {
+    .mrow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 5px; }
+    .mrow .mbar { grid-column: 1 / -1; grid-row: 2; }
+    .mrow.mhead > span:nth-child(2) { display: none; }
+  }
   .mrow + .mrow { border-top: 1px solid var(--border); }
   .mbar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
   .mbar span { display: block; height: 100%; border-radius: 4px; }
@@ -472,6 +485,27 @@
     .navlink .count { display: none; }
     .sidefoot { margin: 0 0 0 auto; border-top: none; padding: 0; }
   }
+.pagegroup { margin: 28px 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.applies { display: inline-flex; gap: 6px; margin-left: 6px; vertical-align: middle; }
+.applies i { font: 600 10.5px var(--sans, inherit); font-style: normal; padding: 2px 7px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); letter-spacing: 0; text-transform: none; white-space: nowrap; }
+.applies i.w-now { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.applies i.w-restart { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.set-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 14px; }
+.set-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.set-grid input, .set-grid select { min-width: 0; width: 100%; box-sizing: border-box; }
+.set-grid input.changed { border-color: var(--accent); }
+.set-grid .dflt { font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.price-table { border-collapse: collapse; font-size: 12.5px; min-width: 640px; width: 100%; }
+.price-table th, .price-table td { padding: 5px 6px; text-align: left; border-bottom: 1px solid var(--border); }
+.price-table input { min-width: 0; width: 86px; padding: 4px 6px; }
+.price-table tr.unpriced td:first-child { color: var(--warn); font-weight: 600; }
+#attention { margin: 0 0 14px; border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); background: var(--warn-bg); border-radius: 12px; padding: 12px 14px; }
+#attention h3 { margin: 0 0 6px; font-size: 13.5px; color: var(--warn); }
+#attention ul { margin: 0; padding-left: 18px; font-size: 13px; }
+#attention li { margin: 3px 0; }
+#attention a { cursor: pointer; }
+#restartBanner { margin: 0 0 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+#restartBanner[hidden] { display: none; }
 .mac-h { margin: 18px 0 6px; font-size: 14px; }
 .mac-h:first-child { margin-top: 0; }
 .mac-modes, .mac-toggles { display: grid; gap: 8px; margin-top: 10px; }
@@ -506,18 +540,31 @@
   <a class="navlink" data-target="sec-responses"><span class="nd" id="nd-responses"></span><span class="label">Responses</span><span class="count" id="nc-responses"></span></a>
   <a class="navlink" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
 
-  <div class="navgroup">Control</div>
+  <div class="navgroup">Context</div>
   <a class="navlink nav-pc" data-target="sec-compaction"><span class="nd" id="nd-compaction"></span><span class="label">Pauseless Compaction</span></a>
-  <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
-  <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
   <a class="navlink" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
+
+  <div class="navgroup">Routing</div>
+  <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Routing</span></a>
+  <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
+  <a class="navlink" data-target="sec-failover"><span class="nd" id="nd-failover"></span><span class="label">Failover &amp; pricing</span></a>
+
+  <div class="navgroup">Sessions</div>
   <a class="navlink" data-target="handoverSection"><span class="nd" id="nd-handover"></span><span class="label">Session handover</span></a>
-  <a class="navlink" data-target="sec-mac"><span class="nd" id="nd-mac"></span><span class="label">This Mac &amp; sessions</span></a>
-  <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Configuration</span></a>
+  <a class="navlink" data-target="sec-sessions"><span class="nd" id="nd-sessions"></span><span class="label">Session options</span></a>
+  <a class="navlink" data-target="sec-panel"><span class="nd" id="nd-panel"></span><span class="label">Usage panel</span></a>
+
+  <div class="navgroup">This Mac</div>
+  <a class="navlink" data-target="sec-mac"><span class="nd" id="nd-mac"></span><span class="label">Lid &amp; hotspot</span></a>
+  <a class="navlink" data-target="sec-notify"><span class="nd" id="nd-notify"></span><span class="label">Notifications</span></a>
+
+  <div class="navgroup">Health</div>
+  <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
   <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
 
   <div class="navgroup">Setup</div>
   <a class="navlink" data-target="installSection"><span class="nd" id="nd-install"></span><span class="label">Install</span></a>
+  <a class="navlink" data-target="sec-advanced"><span class="nd"></span><span class="label">Advanced</span></a>
 
   <div class="sidefoot">
     <span id="gatewayAddr"></span>
@@ -607,6 +654,8 @@
     </div>
   </section>
 
+  <div id="restartBanner" class="note warn" hidden></div>
+  <div id="attention" hidden></div>
   <div class="grid" id="cards" style="scroll-margin-top:70px"></div>
   <div id="bailout"></div>
 
@@ -645,12 +694,22 @@
   <section id="sec-analytics" style="scroll-margin-top:70px">
     <h2>Analytics <span class="hint" id="analyticsWindow">latency, errors, and where the spend goes, over the Daily activity window</span></h2>
     <div class="tiles" id="activityTiles"></div>
+  </section>
+
+  <section id="sec-models" style="scroll-margin-top:70px">
+    <h2>Spend by model <span class="hint">the models behind the spend: prices differ by an order of magnitude</span></h2>
     <div id="modelSplit"></div>
+  </section>
+
+  <section id="sec-repos" style="scroll-margin-top:70px">
+    <h2>Spend by repository <span class="hint">each session's spend, under the repository it ran in</span></h2>
     <div id="repoSplit" style="padding-bottom:6px"></div>
   </section>
 
+  <div class="pagegroup">Context</div>
+
   <section id="sec-compaction" class="standout" style="scroll-margin-top:70px">
-    <h2><span class="pc-mark">&#9889;</span> PAUSELESS COMPACTION <span class="hint">long subscription sessions shrink in the background, and you never wait</span></h2>
+    <h2><span class="pc-mark">&#9889;</span> PAUSELESS COMPACTION <span class="applies" data-where="config.json" data-when="now"></span> <span class="hint">long subscription sessions shrink in the background, and you never wait</span></h2>
     <div class="body">
       <div class="pc-stats" id="pcStats"></div>
       <div class="row" style="align-items:flex-start;margin:16px 0 12px">
@@ -696,124 +755,8 @@
     </div>
   </section>
 
-
-  <!-- Transparent mode only. The pf rdr rule is the one piece of this that
-       other software on the Mac can take away, and on 2026-09-07 it did --
-       for hours, with every indicator on this page green. Its guard, and
-       what that guard has caught, belong on the page rather than in a
-       script you have to already know exists. -->
-  <!-- Starts closed in the MARKUP, not in script, so it never renders open
-       for a frame and then jumps shut on first paint. -->
-  <section id="guardsSection" class="collapsible collapsed" style="scroll-margin-top:70px">
-    <h2 id="guardsHead">Guards <span class="hint">the two things that keep this working while nobody is watching</span>
-      <span class="spacer"></span>
-      <span id="guardsSummary" class="hint"></span>
-      <button class="h2btn primary" id="guardsToggle" aria-expanded="false" aria-controls="guardsBody">Show</button>
-    </h2>
-    <div class="body" id="guardsBody">
-      <!-- Gateway watchdog: shown in both modes. A dead gateway breaks
-           base-url mode too; it just breaks it for one user rather than
-           for every process on the Mac. -->
-      <h3 style="margin:0 0 6px;font-size:13px">Gateway watchdog <span class="hint" style="font-weight:400">restarts the gateway if its process dies; no password needed</span></h3>
-      <div id="selfHealStatus"></div>
-      <div class="row" style="margin-top:8px">
-        <button class="primary" id="armSelfHeal">⤓ Arm the watchdog</button>
-        <button id="viewSelfHealLog">▤ View watchdog log</button>
-      </div>
-
-      <div id="pfHealBlock" hidden>
-        <h3 style="margin:22px 0 6px;font-size:13px">pf redirect guard <span class="hint" style="font-weight:400">root daemon; keeps traffic actually reaching the gateway</span></h3>
-        <div id="pfHealStatus"></div>
-        <div class="row" style="margin-top:8px">
-          <button class="primary" id="armPfHeal">⤓ Arm the guard</button>
-          <button id="viewPfLog">▤ View guard log</button>
-        </div>
-      </div>
-
-      <div class="hint" style="margin-top:12px">
-        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks the gateway is actually running, having a pid, not merely being registered with launchd, which keeps answering for a job whose process has died. The <b>pf guard</b> checks the real path end to end: that <code>api.anthropic.com</code> answers, <i>and answers from this gateway</i>. Neither touches anything while no <code>/etc/hosts</code> redirect is installed, so a rollback stays rolled back. If the guard cannot repair the path after four tries it removes the redirect entirely, because a Mac that reaches Anthropic directly beats one that cannot reach it at all.
-      </div>
-      <div id="pfHealNote"></div>
-    </div>
-  </section>
-
-  <!-- Starts closed in the MARKUP for the same reason Guards does: set in
-       script it would render open for a frame and then jump shut. -->
-  <section id="secondarySection" class="collapsible collapsed" style="scroll-margin-top:70px">
-    <h2 id="secondaryHead">Secondary provider <span class="hint">where inference goes when the primary is out: endpoint, model and API key</span>
-      <span class="spacer"></span>
-      <span id="secSummary" class="hint"></span>
-      <button class="h2btn primary" id="secondaryToggle" aria-expanded="false" aria-controls="secondaryBody">Show</button>
-    </h2>
-    <div class="body" id="secondaryBody">
-      <div id="secStatus"></div>
-      <div class="row">
-        <div>
-          <label for="secProvider">Provider</label>
-          <select id="secProvider">
-            <option value="openai-compatible">openai-compatible: GLM, OpenRouter, Together, any /v1 endpoint</option>
-            <option value="bedrock">bedrock: Claude models via AWS</option>
-            <option value="none">none: no failover target at all</option>
-          </select>
-        </div>
-        <div class="secField">
-          <label for="secBaseUrl">Base URL</label>
-          <input id="secBaseUrl" style="min-width:300px" placeholder="https://api.z.ai/api/coding/paas/v4">
-        </div>
-        <div class="secField" id="secModelField">
-          <label for="secModel">Model</label>
-          <input id="secModel" placeholder="glm-4.6">
-        </div>
-      </div>
-      <div class="row" style="margin-top:12px">
-        <div class="secField">
-          <label for="secKeychain">Keychain service</label>
-          <input id="secKeychain" placeholder="claude-burst-zai">
-        </div>
-        <div class="secField">
-          <label for="secApiKey">API key</label>
-          <input id="secApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="leave blank to keep the stored key">
-        </div>
-        <button class="secField" id="showSecApiKey">👁 Show</button>
-        <button class="primary" id="saveSecondary">✓ Save secondary</button>
-        <button class="success secField" id="testSecondary">⇌ Test secondary</button>
-      </div>
-      <div class="hint secField" style="margin-top:6px">The test sends one real, capped request through the secondary exactly as a failover would, same auth, same model translation, asking the model which version it is. It costs a fraction of a cent on a metered provider.</div>
-      <div id="secTestNote"></div>
-      <div class="hint" style="margin-top:8px" id="secKeyHint"></div>
-      <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json, which only stores the service name. It is never sent back to this page, so the box above stays blank even when a key is stored; the green line at the top of this panel is how you check one is there.</div>
-      <div id="secNote"></div>
-    </div>
-  </section>
-
-  <section id="sec-config" style="scroll-margin-top:70px">
-    <h2>Configuration <span class="hint">saved to config.json; the gateway reads it at startup</span></h2>
-    <div class="body">
-      <div class="row">
-        <div>
-          <label for="strategy">Failover strategy</label>
-          <select id="strategy">
-            <option value="subscription-limit">subscription-limit</option>
-            <option value="metered-failures">metered-failures</option>
-            <option value="subscription-limit+metered-failures">subscription-limit + metered-failures</option>
-            <option value="none">none</option>
-          </select>
-        </div>
-        <div>
-          <label for="mode">Intercept mode</label>
-          <select id="mode">
-            <option value="transparent">transparent, recommended (keeps Remote Control)</option>
-            <option value="base-url">base-url, fallback (no Remote Control)</option>
-          </select>
-        </div>
-        <button class="primary" id="save">✓ Save</button>
-      </div>
-      <div id="cfgNote"></div>
-    </div>
-  </section>
-
   <section id="sec-context" style="scroll-margin-top:70px">
-    <h2>Context &amp; cache <span class="hint">what context costs on your subscription and on overflow, and keeping it small</span></h2>
+    <h2>Context &amp; cache <span class="applies" data-where="config.json" data-when="now"></span> <span class="hint">what context costs on your subscription and on overflow, and keeping it small</span></h2>
     <div class="body">
       <div class="grid" id="ctxCards"></div>
       <div id="ctxCacheNote" class="hint" style="margin-top:8px"></div>
@@ -864,10 +807,120 @@
     </div>
   </section>
 
+  <div class="pagegroup">Routing</div>
+
+  <section id="sec-config" style="scroll-margin-top:70px">
+    <h2>Routing <span class="applies" data-where="config.json" data-when="restart"></span></h2>
+    <div class="body">
+      <div class="row">
+        <div>
+          <label for="strategy">Failover strategy</label>
+          <select id="strategy">
+            <option value="subscription-limit">subscription-limit</option>
+            <option value="metered-failures">metered-failures</option>
+            <option value="subscription-limit+metered-failures">subscription-limit + metered-failures</option>
+            <option value="none">none</option>
+          </select>
+        </div>
+        <div>
+          <label for="mode">Intercept mode</label>
+          <select id="mode">
+            <option value="transparent">transparent, recommended (keeps Remote Control)</option>
+            <option value="base-url">base-url, fallback (no Remote Control)</option>
+          </select>
+        </div>
+        <button class="primary" id="save">✓ Save</button>
+      </div>
+      <div id="cfgNote"></div>
+    </div>
+  </section>
+
+  <!-- Starts closed in the MARKUP for the same reason Guards does: set in
+       script it would render open for a frame and then jump shut. -->
+  <section id="secondarySection" class="collapsible collapsed" style="scroll-margin-top:70px">
+    <h2 id="secondaryHead">Secondary provider <span class="applies" data-where="config.json + Keychain" data-when="restart"></span> <span class="hint">where inference goes when the primary is out: endpoint, model and API key</span>
+      <span class="spacer"></span>
+      <span id="secSummary" class="hint"></span>
+      <button class="h2btn primary" id="secondaryToggle" aria-expanded="false" aria-controls="secondaryBody">Show</button>
+    </h2>
+    <div class="body" id="secondaryBody">
+      <div id="secStatus"></div>
+      <div class="row">
+        <div>
+          <label for="secProvider">Provider</label>
+          <select id="secProvider">
+            <option value="openai-compatible">openai-compatible: GLM, OpenRouter, Together, any /v1 endpoint</option>
+            <option value="bedrock">bedrock: Claude models via AWS</option>
+            <option value="none">none: no failover target at all</option>
+          </select>
+        </div>
+        <div class="secField">
+          <label for="secBaseUrl">Base URL</label>
+          <input id="secBaseUrl" style="min-width:300px" placeholder="https://api.z.ai/api/coding/paas/v4">
+        </div>
+        <div class="secField" id="secModelField">
+          <label for="secModel">Model</label>
+          <input id="secModel" placeholder="glm-4.6">
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="secField">
+          <label for="secKeychain">Keychain service</label>
+          <input id="secKeychain" placeholder="claude-burst-zai">
+        </div>
+        <div class="secField">
+          <label for="secApiKey">API key</label>
+          <input id="secApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="leave blank to keep the stored key">
+        </div>
+        <button class="secField" id="showSecApiKey">👁 Show</button>
+        <button class="primary" id="saveSecondary">✓ Save secondary</button>
+        <button class="success secField" id="testSecondary">⇌ Test secondary</button>
+      </div>
+      <div class="hint secField" style="margin-top:6px">The test sends one real, capped request through the secondary exactly as a failover would, same auth, same model translation, asking the model which version it is. It costs a fraction of a cent on a metered provider.</div>
+      <div id="secTestNote"></div>
+      <div class="hint" style="margin-top:8px" id="secKeyHint"></div>
+      <div class="hint" style="margin-top:4px">The key is written to the macOS Keychain, never to config.json, which only stores the service name. It is never sent back to this page, so the box above stays blank even when a key is stored; the green line at the top of this panel is how you check one is there.</div>
+      <div id="secNote"></div>
+    </div>
+  </section>
+
+  <section id="sec-failover" style="scroll-margin-top:70px">
+    <h2>Failover &amp; pricing <span class="applies" data-where="config.json" data-when="restart"></span></h2>
+    <div class="body">
+      <h3 class="mac-h" style="margin-top:0">When Anthropic is failing</h3>
+      <div class="hint">With the <i>metered-failures</i> strategy, requests move to the secondary after this many failures inside the window. A connection that cannot be made at all counts separately, because it is a stronger sign of an outage.</div>
+      <div class="set-grid" style="margin-top:8px">
+        <label>Window (seconds)<input type="number" min="10" max="3600" data-mf="window_seconds"></label>
+        <label>Error responses<input type="number" min="1" max="100" data-mf="min_failures"></label>
+        <label>Connection failures<input type="number" min="1" max="100" data-mf="transport_error_min_failures"></label>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="primary" id="mfSave">&#x2713; Save</button><button id="mfReset">Reset to defaults</button></div>
+      <div id="mfNote"></div>
+
+      <h3 class="mac-h">Fallback models</h3>
+      <div class="hint">When a model is refused for a usage limit, try these Anthropic models first (still on your subscription) before the paid secondary. One model per line: <code>requested model: fallback, next fallback</code>.</div>
+      <textarea id="fcText" rows="4" spellcheck="false" style="margin-top:8px"></textarea>
+      <div class="row" style="margin-top:8px"><button class="primary" id="fcSave">&#x2713; Save</button></div>
+      <div id="fcNote"></div>
+
+      <h3 class="mac-h">Prices</h3>
+      <div class="hint">Dollars per million tokens, used for every cost on this page. Models served in the last 30 days without a price are listed first: their spend shows as unknown until priced. Past requests are repriced from their stored tokens as soon as you save.</div>
+      <div style="overflow-x:auto;margin-top:8px"><table class="price-table">
+        <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>30 days</th><th></th></tr></thead>
+        <tbody id="prBody"></tbody>
+      </table></div>
+      <div class="row" style="margin-top:8px"><input id="prNew" placeholder="add a model id" style="min-width:240px"><button id="prAdd">+ Add</button><button class="primary" id="prSave">&#x2713; Save prices</button><button id="prUnused" hidden></button></div>
+      <div class="hint">Leave a cache price empty to derive it: for Claude models reads are 0.1x and writes 1.25x the input price; for others, the input price.</div>
+      <div id="prNote"></div>
+    </div>
+  </section>
+
+  <div class="pagegroup">Sessions</div>
+
   <!-- Starts closed in the markup, like Guards: settings nobody changes day
        to day, and the header carries the state. -->
   <section id="handoverSection" class="collapsible collapsed" style="scroll-margin-top:70px">
-    <h2 id="handoverHead">Session handover <span class="hint">Claude reads HANDOFF.md when a session starts and updates it when you close the window</span>
+    <h2 id="handoverHead">Session handover <span class="applies" data-where="handover.json" data-when="next session"></span> <span class="hint">Claude reads HANDOFF.md when a session starts and updates it when you close the window</span>
       <span class="spacer"></span>
       <span id="hoSummary" class="hint"></span>
       <button class="h2btn primary" id="handoverToggle" aria-expanded="false" aria-controls="handoverBody">Show</button>
@@ -941,20 +994,9 @@
     </div>
   </section>
 
-  <section id="sec-mac" style="scroll-margin-top:70px">
-    <h2>This Mac &amp; sessions <span class="hint">settings you are likely to change; each one says what it touches</span>
-      <span class="spacer"></span><button class="h2btn" id="macRefresh">&#x21bb; Refresh</button></h2>
+  <section id="sec-sessions" style="scroll-margin-top:70px">
+    <h2>Session options <span class="applies" data-where="~/.config/claude-panel/options" data-when="next session"></span></h2>
     <div class="body">
-      <h3 class="mac-h">Keep working with the lid closed</h3>
-      <div class="hint">Keeps Claude Code (and Remote Control) running with the lid shut, so you can carry on from your phone. macOS normally sleeps on lid close whatever else is running; this is the one switch that overrides it (<code>pmset disablesleep</code>, machine-wide, so it needs your password once per change). It also stops macOS napping Ghostty while its windows are hidden.</div>
-      <div class="mac-modes" id="kaModes" role="radiogroup" aria-label="Keep awake with the lid closed">
-        <label><input type="radio" name="kaMode" value="off"> <b>Off</b><span>the lid sleeps the Mac as usual</span></label>
-        <label><input type="radio" name="kaMode" value="ac"> <b>Plugged in only</b><span>awake with the lid shut on mains power; unplugging lets it sleep again</span></label>
-        <label><input type="radio" name="kaMode" value="always"> <b>Plugged in and on battery</b><span>always awake with the lid shut. Watch the battery, and do not put it in a bag like this: it will get hot</span></label>
-      </div>
-      <div id="kaLive" class="hint" style="margin-top:8px"></div>
-      <div id="kaNote"></div>
-
       <h3 class="mac-h">When a Claude Code session starts or ends</h3>
       <div class="hint">The first three are carried out by the usage panel's hooks and launcher, so they need the panel below. They apply to the next session you start.</div>
       <div class="mac-toggles">
@@ -964,8 +1006,12 @@
         <label><input type="checkbox" id="macHandover"> <b>Write a handover when a session closes</b><span>updates HANDOFF.md in repos that have one; details and the texts used are in <a href="#" id="macHoLink">Session handover</a></span></label>
       </div>
       <div id="poNote"></div>
+    </div>
+  </section>
 
-      <h3 class="mac-h">Usage panel</h3>
+  <section id="sec-panel" style="scroll-margin-top:70px">
+    <h2>Usage panel <span class="applies" data-where="~/.local/bin, ~/.zshrc, settings.json" data-when="next session"></span></h2>
+    <div class="body">
       <div class="mac-panel">
         <a href="/docs/usage-panel.png" target="_blank" class="mac-shot" title="Open full size"><img src="/docs/usage-panel.png" alt="The usage panel beside a Claude Code session: model, session and today's cost, context usage, the turn table with each turn's context, cache hit rate and cost" loading="lazy"></a>
         <div>
@@ -978,8 +1024,106 @@
           </div>
           <div id="panelNote"></div>
           <pre id="panelLog" class="mac-log" hidden></pre>
+          <h3 class="mac-h">Panel settings</h3>
+          <div class="mac-toggles">
+            <label><input type="checkbox" data-popt="cost_alerts"> <b>Cost alerts in the chat</b><span>a message in the conversation (it reaches Remote Control too) when a session costs well above your average, or the day is heading for a bad total</span></label>
+          </div>
+          <div class="set-grid" style="margin-top:8px">
+            <label>Alert only above ($)<input type="number" min="0" step="0.5" data-pnum="alert_min_usd"></label>
+            <label>Restart warning at (tokens of context, 0 = off)<input type="number" min="0" step="50000" data-pnum="restart_tokens"></label>
+          </div>
+          <div id="pnNote"></div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <div class="pagegroup">This Mac</div>
+
+  <section id="sec-mac" style="scroll-margin-top:70px">
+    <h2>This Mac <span class="applies" data-where="config.json + pmset" data-when="now"></span>
+      <span class="spacer"></span><button class="h2btn" id="macRefresh">&#x21bb; Refresh</button></h2>
+    <div class="body">
+      <h3 class="mac-h">Keep working with the lid closed</h3>
+      <div class="hint">Keeps Claude Code (and Remote Control) running with the lid shut, so you can carry on from your phone. macOS normally sleeps on lid close whatever else is running; this is the one switch that overrides it (<code>pmset disablesleep</code>, machine-wide, so it needs your password once per change). It also stops macOS napping Ghostty while its windows are hidden.</div>
+      <div class="mac-modes" id="kaModes" role="radiogroup" aria-label="Keep awake with the lid closed">
+        <label><input type="radio" name="kaMode" value="off"> <b>Off</b><span>the lid sleeps the Mac as usual</span></label>
+        <label><input type="radio" name="kaMode" value="ac"> <b>Plugged in only</b><span>awake with the lid shut on mains power; unplugging lets it sleep again</span></label>
+        <label><input type="radio" name="kaMode" value="always"> <b>Plugged in and on battery</b><span>always awake with the lid shut. Watch the battery, and do not put it in a bag like this: it will get hot</span></label>
+      </div>
+      <div id="kaLive" class="hint" style="margin-top:8px"></div>
+      <div id="kaNote"></div>
+
+      <h3 class="mac-h">Join a hotspot when offline</h3>
+      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst joins it whenever this Mac has been offline for a minute. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
+      <div class="set-grid" style="margin-top:10px">
+        <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select></label>
+        <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select></label>
+        <label>Password <span class="hint" style="font-weight:400">(optional)</span><input id="hsPw" type="password" autocomplete="off" placeholder="use the one macOS has"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="hsSave">&#x2713; Save</button>
+        <button id="hsJoin" title="Joins the network now, leaving the current Wi-Fi">Test: join it now</button>
+        <button id="hsForget" hidden>Forget stored password</button>
+      </div>
+      <div id="hsLive" class="hint" style="margin-top:8px"></div>
+      <div id="hsNote"></div>
+      <pre id="hsLog" class="mac-log" hidden></pre>
+    </div>
+  </section>
+
+  <section id="sec-notify" style="scroll-margin-top:70px">
+    <h2>Notifications <span class="applies" data-where="config.json" data-when="now"></span></h2>
+    <div class="body">
+      <div class="hint">macOS notifications from the gateway, for things worth knowing while you are looking at something else.</div>
+      <div class="mac-toggles">
+        <label><input type="checkbox" data-notify="failover"> <b>Requests move to the secondary</b><span>when Anthropic refuses a model (a usage limit or an outage) and requests start going to the paid secondary, and again when they come back</span></label>
+        <label><input type="checkbox" data-notify="compaction"> <b>A session was compacted</b><span>when Pauseless Compaction swaps a session onto its summary</span></label>
+        <label><input type="checkbox" data-notify="guards"> <b>A guard acted</b><span>when the pf guard or the gateway watchdog repaired something, or removed the redirect so Claude Code could reach Anthropic directly</span></label>
+      </div>
+      <div id="ntNote"></div>
+    </div>
+  </section>
+
+  <div class="pagegroup">Health</div>
+
+  <!-- Transparent mode only. The pf rdr rule is the one piece of this that
+       other software on the Mac can take away, and on 2026-09-07 it did --
+       for hours, with every indicator on this page green. Its guard, and
+       what that guard has caught, belong on the page rather than in a
+       script you have to already know exists. -->
+  <!-- Starts closed in the MARKUP, not in script, so it never renders open
+       for a frame and then jumps shut on first paint. -->
+  <section id="guardsSection" class="collapsible collapsed" style="scroll-margin-top:70px">
+    <h2 id="guardsHead">Guards <span class="hint">the two things that keep this working while nobody is watching</span>
+      <span class="spacer"></span>
+      <span id="guardsSummary" class="hint"></span>
+      <button class="h2btn primary" id="guardsToggle" aria-expanded="false" aria-controls="guardsBody">Show</button>
+    </h2>
+    <div class="body" id="guardsBody">
+      <!-- Gateway watchdog: shown in both modes. A dead gateway breaks
+           base-url mode too; it just breaks it for one user rather than
+           for every process on the Mac. -->
+      <h3 style="margin:0 0 6px;font-size:13px">Gateway watchdog <span class="hint" style="font-weight:400">restarts the gateway if its process dies; no password needed</span></h3>
+      <div id="selfHealStatus"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="armSelfHeal">⤓ Arm the watchdog</button>
+        <button id="viewSelfHealLog">▤ View watchdog log</button>
+      </div>
+
+      <div id="pfHealBlock" hidden>
+        <h3 style="margin:22px 0 6px;font-size:13px">pf redirect guard <span class="hint" style="font-weight:400">root daemon; keeps traffic actually reaching the gateway</span></h3>
+        <div id="pfHealStatus"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="primary" id="armPfHeal">⤓ Arm the guard</button>
+          <button id="viewPfLog">▤ View guard log</button>
+        </div>
+      </div>
+
+      <div class="hint" style="margin-top:12px">
+        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks the gateway is actually running, having a pid, not merely being registered with launchd, which keeps answering for a job whose process has died. The <b>pf guard</b> checks the real path end to end: that <code>api.anthropic.com</code> answers, <i>and answers from this gateway</i>. Neither touches anything while no <code>/etc/hosts</code> redirect is installed, so a rollback stays rolled back. If the guard cannot repair the path after four tries it removes the redirect entirely, because a Mac that reaches Anthropic directly beats one that cannot reach it at all.
+      </div>
+      <div id="pfHealNote"></div>
     </div>
   </section>
 
@@ -1025,6 +1169,26 @@
       <div id="dgNote"></div>
     </div>
   </section>
+
+  <section id="sec-advanced" class="collapsible collapsed" style="scroll-margin-top:70px">
+    <h2 id="advHead">Advanced <span class="applies" data-where="config.json" data-when="restart"></span>
+      <span class="spacer"></span>
+      <button class="h2btn primary" id="advToggle" aria-expanded="false" aria-controls="advBody">Show</button></h2>
+    <div class="body" id="advBody">
+      <div class="set-grid">
+        <label>Retry after a limit resets, plus (seconds)<input type="number" min="0" max="600" data-adv="reset_grace_seconds"></label>
+        <label>Limit with no reset time lasts (seconds)<input type="number" min="30" max="86400" data-adv="unknown_reset_seconds"></label>
+        <label>Wait for Anthropic to start answering (seconds)<input type="number" min="10" max="600" data-adv="response_header_timeout_seconds"></label>
+        <label>Largest request accepted (MB)<input type="number" min="8" max="1024" data-adv="max_request_mb"></label>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="primary" id="advSave">&#x2713; Save</button><button id="advReset">Reset to defaults</button></div>
+      <div id="advNote"></div>
+      <h3 class="mac-h">Read only here</h3>
+      <div id="advRO" class="hint"></div>
+    </div>
+  </section>
+
+  <div class="pagegroup">Requests</div>
 
   <section id="sec-responses" style="scroll-margin-top:70px">
     <h2>Recent responses <span class="hint">last 20, in memory only; headers that drive failover are highlighted</span></h2>
@@ -1697,6 +1861,7 @@ async function refresh() {
 
     lastState = s;
     renderCards(s);
+    renderAttention();
     // Not awaited on purpose -- see liveCheck's comment. The page below is
     // already correct; only the two header badges are pending.
     liveCheck(s);
@@ -2845,9 +3010,16 @@ function drawChart() {
       }
       const rect = r.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
       const scale = (host.clientWidth || W) / W;
-      tip.style.opacity = "1";
-      tip.style.left = Math.min(wr.width - 170, Math.max(0, rect.left - wr.left + rect.width / 2 - 80)) + "px";
+      // Beside the hovered day, never over it: to its right when there is
+      // room, otherwise to its left. Centred on the bar, it hid the very
+      // bar it describes.
+      const tw = tip.offsetWidth, gap = 12;
+      const barL = rect.left - wr.left, barR = barL + rect.width;
+      let left = barR + gap;
+      if (left + tw > wr.width) left = barL - gap - tw;
+      tip.style.left = Math.max(0, left) + "px";
       tip.style.top = (padT * scale) + "px";
+      tip.style.opacity = "1";
     });
     r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
   });
@@ -2948,8 +3120,7 @@ function renderActivity() {
   if (!models.length) { $("modelSplit").innerHTML = ""; return; }
   const top = Math.max(...models.map(m => m.requests));
   $("modelSplit").innerHTML =
-    `<div class="mrow mhead" style="border-top:1px solid var(--border);color:var(--faint);font-size:10px;
-        text-transform:uppercase;letter-spacing:.08em;font-weight:600">
+    `<div class="mrow mhead" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700">
        <span>Model</span><span>Share of requests</span><span class="amt">Requests · spend</span></div>` +
     models.map(m => `<div class="mrow">
       <span class="mono" title="${esc(m.model)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
@@ -2970,8 +3141,7 @@ function renderRepoSplit(h) {
   const top = Math.max(...repos.map(r => r.usd), 0.0001);
   const total = repos.reduce((t, r) => t + r.usd, 0);
   $("repoSplit").innerHTML =
-    `<div class="mrow mhead" style="border-top:1px solid var(--border);color:var(--faint);font-size:10px;
-        text-transform:uppercase;letter-spacing:.08em;font-weight:600">
+    `<div class="mrow mhead" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700">
        <span>Repository</span><span>Share of spend</span><span class="amt">Sessions · requests · spend</span></div>` +
     repos.map(r => `<div class="mrow">
       <span class="mono" title="${esc(r.path || r.repo)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.repo)}</span>
@@ -3120,6 +3290,8 @@ function renderMac() {
   setDot("nd-mac", ka.problem ? "warn" : ka.mode !== "off" ? "ok" : "");
 
   const p = m.panel;
+  setDot("nd-panel", p.installed ? "ok" : "");
+  setDot("nd-sessions", p.installed && Object.values(p.options).some(Boolean) ? "ok" : "");
   for (const cb of document.querySelectorAll("[data-popt]")) {
     cb.checked = !!p.options[cb.dataset.popt];
     cb.disabled = !p.installed;
@@ -3140,6 +3312,11 @@ function renderMac() {
       ? (run.action === "remove" ? "Removed. Panels already open stop updating; close their splits." : "Installed. It opens beside the next claude you start in Ghostty.")
       : "It failed; the output is below.");
   }
+  for (const inp of document.querySelectorAll("[data-pnum]")) {
+    if (document.activeElement !== inp) inp.value = p.numbers ? p.numbers[inp.dataset.pnum] : "";
+    inp.disabled = !p.installed;
+  }
+  renderAttention();
   clearTimeout(panelPoll);
   if (p.running) panelPoll = setTimeout(loadMac, 1500);
 }
@@ -3185,8 +3362,226 @@ $("panelRemove").onclick = async () => {
   try { await post("/api/panel-install", {action: "remove"}); } catch (e) { note($("panelNote"), "bad", e.message); }
   loadMac();
 };
-$("macRefresh").onclick = loadMac;
+$("macRefresh").onclick = () => { loadMac(); loadSettings(); };
 loadMac();
+
+// ---- Settings: "stored where, applies when" chips -----------------------
+for (const el of document.querySelectorAll(".applies")) {
+  const when = el.dataset.when, cls = when === "now" ? "w-now" : when === "restart" ? "w-restart" : "";
+  const label = when === "now" ? "applies at once" : when === "restart" ? "applies after a restart" : "applies to the " + when;
+  el.innerHTML = `<i title="saved in ${esc(el.dataset.where)}">${esc(el.dataset.where)}</i><i class="${cls}">${esc(label)}</i>`;
+}
+
+function setAdvOpen(open) {
+  $("sec-advanced").classList.toggle("collapsed", !open);
+  $("advToggle").textContent = open ? "Hide" : "Show";
+  $("advToggle").setAttribute("aria-expanded", String(open));
+}
+$("advHead").onclick = () => setAdvOpen($("sec-advanced").classList.contains("collapsed"));
+for (const a of document.querySelectorAll('.navlink[data-target="sec-advanced"]')) a.addEventListener("click", () => setAdvOpen(true));
+
+let settings = null;
+const setDirty = {};
+function markDirty(form) { setDirty[form] = true; }
+async function loadSettings() {
+  try {
+    const r = await fetch("/api/settings");
+    if (!r.ok) throw new Error(await r.text());
+    settings = await r.json();
+  } catch (e) { return; }
+  renderSettings();
+}
+
+function numField(inp, value, dflt) {
+  if (document.activeElement !== inp) inp.value = value;
+  inp.classList.toggle("changed", dflt !== undefined && Number(inp.value) !== Number(dflt));
+  let d = inp.parentElement.querySelector(".dflt");
+  if (dflt !== undefined) {
+    if (!d) { d = document.createElement("span"); d.className = "dflt"; inp.after(d); }
+    d.textContent = Number(inp.value) !== Number(dflt) ? `changed; default ${dflt}` : "default";
+  }
+}
+
+function renderSettings() {
+  const st = settings; if (!st) return;
+  // Restart banner: saved values the running gateway has not read.
+  const rn = st.restart_needed || [];
+  $("restartBanner").hidden = !rn.length;
+  if (rn.length) $("restartBanner").innerHTML = `<span>Saved but not in use yet: <b>${rn.map(esc).join(", ")}</b>. The gateway reads these when it starts.</span><button class="primary" id="rbRestart">&#x21bb; Restart the gateway now</button>`;
+  if (rn.length) $("rbRestart").onclick = () => $("restart").click();
+
+  if (!setDirty.mf) for (const inp of document.querySelectorAll("[data-mf]")) numField(inp, st.metered_failover[inp.dataset.mf] || st.metered_defaults[inp.dataset.mf], st.metered_defaults[inp.dataset.mf]);
+  if (!setDirty.adv) for (const inp of document.querySelectorAll("[data-adv]")) numField(inp, st.advanced[inp.dataset.adv] || st.advanced_defaults[inp.dataset.adv], st.advanced_defaults[inp.dataset.adv]);
+  $("advRO").innerHTML = [
+    `Gateway address: <code>${esc(st.listen)}</code>`,
+    `Dashboard address: <code>${esc(st.admin_listen)}</code>${st.admin_hostname ? ` (also <code>${esc(st.admin_hostname)}</code>)` : ""}`,
+    `TLS peer logging: <b>${st.peer_log ? "on" : "off"}</b> (the <code>CLAUDE_BURST_LOG_TLS_PEERS</code> variable in the LaunchAgent)`,
+  ].join("<br>") + `<br>These change what Claude Code connects to, so they are set with <code>claude-burst configure</code> and a reinstall, not from this page.`;
+  if (!setDirty.fc) $("fcText").value = Object.entries(st.fallback_chain || {}).sort().map(([m, r]) => `${m}: ${r.join(", ")}`).join("\n");
+
+  if (!setDirty.pr) {
+    const all = st.pricing || [], unused = all.filter(p => p.price && !p.requests);
+    const rows = prShowUnused ? all : all.filter(p => !(p.price && !p.requests));
+    $("prUnused").hidden = !unused.length;
+    $("prUnused").textContent = prShowUnused ? `Hide ${unused.length} unused` : `Show ${unused.length} priced but unused`;
+    $("prBody").innerHTML = rows.map(p => {
+      const pr = p.price || {};
+      // An empty cache price is derived from the input price (Claude: reads
+      // 0.1x, writes 1.25x; anything else: the input price). Show that.
+      const claude = p.model.includes("claude"), inp = pr.input_per_mtok || 0;
+      const auto = {cache_read_per_mtok: claude ? inp * 0.1 : inp, cache_write_per_mtok: claude ? inp * 1.25 : inp};
+      const ph = k => !p.price ? "?" : (k in auto) ? `auto ${+auto[k].toFixed(3)}` : "";
+      const cell = k => `<td><input type="number" min="0" step="0.01" data-pm="${esc(p.model)}" data-pk="${k}" value="${pr[k] || (k in auto ? "" : pr[k] ?? "")}" placeholder="${ph(k)}"></td>`;
+      const use = p.requests ? `${p.requests.toLocaleString()} req${p.price ? `, $${p.usd.toFixed(2)}` : ""}` : "not used";
+      return `<tr class="${!p.price && p.unpriced ? "unpriced" : ""}"><td><code>${esc(p.model)}</code>${!p.price && p.unpriced ? " (no price)" : ""}</td>${cell("input_per_mtok")}${cell("output_per_mtok")}${cell("cache_read_per_mtok")}${cell("cache_write_per_mtok")}<td class="hint">${use}</td><td>${prAction(p)}</td></tr>`;
+    }).join("");
+    for (const b of document.querySelectorAll("[data-prdel]")) b.onclick = () => savePrices({[b.dataset.prdel]: null});
+  }
+  const unpriced = (st.pricing || []).filter(p => !p.price && p.unpriced).length;
+  setDot("nd-failover", unpriced ? "warn" : "");
+
+  for (const cb of document.querySelectorAll("[data-notify]")) cb.checked = !!(st.notify || {})[cb.dataset.notify];
+  setDot("nd-notify", Object.values(st.notify || {}).some(Boolean) ? "ok" : "");
+
+  const hs = st.hotspot;
+  if (!setDirty.hs) {
+    const sel = $("hsSsid"), known = hs.known || [];
+    const opts = [`<option value="">Off: do not join anything</option>`].concat(known.map(n => `<option value="${esc(n)}">${esc(n)}</option>`));
+    if (hs.ssid && !known.includes(hs.ssid)) opts.push(`<option value="${esc(hs.ssid)}">${esc(hs.ssid)} (not a known network)</option>`);
+    sel.innerHTML = opts.join("");
+    sel.value = hs.ssid || "";
+    $("hsWhen").value = hs.when || "lid-closed";
+    $("hsPw").placeholder = hs.password_stored ? "stored in the Keychain" : "use the one macOS has";
+  }
+  $("hsForget").hidden = !hs.password_stored;
+  $("hsJoin").disabled = !hs.ssid;
+  $("hsLive").innerHTML = `Now: ${hs.online ? "<b>online</b>" : "<b>offline</b>"}, lid ${hs.lid_closed ? "shut" : "open"}. ` +
+    (hs.ssid ? `Joins <b>${esc(hs.ssid)}</b> after a minute offline${hs.when === "always" ? "" : " with the lid shut"}.` : "Not joining anything.") +
+    ` Networks listed are the ones this Mac has joined before: join the hotspot once by hand so macOS knows its password.`;
+  $("hsLog").hidden = !(hs.events || []).length;
+  $("hsLog").textContent = (hs.events || []).join("\n");
+  setDot("nd-mac", (macState && macState.keep_awake.problem) ? "warn" : (hs.ssid || (macState && macState.keep_awake.mode !== "off")) ? "ok" : "");
+  renderAttention();
+}
+
+for (const inp of document.querySelectorAll("[data-mf]")) inp.addEventListener("input", () => markDirty("mf"));
+for (const inp of document.querySelectorAll("[data-adv]")) inp.addEventListener("input", () => markDirty("adv"));
+$("fcText").addEventListener("input", () => markDirty("fc"));
+$("prBody").addEventListener("input", () => markDirty("pr"));
+for (const id of ["hsSsid", "hsWhen", "hsPw"]) $(id).addEventListener("input", () => markDirty("hs"));
+
+async function saveSettings(body, noteEl, form) {
+  try {
+    const r = await post("/api/settings-save", body);
+    if (form) setDirty[form] = false;
+    note(noteEl, r.restart_needed ? "warn" : "ok", r.ok + (r.restart_needed ? ". Restart the gateway to use it (banner at the top)." : ""));
+  } catch (e) { note(noteEl, "bad", e.message); }
+  loadSettings();
+}
+const numsOf = sel => Object.fromEntries([...document.querySelectorAll(sel)].map(i => [i.dataset[Object.keys(i.dataset)[0]], Number(i.value)]));
+$("mfSave").onclick = () => saveSettings({metered_failover: numsOf("[data-mf]")}, $("mfNote"), "mf");
+$("mfReset").onclick = () => saveSettings({metered_failover: settings.metered_defaults}, $("mfNote"), "mf");
+$("advSave").onclick = () => saveSettings({advanced: numsOf("[data-adv]")}, $("advNote"), "adv");
+$("advReset").onclick = () => saveSettings({advanced: settings.advanced_defaults}, $("advNote"), "adv");
+$("fcSave").onclick = () => {
+  const chain = {};
+  for (const line of $("fcText").value.split("\n")) {
+    if (!line.trim()) continue;
+    const [m, rest] = line.split(":");
+    if (!rest) { note($("fcNote"), "bad", `"${line}" needs the form model: fallback`); return; }
+    chain[m.trim()] = rest.split(",").map(x => x.trim()).filter(Boolean);
+  }
+  saveSettings({fallback_chain: chain}, $("fcNote"), "fc");
+};
+// A built-in price cannot be removed (built-ins are merged into every
+// load), only reset to its built-in value, and only when it differs.
+function prAction(p) {
+  if (!p.price) return "";
+  if (!p.default) return `<button class="h2btn" data-prdel="${esc(p.model)}" title="Remove this price">&#x2715;</button>`;
+  const same = ["input_per_mtok", "output_per_mtok", "cache_read_per_mtok", "cache_write_per_mtok"].every(k => (p.price[k] || 0) === (p.default[k] || 0));
+  return same ? `<span class="hint" title="Anthropic's published price, built in">built in</span>` : `<button class="h2btn" data-prdel="${esc(p.model)}" title="Back to the built-in price">reset</button>`;
+}
+function savePrices(extra) {
+  const rows = {};
+  for (const inp of document.querySelectorAll("[data-pm]")) {
+    if (inp.value === "") continue;
+    (rows[inp.dataset.pm] ||= {})[inp.dataset.pk] = Number(inp.value);
+  }
+  // Only rows that changed or are new, so an untouched table is not resaved.
+  const out = {};
+  for (const [m, p] of Object.entries(rows)) {
+    const cur = (settings.pricing.find(x => x.model === m) || {}).price || {};
+    if (["input_per_mtok", "output_per_mtok", "cache_read_per_mtok", "cache_write_per_mtok"].some(k => (p[k] || 0) !== (cur[k] || 0))) out[m] = p;
+  }
+  Object.assign(out, extra || {});
+  if (!Object.keys(out).length) { note($("prNote"), "ok", "nothing changed"); return; }
+  saveSettings({pricing: out}, $("prNote"), "pr");
+}
+$("prSave").onclick = () => savePrices();
+let prShowUnused = false;
+$("prUnused").onclick = () => { prShowUnused = !prShowUnused; const d = setDirty.pr; setDirty.pr = false; renderSettings(); setDirty.pr = d; };
+$("prAdd").onclick = () => {
+  const m = $("prNew").value.trim(); if (!m) return;
+  settings.pricing.unshift({model: m, price: null, requests: 0});
+  setDirty.pr = false; renderSettings(); setDirty.pr = true; $("prNew").value = "";
+};
+for (const cb of document.querySelectorAll("[data-notify]")) cb.addEventListener("change", () => {
+  const n = Object.fromEntries([...document.querySelectorAll("[data-notify]")].map(c => [c.dataset.notify, c.checked]));
+  saveSettings({notify: n}, $("ntNote"));
+});
+$("hsSave").onclick = () => {
+  const body = {hotspot: {ssid: $("hsSsid").value, when: $("hsWhen").value}};
+  if ($("hsPw").value) body.hotspot_password = $("hsPw").value;
+  $("hsPw").value = "";
+  saveSettings(body, $("hsNote"), "hs");
+};
+$("hsForget").onclick = () => saveSettings({hotspot_password: "-"}, $("hsNote"));
+$("hsJoin").onclick = async () => {
+  if (!confirm(`Join ${settings.hotspot.ssid} now?\n\nThis Mac leaves its current Wi-Fi. Make sure the hotspot is on.`)) return;
+  note($("hsNote"), "warn", "Joining... up to a minute.");
+  try { note($("hsNote"), "ok", (await post("/api/hotspot-join")).ok); }
+  catch (e) { note($("hsNote"), "bad", e.message); }
+  loadSettings();
+};
+for (const inp of document.querySelectorAll("[data-pnum]")) inp.addEventListener("change", async () => {
+  try { const x = await post("/api/panel-options", {[inp.dataset.pnum]: Number(inp.value)}); note($("pnNote"), "ok", x.detail); }
+  catch (e) { note($("pnNote"), "bad", e.message); }
+  loadMac();
+});
+
+// ---- Needs attention: everything not doing what it is set to do ---------
+function renderAttention() {
+  const items = [];
+  const go = (id, text) => items.push(`<li><a data-go="${id}">${text}</a></li>`);
+  const s = lastState;
+  if (s && s.intercept) {
+    const guards = [s.intercept.self_heal].concat(s.intercept.mode === "transparent" && s.intercept.pf_heal ? [s.intercept.pf_heal] : []);
+    if (guards.some(g => g && isBad(s, g))) go("guardsSection", "A guard is not running, so a broken redirect would not be repaired.");
+    const h = s.handover;
+    if (h && (h.error || h.start_hook !== h.end_hook)) go("handoverSection", "Session handover is " + (h.error ? "reporting an error" : "half installed") + ".");
+  }
+  if (macState) {
+    const ka = macState.keep_awake;
+    if (ka.problem) go("sec-mac", `Lid closed setting is not applied as set: ${esc(ka.problem)}.`);
+    const bl = (ka.live.blockers || []).filter(b => b.process !== "powerd");
+    if (ka.mode !== "always" && bl.length) go("sec-mac", `${bl.length === 1 ? "A program is" : bl.length + " programs are"} keeping this Mac awake even on battery with the lid shut.`);
+    const lr = macState.panel.last_run;
+    if (lr && !lr.ok && lr.finished) go("sec-panel", `The usage panel ${lr.action === "remove" ? "removal" : "install"} failed.`);
+  }
+  if (settings) {
+    const up = (settings.pricing || []).filter(p => !p.price && p.unpriced);
+    if (up.length) go("sec-failover", `${up.map(p => esc(p.model)).join(", ")} ${up.length === 1 ? "has" : "have"} no price, so part of the spend shows as unknown.`);
+  }
+  $("attention").hidden = !items.length;
+  $("attention").innerHTML = items.length ? `<h3>Needs attention (${items.length})</h3><ul>${items.join("")}</ul>` : "";
+  for (const a of $("attention").querySelectorAll("[data-go]")) a.onclick = () => {
+    const el = $(a.dataset.go);
+    if (el.classList.contains("collapsed")) el.querySelector("h2").click();
+    scrollToEl(el);
+  };
+}
+
+loadSettings();
 </script>
 </body>
 </html>

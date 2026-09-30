@@ -442,6 +442,11 @@ func (s *Server) SetDowngradeEnabled(on bool) {
 // FallbackChain returns the configured rungs for a model, for display.
 func (s *Server) FallbackChain() map[string][]string { return s.cfg.FallbackChain }
 
+// StartupConfig is the config this gateway was started with. Never written
+// after New, so reading it needs no lock; the dashboard compares it with
+// config.json to say when a saved change is waiting for a restart.
+func (s *Server) StartupConfig() config.Config { return s.cfg }
+
 // ModelOverflow returns a copy of the per-model windows, for display.
 func (s *Server) ModelOverflow() map[string]int64 {
 	s.mu.RLock()

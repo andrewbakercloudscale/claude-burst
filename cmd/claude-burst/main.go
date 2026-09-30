@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/admin"
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/hotspot"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
@@ -232,6 +234,7 @@ func serve(args []string) {
 
 	if cfg.AdminListen != "" {
 		a := admin.New(srv, metricsPath, version, cfg.AdminHostname, rootHelperPath())
+		go a.StartNotifier(context.Background())
 		fmt.Printf("admin:  %s\n", admin.Describe(cfg.AdminListen))
 		if cfg.AdminHostname != "" {
 			_, port, _ := strings.Cut(cfg.AdminListen, ":")
@@ -252,6 +255,8 @@ func serve(args []string) {
 	// Control registers and then long-polls for work, holding a connection
 	// open with nothing on it; a server-side deadline would sever exactly that
 	// and present as Remote Control dropping repeatedly for no visible reason.
+	// Joins the chosen hotspot when offline; idle unless one is chosen.
+	go hotspot.Watch(context.Background())
 	server := &http.Server{Addr: cfg.Listen, Handler: srv, TLSConfig: tlsConfig}
 	go exitWhenIdleOnSignal(srv.InFlight, logger)
 	if tlsConfig != nil {

@@ -29,12 +29,19 @@ It binds loopback only and needs no login (see [the admin UI](#the-local-admin-u
 
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
 
-The menu down the left follows you as you scroll:
+The menu down the left follows you as you scroll, grouped by job:
 
-- **Overview** and **Activity**: whether traffic reaches the gateway, the checks behind it, and requests, tokens, spend and savings per day.
-- **Analytics**: latency, error rate, spend per model, and **spend per repository** (each session filed under the repository its Claude Code transcript says it ran in).
-- **Pauseless Compaction**: the switch, thresholds and results for [pauseless compaction](#pauseless-compaction-long-sessions-without-the-pause-experimental).
-- **Guards, Secondary, Context & cache, Session handover, Configuration, Actions, Install**: the controls.
+- **Observe**: Overview, Activity, Analytics (latency, error rate, spend per model, and **spend per repository**, each session filed under the repository its Claude Code transcript says it ran in), Responses, Requests.
+- **Context**: [Pauseless Compaction](#pauseless-compaction-long-sessions-without-the-pause-experimental), Context & cache.
+- **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
+- **Sessions**: [Session handover](#session-handover-handoffmd-read-at-start-written-at-close-optional), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
+- **This Mac**: [lid closed and hotspot](#keeping-claude-code-working-with-the-lid-shut-optional), [Notifications](#notifications).
+- **Health**: Guards, Actions.
+- **Setup**: Install, Advanced (timeouts and limits).
+
+Every control section says where it is saved and when it applies, as a chip beside its title: **applies at once**, **applies to the next session**, or **applies after a restart**. Settings the gateway only reads at startup (pricing, fallback models, failover thresholds and strategy, intercept mode, the secondary, timeouts and limits) are compared with the running gateway, and a banner at the top lists any that are saved but not yet in use, with a **Restart the gateway now** button.
+
+A **Needs attention** list above the overview collects everything not doing what it is set to do, each linking to its section: a guard not running, handover hooks half installed, the lid setting not applied as set, another program keeping the Mac awake, a failed usage panel install or removal, and models served without a price.
 
 ![Analytics: latency, errors, spend per model and spend per repository](docs/screenshots/analytics.png)
 
@@ -129,6 +136,33 @@ keep awake lid closed: on, mode ac (now on AC: SleepDisabled on, Ghostty App Nap
 
 Any line starting `->` beneath it is drift, with the command that fixes it.
 
+**From the dashboard** (This Mac, Lid & hotspot): pick **Off**, **Plugged in only** (`ac`) or **Plugged in and on battery** (`always`, asks you to confirm). It saves `config.json`, sets Ghostty's App Nap, and applies the root half with cached sudo or in a Terminal window that asks for your password. It shows the live state (power source, battery, whether lid sleep is overridden) and anything not applied as set.
+
+It also lists **other programs keeping this Mac awake**: any process holding a `PreventSystemSleep` assertion (for example `caffeinate -s`) keeps a closed laptop awake on battery whatever this setting says. The idle assertions `caffeinate -i` takes, which Claude Code holds, do not, so they are not listed.
+
+### Join a hotspot when offline
+
+With the lid shut macOS does not join a phone's hotspot by itself (Instant Hotspot is driven from the Wi-Fi menu while someone is at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Off by default.
+
+- **Pick the network** from a dropdown of the networks this Mac has joined before (`networksetup -listpreferredwirelessnetworks`). Join the hotspot once by hand first, so macOS has its password.
+- **When**: only with the lid shut (default), or any time this Mac is offline.
+- **Offline means unreachable**, not "on the wrong network": a TCP connect to `1.1.1.1:443` and `8.8.8.8:443`, by address, so the `/etc/hosts` redirect does not affect it. The SSID is not checked because since macOS 14.4 `networksetup -getairportnetwork` reports "not associated" to processes without Location access even while connected.
+- Checks every **30s**; joins after **two** failed checks in a row, and retries at most every **2 minutes**. The gateway runs the watcher and re-reads `config.json` each check, so changes need no restart.
+- **Password**: optional, stored in the login Keychain as service `claude-burst-hotspot`. Without one, `networksetup` uses the password macOS already has.
+- **On an iPhone**, turn on **Allow Others to Join** in Personal Hotspot, or the network is not visible to a Mac nobody is using.
+- **Test: join it now** joins immediately (leaving the current Wi-Fi) and reports whether the Mac is online afterwards.
+- Log: `~/.config/claude-burst/hotspot.log`, also shown on the page.
+
+### Notifications
+
+macOS notifications (through `osascript`) for events worth knowing while you look elsewhere, each switched on separately in **This Mac, Notifications**:
+
+- **Failover**: requests move to the paid secondary, and again when they come back.
+- **Compaction**: Pauseless Compaction swapped a session onto its summary.
+- **Guards**: the pf guard or the gateway watchdog repaired something, or removed the redirect.
+
+Starting the gateway announces nothing already true. `config.json` is read live, so no restart.
+
 ## Session handover: HANDOFF.md read at start, written at close (optional)
 
 Two Claude Code hooks, installed and adapted from the dashboard's **Session handover** section. They only act in a repo whose git root has a `HANDOFF.md`: create one (even empty) to opt a repo in.
@@ -139,6 +173,32 @@ Two Claude Code hooks, installed and adapted from the dashboard's **Session hand
 The dashboard edits the briefing text, the writer's instructions, the writer model, the minimum prompts and whether to commit, and shows the log. Settings: `~/.config/claude-burst/handover.json` (defaults stored as empty, so they follow new defaults). Scripts, the settings they read, the log and the writer's last reply: `~/.config/claude-burst/handover/`. The scripts are embedded in the binary and rewritten when they differ, so edit `internal/handover/scripts/`, not the installed copies.
 
 **Cost**: the writer re-reads the whole session, so a long session costs about one more turn of it. Pick a cheaper writer model to spend less.
+
+## Session options and the usage panel
+
+**Session options** (Sessions menu) apply to the next session you start. The first three are carried out by the [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel)'s hooks and launcher, so they need it installed, and are saved in `~/.config/claude-panel/options`:
+
+- **Start with Remote Control**: every interactive `claude` starts with `--remote-control`.
+- **Name the session after its folder**: new sessions are titled with the repo's folder name instead of "Claude Code". Resumed sessions keep their name.
+- **Keep the Mac awake while a session runs**: `caffeinate -i` while the panel runs. Stops idle sleep, not lid-close sleep.
+- **Write a handover when a session closes**: the same switch as in [Session handover](#session-handover-handoffmd-read-at-start-written-at-close-optional).
+
+**Usage panel** (Sessions menu): a live panel in a Ghostty split beside Claude Code, showing the session's cost and burn rate, context used, a row per turn with its context, cache hit rate and cost, and where Burst compacted. The section explains what it installs and shows a masked screenshot.
+
+- **Install** runs the panel's `claude-panel-setup.sh` from a checkout beside this repo, cloning it first if there is none. It adds scripts to `~/.local/bin`, a block to `~/.zshrc`, and two hooks to `~/.claude/settings.json`.
+- **Remove** (click twice to confirm) runs the panel's `claude-panel-uninstall.sh`, which takes all of that out and keeps backups of the files it edits. Removing it also turns off the three session options above.
+- One install or removal at a time; its output is shown on the page.
+- **Panel settings**: cost alerts in the chat (on or off), the minimum dollar amount before a session alert fires, and the context size that shows a red restart warning (0 turns it off).
+
+## Failover & pricing
+
+Routing menu, saved in `config.json`, applies after a restart (the banner offers it):
+
+- **When Anthropic is failing**: the `metered_failover` window, error responses and connection failures, each marked when changed from its default, with **Reset to defaults**.
+- **Fallback models**: `fallback_chain`, one line per model (`requested model: fallback, next fallback`), tried on your subscription before the paid secondary.
+- **Prices**: every model with a price, plus every model served in the last 30 days, **unpriced models first**, with requests and spend per model. Add, edit or remove a price; past requests recorded as unpriced are repriced from their stored tokens once saved.
+
+**Advanced** (Setup menu, collapsed): `reset_grace_seconds`, `unknown_reset_seconds`, `response_header_timeout_seconds` and `max_request_mb`, each marked when changed from its default. The gateway and dashboard addresses and TLS peer logging are shown read only: they change what Claude Code connects to, so they are set with `claude-burst configure` and a reinstall.
 
 ## Why this exists
 
@@ -509,6 +569,8 @@ Configuration lives at `~/.config/claude-burst/config.json`. Legacy flat fields 
   "max_request_mb": 128,
   "keep_awake_lid_closed": false,
   "keep_awake_lid_closed_power": "ac",
+  "notify": { "failover": true, "compaction": false, "guards": true },
+  "hotspot": { "ssid": "My Phone", "when": "lid-closed" },
   "primary": {
     "provider": "oauth-passthrough",
     "base_url": "https://api.anthropic.com",
@@ -543,6 +605,8 @@ An Amazon Bedrock secondary instead has `"provider": "bedrock"`, the `bedrock-ru
 - `pricing`: per-million-token rates, keyed by the model that actually served the request. A third-party model is **not** in the defaults (the same GLM id costs different amounts through Together, OpenRouter and Z.ai), so add yours or its spend is reported as unpriced rather than free. This also prices token-shunt worker calls.
 - `shunt.read` / `shunt.write` / `shunt.min_lines` / `shunt.chunk_lines` / `shunt.timeout_seconds` / `shunt.model`: token shunting, see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context). `shunt.model` overrides the worker model; empty means the secondary's own model.
 - `keep_awake_lid_closed` (default `false`) / `keep_awake_lid_closed_power` (`ac` default, or `always`): keep the Mac, and so Claude Code in Ghostty and Remote Control, running with the lid shut, plugged in only, or on battery too. Changing the file alone does nothing to the machine: apply with `configure --keep-awake-lid-closed` or `./install.sh`, and `claude-burst status` reports any drift. See [Keeping Claude Code working with the lid shut](#keeping-claude-code-working-with-the-lid-shut-optional).
+- `notify.failover` / `notify.compaction` / `notify.guards` (all default `false`): macOS notifications, see [Notifications](#notifications). Read live.
+- `hotspot.ssid` (empty: off) / `hotspot.when` (`lid-closed` default, or `always`): join that network when this Mac is offline, see [Join a hotspot when offline](#join-a-hotspot-when-offline). Read live.
 - `response_header_timeout_seconds`: bounds how long the gateway waits for a response to *start* before treating the upstream as failed (doesn't affect how long an already-started stream can run).
 
 `./install.sh` re-applies `keep_awake_lid_closed` from `config.json` on every run. When it is `false` (the default) the installer touches no power settings and asks for no password; when `true` it asks for sudo once to apply the chosen power mode.
@@ -863,7 +927,9 @@ all, and **Test connection** proves it live rather than reading config off disk,
 not the same question.
 
 What the buttons do: force or clear overflow; change the secondary model, failover strategy
-and intercept mode; restart the gateway (config is only read at startup); install either
+and intercept mode; edit failover thresholds, fallback models, prices and timeouts; set the
+lid-closed mode, the hotspot and notifications; install or remove the usage panel and set
+its options; restart the gateway (routing config is only read at startup); install either
 mode; arm either guard and read its log; read the gateway's own log. Anything needing root
 or affecting the whole machine is **not** done in-process, the button writes a script and
 opens it in Terminal, where you answer the sudo prompt and watch every command. That

@@ -239,3 +239,32 @@ func TestKeepAwakePowerDefaultsToACAndRejectsUnknown(t *testing.T) {
 		t.Fatal("unknown keep_awake_lid_closed_power was accepted")
 	}
 }
+
+// A fallback chain in config.json replaces the default instead of merging
+// into it; before, a removed default entry came back on every load, and an
+// emptied chain could not be saved at all.
+func TestFallbackChainInFileReplacesDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.FallbackChain) == 0 {
+		t.Fatal("no config file: the default chain should apply")
+	}
+	cfg.FallbackChain = map[string][]string{"claude-opus-5-5": {"claude-opus-5"}}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := Load()
+	if len(got.FallbackChain) != 1 || got.FallbackChain["claude-opus-5-5"][0] != "claude-opus-5" {
+		t.Fatalf("chain after reload: %v", got.FallbackChain)
+	}
+	got.FallbackChain = map[string][]string{}
+	if err := Save(got); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := Load(); len(again.FallbackChain) != 0 {
+		t.Fatalf("an emptied chain came back: %v", again.FallbackChain)
+	}
+}
