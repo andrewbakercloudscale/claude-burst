@@ -14,8 +14,15 @@
 # Note that shunting is switched OFF in config.json as part of uninstall (that is
 # how its hook and skill are removed), so a later reinstall needs
 # `claude-burst shunt enable` to turn it back on.
+
+# This is a zsh script (${0:A:h}, read "var?prompt"). `bash install.sh` dies at
+# the first zsh-only expansion with "A: unbound variable", so hand it to zsh.
+if [ -z "${ZSH_VERSION:-}" ]; then exec /bin/zsh "$0" "$@"; fi
 set -euo pipefail
 
+# Resolved here, at top level: inside a function zsh sets $0 to the FUNCTION's
+# name, so ${0:A:h} there is the caller's working directory, not the repo.
+ROOT="${0:A:h}"
 LABEL="ninja.andrewbaker.claude-burst"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 INSTALL_DIR="$HOME/.local/bin"
@@ -61,7 +68,7 @@ uninstall() {
   # Only asks for sudo when something was actually applied.
   if [[ -f /etc/claude-burst/lid-awake.state || -f /Library/LaunchDaemons/ninja.andrewbaker.claude-burst-lidawake.plist ]]; then
     echo "Removing the lid-closed keep-awake setting (needs sudo)..."
-    sudo "${0:A:h}/scripts/lid-awake-root.sh" remove || echo "WARNING: run: sudo ${0:A:h}/scripts/lid-awake-root.sh remove" >&2
+    sudo "$ROOT/scripts/lid-awake-root.sh" remove || echo "WARNING: run: sudo $ROOT/scripts/lid-awake-root.sh remove" >&2
   fi
   defaults delete com.mitchellh.ghostty NSAppSleepDisabled >/dev/null 2>&1 || true
   echo "Removed Claude Burst routing, the token-shunting hook and skill, and the LaunchAgent."
@@ -74,7 +81,6 @@ uninstall() {
 }
 
 install() {
-  ROOT="${0:A:h}"
   ARCH="$(uname -m)"
   case "$ARCH" in
     arm64) BIN="$ROOT/dist/claude-burst-darwin-arm64" ;;
@@ -82,20 +88,34 @@ install() {
     *) echo "Unsupported Mac architecture: $ARCH" >&2; exit 1 ;;
   esac
 
-  if [[ ! -x "$BIN" ]]; then
-    if ! command -v go >/dev/null 2>&1; then
-      echo "No prebuilt binary found and Go is not installed." >&2
-      echo "Install Go, then rerun ./install.sh" >&2
-      exit 1
-    fi
-    echo "Building claude-burst locally..."
-    (cd "$ROOT" && go build -o /tmp/claude-burst ./cmd/claude-burst)
-    BIN=/tmp/claude-burst
-  fi
-
   mkdir -p "$INSTALL_DIR"
-  cp "$BIN" "$TARGET"
-  chmod 755 "$TARGET"
+  # Staged in the SAME directory so the final mv is an atomic rename.
+  staged="$INSTALL_DIR/.claude-burst.new.$$"
+  trap 'rm -f "$staged"' EXIT
+
+  # Always build the checkout when Go is here. dist/ is gitignored and nothing
+  # refreshes it, so preferring it installed whatever was built there last:
+  # on 2026-09-30 a rerun put a 28 Aug binary over a current one.
+  if command -v go >/dev/null 2>&1; then
+    echo "Building claude-burst from $ROOT..."
+    (cd "$ROOT" && go build -o "$staged" ./cmd/claude-burst)
+  elif [[ -x "$BIN" ]]; then
+    echo "WARNING: Go is not installed, so installing the prebuilt $BIN" >&2
+    echo "  (built $(stat -f %Sm "$BIN")); it may be older than this checkout." >&2
+    cp "$BIN" "$staged"
+  else
+    echo "No prebuilt binary found and Go is not installed." >&2
+    echo "Install Go, then rerun ./install.sh" >&2
+    exit 1
+  fi
+  chmod 755 "$staged"
+
+  # mv, never cp over $TARGET: the running gateway has that file mapped, and
+  # rewriting its bytes in place invalidates the code signature, so macOS
+  # SIGKILLs every later launch of it (exit 137) while the old process keeps
+  # serving. A rename gives the new binary a fresh inode and leaves the running
+  # one alone until the LaunchAgent restart below. Same reason as scripts/deploy.sh.
+  mv -f "$staged" "$TARGET"
 
   ZPROFILE="$HOME/.zprofile"
   PATH_LINE='export PATH="$HOME/.local/bin:$PATH" # claude-burst'
