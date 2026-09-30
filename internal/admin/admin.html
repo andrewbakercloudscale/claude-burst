@@ -147,6 +147,19 @@
     background: linear-gradient(120deg, color-mix(in srgb, var(--pc-a) 14%, var(--panel)), color-mix(in srgb, var(--pc-c) 12%, var(--panel))); }
   section.standout > h2 .hint { letter-spacing: 0; font-size: 12.5px; }
   .pc-mark { color: var(--pc-a); }
+  /* Savings chart: saved (up) and what it cost (down), per day. Two hues
+     validated with dataviz/validate_palette.js in both modes. */
+  :root { --pcs-saved: #7c3aed; --pcs-cost: #0e9f9d; }
+  @media (prefers-color-scheme: dark) { :root { --pcs-saved: #9466f5; --pcs-cost: #2aa8a6; } }
+  .pc-chart { margin-top: 12px; border: 1px solid color-mix(in srgb, var(--pc-b) 30%, var(--border)); border-radius: var(--radius); background: var(--panel); }
+  .pc-chart .pc-chart-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 12px 16px 0; }
+  .pc-chart .pc-chart-head h3 { margin: 0; font-size: 13px; }
+  .pc-chart .pc-chart-head .sum { font-size: 13px; color: var(--muted); }
+  .pc-chart .pc-chart-head .sum b { color: var(--text); }
+  .pc-chart .legend { display: flex; gap: 14px; margin-left: auto; font-size: 12px; color: var(--muted); }
+  .pc-chart .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .pc-chart details { padding: 0 16px 12px; font-size: 12px; }
+  .pc-chart details table { margin-top: 6px; }
   .pc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
   .pc-stat { border: 1px solid color-mix(in srgb, var(--pc-b) 30%, var(--border)); border-radius: var(--radius);
     padding: 11px 13px; background: color-mix(in srgb, var(--pc-b) 5%, var(--panel)); }
@@ -796,6 +809,12 @@
     <h2><span class="pc-mark">&#9889;</span> PAUSELESS COMPACTION <span class="applies" data-where="config.json" data-when="now"></span> <span class="hint">long subscription sessions shrink in the background, and you never wait</span></h2>
     <div class="body">
       <div class="pc-stats" id="pcStats"></div>
+      <div class="pc-chart" id="pcChartBox" hidden>
+        <div class="pc-chart-head"><h3>Savings per day</h3><span class="sum" id="pcChartSum"></span>
+          <span class="legend"><span><i style="background:var(--pcs-saved)"></i>Not resent</span><span><i style="background:var(--pcs-cost)"></i>Summaries and cache rewrites</span></span></div>
+        <div class="chart-wrap" id="pcChartWrap"><div id="pcChart"></div><div class="chart-tip" id="pcTip"></div></div>
+        <details><summary>Show as a table</summary><div id="pcChartTable"></div></details>
+      </div>
       <div class="row" style="align-items:flex-start;margin:16px 0 12px">
         <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
           <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
@@ -2366,6 +2385,8 @@ function renderCompaction(s) {
       ? `net saved: $${(cs.saved_usd || 0).toFixed(2)} not resent, less $${(cs.summary_usd || 0).toFixed(2)} of summaries and $${(cs.rewrite_usd || 0).toFixed(2)} of cache rewrites`
       : "net saved (API-equivalent)"],
   ].map(([v, t]) => `<div class="pc-stat"><div class="v">${v}</div><div class="k">${esc(t)}</div></div>`).join("");
+  lastSavings = cs.daily || null;
+  drawSavingsChart();
   setDot("nd-compaction", k.enabled ? "ok" : "");
   if (!rows.length) {
     $("compactSessions").innerHTML = `<div class="empty">No sessions tracked yet. A session appears here after its first reply since the gateway started${k.enabled ? "" : " (tracking only runs while this is on)"}.</div>`;
@@ -3380,6 +3401,82 @@ function drawChart() {
     r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
   });
 }
+
+// The Pauseless Compaction savings chart: per day, what was not resent
+// (up, from the zero line) and what it cost, summaries and cache rewrites
+// (down). Net is the difference, in the tooltip and the table; the total
+// in the header matches the net saved tile, since both sum the same days.
+let lastSavings = null;
+function savingsSeries(days) {
+  return (days || []).map(d => ({date: d.date, up: d.saved_usd || 0, down: (d.summary_usd || 0) + (d.rewrite_usd || 0),
+    net: d.net_usd || 0, compactions: d.compactions || 0, requests: d.requests || 0,
+    summary: d.summary_usd || 0, rewrite: d.rewrite_usd || 0}));
+}
+function drawSavingsChart() {
+  const box = $("pcChartBox"), host = $("pcChart"), tip = $("pcTip");
+  const days = savingsSeries(lastSavings);
+  const any = days.some(d => d.up || d.down);
+  box.hidden = !any;
+  tip.style.opacity = "0";
+  if (!any) { host.innerHTML = ""; return; }
+  const total = days.reduce((t, d) => t + d.net, 0);
+  $("pcChartSum").innerHTML = `net <b>${esc(signedUSD(total))}</b> over ${days.length} days`;
+
+  const W = Math.max(320, host.clientWidth || 640), H = 190;
+  const padL = 48, padR = 10, padT = 10, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const hiRaw = Math.max(...days.map(d => d.up), 0), loRaw = Math.max(...days.map(d => d.down), 0);
+  // One axis for both directions, so a cost and a saving of the same size
+  // are the same height.
+  const hi = niceMax(Math.max(hiRaw, loRaw * 0.25)), lo = loRaw > 0 ? niceMax(loRaw) : 0;
+  const y = v => padT + (hi - v) / (hi + lo) * plotH, zero = y(0);
+  const band = plotW / days.length, barW = Math.min(26, Math.max(3, band - 8));
+  const parts = [];
+  const ticks = [hi, hi / 2, 0].concat(lo ? [-lo] : []);
+  for (const v of ticks) {
+    parts.push(`<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-width="1"/>`);
+    parts.push(`<text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="var(--faint)">${esc((v < 0 ? "-$" : "$") + Math.abs(v).toFixed(v && Math.abs(v) < 1 ? 2 : 0))}</text>`);
+  }
+  days.forEach((d, i) => {
+    const x = padL + band * i + band / 2 - barW / 2;
+    if (d.up > 0) parts.push(rounded(x, y(d.up), barW, zero - y(d.up) - 1, Math.min(4, zero - y(d.up) - 1), "var(--pcs-saved)"));
+    if (d.down > 0) {
+      const h = y(-d.down) - zero - 1, r = Math.min(4, h, barW / 2), top = zero + 1;
+      // Rounded at the data end, which for a downward bar is the bottom.
+      if (h > 0) parts.push(`<path fill="var(--pcs-cost)" d="M${x},${top} L${x + barW},${top} L${x + barW},${top + h - r} Q${x + barW},${top + h} ${x + barW - r},${top + h} L${x + r},${top + h} Q${x},${top + h} ${x},${top + h - r} Z"/>`);
+    }
+  });
+  parts.push(`<line x1="${padL}" x2="${W - padR}" y1="${zero}" y2="${zero}" stroke="var(--faint)" stroke-width="1"/>`);
+  const every = Math.max(1, Math.ceil(days.length / Math.max(1, Math.floor(plotW / 58)))), last = days.length - 1;
+  days.forEach((d, i) => {
+    if ((last - i) % every) return;
+    parts.push(`<text x="${padL + band * i + band / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--faint)">${esc(dayLabel(d.date))}</text>`);
+  });
+  days.forEach((d, i) => parts.push(`<rect class="hit" data-i="${i}" x="${padL + band * i}" y="${padT}" width="${band}" height="${plotH}" fill="transparent"/>`));
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Pauseless Compaction savings per day: not resent above the line, summaries and cache rewrites below">${parts.join("")}</svg>`;
+
+  const wrap = $("pcChartWrap");
+  host.querySelectorAll("rect.hit").forEach(r => {
+    r.addEventListener("mouseenter", () => {
+      const d = days[+r.dataset.i];
+      const row = (c, k, v) => `<div class="r"><span>${c ? `<i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${c};margin-right:6px"></i>` : ""}${k}</span><b>${esc(v)}</b></div>`;
+      tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
+        row("var(--pcs-saved)", "Not resent", "$" + d.up.toFixed(2)) +
+        row("var(--pcs-cost)", "Summaries", "-$" + d.summary.toFixed(2)) +
+        row("var(--pcs-cost)", "Cache rewrites", "-$" + d.rewrite.toFixed(2)) +
+        row("", "<b>Net</b>", signedUSD(d.net)) +
+        row("", "Compactions", num(d.compactions)) + row("", "Compacted requests", num(d.requests));
+      const rect = r.getBoundingClientRect(), wr = wrap.getBoundingClientRect(), tw = tip.offsetWidth, gap = 12;
+      let left = rect.right - wr.left + gap;
+      if (left + tw > wr.width) left = rect.left - wr.left - gap - tw;
+      tip.style.left = Math.max(0, left) + "px"; tip.style.top = "10px"; tip.style.opacity = "1";
+    });
+    r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
+  });
+  $("pcChartTable").innerHTML = `<table><thead><tr><th>Day</th><th class="num">Not resent</th><th class="num">Summaries</th><th class="num">Cache rewrites</th><th class="num">Net</th><th class="num">Compactions</th></tr></thead><tbody>` +
+    days.slice().reverse().map(d => `<tr><td>${esc(dayLabel(d.date))}</td><td class="num">$${d.up.toFixed(2)}</td><td class="num">$${d.summary.toFixed(2)}</td><td class="num">$${d.rewrite.toFixed(2)}</td><td class="num">${esc(signedUSD(d.net))}</td><td class="num">${d.compactions}</td></tr>`).join("") + `</tbody></table>`;
+}
+window.addEventListener("resize", () => { clearTimeout(window.__pcResize); window.__pcResize = setTimeout(drawSavingsChart, 120); });
 
 // rounded draws a rect with only its TOP corners rounded: the data-end is
 // rounded, the baseline end is square, so a stack still reads as sitting on
