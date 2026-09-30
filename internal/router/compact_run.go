@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -75,7 +76,7 @@ const maxNotices = 5
 
 // notice queues a line for the session's next prompt. Caller holds mu.
 func (st *compactState) notice(format string, a ...any) {
-	st.notices = append(st.notices, "\u26a1 Pauseless compaction: "+fmt.Sprintf(format, a...))
+	st.notices = append(st.notices, "\u26a1 Claude Burst, pauseless compaction: "+fmt.Sprintf(format, a...))
 	if len(st.notices) > maxNotices {
 		st.notices = st.notices[len(st.notices)-maxNotices:]
 	}
@@ -238,7 +239,11 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 	st := s.compaction.state(ci.key)
 	st.lastContext = ctxTokens
 	if st.swappedFrom > 0 && ci.applied {
-		st.notice("done. %d earlier messages now go as a summary; context %dk \u2192 %dk", st.swappedMsgs, st.swappedFrom/1000, ctxTokens/1000)
+		cut := 0
+		if st.swappedFrom > 0 && ctxTokens < st.swappedFrom {
+			cut = int(math.Round(100 * float64(st.swappedFrom-ctxTokens) / float64(st.swappedFrom)))
+		}
+		st.notice("done. Context down %d%%, %dk \u2192 %dk: %d earlier messages now go as a summary", cut, st.swappedFrom/1000, ctxTokens/1000, st.swappedMsgs)
 		st.swappedFrom, st.swappedMsgs = 0, 0
 	}
 	s.compaction.mu.Unlock()
@@ -617,7 +622,7 @@ func (s *Server) PromptNotices(sid string) []string {
 		st.notices = nil
 		if st.next != "" && !st.readyShown {
 			st.readyShown = true
-			out = append(out, fmt.Sprintf("\u26a1 Pauseless compaction: the summary is ready and swaps in with this message (%d earlier messages, context %dk now)", st.nextP0, st.lastContext/1000))
+			out = append(out, fmt.Sprintf("\u26a1 Claude Burst, pauseless compaction: the summary is ready and swaps in with this message (%d earlier messages, context %dk now)", st.nextP0, st.lastContext/1000))
 		}
 	}
 	return out

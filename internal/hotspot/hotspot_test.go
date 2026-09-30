@@ -3,6 +3,7 @@ package hotspot
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -143,5 +144,16 @@ func TestLidOpenedWithNoNetworkTriesAtOnce(t *testing.T) {
 	}
 	if lidJustOpened(config.HotspotConfig{}, true, false, 3) {
 		t.Error("no network chosen")
+	}
+}
+
+func TestHotspotAddressIsRecognised(t *testing.T) {
+	for ip, want := range map[string]bool{"172.20.10.2": true, "172.20.10.14": true, "172.20.10.16": false, "192.168.1.20": false, "10.0.0.5": false} {
+		if got := onHotspotAddr(net.ParseIP(ip).To4()); got != want {
+			t.Errorf("%s: got %v", ip, got)
+		}
+	}
+	if onHotspotAddr(nil) {
+		t.Error("no address")
 	}
 }

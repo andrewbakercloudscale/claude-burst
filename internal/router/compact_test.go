@@ -664,7 +664,7 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	f.mu.Unlock()
 	send(t, s, "S", all[:9])
 	got = strings.Join(s.PromptNotices("S"), "\n")
-	if !strings.Contains(got, "done. 4 earlier messages now go as a summary; context 450k → 60k") {
+	if !strings.Contains(got, "Claude Burst, pauseless compaction: done. Context down 87%, 450k → 60k: 4 earlier messages now go as a summary") {
 		t.Fatalf("want the result of the swap, got:\n%s", got)
 	}
 

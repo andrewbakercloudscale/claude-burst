@@ -740,7 +740,7 @@
         </label>
         <button id="compactNoticeTest" class="secondary" title="Queues a test line for every tracked session; it shows under the next prompt you send">Send a test line</button>
       </div>
-      <div class="hint" style="margin:-8px 0 12px 0">A line such as <code>&#9889; Pauseless compaction: done. 759 earlier messages now go as a summary; context 486k &rarr; 62k</code> appears under the prompt you send, in Claude Code's own window: when a summary starts, when it is ready and swaps in with that prompt, when the swap has cut the context, and if it fails or no longer fits. It comes from a <code>UserPromptSubmit</code> hook Burst adds to <code>~/.claude/settings.json</code> and removes when this is off. Claude does not see these lines, so they cost no context. News that happens mid-turn shows on your next prompt.</div>
+      <div class="hint" style="margin:-8px 0 12px 0">A line such as <code>&#9889; Claude Burst, pauseless compaction: done. Context down 88%, 666k &rarr; 78k: 1074 earlier messages now go as a summary</code> appears under the prompt you send, in Claude Code's own window: when a summary starts, when it is ready and swaps in with that prompt, when the swap has cut the context, and if it fails or no longer fits. It comes from a <code>UserPromptSubmit</code> hook Burst adds to <code>~/.claude/settings.json</code> and removes when this is off. Claude does not see these lines, so they cost no context. News that happens mid-turn shows on your next prompt.</div>
       <div class="hint" style="margin:-4px 0 12px 0;font-size:14px;line-height:1.55">
         <p style="margin:0 0 8px"><strong>Your session never stops to compact.</strong> Claude Code's own <code>/compact</code> makes you wait while it summarises. Burst writes the summary in the background while you keep working, and swaps it in on your next prompt. <strong>No pause, no lost place, nothing to type.</strong></p>
         <p style="margin:0 0 8px"><strong>Why it matters:</strong> on the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window.</p>
@@ -1102,7 +1102,7 @@
       </div>
       <div id="hsLive" class="hint" style="margin-top:8px"></div>
       <div id="hsNote"></div>
-      <dialog id="hsCheck" class="hs-check" aria-labelledby="hsCheckTitle">
+      <dialog id="hsDialog" class="hs-check" aria-labelledby="hsCheckTitle">
         <h3 id="hsCheckTitle">Test joining the hotspot</h3>
         <h4>Before you start, make sure:</h4>
         <ul id="hsItems" class="hs-bullets"></ul>
@@ -3786,9 +3786,9 @@ $("hsJoin").onclick = () => {
   $("hsResultHead").hidden = true; $("hsResult").innerHTML = "";
   $("hsCheckTitle").textContent = `Test joining ${ssid}`;
   $("hsCancel").textContent = "Cancel";
-  $("hsCheck").showModal();
+  $("hsDialog").showModal();
 };
-$("hsCancel").onclick = () => $("hsCheck").close();
+$("hsCancel").onclick = () => $("hsDialog").close();
 $("hsStart").onclick = async () => {
   const ssid = $("hsSsid").value;
   $("hsStart").disabled = true;

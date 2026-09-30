@@ -114,6 +114,31 @@ var Online = func() bool {
 	return false
 }
 
+// onHotspotAddr says whether an IPv4 address was handed out by an iPhone's
+// Personal Hotspot, which always uses 172.20.10.0/28. Holding one means the
+// Mac is still joined to the phone: if the internet is gone, it is the
+// phone's mobile data that dropped, and joining again cannot fix that.
+func onHotspotAddr(ip net.IP) bool {
+	_, hs, _ := net.ParseCIDR("172.20.10.0/28")
+	return ip != nil && hs.Contains(ip)
+}
+
+// OnHotspot reports whether the Wi-Fi interface holds an iPhone hotspot
+// address. A variable for tests.
+var OnHotspot = func() bool {
+	ifc, err := net.InterfaceByName(WiFiDevice())
+	if err != nil {
+		return false
+	}
+	addrs, _ := ifc.Addrs()
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && onHotspotAddr(n.IP.To4()) {
+			return true
+		}
+	}
+	return false
+}
+
 // join is a variable so tests never touch the real Wi-Fi.
 var join = func(ctx context.Context, ssid string) (string, error) {
 	args := []string{"-setairportnetwork", WiFiDevice(), ssid}
@@ -380,6 +405,17 @@ func Watch(ctx context.Context) {
 		}
 		if offline == cfg.Hotspot.OfflineAfter() {
 			logEvent("offline (lid %s)", map[bool]string{true: "shut", false: "open"}[lid])
+		}
+		// Still joined to the phone: joining again drops the Mac off it, and
+		// an iPhone with nothing connected stops broadcasting, so the next
+		// tries all fail with "Could not find network". On 2026-09-30 at
+		// 12:45 exactly that turned a short mobile-data gap into a lost
+		// hotspot. Wait for the phone instead.
+		if OnHotspot() {
+			if offline == cfg.Hotspot.OfflineAfter() {
+				logEvent("still joined to the phone's hotspot: waiting for its mobile data rather than joining again")
+			}
+			continue
 		}
 		var sinceFirst time.Duration
 		if !firstTry.IsZero() {
