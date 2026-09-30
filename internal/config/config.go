@@ -485,10 +485,13 @@ func Default() Config {
 		// pricing note in README. Anyone billing against Bedrock should
 		// verify these against the AWS price list.
 		Pricing: map[string]ModelPrice{
-			// Fable 5.1 and Opus 5.5 cache reads are listed prices ($0.25 and
-			// $0.20/MTok), well under the 0.1x-of-input default CacheRates uses.
+			// Fable 5.1, Opus 5.5 and Sonnet 5.5 cache reads are listed prices
+			// ($0.25, $0.20 and $0.20/MTok). Opus 5.5's is well under the
+			// 0.1x-of-input default CacheRates uses; Sonnet 5.5's is listed
+			// explicitly so it is a price, not an inference.
 			"claude-fable-5-1":                                {InputPerMTok: 10, OutputPerMTok: 50, CacheReadPerMTok: 0.25},
 			"claude-opus-5-5":                                 {InputPerMTok: 4, OutputPerMTok: 20, CacheReadPerMTok: 0.20},
+			"claude-sonnet-5-5":                               {InputPerMTok: 2, OutputPerMTok: 10, CacheReadPerMTok: 0.20},
 			"claude-opus-4-8":                                 {InputPerMTok: 5, OutputPerMTok: 25},
 			"claude-opus-4-7":                                 {InputPerMTok: 5, OutputPerMTok: 25},
 			"claude-opus-4-6":                                 {InputPerMTok: 5, OutputPerMTok: 25},
