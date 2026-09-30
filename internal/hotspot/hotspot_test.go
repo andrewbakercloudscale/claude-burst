@@ -39,15 +39,17 @@ func TestDecide(t *testing.T) {
 	}{
 		{"no network chosen", config.HotspotConfig{}, true, 5, 0, long, false},
 		{"lid open, lid-closed mode", lid, false, 5, 0, long, false},
-		{"lid shut, offline long enough", lid, true, offlineAfter, 0, long, true},
-		{"one failed check is not offline", lid, true, offlineAfter - 1, 0, long, false},
+		{"lid shut, offline long enough", lid, true, 2, 0, long, true},
+		{"one failed check is not offline", lid, true, 1, 0, long, false},
 		{"tried a moment ago", lid, true, 5, 0, time.Second, false},
 		{"a minute after the last attempt", lid, true, 5, time.Minute, time.Minute, true},
 		{"59 seconds after the last attempt", lid, true, 5, time.Minute, 59 * time.Second, false},
 		{"29 minutes in, the default keeps trying", lid, true, 5, 29 * time.Minute, long, true},
 		{"30 minutes in, the default gives up", lid, true, 5, 30 * time.Minute, long, false},
+		{"a shorter retry gap", config.HotspotConfig{SSID: "Phone", RetrySeconds: 20}, true, 5, time.Minute, 20 * time.Second, true},
+		{"three checks asked for, two seen", config.HotspotConfig{SSID: "Phone", OfflineChecks: 3}, true, 2, 0, long, false},
 		{"a longer give-up time keeps going", config.HotspotConfig{SSID: "Phone", GiveUpMinutes: 60}, true, 5, 45 * time.Minute, long, true},
-		{"always mode ignores the lid", always, false, offlineAfter, 0, long, true},
+		{"always mode ignores the lid", always, false, 2, 0, long, true},
 		{"empty When means lid-closed", config.HotspotConfig{SSID: "Phone"}, false, 5, 0, long, false},
 	}
 	for _, c := range cases {

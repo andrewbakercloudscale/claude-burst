@@ -321,9 +321,21 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			bad(fmt.Errorf("that is not a Wi-Fi network name"))
 			return
 		}
-		if h.GiveUpMinutes < 0 || h.GiveUpMinutes > config.MaxHotspotGiveUpMinutes {
-			bad(fmt.Errorf("keep trying for must be between 1 and %d minutes", config.MaxHotspotGiveUpMinutes))
-			return
+		// 0 means the default; anything else must be in range.
+		for _, c := range []struct {
+			name     string
+			v, lo, hi int
+			unit     string
+		}{
+			{"check every", h.CheckSeconds, config.MinHotspotCheckSeconds, config.MaxHotspotCheckSeconds, "seconds"},
+			{"failed checks", h.OfflineChecks, 1, config.MaxHotspotOfflineChecks, ""},
+			{"gap between tries", h.RetrySeconds, config.MinHotspotRetrySeconds, config.MaxHotspotRetrySeconds, "seconds"},
+			{"keep trying for", h.GiveUpMinutes, 1, config.MaxHotspotGiveUpMinutes, "minutes"},
+		} {
+			if c.v != 0 && (c.v < c.lo || c.v > c.hi) {
+				bad(fmt.Errorf("%s must be between %d and %d %s", c.name, c.lo, c.hi, c.unit))
+				return
+			}
 		}
 		// The password is required: without it macOS refuses a join made
 		// by a background process (error -3900), every time.

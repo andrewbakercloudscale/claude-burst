@@ -1081,13 +1081,20 @@
       <div id="kaNote"></div>
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
-      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it about 10 seconds after this Mac goes offline, then a minute after each attempt, for up to <b>Keep trying for</b> minutes (default 30), and starts again after the next time it is back online. The password is required: without it macOS refuses a join made in the background. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
+      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it soon after this Mac goes offline and keeps trying for a while, as set under <b>Timing</b> (defaults: about 10 seconds after Wi-Fi is lost, then every minute for 30 minutes), and starts again after the next time it is back online. The password is required: without it macOS refuses a join made in the background. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
       <div class="set-grid" style="margin-top:10px">
         <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select></label>
         <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select></label>
         <label><span>Password <span class="hint" style="font-weight:400">(required)</span></span><span style="display:flex;gap:6px"><input id="hsPw" type="text" class="masked" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="the hotspot's password" style="flex:1"><button id="hsShow" type="button">Show</button></span></label>
+      </div>
+      <h4 style="margin:12px 0 4px">Timing</h4>
+      <div class="set-grid">
+        <label>Check the internet every (seconds)<input id="hsCheck" type="number" min="2" max="120" step="1" style="width:110px"></label>
+        <label>Failed checks before joining<input id="hsOffline" type="number" min="1" max="10" step="1" style="width:110px"></label>
+        <label>Gap between tries (seconds)<input id="hsRetry" type="number" min="15" max="1800" step="5" style="width:110px"></label>
         <label>Keep trying for (minutes)<input id="hsGiveUp" type="number" min="1" max="1440" step="5" style="width:110px"></label>
       </div>
+      <div class="hint" id="hsTiming" style="margin-top:4px"></div>
       <div class="row" style="margin-top:8px">
         <button class="primary" id="hsSave">&#x2713; Save</button>
         <button id="hsJoin" title="Joins the network now, leaving the current Wi-Fi">Test: join it now</button>
@@ -3640,11 +3647,14 @@ function renderSettings() {
     $("hsWhen").value = hs.when || "lid-closed";
     $("hsPw").placeholder = hs.password_stored ? "stored in the Keychain" : "the hotspot's password";
     $("hsGiveUp").value = hs.give_up_minutes || 30;
+    $("hsCheck").value = hs.check_seconds || 5;
+    $("hsOffline").value = hs.offline_checks || 2;
+    $("hsRetry").value = hs.retry_seconds || 60;
   }
   $("hsForget").hidden = !hs.password_stored;
   $("hsJoin").disabled = !$("hsSsid").value;
   $("hsLive").innerHTML = `Now: ${hs.online ? "<b>online</b>" : "<b>offline</b>"}, lid ${hs.lid_closed ? "shut" : "open"}. ` +
-    (hs.ssid ? `Joins <b>${esc(hs.ssid)}</b> about 10 seconds after going offline${hs.when === "always" ? "" : " with the lid shut"}, then a minute after each attempt, for up to <b>${hs.give_up_minutes || 30} minutes</b>.` : "Not joining anything.") +
+    (hs.ssid ? `Joins <b>${esc(hs.ssid)}</b>${hs.when === "always" ? "" : " with the lid shut"}: ${hsTimingText(hs)}` : "Not joining anything.") +
     (hs.ssid && !hs.password_stored ? ` <b style="color:var(--bad)">No password stored: joins will fail until you type it and Save.</b>` : "") +
     ` Networks listed are the ones this Mac has joined before: join the hotspot once by hand so macOS knows its password.`;
   $("hsLog").hidden = !(hs.events || []).length;
@@ -3657,7 +3667,7 @@ for (const inp of document.querySelectorAll("[data-mf]")) inp.addEventListener("
 for (const inp of document.querySelectorAll("[data-adv]")) inp.addEventListener("input", () => markDirty("adv"));
 $("fcText").addEventListener("input", () => markDirty("fc"));
 $("prBody").addEventListener("input", () => markDirty("pr"));
-for (const id of ["hsSsid", "hsWhen", "hsPw"]) $(id).addEventListener("input", () => markDirty("hs"));
+for (const id of ["hsSsid", "hsWhen", "hsPw", "hsCheck", "hsOffline", "hsRetry", "hsGiveUp"]) $(id).addEventListener("input", () => markDirty("hs"));
 $("hsSsid").addEventListener("change", () => { $("hsJoin").disabled = !$("hsSsid").value; });
 
 async function saveSettings(body, noteEl, form) {
@@ -3721,11 +3731,24 @@ $("ntSave").onclick = async () => {
   await saveSettings({notify: n}, $("ntNote"));
 };
 $("hsSave").onclick = () => {
-  const body = {hotspot: {ssid: $("hsSsid").value, when: $("hsWhen").value, give_up_minutes: parseInt($("hsGiveUp").value, 10) || 0}};
+  const n = id => parseInt($(id).value, 10) || 0;
+  const body = {hotspot: {ssid: $("hsSsid").value, when: $("hsWhen").value,
+    check_seconds: n("hsCheck"), offline_checks: n("hsOffline"), retry_seconds: n("hsRetry"), give_up_minutes: n("hsGiveUp")}};
   if ($("hsPw").value) body.hotspot_password = $("hsPw").value;
   $("hsPw").value = "";
   saveSettings(body, $("hsNote"), "hs");
 };
+// What the timing fields add up to, in words, for the saved settings and
+// live as the fields are edited.
+function hsTimingText(h) {
+  const chk = h.check_seconds || 5, off = h.offline_checks || 2, gap = h.retry_seconds || 60, up = h.give_up_minutes || 30;
+  const gapText = gap % 60 ? `${gap} seconds` : gap === 60 ? "a minute" : `${gap / 60} minutes`;
+  return `first try about ${chk * off} seconds after Wi-Fi is lost (${off} failed check${off === 1 ? "" : "s"}, ${chk} seconds apart), then ${gapText} after each try ends, for up to <b>${up} minutes</b> (about ${Math.max(1, Math.floor(up * 60 / (gap + 10)))} tries).`;
+}
+for (const id of ["hsCheck", "hsOffline", "hsRetry", "hsGiveUp"]) $(id).addEventListener("input", () => {
+  const n = x => parseInt($(x).value, 10) || 0;
+  $("hsTiming").innerHTML = "With these values: " + hsTimingText({check_seconds: n("hsCheck"), offline_checks: n("hsOffline"), retry_seconds: n("hsRetry"), give_up_minutes: n("hsGiveUp")}) + " Press Save to apply; the watcher picks it up at its next check.";
+});
 $("hsForget").onclick = () => saveSettings({hotspot_password: "-"}, $("hsNote"));
 // Show: a typed password is unmasked as it is; a stored one is read from the
 // Keychain after Touch ID, and masked again on the next press.

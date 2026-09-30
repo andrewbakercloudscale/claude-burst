@@ -35,12 +35,9 @@ import (
 // without it networksetup uses the password macOS already has for the network.
 const KeychainService = "claude-burst-hotspot"
 
-// Tunables, as variables for tests.
+// probeAddrs are dialled to tell online from offline.
 var (
-	checkEvery   = 5 * time.Second // two failed checks: about 10s after Wi-Fi is lost
-	offlineAfter = 2               // consecutive failed checks before acting
-	retryEvery   = time.Minute     // gap after one background attempt ends
-	probeAddrs   = []string{"1.1.1.1:443", "8.8.8.8:443"}
+	probeAddrs = []string{"1.1.1.1:443", "8.8.8.8:443"}
 )
 
 // WiFiDevice finds the Wi-Fi interface (en0 on every current Mac, but not
@@ -317,7 +314,7 @@ func RecentEvents(n int) []string {
 
 // decide is the watcher's whole policy, separate so it is testable: act only
 // with a network chosen, the lid condition met, and offline for long enough,
-// not again until retryEvery has passed, and not once the spell's first
+// not again until the retry gap has passed, and not once the spell's first
 // attempt is further back than the give-up time (sinceFirstTry is 0 before
 // the first attempt).
 func decide(cfg config.HotspotConfig, lidClosed bool, offlineChecks int, sinceFirstTry, sinceLastTry time.Duration) bool {
@@ -330,7 +327,7 @@ func decide(cfg config.HotspotConfig, lidClosed bool, offlineChecks int, sinceFi
 	if cfg.When != config.HotspotAlways && !lidClosed {
 		return false
 	}
-	return offlineChecks >= offlineAfter && sinceLastTry >= retryEvery
+	return offlineChecks >= cfg.OfflineAfter() && sinceLastTry >= cfg.RetryEvery()
 }
 
 // Watch runs until ctx ends. Config is re-read every check, so the dashboard's
@@ -339,21 +336,23 @@ func Watch(ctx context.Context) {
 	offline := 0
 	var firstTry, lastTry time.Time
 	gaveUp := false
-	t := time.NewTicker(checkEvery)
-	defer t.Stop()
+	wait := config.HotspotConfig{}.CheckEvery()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(wait):
 		}
 		cfg, err := config.Load()
+		if err == nil {
+			wait = cfg.Hotspot.CheckEvery() // a change applies from the next check
+		}
 		if err != nil || cfg.Hotspot.SSID == "" {
 			offline, firstTry, gaveUp = 0, time.Time{}, false
 			continue
 		}
 		if Online() {
-			if offline >= offlineAfter {
+			if offline >= cfg.Hotspot.OfflineAfter() {
 				logEvent("back online")
 			}
 			offline, firstTry, gaveUp = 0, time.Time{}, false
@@ -361,7 +360,7 @@ func Watch(ctx context.Context) {
 		}
 		offline++
 		lid := LidClosed()
-		if offline == offlineAfter {
+		if offline == cfg.Hotspot.OfflineAfter() {
 			logEvent("offline (lid %s)", map[bool]string{true: "shut", false: "open"}[lid])
 		}
 		var sinceFirst time.Duration
@@ -381,7 +380,7 @@ func Watch(ctx context.Context) {
 		}
 		// The last attempt that fits in the give-up time also turns Wi-Fi
 		// off and on, in case the Mac is stuck with no network at all.
-		last := time.Since(firstTry)+retryEvery+attemptTimeout >= giveUp
+		last := time.Since(firstTry)+cfg.Hotspot.RetryEvery()+attemptTimeout >= giveUp
 		logEvent("joining %q (%s of %s tried)", cfg.Hotspot.SSID, time.Since(firstTry).Round(time.Minute), giveUp)
 		_, _ = Join(cfg.Hotspot.SSID, last)
 		// The gap runs from the end of the attempt, not its start.

@@ -387,15 +387,49 @@ type HotspotConfig struct {
 	// When is HotspotLidClosed (default: only while the lid is shut, so an
 	// open laptop is left to the user) or HotspotAlways.
 	When string `json:"when,omitempty"`
-	// GiveUpMinutes is how long the watcher keeps trying, a minute apart,
-	// from its first attempt in an offline spell. 0 means the default.
+	// The watcher's timing; 0 means the default. CheckSeconds: how often
+	// the internet is probed. OfflineChecks: failed probes in a row before
+	// the first join. RetrySeconds: the gap after one attempt ends and the
+	// next starts. GiveUpMinutes: how long it keeps trying, from its first
+	// attempt in an offline spell.
+	CheckSeconds  int `json:"check_seconds,omitempty"`
+	OfflineChecks int `json:"offline_checks,omitempty"`
+	RetrySeconds  int `json:"retry_seconds,omitempty"`
 	GiveUpMinutes int `json:"give_up_minutes,omitempty"`
 }
 
 const (
+	DefaultHotspotCheckSeconds  = 5
+	DefaultHotspotOfflineChecks = 2
+	DefaultHotspotRetrySeconds  = 60
 	DefaultHotspotGiveUpMinutes = 30
-	MaxHotspotGiveUpMinutes     = 24 * 60
+
+	MinHotspotCheckSeconds  = 2
+	MaxHotspotCheckSeconds  = 120
+	MaxHotspotOfflineChecks = 10
+	MinHotspotRetrySeconds  = 15 // below this a phone is hammered
+	MaxHotspotRetrySeconds  = 30 * 60
+	MaxHotspotGiveUpMinutes = 24 * 60
 )
+
+func orDefault(v, def int) int {
+	if v <= 0 {
+		return def
+	}
+	return v
+}
+
+// CheckEvery, OfflineAfter and RetryEvery are the watcher's timing with
+// the defaults filled in.
+func (h HotspotConfig) CheckEvery() time.Duration {
+	return time.Duration(orDefault(h.CheckSeconds, DefaultHotspotCheckSeconds)) * time.Second
+}
+func (h HotspotConfig) OfflineAfter() int {
+	return orDefault(h.OfflineChecks, DefaultHotspotOfflineChecks)
+}
+func (h HotspotConfig) RetryEvery() time.Duration {
+	return time.Duration(orDefault(h.RetrySeconds, DefaultHotspotRetrySeconds)) * time.Second
+}
 
 // GiveUp is GiveUpMinutes as a duration, with the default filled in.
 func (h HotspotConfig) GiveUp() time.Duration {
