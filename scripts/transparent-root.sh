@@ -251,6 +251,20 @@ do_reload_anchor() {
     die "pfctl -f failed (exit $lrc) after a clean dry run"
   fi
 
+  # A loaded rule does nothing while pf itself is off. On 2026-09-30 21:08,
+  # joining the phone hotspot left pf DISABLED with our rule still loaded:
+  # every repair reloaded the rule, verified, failed, and Claude Code got
+  # ECONNREFUSED on 127.0.0.1:443 until the redirect was rolled back by hand.
+  # Take a token as install does, so remove releases exactly what we took.
+  if ! pfctl -s info 2>/dev/null | head -1 | grep -q Enabled; then
+    echo "== enabling pf (it was disabled; the redirect is inert without it) =="
+    local token
+    token=$(pfctl -E 2>&1 | awk '/Token/ {print $3}')
+    state_set pf_was_enabled 0
+    state_set pf_token "$token"
+    echo "  pf enabled (token $token; released on remove)"
+  fi
+
   # Stale states are the leading suspect (see probe_direct_retry), and a
   # ruleset reload leaves them in place. Flush only OUR anchor's -- machine-
   # wide `pfctl -F states` would tear down every tracked connection on the Mac.
