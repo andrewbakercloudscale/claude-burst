@@ -285,7 +285,14 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			hash := prefixHash(msgs, p)
 			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages", rid, key, st.lastContext/1000, p, len(msgs))
 			s.compaction.running.Add(1)
-			go s.summarise(in.Clone(context.Background()), top, history, cut, key, p, hash)
+			// Its own copy of top: this same request may still be rewritten
+			// below (the current summary stays in force), which writes
+			// top["messages"] while the summary goroutine reads top.
+			own := make(map[string]json.RawMessage, len(top))
+			for k, v := range top {
+				own[k] = v
+			}
+			go s.summarise(in.Clone(context.Background()), own, history, cut, key, p, hash)
 		} else if st.skippedAt.IsZero() || now.Sub(st.skippedAt) >= window {
 			st.skippedAt = now
 			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no prompt boundary leaves at least %.0f%% to summarise",
