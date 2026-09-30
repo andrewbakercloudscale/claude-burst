@@ -129,3 +129,19 @@ func TestBackgroundAttemptIsOneTryAndRestoresOnlyWhenAsked(t *testing.T) {
 		t.Fatal("the last attempt restores Wi-Fi")
 	}
 }
+
+func TestLidOpenedWithNoNetworkTriesAtOnce(t *testing.T) {
+	cfg := config.HotspotConfig{SSID: "Phone", When: config.HotspotLidClosed}
+	if !lidJustOpened(cfg, true, false, 1) {
+		t.Error("lid opened, offline: try now")
+	}
+	if lidJustOpened(cfg, true, false, 0) {
+		t.Error("lid opened, online: nothing to do")
+	}
+	if lidJustOpened(cfg, false, false, 3) || lidJustOpened(cfg, true, true, 3) {
+		t.Error("only the moment the lid opens")
+	}
+	if lidJustOpened(config.HotspotConfig{}, true, false, 3) {
+		t.Error("no network chosen")
+	}
+}

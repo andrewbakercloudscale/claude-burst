@@ -312,6 +312,14 @@ func RecentEvents(n int) []string {
 
 // --- watcher -------------------------------------------------------------
 
+// lidJustOpened says whether to try the hotspot at once because the lid has
+// just been opened on a Mac with no network: whatever the When setting, and
+// whether or not the spell had given up, since someone is now at the Mac
+// and waiting for it.
+func lidJustOpened(cfg config.HotspotConfig, wasShut, isShut bool, offlineChecks int) bool {
+	return cfg.SSID != "" && wasShut && !isShut && offlineChecks > 0
+}
+
 // decide is the watcher's whole policy, separate so it is testable: act only
 // with a network chosen, the lid condition met, and offline for long enough,
 // not again until the retry gap has passed, and not once the spell's first
@@ -336,6 +344,7 @@ func Watch(ctx context.Context) {
 	offline := 0
 	var firstTry, lastTry time.Time
 	gaveUp := false
+	wasShut := LidClosed()
 	wait := config.HotspotConfig{}.CheckEvery()
 	for {
 		select {
@@ -360,6 +369,15 @@ func Watch(ctx context.Context) {
 		}
 		offline++
 		lid := LidClosed()
+		opened := lidJustOpened(cfg.Hotspot, wasShut, lid, offline)
+		wasShut = lid
+		if opened {
+			logEvent("lid opened with no network: trying %q now", cfg.Hotspot.SSID)
+			_, _ = Join(cfg.Hotspot.SSID, false)
+			// A fresh spell: an earlier give-up no longer applies.
+			firstTry, lastTry, gaveUp = time.Now(), time.Now(), false
+			continue
+		}
 		if offline == cfg.Hotspot.OfflineAfter() {
 			logEvent("offline (lid %s)", map[bool]string{true: "shut", false: "open"}[lid])
 		}

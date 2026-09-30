@@ -312,7 +312,7 @@ func TestCompactionFailedSummaryNeverSwaps(t *testing.T) {
 	waitFor(t, func() bool {
 		s.compaction.mu.Lock()
 		defer s.compaction.mu.Unlock()
-		st := s.compaction.sessions["S|claude-opus-5-5"]
+		st := stateFor(s, "S")
 		return st != nil && !st.startedAt.IsZero() && !st.pending
 	})
 	if s.compactionReady("S") {
@@ -320,7 +320,7 @@ func TestCompactionFailedSummaryNeverSwaps(t *testing.T) {
 	}
 	// A failure retries after retryAfterFailure, not after the whole window.
 	s.compaction.mu.Lock()
-	next := s.compaction.sessions["S|claude-opus-5-5"].startedAt.Add(time.Duration(s.compaction.cfg.WindowMinutes) * time.Minute)
+	next := stateFor(s, "S").startedAt.Add(time.Duration(s.compaction.cfg.WindowMinutes) * time.Minute)
 	s.compaction.mu.Unlock()
 	if d := time.Until(next); d > retryAfterFailure+time.Second || d < retryAfterFailure-time.Minute {
 		t.Fatalf("next attempt in %s, want about %s", d, retryAfterFailure)
@@ -673,5 +673,39 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	send(t, s, "S", msgs(t, `[{"role":"user","content":"a fresh start"}]`))
 	if got := s.PromptNotices("S"); got != nil {
 		t.Fatalf("notices off, got %q", got)
+	}
+}
+
+// stateFor is the compaction state of session sid's main conversation.
+// Caller holds mu.
+func stateFor(s *Server, sid string) *compactState {
+	for k, st := range s.compaction.sessions {
+		if strings.HasPrefix(k, sid+"|claude-opus-5-5|") {
+			return st
+		}
+	}
+	return nil
+}
+
+// A subagent runs under its parent's session id and model with a short
+// history of its own. It must not drop the parent's summary.
+func TestSubagentDoesNotDropTheParentsSummary(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the summary must apply first")
+	}
+	send(t, s, "S", msgs(t, `[{"role":"user","content":"review the code, read only"}]`))
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the subagent's own request must go untouched")
+	}
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the parent must still carry its summary after a subagent request")
 	}
 }

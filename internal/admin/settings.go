@@ -323,9 +323,9 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		// 0 means the default; anything else must be in range.
 		for _, c := range []struct {
-			name     string
+			name      string
 			v, lo, hi int
-			unit     string
+			unit      string
 		}{
 			{"check every", h.CheckSeconds, config.MinHotspotCheckSeconds, config.MaxHotspotCheckSeconds, "seconds"},
 			{"failed checks", h.OfflineChecks, 1, config.MaxHotspotOfflineChecks, ""},

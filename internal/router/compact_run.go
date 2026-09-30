@@ -264,7 +264,12 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	if json.Unmarshal(top["messages"], &msgs) != nil || len(msgs) == 0 {
 		return body, in
 	}
-	key := sid + "|" + requestModel(body)
+	// A session id alone does not name one conversation: subagents run
+	// under their parent's session id and model, and on 2026-09-30 two of
+	// them, a 2-message and a 53-message history, were taken for the main
+	// conversation being cleared, dropping its summary twice in two minutes.
+	// The first message tells them apart.
+	key := sid + "|" + requestModel(body) + "|" + conversationID(msgs[0])
 	ci := compactInfo{key: key}
 	now := time.Now()
 	window := time.Duration(cfg.WindowMinutes) * time.Minute
@@ -656,6 +661,7 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			continue
 		}
 		sid, model, _ := strings.Cut(k, "|")
+		model, _, _ = strings.Cut(model, "|")
 		state := "ok"
 		switch {
 		case st.pending:
@@ -679,6 +685,13 @@ func (s *Server) CompactionSessions() []CompactionSession {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Context > out[j].Context })
 	return out
+}
+
+// conversationID is a short hash of a conversation's first message, which
+// stays the same for its whole life and differs between a session and the
+// subagents it starts.
+func conversationID(first json.RawMessage) string {
+	return prefixHash([]json.RawMessage{first}, 1)[:12]
 }
 
 // lastMessageShape names the last message's role and block types, for the
