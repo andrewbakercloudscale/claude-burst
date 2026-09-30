@@ -85,3 +85,37 @@ func TestPromptNoticeTestNeedsASession(t *testing.T) {
 		t.Fatalf("no sessions tracked: want 404, got %d %q", w.Code, w.Body.String())
 	}
 }
+
+// /compact-async is installed while compaction is on and removed when off;
+// a command of the same name that is not ours is never touched.
+func TestCompactCommandFollowsTheSetting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p, err := compactCommandPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true}
+	if err := SyncCompactCommand(cfg); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || !strings.Contains(string(b), "claude-burst:compact-async") || !strings.Contains(string(b), "description:") {
+		t.Fatalf("not installed: %v\n%s", err, b)
+	}
+	cfg.PrimaryCompaction.Enabled = false
+	if err := SyncCompactCommand(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatal("compaction off: the command must be removed")
+	}
+	os.WriteFile(p, []byte("my own command"), 0o644)
+	cfg.PrimaryCompaction.Enabled = true
+	SyncCompactCommand(cfg)
+	cfg.PrimaryCompaction.Enabled = false
+	SyncCompactCommand(cfg)
+	if b, _ := os.ReadFile(p); string(b) != "my own command" {
+		t.Fatalf("someone else's compact-async.md was changed: %q", b)
+	}
+}
