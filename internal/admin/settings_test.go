@@ -132,6 +132,17 @@ func TestSettingsSavePartialUpdates(t *testing.T) {
 		t.Fatal("an advanced update touched other settings")
 	}
 
+	// The password is required.
+	stored := false
+	old := hotspotPasswordStored
+	hotspotPasswordStored = func() bool { return stored }
+	defer func() { hotspotPasswordStored = old }()
+	if rec, _ := postSettings(t, s, `{"hotspot":{"ssid":"My Phone","when":"always"}}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("a hotspot with no password must be refused: %d %s", rec.Code, rec.Body)
+	}
+	// Not tested here: forgetting ("-") and storing, which call the real
+	// Keychain.
+	stored = true
 	if rec, _ := postSettings(t, s, `{"hotspot":{"ssid":"My Phone","when":"always"}}`); rec.Code != http.StatusOK {
 		t.Fatalf("hotspot: %d %s", rec.Code, rec.Body)
 	}

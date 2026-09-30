@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/backup"
 )
@@ -386,6 +387,22 @@ type HotspotConfig struct {
 	// When is HotspotLidClosed (default: only while the lid is shut, so an
 	// open laptop is left to the user) or HotspotAlways.
 	When string `json:"when,omitempty"`
+	// GiveUpMinutes is how long the watcher keeps trying, a minute apart,
+	// from its first attempt in an offline spell. 0 means the default.
+	GiveUpMinutes int `json:"give_up_minutes,omitempty"`
+}
+
+const (
+	DefaultHotspotGiveUpMinutes = 30
+	MaxHotspotGiveUpMinutes     = 24 * 60
+)
+
+// GiveUp is GiveUpMinutes as a duration, with the default filled in.
+func (h HotspotConfig) GiveUp() time.Duration {
+	if h.GiveUpMinutes <= 0 {
+		return DefaultHotspotGiveUpMinutes * time.Minute
+	}
+	return time.Duration(h.GiveUpMinutes) * time.Minute
 }
 
 func Default() Config {

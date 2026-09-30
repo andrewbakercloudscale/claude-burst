@@ -33,7 +33,7 @@ func TestDecide(t *testing.T) {
 		cfg   config.HotspotConfig
 		lid   bool
 		off   int
-		tries int
+		first time.Duration
 		since time.Duration
 		want  bool
 	}{
@@ -42,15 +42,16 @@ func TestDecide(t *testing.T) {
 		{"lid shut, offline long enough", lid, true, offlineAfter, 0, long, true},
 		{"one failed check is not offline", lid, true, offlineAfter - 1, 0, long, false},
 		{"tried a moment ago", lid, true, 5, 0, time.Second, false},
-		{"a minute after the last attempt", lid, true, 5, 1, time.Minute, true},
-		{"59 seconds after the last attempt", lid, true, 5, 1, 59 * time.Second, false},
-		{"attempt 30 is allowed", lid, true, 5, maxTries - 1, long, true},
-		{"no attempt 31", lid, true, 5, maxTries, long, false},
+		{"a minute after the last attempt", lid, true, 5, time.Minute, time.Minute, true},
+		{"59 seconds after the last attempt", lid, true, 5, time.Minute, 59 * time.Second, false},
+		{"29 minutes in, the default keeps trying", lid, true, 5, 29 * time.Minute, long, true},
+		{"30 minutes in, the default gives up", lid, true, 5, 30 * time.Minute, long, false},
+		{"a longer give-up time keeps going", config.HotspotConfig{SSID: "Phone", GiveUpMinutes: 60}, true, 5, 45 * time.Minute, long, true},
 		{"always mode ignores the lid", always, false, offlineAfter, 0, long, true},
 		{"empty When means lid-closed", config.HotspotConfig{SSID: "Phone"}, false, 5, 0, long, false},
 	}
 	for _, c := range cases {
-		if got := decide(c.cfg, c.lid, c.off, c.tries, c.since); got != c.want {
+		if got := decide(c.cfg, c.lid, c.off, c.first, c.since); got != c.want {
 			t.Errorf("%s: got %v", c.name, got)
 		}
 	}
@@ -89,21 +90,29 @@ func stubJoin(t *testing.T, results ...error) (calls *int, restored *bool) {
 func TestJoinTriesThreeTimes(t *testing.T) {
 	fail := errors.New("Failed to join network Phone. Error: -3900")
 
+	var seen []Step
 	calls, restored := stubJoin(t, fail, fail, nil)
-	steps := JoinSteps("Phone")
-	if *calls != 3 || !steps[0].OK || !strings.Contains(steps[0].Detail, "attempt 3 of 3") || *restored {
-		t.Fatalf("third attempt should succeed: calls=%d restored=%v steps=%+v", *calls, *restored, steps)
+	steps := JoinSteps("Phone", func(st Step) { seen = append(seen, st) })
+	if *calls != 3 || *restored || len(steps) != 4 || steps[0].OK || steps[1].OK || !steps[2].OK || steps[2].Name != "Attempt 3 of 3" || !steps[3].OK {
+		t.Fatalf("two failures, success on the third, then internet: calls=%d restored=%v steps=%+v", *calls, *restored, steps)
+	}
+	if !strings.Contains(steps[0].Detail, "Trying again") || !strings.Contains(steps[0].Detail, "password") {
+		t.Fatalf("a failed attempt says why and that another follows: %q", steps[0].Detail)
+	}
+	// Each attempt is reported as it starts and as it ends.
+	if len(seen) != 8 || !seen[0].Pending || seen[1].Pending || seen[1].Name != "Attempt 1 of 3" {
+		t.Fatalf("progress: %+v", seen)
 	}
 
 	calls, restored = stubJoin(t, fail)
-	steps = JoinSteps("Phone")
-	if *calls != 3 || steps[0].OK || !strings.Contains(steps[0].Detail, "all 3 attempts failed") || !*restored {
+	steps = JoinSteps("Phone", nil)
+	if *calls != 3 || len(steps) != 4 || steps[2].OK || strings.Contains(steps[2].Detail, "Trying again") || !*restored || steps[3].Name != "Back on a network" {
 		t.Fatalf("three failures, then restore: calls=%d restored=%v steps=%+v", *calls, *restored, steps)
 	}
 
 	calls, _ = stubJoin(t, nil)
-	steps = JoinSteps("Phone")
-	if *calls != 1 || !strings.Contains(steps[0].Detail, "first attempt") {
+	steps = JoinSteps("Phone", nil)
+	if *calls != 1 || len(steps) != 2 || !steps[0].OK {
 		t.Fatalf("a first-time join must not retry: calls=%d steps=%+v", *calls, steps)
 	}
 }

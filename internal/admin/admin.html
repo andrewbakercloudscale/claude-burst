@@ -133,6 +133,9 @@
   .stat small { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
   .sub { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
 
+  /* A password field the browser does not offer to save: it is a Wi-Fi
+     password, not a login to this page. */
+  input.masked { -webkit-text-security: disc; }
   /* Pauseless compaction is the feature to notice, so its section is the one
      with a colour of its own. */
   :root { --pc-a: #7c3aed; --pc-b: #3b5bdb; --pc-c: #0e9f9d; }
@@ -1078,11 +1081,12 @@
       <div id="kaNote"></div>
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
-      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it once this Mac has been offline for about 20 seconds, then a minute after each attempt, up to 30 attempts (30 to 45 minutes), and starts again after the next time it is back online. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
+      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it once this Mac has been offline for about 20 seconds, then a minute after each attempt, for up to <b>Keep trying for</b> minutes (default 30), and starts again after the next time it is back online. The password is required: without it macOS refuses a join made in the background. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
       <div class="set-grid" style="margin-top:10px">
         <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select></label>
         <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select></label>
-        <label><span>Password <span class="hint" style="font-weight:400">(optional)</span></span><input id="hsPw" type="password" autocomplete="off" placeholder="use the one macOS has"></label>
+        <label><span>Password <span class="hint" style="font-weight:400">(required)</span></span><span style="display:flex;gap:6px"><input id="hsPw" type="text" class="masked" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="the hotspot's password" style="flex:1"><button id="hsShow" type="button">Show</button></span></label>
+        <label>Keep trying for (minutes)<input id="hsGiveUp" type="number" min="1" max="1440" step="5" style="width:110px"></label>
       </div>
       <div class="row" style="margin-top:8px">
         <button class="primary" id="hsSave">&#x2713; Save</button>
@@ -1095,9 +1099,9 @@
         <h3 id="hsCheckTitle">Test joining the hotspot</h3>
         <h4>Before you start, make sure:</h4>
         <ul id="hsItems" class="hs-bullets"></ul>
-        <div class="row" style="margin-top:8px"><button class="primary" id="hsStart" disabled>Start test</button><button id="hsCancel">Cancel</button></div>
         <h4 id="hsResultHead" hidden>Result</h4>
         <ul id="hsResult" class="hs-result"></ul>
+        <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="primary" id="hsStart" disabled>Start test</button><button id="hsCancel">Cancel</button></div>
       </dialog>
       <pre id="hsLog" class="mac-log" hidden></pre>
     </div>
@@ -3634,12 +3638,14 @@ function renderSettings() {
     sel.innerHTML = opts.join("");
     sel.value = hs.ssid || "";
     $("hsWhen").value = hs.when || "lid-closed";
-    $("hsPw").placeholder = hs.password_stored ? "stored in the Keychain" : "use the one macOS has";
+    $("hsPw").placeholder = hs.password_stored ? "stored in the Keychain" : "the hotspot's password";
+    $("hsGiveUp").value = hs.give_up_minutes || 30;
   }
   $("hsForget").hidden = !hs.password_stored;
   $("hsJoin").disabled = !$("hsSsid").value;
   $("hsLive").innerHTML = `Now: ${hs.online ? "<b>online</b>" : "<b>offline</b>"}, lid ${hs.lid_closed ? "shut" : "open"}. ` +
-    (hs.ssid ? `Joins <b>${esc(hs.ssid)}</b> after a minute offline${hs.when === "always" ? "" : " with the lid shut"}.` : "Not joining anything.") +
+    (hs.ssid ? `Joins <b>${esc(hs.ssid)}</b> after about 20 seconds offline${hs.when === "always" ? "" : " with the lid shut"}, then a minute after each attempt, for up to <b>${hs.give_up_minutes || 30} minutes</b>.` : "Not joining anything.") +
+    (hs.ssid && !hs.password_stored ? ` <b style="color:var(--bad)">No password stored: joins will fail until you type it and Save.</b>` : "") +
     ` Networks listed are the ones this Mac has joined before: join the hotspot once by hand so macOS knows its password.`;
   $("hsLog").hidden = !(hs.events || []).length;
   $("hsLog").textContent = (hs.events || []).join("\n");
@@ -3715,12 +3721,25 @@ $("ntSave").onclick = async () => {
   await saveSettings({notify: n}, $("ntNote"));
 };
 $("hsSave").onclick = () => {
-  const body = {hotspot: {ssid: $("hsSsid").value, when: $("hsWhen").value}};
+  const body = {hotspot: {ssid: $("hsSsid").value, when: $("hsWhen").value, give_up_minutes: parseInt($("hsGiveUp").value, 10) || 0}};
   if ($("hsPw").value) body.hotspot_password = $("hsPw").value;
   $("hsPw").value = "";
   saveSettings(body, $("hsNote"), "hs");
 };
 $("hsForget").onclick = () => saveSettings({hotspot_password: "-"}, $("hsNote"));
+// Show: a typed password is unmasked as it is; a stored one is read from the
+// Keychain after Touch ID, and masked again on the next press.
+$("hsShow").onclick = async () => {
+  const pw = $("hsPw"), btn = $("hsShow");
+  if (!pw.classList.contains("masked")) { pw.classList.add("masked"); btn.textContent = "Show"; if (pw.dataset.revealed) { pw.value = ""; delete pw.dataset.revealed; } return; }
+  if (!pw.value && settings.hotspot.password_stored) {
+    btn.disabled = true;
+    try { pw.value = (await post("/api/hotspot-password")).value; pw.dataset.revealed = "1"; }
+    catch (e) { note($("hsNote"), "bad", e.message); btn.disabled = false; return; }
+    btn.disabled = false;
+  }
+  pw.classList.remove("masked"); btn.textContent = "Hide";
+};
 // Test: a checklist first. What the page can check is ticked for you; what
 // only the phone can show, you tick. Start unlocks when every item is ticked.
 $("hsJoin").onclick = () => {
@@ -3728,16 +3747,18 @@ $("hsJoin").onclick = () => {
   const hs = settings.hotspot, typed = !!$("hsPw").value, known = (hs.known || []).includes(ssid);
   const pw = typed ? "The password you typed is saved first."
     : hs.password_stored ? "The stored password is used."
-    : "No password is stored: if the test fails, type the hotspot's password above and try again.";
+    : null;
   const items = [
     "On the phone, open <b>Settings &gt; Personal Hotspot</b> and leave that screen open: an iPhone only broadcasts while it is open or something is connected.",
     "Turn on <b>Allow Others to Join</b>, and <b>Maximise Compatibility</b> on an iPhone 12 or later.",
     pw,
-    "This Mac leaves its current Wi-Fi for up to two minutes: a join is tried up to 3 times. Open sessions reconnect afterwards.",
+    "This Mac leaves its current Wi-Fi for up to two minutes: a join is tried up to 3 times, and each attempt is shown as it happens. Open sessions reconnect afterwards.",
   ];
+  const pwOK = typed || hs.password_stored;
   $("hsItems").innerHTML = (known ? "" : `<li class="bad"><b>${esc(ssid)}</b> is not a network this Mac has joined before: join it once from the Wi-Fi menu first.</li>`) +
-    items.map(t => `<li>${t}</li>`).join("");
-  $("hsStart").disabled = !known;
+    (pwOK ? "" : `<li class="bad">Type the hotspot's password above first: without it macOS refuses the join.</li>`) +
+    items.filter(Boolean).map(t => `<li>${t}</li>`).join("");
+  $("hsStart").disabled = !known || !pwOK;
   $("hsStart").textContent = "Start test"; $("hsStart").hidden = false;
   $("hsResultHead").hidden = true; $("hsResult").innerHTML = "";
   $("hsCheckTitle").textContent = `Test joining ${ssid}`;
@@ -3752,10 +3773,30 @@ $("hsStart").onclick = async () => {
   $("hsResult").innerHTML = `<li><span class="mark">&#x22EF;</span><span>Joining ${esc(ssid)}... up to 3 attempts, up to two minutes</span></li>`;
   try {
     if ($("hsPw").value) { await post("/api/settings-save", {hotspot_password: $("hsPw").value}); $("hsPw").value = ""; }
-    const r = await post("/api/hotspot-join", {ssid});
+    const res = await fetch("/api/hotspot-join", {method: "POST", headers: H, body: JSON.stringify({ssid})});
+    if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+    const li = st => `<li class="${st.pending ? "" : st.ok ? "ok" : "bad"}"><span class="mark">${st.pending ? "&#x22EF;" : st.ok ? "&#x2713;" : "&#x2715;"}</span><span><b>${esc(st.name)}</b>${st.detail ? ": " + esc(st.detail) : ""}</span></li>`;
+    const done = [];
+    let pending = null, r = null, buf = "";
+    const draw = () => { $("hsResult").innerHTML = done.map(li).join("") + (pending ? li(pending) : "") +
+      (r ? `<li class="${r.ok ? "ok" : ""}"><span class="mark"></span><span>${r.ok ? `Works. Save to have Burst join ${esc(ssid)} when this Mac is offline.` : "Fix the failed step and press Retry."}</span></li>` : ""); };
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    for (;;) {
+      const {value, done: end} = await reader.read();
+      if (end) break;
+      buf += dec.decode(value, {stream: true});
+      let k;
+      while ((k = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, k); buf = buf.slice(k + 1);
+        if (!line.trim()) continue;
+        const m = JSON.parse(line);
+        if (m.step) { if (m.step.pending) pending = m.step; else { pending = null; done.push(m.step); } }
+        if (m.done) r = m;
+        draw();
+      }
+    }
+    if (!r) throw new Error("the test stopped before it finished; the gateway may have restarted");
     if (r.ok) $("hsStart").hidden = true;
-    $("hsResult").innerHTML = r.steps.map(st => `<li class="${st.ok ? "ok" : "bad"}"><span class="mark">${st.ok ? "&#x2713;" : "&#x2715;"}</span><span><b>${esc(st.name)}</b>${st.detail ? ": " + esc(st.detail) : ""}</span></li>`).join("") +
-      `<li class="${r.ok ? "ok" : ""}"><span class="mark"></span><span>${r.ok ? `Works. Save to have Burst join ${esc(ssid)} when this Mac is offline.` : "Fix the failed step and press Retry."}</span></li>`;
   } catch (e) {
     $("hsResult").innerHTML = `<li class="bad"><span class="mark">&#x2715;</span><span>${esc(e.message)}</span></li>`;
   }

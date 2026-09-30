@@ -120,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/settings", s.readOnly(s.handleSettingsGet))
 	mux.HandleFunc("/api/settings-save", s.mutating(s.handleSettingsPost))
 	mux.HandleFunc("/api/hotspot-join", s.mutating(s.handleHotspotJoin))
+	mux.HandleFunc("/api/hotspot-password", s.mutating(s.handleHotspotPassword))
 	mux.HandleFunc("/api/keep-awake", s.mutating(s.handleKeepAwake))
 	mux.HandleFunc("/api/panel-options", s.mutating(s.handlePanelOptions))
 	mux.HandleFunc("/api/panel-install", s.mutating(s.handlePanelInstall))

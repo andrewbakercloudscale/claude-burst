@@ -40,7 +40,6 @@ var (
 	checkEvery   = 10 * time.Second // so a 1 minute gap is 60 to 70s, not up to 120
 	offlineAfter = 2                // consecutive failed checks before acting
 	retryEvery   = time.Minute // gap after one background attempt ends
-	maxTries     = 30               // background attempts per offline spell
 	probeAddrs   = []string{"1.1.1.1:443", "8.8.8.8:443"}
 )
 
@@ -139,7 +138,7 @@ func Explain(msg string) string {
 	case strings.Contains(msg, "Could not find network"):
 		return "the Mac cannot see it. An iPhone only broadcasts its hotspot while Settings > Personal Hotspot is open on the phone, or while something is connected to it: open that screen, turn on Maximise Compatibility, and try again."
 	case strings.Contains(msg, "-3900"), strings.Contains(msg, "Failed to join"):
-		return "the Mac saw it but could not join. Usually the password: macOS keeps it where a background process cannot read it, so type it into the Password field and Save, then try again."
+		return "the Mac saw it but could not join. Usually a wrong password: press Show beside the Password field to check it, correct it and Save, then try again."
 	}
 	return ""
 }
@@ -169,14 +168,18 @@ var restore = func() string {
 }
 
 // Step is one stage of a join, for the dashboard's test checklist.
+// Pending marks a stage that has started and not finished; the stage's
+// result follows under the same name.
 type Step struct {
-	Name   string `json:"name"`
-	OK     bool   `json:"ok"`
-	Detail string `json:"detail,omitempty"`
+	Name    string `json:"name"`
+	OK      bool   `json:"ok"`
+	Pending bool   `json:"pending,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 }
 
-// joinAttempts is how many times a join is tried before giving up: an
-// iPhone hotspot often refuses the first try while it wakes its radio.
+// joinAttempts is how many times the dashboard's test tries a join before
+// giving up: an iPhone hotspot often refuses the first try while it wakes
+// its radio.
 const joinAttempts = 3
 
 // attemptTimeout bounds one networksetup join.
@@ -185,70 +188,83 @@ const attemptTimeout = 30 * time.Second
 // betweenAttempts is the pause before trying again; a variable for tests.
 var betweenAttempts = 5 * time.Second
 
-// JoinSteps joins ssid now, trying up to joinAttempts times, and reports
-// each stage: the join itself, whether the internet is reachable through it,
-// and, after every attempt failed, getting the Mac back onto a network.
-func JoinSteps(ssid string) []Step { return joinSteps(ssid, joinAttempts, true) }
+// JoinSteps is the dashboard's test: up to joinAttempts tries, each one
+// reported to progress as it starts and as it ends, then whether the
+// internet is reachable through it, or, when every attempt failed, getting
+// the Mac back onto a network. progress may be nil.
+func JoinSteps(ssid string, progress func(Step)) []Step {
+	return joinSteps(ssid, joinAttempts, true, progress)
+}
 
 // joinSteps is JoinSteps with the number of attempts, and whether a final
 // failure turns Wi-Fi off and on to get back onto a known network.
-func joinSteps(ssid string, attempts int, restoreOnFail bool) []Step {
+func joinSteps(ssid string, attempts int, restoreOnFail bool, progress func(Step)) []Step {
 	var steps []Step
-	start := time.Now()
-	var msg string
+	emit := func(st Step) {
+		if !st.Pending {
+			steps = append(steps, st)
+		}
+		if progress != nil {
+			progress(st)
+		}
+	}
+	name := func(i int) string {
+		if attempts == 1 {
+			return "Join " + ssid
+		}
+		return fmt.Sprintf("Attempt %d of %d", i, attempts)
+	}
 	var err error
-	attempt := 1
-	for ; ; attempt++ {
+	for i := 1; i <= attempts; i++ {
+		emit(Step{Name: name(i), Pending: true, Detail: "joining " + ssid})
+		start := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
+		var msg string
 		msg, err = join(ctx, ssid)
 		cancel()
 		if err == nil {
+			emit(Step{Name: name(i), OK: true, Detail: fmt.Sprintf("joined %s in %s", ssid, time.Since(start).Round(time.Second))})
 			break
 		}
-		if attempts > 1 {
-			logEvent("join %q failed (attempt %d of %d): %v", ssid, attempt, attempts, err)
-		}
-		if attempt >= attempts {
-			break
-		}
-		time.Sleep(betweenAttempts)
-	}
-	if err != nil {
+		logEvent("join %q failed (attempt %d of %d): %v", ssid, i, attempts, err)
 		detail := Explain(err.Error() + " " + msg)
 		if detail == "" {
-			detail = err.Error()
+			detail = strings.Join(strings.Fields(err.Error()), " ")
 		}
-		if attempts > 1 {
-			detail = fmt.Sprintf("all %d attempts failed. %s", attempts, detail)
+		if i < attempts {
+			detail = fmt.Sprintf("%s Trying again in %s.", detail, betweenAttempts)
 		}
-		steps = append(steps, Step{Name: "Join " + ssid, Detail: detail})
-		if !restoreOnFail {
-			return steps
+		emit(Step{Name: name(i), Detail: detail})
+		if i < attempts {
+			time.Sleep(betweenAttempts)
 		}
-		r := restore()
-		steps = append(steps, Step{Name: "Back on a network", OK: Online(), Detail: r})
+	}
+	if err != nil {
+		if restoreOnFail {
+			emit(Step{Name: "Back on a network", Pending: true, Detail: "waiting for macOS to rejoin a known network"})
+			r := restore()
+			emit(Step{Name: "Back on a network", OK: Online(), Detail: r})
+		}
 		return steps
 	}
-	tries := "first attempt"
-	if attempt > 1 {
-		tries = fmt.Sprintf("attempt %d of %d", attempt, attempts)
-	}
-	steps = append(steps, Step{Name: "Join " + ssid, OK: true, Detail: fmt.Sprintf("joined on the %s, in %s", tries, time.Since(start).Round(time.Second))})
+	emit(Step{Name: "Internet through it", Pending: true, Detail: "checking 1.1.1.1 / 8.8.8.8"})
 	for i := 0; i < 10 && !Online(); i++ {
 		time.Sleep(2 * time.Second)
 	}
 	if !Online() {
 		logEvent("joined %q but still offline", ssid)
-		return append(steps, Step{Name: "Internet through it", Detail: "joined, but nothing is reachable: check the phone has mobile data and Personal Hotspot is allowed on your plan"})
+		emit(Step{Name: "Internet through it", Detail: "joined, but nothing is reachable: check the phone has mobile data and Personal Hotspot is allowed on your plan"})
+		return steps
 	}
 	logEvent("joined %q: online", ssid)
-	return append(steps, Step{Name: "Internet through it", OK: true, Detail: "reached 1.1.1.1 / 8.8.8.8"})
+	emit(Step{Name: "Internet through it", OK: true, Detail: "reached 1.1.1.1 / 8.8.8.8"})
+	return steps
 }
 
 // Join is one attempt as one error, for the background watcher, which does
 // its own retrying. restoreOnFail is for its last attempt.
 func Join(ssid string, restoreOnFail bool) (string, error) {
-	steps := joinSteps(ssid, 1, restoreOnFail)
+	steps := joinSteps(ssid, 1, restoreOnFail, nil)
 	for _, st := range steps {
 		if !st.OK {
 			return "", fmt.Errorf("%s: %s", st.Name, st.Detail)
@@ -301,9 +317,11 @@ func RecentEvents(n int) []string {
 
 // decide is the watcher's whole policy, separate so it is testable: act only
 // with a network chosen, the lid condition met, and offline for long enough,
-// and not again until retryEvery has passed.
-func decide(cfg config.HotspotConfig, lidClosed bool, offlineChecks, tries int, sinceLastTry time.Duration) bool {
-	if tries >= maxTries {
+// not again until retryEvery has passed, and not once the spell's first
+// attempt is further back than the give-up time (sinceFirstTry is 0 before
+// the first attempt).
+func decide(cfg config.HotspotConfig, lidClosed bool, offlineChecks int, sinceFirstTry, sinceLastTry time.Duration) bool {
+	if sinceFirstTry >= cfg.GiveUp() {
 		return false
 	}
 	if cfg.SSID == "" {
@@ -318,8 +336,9 @@ func decide(cfg config.HotspotConfig, lidClosed bool, offlineChecks, tries int, 
 // Watch runs until ctx ends. Config is re-read every check, so the dashboard's
 // changes apply without a restart.
 func Watch(ctx context.Context) {
-	offline, tries := 0, 0
-	lastTry := time.Time{}
+	offline := 0
+	var firstTry, lastTry time.Time
+	gaveUp := false
 	t := time.NewTicker(checkEvery)
 	defer t.Stop()
 	for {
@@ -330,14 +349,14 @@ func Watch(ctx context.Context) {
 		}
 		cfg, err := config.Load()
 		if err != nil || cfg.Hotspot.SSID == "" {
-			offline, tries = 0, 0
+			offline, firstTry, gaveUp = 0, time.Time{}, false
 			continue
 		}
 		if Online() {
 			if offline >= offlineAfter {
 				logEvent("back online")
 			}
-			offline, tries = 0, 0
+			offline, firstTry, gaveUp = 0, time.Time{}, false
 			continue
 		}
 		offline++
@@ -345,15 +364,27 @@ func Watch(ctx context.Context) {
 		if offline == offlineAfter {
 			logEvent("offline (lid %s)", map[bool]string{true: "shut", false: "open"}[lid])
 		}
-		if decide(cfg.Hotspot, lid, offline, tries, time.Since(lastTry)) {
-			tries++
-			last := tries == maxTries
-			logEvent("joining %q (attempt %d of %d)", cfg.Hotspot.SSID, tries, maxTries)
-			if _, err := Join(cfg.Hotspot.SSID, last); err != nil && last {
-				logEvent("gave up after %d attempts; trying again after the Mac has been back online", maxTries)
-			}
-			// The gap runs from the end of the attempt, not its start.
-			lastTry = time.Now()
+		var sinceFirst time.Duration
+		if !firstTry.IsZero() {
+			sinceFirst = time.Since(firstTry)
 		}
+		giveUp := cfg.Hotspot.GiveUp()
+		if !decide(cfg.Hotspot, lid, offline, sinceFirst, time.Since(lastTry)) {
+			if !firstTry.IsZero() && sinceFirst >= giveUp && !gaveUp {
+				gaveUp = true
+				logEvent("gave up after %s; trying again after the Mac has been back online", giveUp)
+			}
+			continue
+		}
+		if firstTry.IsZero() {
+			firstTry = time.Now()
+		}
+		// The last attempt that fits in the give-up time also turns Wi-Fi
+		// off and on, in case the Mac is stuck with no network at all.
+		last := time.Since(firstTry)+retryEvery+attemptTimeout >= giveUp
+		logEvent("joining %q (%s of %s tried)", cfg.Hotspot.SSID, time.Since(firstTry).Round(time.Minute), giveUp)
+		_, _ = Join(cfg.Hotspot.SSID, last)
+		// The gap runs from the end of the attempt, not its start.
+		lastTry = time.Now()
 	}
 }

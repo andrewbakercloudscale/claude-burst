@@ -321,8 +321,23 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 			bad(fmt.Errorf("that is not a Wi-Fi network name"))
 			return
 		}
+		if h.GiveUpMinutes < 0 || h.GiveUpMinutes > config.MaxHotspotGiveUpMinutes {
+			bad(fmt.Errorf("keep trying for must be between 1 and %d minutes", config.MaxHotspotGiveUpMinutes))
+			return
+		}
+		// The password is required: without it macOS refuses a join made
+		// by a background process (error -3900), every time.
+		typed := u.HotspotPassword != "" && u.HotspotPassword != "-"
+		if h.SSID != "" && !typed && (u.HotspotPassword == "-" || !hotspotPasswordStored()) {
+			bad(fmt.Errorf("type the hotspot's password: without it macOS refuses the join"))
+			return
+		}
 		cfg.Hotspot = *h
 		changed = append(changed, "hotspot")
+	}
+	if u.HotspotPassword == "-" && u.Hotspot == nil && cfg.Hotspot.SSID != "" {
+		bad(fmt.Errorf("the password is required while a hotspot is chosen: set Network to Off first"))
+		return
 	}
 	switch u.HotspotPassword {
 	case "":
@@ -378,10 +393,51 @@ func (s *Server) handleHotspotJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("%q is not a network this Mac has joined before; join it once from the Wi-Fi menu first", ssid), http.StatusBadRequest)
 		return
 	}
-	steps := hotspot.JoinSteps(ssid)
-	ok := true
+	if !hotspotPasswordStored() {
+		http.Error(w, "type the hotspot's password first: without it macOS refuses the join (error -3900)", http.StatusBadRequest)
+		return
+	}
+	// One JSON object per line as each stage starts and ends, then the
+	// outcome, so the page can show every attempt while the next one runs.
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	flusher, _ := w.(http.Flusher)
+	enc := json.NewEncoder(w)
+	steps := hotspot.JoinSteps(ssid, func(st hotspot.Step) {
+		_ = enc.Encode(map[string]any{"step": st})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	})
+	ok := len(steps) > 0
 	for _, st := range steps {
 		ok = ok && st.OK
 	}
-	writeJSON(w, map[string]any{"ok": ok, "ssid": ssid, "steps": steps})
+	// A failed attempt followed by a working one is still a pass.
+	if n := len(steps); n > 0 && steps[n-1].OK && steps[n-1].Name == "Internet through it" {
+		ok = true
+	}
+	_ = enc.Encode(map[string]any{"done": true, "ok": ok, "ssid": ssid})
+}
+
+// hotspotPasswordStored is a variable so tests never read the real Keychain.
+var hotspotPasswordStored = func() bool {
+	_, err := keychain.Load(hotspot.KeychainService, "CLAUDE_BURST_HOTSPOT_PASSWORD")
+	return err == nil
+}
+
+// handleHotspotPassword hands the stored hotspot password back, after Touch
+// ID or the login password, so it can be checked by eye.
+func (s *Server) handleHotspotPassword(w http.ResponseWriter, r *http.Request) {
+	if err := s.authenticate("show the hotspot password stored for Claude Burst"); err != nil {
+		http.Error(w, "authentication was not completed, so the password was not read: "+err.Error(), http.StatusForbidden)
+		return
+	}
+	v, err := keychain.Load(hotspot.KeychainService, "CLAUDE_BURST_HOTSPOT_PASSWORD")
+	if err != nil {
+		http.Error(w, "no hotspot password is stored", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, map[string]string{"value": v})
 }
