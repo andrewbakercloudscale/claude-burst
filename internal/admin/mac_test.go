@@ -83,6 +83,15 @@ func TestKeepAwakeModeIsValidatedAndSaved(t *testing.T) {
 	old := sudoNonInteractive
 	sudoNonInteractive = func(args ...string) ([]byte, error) { ran = append(ran, args); return []byte("applied"), nil }
 	t.Cleanup(func() { sudoNonInteractive = old })
+	var nap []bool
+	oldNap := setGhosttyAppNap
+	setGhosttyAppNap = func(on bool) error { nap = append(nap, on); return nil }
+	t.Cleanup(func() { setGhosttyAppNap = oldNap })
+	defer func() {
+		if len(nap) != 2 || !nap[0] || nap[1] {
+			t.Errorf("Ghostty App Nap calls %v, want [true false]", nap)
+		}
+	}()
 	scripts := filepath.Join(t.TempDir(), "scripts")
 	os.MkdirAll(scripts, 0o755)
 	s.rootHelper = filepath.Join(scripts, "transparent-root.sh")

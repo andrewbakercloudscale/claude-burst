@@ -44,6 +44,11 @@ func readKeepAwake() keepAwakeView {
 	return v
 }
 
+// setGhosttyAppNap is a variable so tests never change the real Ghostty
+// preference: `defaults` ignores HOME, so a test's temporary HOME does not
+// protect it, and one did turn this machine's setting off.
+var setGhosttyAppNap = keepawake.SetGhosttyAppNap
+
 // sudoNonInteractive runs a root command only if sudo has cached
 // credentials. Never prompts: the gateway has no terminal. A variable for
 // tests.
@@ -80,7 +85,7 @@ func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 	}
 	// The user half needs no root.
 	napNote := ""
-	if err := keepawake.SetGhosttyAppNap(on); err != nil {
+	if err := setGhosttyAppNap(on); err != nil {
 		napNote = " Could not change Ghostty's App Nap setting: " + err.Error() + "."
 	}
 
