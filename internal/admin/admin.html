@@ -203,7 +203,7 @@
   /* The rule above gives every input a 210px minimum, which is right for a text
      field and wrong for a checkbox: the box itself became 210px wide with the
      tick floating in the middle, pushing its label away. */
-  input[type="checkbox"] { min-width: 0; }
+  input[type="checkbox"], input[type="radio"] { min-width: 0; padding: 0; }
   textarea {
     font: 12px/1.5 var(--mono); color: var(--text); background: var(--bg);
     border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px;
@@ -472,6 +472,18 @@
     .navlink .count { display: none; }
     .sidefoot { margin: 0 0 0 auto; border-top: none; padding: 0; }
   }
+.mac-h { margin: 18px 0 6px; font-size: 14px; }
+.mac-h:first-child { margin-top: 0; }
+.mac-modes, .mac-toggles { display: grid; gap: 8px; margin-top: 10px; }
+.mac-modes label, .mac-toggles label { display: grid; grid-template-columns: 18px minmax(0, 1fr); column-gap: 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; font-size: 13.5px; color: var(--text); }
+.mac-modes label:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.mac-modes input, .mac-toggles input { width: 16px !important; height: 16px; margin: 3px 0 0; grid-row: span 2; }
+.mac-modes span, .mac-toggles span { grid-column: 2; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.mac-toggles label.disabled { opacity: .55; cursor: not-allowed; }
+.mac-panel { display: grid; grid-template-columns: minmax(0, 260px) 1fr; gap: 18px; align-items: start; }
+.mac-shot img { width: 100%; border-radius: 10px; border: 1px solid var(--border); display: block; }
+.mac-log { max-height: 260px; overflow: auto; font-size: 12px; background: var(--thead-bg, rgba(0,0,0,.05)); padding: 10px; border-radius: 8px; white-space: pre-wrap; }
+@media (max-width: 720px) { .mac-panel { grid-template-columns: 1fr; } .mac-shot { max-width: 320px; } }
 </style>
 </head>
 <body>
@@ -500,6 +512,7 @@
   <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
   <a class="navlink" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
   <a class="navlink" data-target="handoverSection"><span class="nd" id="nd-handover"></span><span class="label">Session handover</span></a>
+  <a class="navlink" data-target="sec-mac"><span class="nd" id="nd-mac"></span><span class="label">This Mac &amp; sessions</span></a>
   <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Configuration</span></a>
   <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
 
@@ -924,6 +937,48 @@
           <button id="hoViewClose">Close</button>
         </div>
         <pre class="hoLog" id="hoViewBody" style="max-height:560px;margin-top:6px"></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="sec-mac" style="scroll-margin-top:70px">
+    <h2>This Mac &amp; sessions <span class="hint">settings you are likely to change; each one says what it touches</span>
+      <span class="spacer"></span><button class="h2btn" id="macRefresh">&#x21bb; Refresh</button></h2>
+    <div class="body">
+      <h3 class="mac-h">Keep working with the lid closed</h3>
+      <div class="hint">Keeps Claude Code (and Remote Control) running with the lid shut, so you can carry on from your phone. macOS normally sleeps on lid close whatever else is running; this is the one switch that overrides it (<code>pmset disablesleep</code>, machine-wide, so it needs your password once per change). It also stops macOS napping Ghostty while its windows are hidden.</div>
+      <div class="mac-modes" id="kaModes" role="radiogroup" aria-label="Keep awake with the lid closed">
+        <label><input type="radio" name="kaMode" value="off"> <b>Off</b><span>the lid sleeps the Mac as usual</span></label>
+        <label><input type="radio" name="kaMode" value="ac"> <b>Plugged in only</b><span>awake with the lid shut on mains power; unplugging lets it sleep again</span></label>
+        <label><input type="radio" name="kaMode" value="always"> <b>Plugged in and on battery</b><span>always awake with the lid shut. Watch the battery, and do not put it in a bag like this: it will get hot</span></label>
+      </div>
+      <div id="kaLive" class="hint" style="margin-top:8px"></div>
+      <div id="kaNote"></div>
+
+      <h3 class="mac-h">When a Claude Code session starts or ends</h3>
+      <div class="hint">The first three are carried out by the usage panel's hooks and launcher, so they need the panel below. They apply to the next session you start.</div>
+      <div class="mac-toggles">
+        <label><input type="checkbox" data-popt="remote_control"> <b>Start with Remote Control</b><span>every interactive <code>claude</code> starts with <code>--remote-control</code>, so you can pick it up on claude.ai or your phone</span></label>
+        <label><input type="checkbox" data-popt="session_title"> <b>Name the session after its folder</b><span>new sessions are titled with the repo's folder name instead of "Claude Code", so windows and Remote Control sessions are told apart. Resumed sessions keep their name</span></label>
+        <label><input type="checkbox" data-popt="caffeinate"> <b>Keep the Mac awake while a session runs</b><span><code>caffeinate -i</code> for as long as the panel runs: stops idle sleep, not lid-close sleep (that is the setting above)</span></label>
+        <label><input type="checkbox" id="macHandover"> <b>Write a handover when a session closes</b><span>updates HANDOFF.md in repos that have one; details and the texts used are in <a href="#" id="macHoLink">Session handover</a></span></label>
+      </div>
+      <div id="poNote"></div>
+
+      <h3 class="mac-h">Usage panel</h3>
+      <div class="mac-panel">
+        <a href="/docs/usage-panel.png" target="_blank" class="mac-shot" title="Open full size"><img src="/docs/usage-panel.png" alt="The usage panel beside a Claude Code session: model, session and today's cost, context usage, the turn table with each turn's context, cache hit rate and cost" loading="lazy"></a>
+        <div>
+          <div class="hint" style="font-size:13.5px;line-height:1.55">A live panel in a split beside Claude Code (Ghostty): the session's cost and burn rate, context used, a row per turn with its context, cache hit rate and cost, and markers where Burst compacted. It is a separate open source project, <a href="https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel" target="_blank" rel="noopener">claudecode-cost-usage-panel</a>.
+            <br><br>Installing adds scripts to <code>~/.local/bin</code>, a block to <code>~/.zshrc</code> that opens the split when you run <code>claude</code>, and two hooks to <code>~/.claude/settings.json</code>. Removing takes all of that out again (backups of the files it edits are kept beside them). Needs Ghostty, <code>jq</code> and Node.js.</div>
+          <div id="panelStatus" style="margin:10px 0"></div>
+          <div class="row">
+            <button class="primary" id="panelInstall">&#x2913; Install the panel</button>
+            <button id="panelRemove">&#x2715; Remove the panel</button>
+          </div>
+          <div id="panelNote"></div>
+          <pre id="panelLog" class="mac-log" hidden></pre>
+        </div>
       </div>
     </div>
   </section>
@@ -2024,6 +2079,7 @@ function renderHandover(s) {
   $("hoSummary").textContent = h.error ? "error" : h.installed ? (eff.write ? "on" : "briefing only") : h.legacy ? "old hooks, install to switch" : partial ? "half installed" : "not installed";
   setHeadState("handoverHead", h.error || partial ? "bad" : h.installed ? "ok" : h.legacy ? "warn" : "");
   setDot("nd-handover", h.error || partial ? "bad" : h.installed ? "ok" : "");
+  $("macHandover").checked = !!(h.installed && eff.write);
   $("hoInstall").textContent = h.installed ? "⤓ Reinstall hooks" : "⤓ Install hooks";
   $("hoUninstall").disabled = !h.start_hook && !h.end_hook && !h.legacy;
 
@@ -3041,6 +3097,96 @@ window.addEventListener("scroll", () => {
 // reset, restart, revert) still refresh themselves right after.
 applySecProvider();
 refresh();
+
+// This Mac & sessions. Read on demand from /api/mac (pmset and defaults are
+// too slow for the state poll): on load, on Refresh, and after each change.
+let macState = null, panelPoll = null;
+async function loadMac() {
+  try { macState = await (await fetch("/api/mac")).json(); } catch { return; }
+  renderMac();
+}
+function renderMac() {
+  const m = macState; if (!m) return;
+  const ka = m.keep_awake, lv = ka.live;
+  for (const r of document.querySelectorAll('input[name="kaMode"]')) r.checked = r.value === ka.mode;
+  const power = lv.on_ac ? "on mains power" : "on battery";
+  const bits = [`Now ${power}${lv.battery ? ` (${esc(lv.battery)})` : ""}`,
+    `lid sleep is ${lv.sleep_disabled ? "<b>overridden</b>: the Mac stays awake with the lid shut" : "<b>normal</b>: closing the lid sleeps the Mac"}`];
+  let html = bits.join(". ") + ".";
+  if (ka.problem) html += `<div class="note warn" style="margin-top:6px">Not applied as set: ${esc(ka.problem)}. Choose the option again to reapply.</div>`;
+  const bl = (lv.blockers || []).filter(b => b.process !== "powerd");
+  if (bl.length) html += `<div class="note warn" style="margin-top:6px">Also keeping this Mac awake, whatever is chosen here: ${bl.map(b => esc((b.for || b.process + " (pid " + b.pid + ")").replace(/^caffeinate asserting on behalf of /, "caffeinate for "))).join("; ")}. A program holding "prevent system sleep" can keep a closed laptop awake on battery.</div>`;
+  $("kaLive").innerHTML = html;
+  setDot("nd-mac", ka.problem ? "warn" : ka.mode !== "off" ? "ok" : "");
+
+  const p = m.panel;
+  for (const cb of document.querySelectorAll("[data-popt]")) {
+    cb.checked = !!p.options[cb.dataset.popt];
+    cb.disabled = !p.installed;
+    cb.closest("label").classList.toggle("disabled", !p.installed);
+  }
+  $("panelStatus").innerHTML = p.installed
+    ? `<span class="pill p">installed</span>${p.repo_dir ? ` <span class="hint">from <code>${esc(p.repo_dir)}</code></span>` : ""}`
+    : `<span class="pill">not installed</span>${p.repo_dir ? "" : ` <span class="hint">installing downloads it from GitHub first</span>`}`;
+  $("panelInstall").textContent = p.installed ? "\u2913 Reinstall / update" : "\u2913 Install the panel";
+  $("panelRemove").disabled = !p.installed || p.running;
+  $("panelInstall").disabled = !!p.running;
+  const run = p.last_run;
+  if (run) {
+    $("panelLog").hidden = false;
+    $("panelLog").textContent = run.output || "";
+    if (p.running) note($("panelNote"), "warn", `${run.action === "remove" ? "Removing" : "Installing"}... this can take a minute.`);
+    else note($("panelNote"), run.ok ? "ok" : "bad", run.ok
+      ? (run.action === "remove" ? "Removed. Panels already open stop updating; close their splits." : "Installed. It opens beside the next claude you start in Ghostty.")
+      : "It failed; the output is below.");
+  }
+  clearTimeout(panelPoll);
+  if (p.running) panelPoll = setTimeout(loadMac, 1500);
+}
+for (const r of document.querySelectorAll('input[name="kaMode"]')) {
+  r.addEventListener("change", async () => {
+    if (r.value === "always" && !confirm("Stay awake with the lid shut on battery too?\n\nThe Mac will not sleep in a bag. It keeps using the battery and can get hot.")) { renderMac(); return; }
+    note($("kaNote"), "warn", "Applying...");
+    try { const x = await post("/api/keep-awake", {mode: r.value}); note($("kaNote"), "ok", x.detail); }
+    catch (e) { note($("kaNote"), "bad", e.message); }
+    loadMac();
+  });
+}
+for (const cb of document.querySelectorAll("[data-popt]")) {
+  cb.addEventListener("change", async () => {
+    try { const x = await post("/api/panel-options", {[cb.dataset.popt]: cb.checked}); note($("poNote"), "ok", x.detail); }
+    catch (e) { note($("poNote"), "bad", e.message); }
+    loadMac();
+  });
+}
+$("macHandover").addEventListener("change", async () => {
+  const on = $("macHandover").checked;
+  try {
+    const st = await (await fetch("/api/state")).json(), h = st.handover || {};
+    if (on && !h.installed) await post("/api/handover-install", {install: true});
+    const r = await post("/api/handover", {...(h.config || {}), no_write: !on});
+    note($("poNote"), "ok", r.ok);
+  } catch (e) { note($("poNote"), "bad", e.message); }
+  refresh();
+});
+$("macHoLink").onclick = e => { e.preventDefault(); scrollToEl($("handoverSection")); };
+$("panelInstall").onclick = async () => {
+  try { await post("/api/panel-install", {action: "install"}); } catch (e) { note($("panelNote"), "bad", e.message); }
+  loadMac();
+};
+let panelRemoveArmed = 0;
+$("panelRemove").onclick = async () => {
+  if (Date.now() - panelRemoveArmed > 5000) {
+    panelRemoveArmed = Date.now();
+    note($("panelNote"), "warn", "Click Remove again within 5 seconds to confirm. This also turns off Remote Control, folder names and caffeinate for new sessions, since the panel's hooks carry them out.");
+    return;
+  }
+  panelRemoveArmed = 0;
+  try { await post("/api/panel-install", {action: "remove"}); } catch (e) { note($("panelNote"), "bad", e.message); }
+  loadMac();
+};
+$("macRefresh").onclick = loadMac;
+loadMac();
 </script>
 </body>
 </html>

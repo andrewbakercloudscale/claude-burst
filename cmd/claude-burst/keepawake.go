@@ -7,75 +7,27 @@ import (
 	"strings"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
 )
 
-// keep_awake_lid_closed has two halves with different privileges:
-//
-//   - pmset SleepDisabled, machine-wide, root. The only switch that overrides
-//     clamshell sleep; `caffeinate` and `pmset sleep 0` do not. Delegated to
-//     scripts/lid-awake-root.sh, which records and restores the prior value.
-//   - Ghostty's App Nap, per-user, no root. With the lid shut every window is
-//     occluded, which is exactly when macOS naps an app and throttles the
-//     Claude Code process running under it.
-//
-// Remote Control needs nothing of its own beyond these: it is Claude Code's
-// long-poll, and it survives as long as the process runs and the network stays
-// up, which it does while the machine is awake.
+// The logic lives in internal/keepawake, shared with the dashboard.
+var (
+	parseSleepDisabled = keepawake.ParseSleepDisabled
+	sleepDisabled      = keepawake.SleepDisabled
+	onACPower          = keepawake.OnACPower
+	wantSleepDisabled  = keepawake.WantSleepDisabled
+)
 
-const ghosttyDomain = "com.mitchellh.ghostty"
-
-// parseSleepDisabled reads SleepDisabled out of `pmset -g` output.
-func parseSleepDisabled(out string) (on, known bool) {
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) == 2 && f[0] == "SleepDisabled" {
-			return f[1] == "1", f[1] == "0" || f[1] == "1"
-		}
-	}
-	return false, false
-}
-
-func sleepDisabled() (on, known bool) {
-	out, err := exec.Command("pmset", "-g").Output()
-	if err != nil {
-		return false, false
-	}
-	return parseSleepDisabled(string(out))
-}
-
-func ghosttyAppNapDisabled() bool {
-	out, err := exec.Command("defaults", "read", ghosttyDomain, "NSAppSleepDisabled").Output()
-	return err == nil && strings.TrimSpace(string(out)) == "1"
-}
-
-// Written by lid-awake-root.sh, root-owned but world-readable.
 const (
-	lidAwakeModeFile = "/etc/claude-burst/lid-awake.mode"
-	lidAwakePlist    = "/Library/LaunchDaemons/ninja.andrewbaker.claude-burst-lidawake.plist"
+	lidAwakeModeFile = keepawake.ModeFile
+	lidAwakePlist    = keepawake.Plist
 )
 
-// onACPower reads the power source from `pmset -g batt`, whose first line is
-// "Now drawing from 'AC Power'" or "... 'Battery Power'".
-func onACPower(battOut string) bool {
-	first, _, _ := strings.Cut(battOut, "\n")
-	return !strings.Contains(first, "'Battery Power'")
-}
-
-// wantSleepDisabled is what SleepDisabled should read right now for a power
-// mode: always 1 in "always", and in "ac" only while plugged in.
-func wantSleepDisabled(mode string, onAC bool) bool {
-	return mode == config.KeepAwakeAlways || onAC
-}
+func ghosttyAppNapDisabled() bool { return keepawake.GhosttyAppNapDisabled() }
 
 func applyKeepAwake(on bool, mode string) {
 	// User half first: it cannot fail for lack of sudo.
-	var err error
-	if on {
-		err = exec.Command("defaults", "write", ghosttyDomain, "NSAppSleepDisabled", "-bool", "YES").Run()
-	} else if ghosttyAppNapDisabled() {
-		err = exec.Command("defaults", "delete", ghosttyDomain, "NSAppSleepDisabled").Run()
-	}
-	if err != nil {
+	if err := keepawake.SetGhosttyAppNap(on); err != nil {
 		fmt.Printf("warning: could not change Ghostty App Nap setting: %v\n", err)
 	} else {
 		fmt.Printf("Ghostty App Nap: %s (takes effect when Ghostty is next launched)\n", map[bool]string{true: "disabled", false: "default"}[on])
