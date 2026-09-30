@@ -64,7 +64,7 @@ func newUpgradeRig(t *testing.T) *upgradeRig {
 	commitFile(t, r.work, "cmd/claude-burst/main.go", mainGo("0.2.0"), "first")
 	commitFile(t, r.work, "scripts/transparent-root.sh", "#!/bin/zsh\n", "scripts")
 	// deploy.sh stub: records that it ran, from which commit.
-	commitFile(t, r.work, "scripts/deploy.sh", "#!/bin/bash\ngit rev-parse --short HEAD > \"$DEPLOY_MARKER\"\n", "deploy")
+	commitFile(t, r.work, "scripts/deploy.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/..\" && git rev-parse --short HEAD > \"$DEPLOY_MARKER\"\n", "deploy")
 	git(t, r.work, "push", "-q", "origin", "main")
 	git(t, root, "clone", "-q", r.origin, r.checkout)
 
@@ -307,11 +307,110 @@ func TestUpgradeScriptStopsOnChangesMadeAfterTheClick(t *testing.T) {
 	}
 }
 
+// Install GitHub version: a rollback from a build with unpushed commits
+// and uncommitted changes. It deploys origin/main from a temporary
+// worktree and leaves the checkout exactly as it was.
+func TestInstallGitHubVersionRollsBackWithoutTouchingTheCheckout(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	r := newUpgradeRig(t)
+	github := git(t, r.work, "rev-parse", "--short", "HEAD")
+	commitFile(t, r.checkout, "local.txt", "mine\n", "not pushed")
+	r.running = git(t, r.checkout, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(r.checkout, "wip.txt"), []byte("wip"), 0o644)
+
+	req := httptest.NewRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader(`{"mode":"github"}`))
+	req.Host = "127.0.0.1:7788"
+	req.Header.Set("X-Claude-Burst-Admin", "1")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || len(r.launched) != 1 || !strings.Contains(rr.Body.String(), "Rolling back 1 commit") {
+		t.Fatalf("install github: %d %s launched=%v", rr.Code, rr.Body.String(), r.launched)
+	}
+
+	marker := filepath.Join(t.TempDir(), "deployed")
+	cmd := exec.Command("zsh", r.launched[0])
+	cmd.Env = append(os.Environ(), "DEPLOY_MARKER="+marker)
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("script: %v\n%s", err, out)
+	}
+	if got, _ := os.ReadFile(marker); strings.TrimSpace(string(got)) != github {
+		t.Fatalf("deployed %q, want GitHub's %q\n%s", got, github, out)
+	}
+	if git(t, r.checkout, "rev-parse", "HEAD") != r.running {
+		t.Fatal("the checkout's HEAD moved")
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.checkout, "wip.txt")); string(b) != "wip" {
+		t.Fatal("uncommitted work was touched")
+	}
+	if wt := git(t, r.checkout, "worktree", "list"); strings.Count(wt, "\n") != 0 {
+		t.Fatalf("the temporary worktree was left behind:\n%s", wt)
+	}
+}
+
+func TestInstallGitHubVersionRejectsAnUnknownMode(t *testing.T) {
+	r := newUpgradeRig(t)
+	req := httptest.NewRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader(`{"mode":"nuke"}`))
+	req.Host = "127.0.0.1:7788"
+	req.Header.Set("X-Claude-Burst-Admin", "1")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest || len(r.launched) != 0 {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// The Install GitHub version button is offered whenever the check worked,
+// labelled for what it will do.
+func TestGitHubInstallButton(t *testing.T) {
+	type b struct {
+		Text  string `json:"text"`
+		Title string `json:"title"`
+	}
+	var got map[string]*b
+	runPageJS(t, []string{"githubInstallButton"}, `
+const base = {running_version: "0.2.0", running_commit: "dc3de51", latest_version: "0.2.0", latest_commit: "98f965b"};
+out({
+  current: githubInstallButton({...base, up_to_date: true}),
+  ahead: githubInstallButton({...base, up_to_date: true, ahead: 2}),
+  behind: githubInstallButton({...base, behind: 3, can_upgrade: true}),
+  blocked: githubInstallButton({...base, behind: 3, can_upgrade: false, reason: "the checkout has uncommitted changes"}),
+  failed: githubInstallButton({error: "no network"}),
+});`, &got)
+	if c := got["current"]; c == nil || !strings.Contains(c.Text, "Reinstall GitHub version") {
+		t.Errorf("current: %+v", c)
+	}
+	if c := got["ahead"]; c == nil || !strings.Contains(c.Text, "Roll back to GitHub version") || !strings.Contains(c.Title, "2 commit") {
+		t.Errorf("ahead: %+v", c)
+	}
+	if c := got["behind"]; c == nil || !strings.Contains(c.Text, "without updating my checkout") {
+		t.Errorf("behind: %+v", c)
+	}
+	if c := got["blocked"]; c == nil || !strings.Contains(c.Text, "Install GitHub version") || !strings.Contains(c.Title, "uncommitted changes") {
+		t.Errorf("blocked: %+v", c)
+	}
+	if got["failed"] != nil {
+		t.Errorf("no button when the check failed: %+v", got["failed"])
+	}
+}
+
 // What the Check version dialog says, from each status.
 func TestVersionMessage(t *testing.T) {
+	type note struct {
+		Cls  string `json:"cls"`
+		Text string `json:"text"`
+	}
 	type m struct {
+		Tone       string `json:"tone"`
+		Mark       string `json:"mark"`
 		Title      string `json:"title"`
-		Body       string `json:"body"`
+		Sub        string `json:"sub"`
+		Note       *note  `json:"note"`
 		CanUpgrade bool   `json:"canUpgrade"`
 	}
 	var got map[string]m
@@ -320,32 +419,24 @@ const base = {running_version: "0.2.0", running_commit: "98f965b"};
 out({
   current: versionMessage({...base, up_to_date: true}),
   ahead: versionMessage({...base, up_to_date: true, ahead: 2, latest_commit: "66bdcb1"}),
-  newer: versionMessage({...base, behind: 12, can_upgrade: true, latest_version: "0.3.0", latest_commit: "abc1234",
-    new_commits: ["Release 0.3.0", "Fix <b>escaping</b>"]}),
+  newer: versionMessage({...base, behind: 12, can_upgrade: true, latest_version: "0.3.0", latest_commit: "abc1234", new_commits: ["Release 0.3.0"]}),
   blocked: versionMessage({...base, behind: 1, can_upgrade: false, reason: "the checkout has uncommitted changes", latest_commit: "abc1234", new_commits: ["x"]}),
   failed: versionMessage({...base, error: "could not reach GitHub"}),
 });`, &got)
 
-	if c := got["current"]; !strings.Contains(c.Title, "Up to date") || !strings.Contains(c.Body, "0.2.0 (98f965b)") || c.CanUpgrade {
+	if c := got["current"]; c.Tone != "ok" || c.Title != "Up to date" || !strings.Contains(c.Sub, "latest version on GitHub") || c.CanUpgrade {
 		t.Errorf("current: %+v", c)
 	}
-	if c := got["ahead"]; !strings.Contains(c.Title, "Up to date") || !strings.Contains(c.Body, "ahead of GitHub (66bdcb1) by 2 commits") || strings.Contains(c.Body, "the latest on GitHub") {
+	if c := got["ahead"]; c.Tone != "ok" || !strings.Contains(c.Sub, "Ahead of GitHub by 2 commits") || strings.Contains(c.Sub, "latest version") {
 		t.Errorf("ahead: %+v", c)
 	}
-	c := got["newer"]
-	if !strings.Contains(c.Title, "Upgrade available") || !strings.Contains(c.Title, "0.3.0 (abc1234)") || !c.CanUpgrade {
+	if c := got["newer"]; c.Tone != "new" || c.Title != "Upgrade available: 0.3.0" || c.Sub != "12 new commits on GitHub" || !c.CanUpgrade || c.Note == nil {
 		t.Errorf("newer: %+v", c)
 	}
-	if !strings.Contains(c.Body, "<b>12</b> newer commits") || !strings.Contains(c.Body, "Release 0.3.0") || !strings.Contains(c.Body, "and 10 more") {
-		t.Errorf("newer body: %s", c.Body)
-	}
-	if strings.Contains(c.Body, "<b>escaping</b>") {
-		t.Error("commit subjects must be escaped")
-	}
-	if c := got["blocked"]; c.CanUpgrade || !strings.Contains(c.Body, "uncommitted changes") {
+	if c := got["blocked"]; c.Tone != "warn" || c.CanUpgrade || c.Note == nil || c.Note.Cls != "warn" || !strings.Contains(c.Note.Text, "uncommitted changes") {
 		t.Errorf("blocked: %+v", c)
 	}
-	if c := got["failed"]; c.CanUpgrade || !strings.Contains(c.Body, "could not reach GitHub") {
+	if c := got["failed"]; c.Tone != "bad" || c.CanUpgrade || c.Note == nil || !strings.Contains(c.Note.Text, "could not reach GitHub") {
 		t.Errorf("failed: %+v", c)
 	}
 }

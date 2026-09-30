@@ -545,6 +545,40 @@
 #restartBanner[hidden] { display: none; }
 .mac-h { margin: 18px 0 6px; font-size: 14px; }
 .hs-check { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; background: var(--panel); color: var(--text); box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+/* Check version dialog: a tinted band with a status mark, the two versions
+   side by side, and what is new as a timeline. Tone comes from data-tone. */
+.ver { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; border: 1px solid var(--border); border-radius: 16px; padding: 0; background: var(--panel); color: var(--text); box-shadow: 0 24px 70px rgba(0,0,0,.32); }
+.ver::backdrop { background: rgba(15,20,35,.55); backdrop-filter: blur(2px); }
+.ver .ver-band { display: flex; gap: 14px; align-items: center; padding: 20px 22px 18px; background: var(--tone-bg); border-bottom: 1px solid var(--border); }
+.ver .ver-mark { flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; font-size: 22px; font-weight: 700; color: #fff; background: var(--tone); box-shadow: 0 0 0 5px color-mix(in srgb, var(--tone) 18%, transparent); }
+.ver h3 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
+.ver .ver-sub { margin-top: 2px; font-size: 13px; color: var(--muted); }
+.ver .ver-main { padding: 18px 22px 4px; font-size: 13.5px; line-height: 1.55; }
+.ver .ver-cmp { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+.ver .ver-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--panel-2); }
+.ver .ver-card.hl { border-color: var(--tone); background: var(--tone-bg); }
+.ver .ver-card small { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; color: var(--faint); }
+.ver .ver-card b { display: block; font-size: 18px; margin-top: 2px; }
+.ver .ver-card code { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.ver .ver-arrow { display: grid; place-items: center; font-size: 18px; color: var(--tone); font-weight: 700; }
+.ver .ver-note { margin-top: 12px; padding: 9px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); font-size: 12.5px; }
+.ver .ver-note.warn { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 35%, transparent); color: var(--warn); }
+.ver .ver-note.bad { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 35%, transparent); color: var(--bad); }
+.ver ol.ver-log { list-style: none; margin: 14px 0 0; padding: 0 0 0 14px; border-left: 2px solid var(--border); }
+.ver ol.ver-log li { position: relative; padding: 3px 0 3px 10px; font-size: 13px; }
+.ver ol.ver-log li::before { content: ""; position: absolute; left: -20px; top: 10px; width: 10px; height: 10px; border-radius: 50%; background: var(--panel); border: 2px solid var(--tone); }
+.ver ol.ver-log li:first-child::before { background: var(--tone); }
+.ver .ver-foot { display: flex; align-items: center; gap: 10px; padding: 14px 22px 18px; }
+.ver .ver-foot .spacer { flex: 1; }
+.ver .ver-foot .hint { font-size: 12px; }
+.ver[data-tone="ok"] { --tone: #2f9e5b; --tone-bg: color-mix(in srgb, #2f9e5b 10%, var(--panel)); }
+.ver[data-tone="new"] { --tone: var(--accent); --tone-bg: var(--ok-bg); }
+.ver[data-tone="warn"] { --tone: var(--warn); --tone-bg: var(--warn-bg); }
+.ver[data-tone="bad"] { --tone: var(--bad); --tone-bg: var(--bad-bg); }
+.ver[data-tone="busy"] { --tone: var(--faint); --tone-bg: var(--panel-2); }
+.ver[data-tone="busy"] .ver-mark { animation: ver-spin 1s linear infinite; }
+@keyframes ver-spin { to { transform: rotate(360deg); } }
+@media (max-width: 520px) { .ver .ver-cmp { grid-template-columns: 1fr; } .ver .ver-arrow { transform: rotate(90deg); } }
 .hs-check::backdrop { background: rgba(15,20,35,.55); }
 .hs-check h3 { margin: 0 0 14px; font-size: 16px; }
 .hs-check h4 { margin: 0 0 6px; font-size: 13px; }
@@ -1161,10 +1195,13 @@
       </div>
       <div id="hsLive" class="hint" style="margin-top:8px"></div>
       <div id="hsNote"></div>
-      <dialog id="verDialog" class="hs-check" aria-labelledby="verTitle">
-        <h3 id="verTitle">Checking for a newer version...</h3>
-        <div id="verBody" style="font-size:13.5px;line-height:1.55"></div>
-        <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="success" id="verUpgrade" hidden>&#x2913; Upgrade</button><button id="verClose">Close</button></div>
+      <dialog id="verDialog" class="ver" data-tone="busy" aria-labelledby="verTitle">
+        <div class="ver-band">
+          <div class="ver-mark" id="verMark">&#x27F3;</div>
+          <div><h3 id="verTitle">Checking for a newer version...</h3><div class="ver-sub" id="verSub">Asking GitHub</div></div>
+        </div>
+        <div class="ver-main" id="verBody"></div>
+        <div class="ver-foot"><span class="hint" id="verChecked"></span><span class="spacer"></span><button id="verClose">Close</button><button id="verGitHub" hidden>&#x2913; Install GitHub version</button><button class="primary" id="verUpgrade" hidden>&#x2913; Upgrade now</button></div>
       </dialog>
       <dialog id="hsDialog" class="hs-check" aria-labelledby="hsCheckTitle">
         <h3 id="hsCheckTitle">Test joining the hotspot</h3>
@@ -2322,7 +2359,7 @@ function renderCompaction(s) {
   const cs = c.compaction_stats || {}, kk = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "k";
   const days = c.window_days || 7;
   $("pcStats").innerHTML = [
-    [cs.compactions || 0, `compaction${cs.compactions === 1 ? "" : "s"} in ${days} days`],
+    [cs.compactions || 0, `Pauseless compaction${cs.compactions === 1 ? "" : "s"} in ${days} days`],
     [cs.largest_before ? `${kk(cs.largest_before)} &rarr; ${kk(cs.largest_after)}` : "-", "biggest single drop in context"],
     [cs.tokens_not_resent ? kk(cs.tokens_not_resent) : "-", `tokens not resent, across ${num(cs.compacted_requests || 0)} requests`],
     [cs.compacted_requests ? signedUSD(cs.net_usd) : "-", cs.compacted_requests
@@ -3176,7 +3213,7 @@ const METRICS = {
     series: [
       {name: "Sent to secondary", color: "var(--s-secondary)", v: d => d.secondary_sent_tokens},
       {name: "Removed by pruning", color: "var(--s-saved)", v: d => d.pruned_tokens},
-      {name: "Removed by compaction", color: "var(--pc-a)", v: d => Math.max(0, d.compacted_tokens || 0)},
+      {name: "Removed by Pauseless Compaction", color: "var(--pc-a)", v: d => Math.max(0, d.compacted_tokens || 0)},
     ],
     fmt: n => num(Math.round(n)), axis: compact,
     extra: d => {
@@ -3752,58 +3789,108 @@ async function loadUpgrade(refresh) {
   el.textContent = newer ? "\u27F3 Check version \u00b7 update available" : "\u27F3 Check version";
   el.classList.toggle("success", newer);
 }
-// versionMessage is what the dialog says for a status. Pure, for
-// page_script_test.go.
+// versionMessage is what the dialog says for a status: its tone, mark,
+// title, subtitle and an optional note. Pure, for page_script_test.go.
 function versionMessage(u) {
-  const running = `${u.running_version} (${u.running_commit || "unknown build"})`;
-  if (u.error) return {title: "Could not check the version", body: `The check failed: ${esc(u.error)}`, canUpgrade: false};
-  if (u.up_to_date && u.ahead > 0) return {title: "\u2713 Up to date",
-    body: `Running <b>${esc(running)}</b>, which is ahead of GitHub (${esc(u.latest_commit)}) by ${u.ahead} commit${u.ahead === 1 ? "" : "s"} not pushed yet. Nothing newer to install.`, canUpgrade: false};
-  if (u.up_to_date) return {title: "\u2713 Up to date",
-    body: `Running <b>${esc(running)}</b>, the latest on GitHub.`, canUpgrade: false};
-  const to = `${u.latest_version || ""} (${u.latest_commit})`.trim();
-  const list = (u.new_commits || []).map(c => `<li style="display:list-item">${esc(c)}</li>`).join("");
-  const more = u.behind > (u.new_commits || []).length ? `<div class="hint">and ${u.behind - u.new_commits.length} more</div>` : "";
+  if (u.error) return {tone: "bad", mark: "!", title: "Could not check the version",
+    sub: "GitHub did not answer", note: {cls: "bad", text: "The check failed: " + u.error}, canUpgrade: false};
+  if (u.up_to_date && u.ahead > 0) return {tone: "ok", mark: "\u2713", title: "Up to date",
+    sub: `Ahead of GitHub by ${u.ahead} commit${u.ahead === 1 ? "" : "s"} not pushed yet. Nothing newer to install.`, canUpgrade: false};
+  if (u.up_to_date) return {tone: "ok", mark: "\u2713", title: "Up to date",
+    sub: "You are running the latest version on GitHub.", canUpgrade: false};
+  const n = u.behind;
   return {
-    title: `Upgrade available: ${esc(to)}`,
-    body: `Running <b>${esc(running)}</b>; GitHub has <b>${u.behind}</b> newer commit${u.behind === 1 ? "" : "s"}:` +
-      `<ul class="hs-bullets" style="margin:8px 0">${list}</ul>${more}` +
-      (u.can_upgrade
-        ? `Upgrade opens a Terminal window that updates the checkout and runs the deploy: tests, build, restart (replies in flight finish first), and a rollback by itself if the new gateway is not healthy.`
-        : `<div class="note warn">It cannot upgrade from here: ${esc(u.reason)}.</div>`),
+    tone: u.can_upgrade ? "new" : "warn", mark: u.can_upgrade ? "\u2191" : "!",
+    title: `Upgrade available: ${u.latest_version || u.latest_commit}`,
+    sub: `${n} new commit${n === 1 ? "" : "s"} on GitHub`,
+    note: u.can_upgrade
+      ? {cls: "", text: "Upgrade opens a Terminal window that updates the checkout and redeploys: tests, build, restart (replies in flight finish first), and a rollback by itself if the new gateway is not healthy."}
+      : {cls: "warn", text: `It cannot upgrade from here: ${u.reason}.`},
     canUpgrade: !!u.can_upgrade,
   };
 }
+// githubInstallButton labels "install exactly what is on GitHub", which is
+// there whenever the check worked: a reinstall, a rollback from a build
+// with unpushed commits, or the way to take GitHub's version without
+// touching a checkout that cannot fast-forward. Pure, for tests.
+function githubInstallButton(u) {
+  if (!u || u.error) return null;
+  const v = `${u.latest_version || ""} (${u.latest_commit})`.trim();
+  if (u.ahead > 0 && !u.behind) return {text: "\u21A9 Roll back to GitHub version", title: `Install GitHub's ${v}, dropping the ${u.ahead} commit(s) this build has that are not pushed. Your checkout is not touched.`};
+  if (u.up_to_date) return {text: "\u21BB Reinstall GitHub version", title: `Build and install GitHub's ${v} again.`};
+  if (u.can_upgrade) return {text: "Install without updating my checkout", title: `Install GitHub's ${v} from a temporary copy, leaving your checkout where it is.`};
+  return {text: "\u2913 Install GitHub version", title: `Install GitHub's ${v} from a temporary copy; your checkout (${u.reason}) is not touched.`};
+}
+function setVerTone(tone, mark, title, sub) {
+  $("verDialog").dataset.tone = tone;
+  $("verMark").textContent = mark;
+  $("verTitle").textContent = title;
+  $("verSub").textContent = sub;
+}
 function showVersion() {
-  const m = versionMessage(upgradeState || {error: "no answer"});
-  $("verTitle").innerHTML = m.title;
-  $("verBody").innerHTML = m.body;
+  const u = upgradeState || {error: "no answer"}, m = versionMessage(u);
+  setVerTone(m.tone, m.mark, m.title, m.sub);
+  let html = "";
+  if (!u.error) {
+    const card = (label, v, c, hl, extra) => `<div class="ver-card${hl ? " hl" : ""}"><small>${label}</small><b>${esc(v || "?")}</b><code>${esc(c || "unknown build")}</code>${extra || ""}</div>`;
+    const aheadTag = u.ahead > 0 ? ` <span class="pill">+${u.ahead} not pushed</span>` : "";
+    html += `<div class="ver-cmp">${card("This Mac", u.running_version, u.running_commit, u.up_to_date, aheadTag)}` +
+      `<div class="ver-arrow">${u.up_to_date ? "=" : "\u2192"}</div>` +
+      `${card("GitHub", u.latest_version, u.latest_commit, !u.up_to_date)}</div>`;
+    const commits = u.new_commits || [];
+    if (!u.up_to_date && commits.length) {
+      html += `<ol class="ver-log">${commits.map(c => `<li>${esc(c)}</li>`).join("")}` +
+        (u.behind > commits.length ? `<li class="hint">and ${u.behind - commits.length} more</li>` : "") + `</ol>`;
+    }
+  }
+  if (m.note) html += `<div class="ver-note ${m.note.cls}">${esc(m.note.text)}</div>`;
+  $("verBody").innerHTML = html;
+  $("verChecked").textContent = u.checked_at ? "Checked " + new Date(u.checked_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "";
   $("verUpgrade").hidden = !m.canUpgrade;
   $("verUpgrade").disabled = false;
+  const g = githubInstallButton(upgradeState);
+  $("verGitHub").hidden = !g;
+  if (g) { $("verGitHub").textContent = g.text; $("verGitHub").title = g.title; $("verGitHub").disabled = false; }
+  // The main action is primary: Upgrade when there is one, otherwise this.
+  $("verGitHub").classList.toggle("primary", !!g && !m.canUpgrade);
 }
 $("upgradeTop").onclick = async () => {
   const el = $("upgradeTop");
   el.disabled = true;
-  $("verTitle").textContent = "Checking for a newer version...";
-  $("verBody").innerHTML = `<span class="hint">Asking GitHub...</span>`;
-  $("verUpgrade").hidden = true;
+  setVerTone("busy", "\u27F3", "Checking for a newer version...", "Asking GitHub");
+  $("verBody").innerHTML = ""; $("verChecked").textContent = "";
+  $("verUpgrade").hidden = true; $("verGitHub").hidden = true;
   $("verDialog").showModal();
   await loadUpgrade(true);
   el.disabled = false;
   showVersion();
 };
 $("verClose").onclick = () => $("verDialog").close();
-$("verUpgrade").onclick = async () => {
-  $("verUpgrade").disabled = true;
+async function runUpgrade(mode, btn) {
+  btn.disabled = true;
   try {
-    const r = await post("/api/upgrade");
-    $("verTitle").textContent = "Upgrading in Terminal";
-    $("verBody").innerHTML = esc(r.detail) + `<div class="hint" style="margin-top:8px">Refresh this page when the Terminal window says it is done.</div>`;
-    $("verUpgrade").hidden = true;
+    const r = await post("/api/upgrade", {mode});
+    setVerTone("busy", "\u27F3", mode === "github" ? "Installing GitHub version in Terminal" : "Upgrading in Terminal",
+      "Refresh this page when the Terminal window says it is done");
+    $("verBody").innerHTML = `<div class="ver-note">${esc(r.detail)}</div>`;
+    $("verUpgrade").hidden = true; $("verGitHub").hidden = true;
   } catch (e) {
-    $("verBody").innerHTML += `<div class="note bad">${esc(e.message)}</div>`;
-    $("verUpgrade").disabled = false;
+    $("verBody").innerHTML += `<div class="ver-note bad">${esc(e.message)}</div>`;
+    btn.disabled = false;
   }
+}
+$("verUpgrade").onclick = () => runUpgrade("upgrade", $("verUpgrade"));
+let verGitHubArmed = 0;
+$("verGitHub").onclick = () => {
+  // A rollback drops running code; ask once more on the button itself.
+  const u = upgradeState || {};
+  if (u.ahead > 0 && Date.now() - verGitHubArmed > 5000) {
+    verGitHubArmed = Date.now();
+    $("verGitHub").textContent = `Click again to drop ${u.ahead} unpushed commit${u.ahead === 1 ? "" : "s"}`;
+    return;
+  }
+  verGitHubArmed = 0;
+  runUpgrade("github", $("verGitHub"));
 };
 loadUpgrade(false);
 setInterval(() => loadUpgrade(false), 30 * 60 * 1000);
