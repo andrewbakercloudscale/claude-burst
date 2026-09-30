@@ -1,6 +1,6 @@
-# Claude Burst
+# Claude Burst: pauseless compaction and overflow for Claude Code
 
-**Your Claude subscription as the engine. Together AI's GLM as cheap overflow, with the overflow trimmed before it is paid for.**
+**Pauseless compaction for Claude Code: long sessions are summarised in the background, with no pause. Plus your Claude subscription as the engine, and Together AI's GLM as cheap overflow.**
 
 Claude Burst is a Mac-only local gateway for Claude Code:
 
@@ -76,13 +76,18 @@ See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-op
 
 **Claude Code's `/compact` stops the session while it summarises. Burst's compaction never does.**
 
+**What is pauseless compaction?** Claude Code has no pauseless compaction mode of its own: its `/compact`, and the auto-compact near the end of its context window, stop the session while the conversation is summarised. Pauseless compaction is Claude Burst's alternative. A local gateway between Claude Code and Anthropic writes the summary in a background request while you keep working, then swaps it in on your next prompt. Claude Code is unchanged, your place in the conversation is kept, and there is nothing to type. Turn it on in the dashboard under **Pauseless Compaction**.
+
+**You see it in Claude Code itself.** A line appears under the prompt you send, for example `⚡ Pauseless compaction: done. 759 earlier messages now go as a summary; context 486k → 62k`. There are lines for when a summary starts, when it is ready, when it has cut the context, and when it fails or no longer fits. They come from a `UserPromptSubmit` hook the dashboard installs (on by default, with a switch). Claude does not see them, so they cost no context.
+
 On the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window. With pauseless compaction on:
 
 - When a session's context passes **Compact at** (default 400k), Burst sends one background request, on your subscription with the session's own login, asking the same model to summarise everything before your latest prompt. It takes about 40 seconds and you keep working.
 - The summary request resends the history exactly as Claude Code last sent it, so it reads from cache rather than paying for the whole context again.
 - From your next prompt, Burst sends the summary in place of those messages. Claude Code keeps its full local history and sees no difference. CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.
 - `/clear`, `/compact` or a rewind make the summary stop fitting, and requests then go through untouched.
-- A session is compacted at most once per window (default 60 minutes), a warning is logged at **Warn at** (default 300k), and state survives a gateway restart.
+- A session is compacted at most once per window (default 60 minutes), a warning is logged at **Warn at** (default 300k), and state survives a gateway restart. A summary that fails is retried after 5 minutes, and a summary that stops fitting reopens the window at once, so a session is never left on its full history for the rest of the hour.
+- **Limit:** Claude Code never learns that Burst shortened the history, so its own copy keeps growing. If Burst's summary stops fitting after that copy has passed the 1M window, the full history is too big to send: Anthropic refuses it and Claude Code compacts in its own way, with the pause. The gateway log says which message changed, so the cause can be found.
 
 **What it did in its first day** (one long Opus 5.5 session, 2026-09-29 to 30): three summaries, the biggest drop 611k tokens to 49k with recall intact. Over 306 requests that is **$25.12 saved net**: $30.57 of context not resent, less $5.27 for the summaries and $0.19 for cache rewrites. The first two summaries cost $2.10 and $2.96 because they did not read the session from cache; the fix brought the third down to **$0.21**.
 
