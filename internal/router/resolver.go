@@ -39,9 +39,20 @@ type interceptResolver struct {
 	dialer   *net.Dialer
 	client   *http.Client // plain client; must NOT use this resolver
 
-	mu    sync.Mutex
-	cache map[string]dnsEntry
-	now   func() time.Time // swappable for tests
+	// fallbacks are further DoH endpoints tried in order when endpoint
+	// fails, and udpServers plain DNS servers tried after those. Both are
+	// empty unless withFallbacks is called, so tests never reach the
+	// internet. See withFallbacks for why they exist.
+	fallbacks  []string
+	udpServers []string
+	// cachePath, when set, keeps the last good answer on disk so a restart
+	// on a network that blocks every lookup still has an address to dial.
+	cachePath string
+
+	mu        sync.Mutex
+	cache     map[string]dnsEntry
+	preferred string           // the endpoint that last answered; tried first
+	now       func() time.Time // swappable for tests
 }
 
 type dnsEntry struct {
@@ -67,6 +78,38 @@ func newInterceptResolver(host, endpoint, pinned string) *interceptResolver {
 		cache:    map[string]dnsEntry{},
 		now:      time.Now,
 	}
+}
+
+// defaultDoHFallbacks are addressed by IP, not name, on purpose. On
+// 2026-09-30 a network started resetting every TLS connection whose SNI was
+// cloudflare-dns.com or dns.google (curl exit 35 for both, while
+// https://1.1.1.1/dns-query answered normally), so a named endpoint was the
+// single point of failure that took the whole gateway down: every request
+// to Anthropic got a 502 for as long as the Mac stayed on that network.
+var defaultDoHFallbacks = []string{
+	"https://1.1.1.1/dns-query",
+	"https://8.8.8.8/resolve",
+}
+
+// defaultUDPServers are the last resort: plain DNS on port 53, which a
+// network that filters DoH usually still lets through. Plain DNS queries
+// never read /etc/hosts because they are sent by hand, not via the system
+// resolver.
+var defaultUDPServers = []string{"1.1.1.1:53", "8.8.8.8:53"}
+
+// withFallbacks turns on the extra DoH endpoints, the plain DNS servers and
+// the on-disk cache. Production only; tests build a bare resolver so they
+// never leave the machine.
+func (r *interceptResolver) withFallbacks(cachePath string) *interceptResolver {
+	for _, e := range defaultDoHFallbacks {
+		if e != r.endpoint {
+			r.fallbacks = append(r.fallbacks, e)
+		}
+	}
+	r.udpServers = append([]string(nil), defaultUDPServers...)
+	r.cachePath = cachePath
+	r.loadCache()
+	return r
 }
 
 // DialContext is installed as the Transport's DialContext.
@@ -110,7 +153,7 @@ func (r *interceptResolver) lookup(ctx context.Context, host string) ([]string, 
 	}
 	r.mu.Unlock()
 
-	addrs, ttl, err := r.queryDoH(ctx, host)
+	addrs, ttl, err := r.queryAll(ctx, host)
 	if err != nil {
 		// Anthropic's address rarely changes, and the lookup fails mostly
 		// while the Mac is changing networks. The last address it had is far
@@ -138,13 +181,16 @@ func (r *interceptResolver) lookup(ctx context.Context, host string) ([]string, 
 	r.mu.Lock()
 	r.cache[host] = dnsEntry{addrs: addrs, expires: r.now().Add(ttl)}
 	r.mu.Unlock()
+	r.saveCache(host, addrs)
 	return addrs, nil
 }
 
-// LookupError is a failed DoH lookup with no address to fall back on. It
-// says nothing about Anthropic, which was never contacted, so the failover
-// detector treats it as this machine's network, never as an upstream
-// failure.
+// LookupError is a failed lookup, every resolver tried, with no address to
+// fall back on. Nothing was sent, so the primary retry ladder resends it
+// (safeToResend); if it still fails after that, it DOES count towards
+// failover. Treating it as "this machine's network" and never failing over
+// is what turned a DoH block on 2026-09-30 into a 502 on every request while
+// Anthropic and the secondary were both reachable.
 type LookupError struct {
 	Host string
 	Err  error
@@ -165,12 +211,76 @@ type dohResponse struct {
 	Answer []dohAnswer `json:"Answer"`
 }
 
-// queryDoH uses the JSON DoH API rather than wire-format DNS: it needs only
-// net/http and encoding/json, keeping this repo dependency-free.
+// queryAll asks each resolver in turn, starting with the one that answered
+// last time, and returns the first answer. The error, when all fail, names
+// every attempt: "the DoH server reset the connection" alone hid, on
+// 2026-09-30, that it was the only server ever asked.
+func (r *interceptResolver) queryAll(ctx context.Context, host string) ([]string, time.Duration, error) {
+	endpoints := append([]string{r.endpoint}, r.fallbacks...)
+	r.mu.Lock()
+	pref := r.preferred
+	r.mu.Unlock()
+	if pref != "" {
+		ordered := []string{pref}
+		for _, e := range endpoints {
+			if e != pref {
+				ordered = append(ordered, e)
+			}
+		}
+		endpoints = ordered
+	}
+	var errs []string
+	var lastErr error
+	for _, e := range endpoints {
+		if ctx.Err() != nil {
+			break
+		}
+		addrs, ttl, err := r.queryEndpoint(ctx, e, host)
+		if err == nil && len(addrs) > 0 {
+			r.mu.Lock()
+			r.preferred = e
+			r.mu.Unlock()
+			return addrs, ttl, nil
+		}
+		if err == nil {
+			err = fmt.Errorf("no A records")
+		}
+		lastErr = err
+		errs = append(errs, e+": "+err.Error())
+	}
+	for _, srv := range r.udpServers {
+		if ctx.Err() != nil {
+			break
+		}
+		addrs, ttl, err := queryUDP(ctx, srv, host)
+		if err == nil && len(addrs) > 0 {
+			return addrs, ttl, nil
+		}
+		if err == nil {
+			err = fmt.Errorf("no A records")
+		}
+		lastErr = err
+		errs = append(errs, "dns://"+srv+": "+err.Error())
+	}
+	if len(errs) == 1 {
+		// One resolver configured (tests, or no fallbacks): keep the bare
+		// error so callers can still match on it.
+		return nil, 0, lastErr
+	}
+	return nil, 0, fmt.Errorf("every resolver failed: %s", strings.Join(errs, "; "))
+}
+
+// queryDoH asks the configured endpoint only.
 func (r *interceptResolver) queryDoH(ctx context.Context, host string) ([]string, time.Duration, error) {
-	u, err := url.Parse(r.endpoint)
+	return r.queryEndpoint(ctx, r.endpoint, host)
+}
+
+// queryEndpoint uses the JSON DoH API rather than wire-format DNS: it needs only
+// net/http and encoding/json, keeping this repo dependency-free.
+func (r *interceptResolver) queryEndpoint(ctx context.Context, endpoint, host string) ([]string, time.Duration, error) {
+	u, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, 0, fmt.Errorf("bad DoH endpoint %q: %w", r.endpoint, err)
+		return nil, 0, fmt.Errorf("bad DoH endpoint %q: %w", endpoint, err)
 	}
 	q := u.Query()
 	q.Set("name", host)

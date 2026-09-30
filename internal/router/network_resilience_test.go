@@ -325,3 +325,32 @@ func TestPrimaryTransportErrorsAreRetriedBeforeFailover(t *testing.T) {
 		t.Fatalf("a stale write: original plus one immediate retry, got %d", len(ft2.bodies))
 	}
 }
+
+// A ladder retry that recovers must serve the response. Before this was
+// fixed the code after the ladder ran with a nil error and panicked on
+// err.Error(). The health the dashboard reads must follow: failing while
+// it fails, clear once the primary answers.
+func TestLadderRecoveryServesTheResponse(t *testing.T) {
+	old := primaryRetryDelays
+	primaryRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+	t.Cleanup(func() { primaryRetryDelays = old })
+	up := newRecordingUpstream(t)
+	s, _ := newChainServer(t, up.srv.URL, nil)
+	s.probe = func() netProbe { return netProbe{dnsOK: true} }
+	s.client.Transport = &flakyTransport{fail: 1, err: timeoutErr{}, next: s.client.Transport}
+
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, messagesRequest("claude-sonnet-5"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200 from the retry: %s", rec.Code, rec.Body.String())
+	}
+	if h := s.Health(); h.Failures != 0 || h.LastAnswer.IsZero() {
+		t.Fatalf("health after a recovered request = %+v", h)
+	}
+
+	s.client.Transport = &flakyTransport{neverRecover: true, err: timeoutErr{}, next: s.client.Transport}
+	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
+	if h := s.Health(); h.Failures == 0 || h.LastError == "" {
+		t.Fatalf("health after a failed request = %+v", h)
+	}
+}

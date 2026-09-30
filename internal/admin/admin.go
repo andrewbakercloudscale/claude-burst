@@ -243,6 +243,10 @@ type stateResponse struct {
 	// and the log of what they wrote. See handover.go.
 	Handover handover.Status `json:"handover"`
 
+	// PrimaryHealth is whether Anthropic is answering right now, as opposed
+	// to the 14-day error rate, which an outage of minutes cannot move.
+	PrimaryHealth router.PrimaryHealth `json:"primary_health"`
+
 	// Shunt is the token-shunting feature: what is switched on, whether the
 	// pieces that enforce it are actually in place, and what it has saved.
 	Shunt shuntInfo `json:"shunt"`
@@ -440,6 +444,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	resp.Shunt = s.shuntInfo(cfg)
 	resp.Context = s.contextInfo(cfg)
 	resp.Handover = handover.GetStatus()
+	resp.PrimaryHealth = s.gateway.Health()
 	writeJSON(w, resp)
 }
 

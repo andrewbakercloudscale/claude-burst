@@ -118,8 +118,13 @@ type Server struct {
 	// never silent. Held by failoverMu; not part of state.json.
 	failoverMu      sync.Mutex
 	failoverNotices []string
-	recent          recentRing
-	logger          *log.Logger
+
+	// health is whether the primary is answering right now, for the
+	// dashboard. Held by healthMu; not part of state.json.
+	healthMu sync.Mutex
+	health   PrimaryHealth
+	recent   recentRing
+	logger   *log.Logger
 	// warnedUnpriced deduplicates the "no pricing entry" warning per served
 	// model. Without it a whole overflow window logs one line per request.
 	warnedUnpriced sync.Map
@@ -153,15 +158,21 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 
 	timeout := time.Duration(cfg.ResponseHeaderTimeoutSeconds) * time.Second
 
+	// One resolver shared by both transports, so a lookup either one makes
+	// warms the cache for the other.
+	var resolver *interceptResolver
+	if cfg.Intercept.Transparent() {
+		resolver = newInterceptResolver(
+			cfg.Intercept.Host, cfg.Intercept.ResolverDoH, cfg.Intercept.UpstreamAddr,
+		).withFallbacks(resolverCachePath(statePath))
+	}
 	newTransport := func(responseHeaderTimeout time.Duration) *http.Transport {
 		t := &http.Transport{ResponseHeaderTimeout: responseHeaderTimeout}
-		if cfg.Intercept.Transparent() {
+		if resolver != nil {
 			// /etc/hosts now points the upstream hostname at this process, so
 			// the standard resolver would make the gateway call itself. See
 			// interceptResolver.
-			t.DialContext = newInterceptResolver(
-				cfg.Intercept.Host, cfg.Intercept.ResolverDoH, cfg.Intercept.UpstreamAddr,
-			).DialContext
+			t.DialContext = resolver.DialContext
 		}
 		return t
 	}
@@ -386,6 +397,51 @@ func (s *Server) addFailoverNotice(line string) {
 	s.failoverMu.Lock()
 	defer s.failoverMu.Unlock()
 	s.failoverNotices = append(s.failoverNotices, line)
+}
+
+// PrimaryHealth is what the dashboard needs to say "Anthropic is not
+// answering" instead of a green 5/5: on 2026-09-30 every request got a 502
+// for minutes while every check passed, because the only error check was a
+// 14-day average.
+type PrimaryHealth struct {
+	LastAnswer   time.Time `json:"last_answer"`          // any HTTP response from the primary
+	LastFailure  time.Time `json:"last_failure"`         // a transport error, after retries
+	LastError    string    `json:"last_error,omitempty"` // that error, verbatim
+	FailingSince time.Time `json:"failing_since"`        // first failure since the last answer
+	Failures     int       `json:"failures"`             // failures since the last answer
+}
+
+func (s *Server) notePrimaryAnswered(slot string) {
+	if slot != "primary" {
+		return
+	}
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	s.health.LastAnswer = time.Now()
+	s.health.Failures = 0
+	s.health.FailingSince = time.Time{}
+}
+
+func (s *Server) notePrimaryFailure(slot string, err error) {
+	if slot != "primary" || err == nil {
+		return
+	}
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	now := time.Now()
+	if s.health.Failures == 0 {
+		s.health.FailingSince = now
+	}
+	s.health.Failures++
+	s.health.LastFailure = now
+	s.health.LastError = err.Error()
+}
+
+// Health returns a copy of the primary's current health.
+func (s *Server) Health() PrimaryHealth {
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	return s.health
 }
 
 // takeFailoverNotices returns and clears the pending lines.
@@ -964,6 +1020,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			// network. Failing over would only make the request wait on a second
 			// dead host (four Together timeouts in a row, 2026-09-21), and it
 			// would arm a window blaming a model for a laptop changing WiFi.
+			s.notePrimaryFailure(slot, err)
 			s.logger.Printf("req=%s no_failover route=%s reason=%q (local network unavailable: control DNS failed)", rid, p.Name(), "network down")
 			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
@@ -1006,19 +1063,33 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 				s.logger.Printf("req=%s retry route=%s attempt=%d worked; no failover", rid, p.Name(), i+2)
 			}
 		}
-		if allowFailover {
-			if d := fd.OnError(err); d.Failover {
-				s.activateOverflow(model, d.ResetAt, d.Claim, d.Reason)
-				s.replayElsewhere(w, in, body, slot, p, model, serveModel, destination, start, 0, d, ladder,
-					fmt.Sprintf("transport error: %v", err))
-				return
+		if err == nil {
+			// A retry recovered. Fall through to the normal response path:
+			// before this, the code below ran with a nil err, and err.Error()
+			// panicked the handler instead of returning the good response.
+			s.recent.add(RecentResponse{
+				Time: start, RequestID: rid, Method: in.Method, Path: in.URL.Path,
+				Slot: slot, Route: p.Name(), Model: serveModel, Status: resp.StatusCode,
+				DurationMS: time.Since(start).Milliseconds(), Headers: filterHeaders(resp.Header),
+				Destination: destination,
+			})
+		} else {
+			s.notePrimaryFailure(slot, err)
+			if allowFailover {
+				if d := fd.OnError(err); d.Failover {
+					s.activateOverflow(model, d.ResetAt, d.Claim, d.Reason)
+					s.replayElsewhere(w, in, body, slot, p, model, serveModel, destination, start, 0, d, ladder,
+						fmt.Sprintf("transport error: %v", err))
+					return
+				}
 			}
+			s.logger.Printf("req=%s error stage=upstream_call route=%s err=%v", rid, p.Name(), err)
+			http.Error(w, p.Name()+" upstream error: "+err.Error(), http.StatusBadGateway)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "upstream call failed: "+err.Error(), destination)
+			return
 		}
-		s.logger.Printf("req=%s error stage=upstream_call route=%s err=%v", rid, p.Name(), err)
-		http.Error(w, p.Name()+" upstream error: "+err.Error(), http.StatusBadGateway)
-		s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "upstream call failed: "+err.Error(), destination)
-		return
 	}
+	s.notePrimaryAnswered(slot)
 
 	// Successful responses must stream immediately; don't buffer them.
 	if resp.StatusCode < 400 {
@@ -1253,6 +1324,11 @@ func peerAnswered(err error) bool {
 // run.
 func safeToResend(err error) bool {
 	if isStaleWriteFailure(err) {
+		return true
+	}
+	// A failed lookup never opened a connection, so nothing was sent.
+	var lookupErr *LookupError
+	if errors.As(err, &lookupErr) {
 		return true
 	}
 	var ne net.Error
