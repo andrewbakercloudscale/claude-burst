@@ -1,0 +1,36 @@
+#!/bin/bash
+# Source login files so `opencode` is on PATH no matter how we were launched.
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+  [ -f "$rc" ] && source "$rc" 2>/dev/null || true
+done
+
+OPENCODE="$(command -v opencode 2>/dev/null || true)"
+if [ -z "$OPENCODE" ]; then
+  for candidate in \
+    "$HOME/.local/bin/opencode" \
+    "$HOME/.npm-global/bin/opencode" \
+    "/opt/homebrew/bin/opencode" \
+    "/usr/local/bin/opencode" \
+    "/usr/bin/opencode"; do
+    if [ -x "$candidate" ]; then OPENCODE="$candidate"; break; fi
+  done
+fi
+if [ -z "$OPENCODE" ]; then
+  osascript -e 'display alert "OpenCode not found" message "Install OpenCode, or make sure the opencode command is on your PATH."'
+  exit 1
+fi
+
+# First argument is the folder Finder passed in.
+FOLDER="$1"
+if [ -n "$FOLDER" ] && [ -d "$FOLDER" ]; then
+  cd "$FOLDER"
+fi
+
+# Auto-open the live OpenCode usage panel in a right-hand split. This
+# window is always freshly created by the Finder Service (`open -na`), so
+# there's no risk of double-launching — runs in the background so it
+# doesn't delay OpenCode starting.
+[ -x "$HOME/.local/bin/opencode-panel-launch.sh" ] && "$HOME/.local/bin/opencode-panel-launch.sh" &
+
+# caffeinate -i keeps the Mac awake while a session is running.
+caffeinate -i "$OPENCODE"

@@ -612,6 +612,7 @@
   <a class="navlink" data-target="handoverSection"><span class="nd" id="nd-handover"></span><span class="label">Session handover</span></a>
   <a class="navlink" data-target="sec-sessions"><span class="nd" id="nd-sessions"></span><span class="label">Session options</span></a>
   <a class="navlink" data-target="sec-panel"><span class="nd" id="nd-panel"></span><span class="label">Usage panel</span></a>
+  <a class="navlink" data-target="sec-finder"><span class="nd" id="nd-finder"></span><span class="label">Finder shortcuts</span></a>
 
   <div class="navgroup">This Mac</div>
   <a class="navlink" data-target="sec-mac"><span class="nd" id="nd-mac"></span><span class="label">Lid &amp; hotspot</span></a>
@@ -1087,6 +1088,19 @@
       <div id="pnNote"></div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section id="sec-finder" style="scroll-margin-top:70px">
+    <h2>Finder shortcuts <span class="applies" data-where="~/Library/Services, ~/.local/bin" data-when="now"></span></h2>
+    <div class="body">
+      <div class="hint">Right-click any folder in Finder, then <b>Services</b> (or <b>Quick Actions</b>), to open a new Ghostty window in that folder running Claude Code or OpenCode. Install adds only the shortcuts that are missing and never overwrites one that is already there. Remove deletes the shortcuts it can recognise as these; the launcher scripts in <code>~/.local/bin</code> stay, so the usage panel's changes to them survive a reinstall. Needs Ghostty.</div>
+      <div id="finderStatus" style="margin:10px 0"></div>
+      <div class="row">
+        <button class="primary" id="finderInstall">&#x2913; Install Finder shortcuts</button>
+        <button id="finderRemove">&#x2715; Remove Finder shortcuts</button>
+      </div>
+      <div id="finderNote"></div>
     </div>
   </section>
 
@@ -3695,8 +3709,53 @@ $("panelRemove").onclick = async () => {
   try { await post("/api/panel-install", {action: "remove"}); } catch (e) { note($("panelNote"), "bad", e.message); }
   loadMac();
 };
-$("macRefresh").onclick = () => { loadMac(); loadSettings(); };
+$("macRefresh").onclick = () => { loadMac(); loadSettings(); loadFinder(); };
 loadMac();
+
+// Finder shortcuts. The buttons reflect what is already there: Install is
+// disabled once every shortcut exists, Remove while none of ours does.
+let finderState = null;
+async function loadFinder() {
+  try { finderState = await (await fetch("/api/finder")).json(); } catch { return; }
+  renderFinder();
+}
+function renderFinder() {
+  const f = finderState; if (!f) return;
+  const list = f.shortcuts || [];
+  const missing = list.filter(x => !x.installed);
+  const removable = list.filter(x => x.installed && x.ours);
+  $("finderStatus").innerHTML = (f.ghostty ? "" : `<div class="note warn">Ghostty is not installed, so there is nothing for these to open. Get it from <a href="https://ghostty.org" target="_blank" rel="noopener">ghostty.org</a>.</div>`) +
+    list.map(x => `<div style="margin:4px 0">${x.installed ? `<span class="pill p">installed</span>` : `<span class="pill">not installed</span>`} <b>${esc(x.name)}</b>${
+      x.installed && !x.ours ? ` <span class="hint">(not made here; Remove leaves it alone)</span>` : ""}${
+      x.tool_found ? "" : ` <span class="hint"><code>${esc(x.tool)}</code> is not installed</span>`}</div>`).join("");
+  setDot("nd-finder", list.length && !missing.length ? "ok" : "");
+  $("finderInstall").disabled = !missing.length || !f.ghostty;
+  $("finderInstall").textContent = !missing.length ? "\u2713 Already installed"
+    : missing.length === list.length ? "\u2913 Install Finder shortcuts"
+    : `\u2913 Install the missing one${missing.length === 1 ? "" : "s"} (${missing.length})`;
+  $("finderInstall").title = !missing.length ? "Every shortcut is already in ~/Library/Services" : "";
+  $("finderRemove").disabled = !removable.length;
+  $("finderRemove").title = removable.length ? "" : "Nothing to remove";
+}
+async function finderAction(action) {
+  try {
+    const r = await post("/api/finder-install", {action});
+    finderState = r.finder; renderFinder();
+    note($("finderNote"), "ok", r.done.join("\n"));
+  } catch (e) { note($("finderNote"), "bad", e.message); loadFinder(); }
+}
+$("finderInstall").onclick = () => finderAction("install");
+let finderRemoveArmed = 0;
+$("finderRemove").onclick = () => {
+  if (Date.now() - finderRemoveArmed > 5000) {
+    finderRemoveArmed = Date.now();
+    note($("finderNote"), "warn", "Click Remove again within 5 seconds to confirm.");
+    return;
+  }
+  finderRemoveArmed = 0;
+  finderAction("remove");
+};
+loadFinder();
 
 // ---- Settings: "stored where, applies when" chips -----------------------
 for (const el of document.querySelectorAll(".applies")) {

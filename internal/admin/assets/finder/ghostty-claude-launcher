@@ -1,0 +1,30 @@
+#!/bin/bash
+# Source login files so `claude` is on PATH no matter how we were launched.
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+  [ -f "$rc" ] && source "$rc" 2>/dev/null || true
+done
+
+CLAUDE="$(command -v claude 2>/dev/null || true)"
+if [ -z "$CLAUDE" ]; then
+  for candidate in \
+    "$HOME/.local/bin/claude" \
+    "$HOME/.npm-global/bin/claude" \
+    "/opt/homebrew/bin/claude" \
+    "/usr/local/bin/claude" \
+    "/usr/bin/claude"; do
+    if [ -x "$candidate" ]; then CLAUDE="$candidate"; break; fi
+  done
+fi
+if [ -z "$CLAUDE" ]; then
+  osascript -e 'display alert "Claude Code not found" message "Install Claude Code, or make sure the claude command is on your PATH."'
+  exit 1
+fi
+
+# First argument is the folder Finder passed in.
+FOLDER="$1"
+if [ -n "$FOLDER" ] && [ -d "$FOLDER" ]; then
+  cd "$FOLDER"
+fi
+
+# caffeinate -i keeps the Mac awake while a session is running.
+caffeinate -i "$CLAUDE"
