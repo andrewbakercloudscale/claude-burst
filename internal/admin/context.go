@@ -44,6 +44,8 @@ type contextInfo struct {
 	Sessions   []router.CompactionSession `json:"sessions"`
 	// CompactionStats is what compaction did over the same window.
 	CompactionStats metrics.CompactionStats `json:"compaction_stats"`
+	// PromptNotice is whether the prompt notice hook is in settings.json.
+	PromptNotice string `json:"prompt_notice"`
 }
 
 type verdict struct {
@@ -67,6 +69,7 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.USDNotSpent = float64(ci.TokensNotSent) / 1_000_000 * cfg.Pricing[cfg.Secondary.Model].InputPerMTok
 	ci.Compaction = cfg.PrimaryCompaction
 	ci.Sessions = s.gateway.CompactionSessions()
+	ci.PromptNotice = promptNoticeState()
 	ci.CompactionStats, _ = metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
 	ci.Verdict = pruneVerdict(ci)
 	ci.CacheVerdict = cacheVerdict(eff)
@@ -227,6 +230,12 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 	state := "compaction off"
 	if req.Enabled {
 		state = fmt.Sprintf("compaction on: warn at %dk, compact at %dk, at most once per %d minutes per session", res.WarnAtTokens/1000, res.CompactAtTokens/1000, res.WindowMinutes)
+		if !req.NoPromptNotice {
+			state += ", shown under your prompt"
+		}
+	}
+	if err := SyncPromptNoticeHook(cfg); err != nil {
+		state += "; the prompt notice hook could not be updated: " + err.Error()
 	}
 	writeJSON(w, map[string]string{"ok": state + "; applied to the running gateway"})
 }

@@ -66,6 +66,9 @@ type CompactionConfig struct {
 	WarnAtTokens    int64 `json:"warn_at_tokens,omitempty"`
 	CompactAtTokens int64 `json:"compact_at_tokens,omitempty"`
 	WindowMinutes   int   `json:"window_minutes,omitempty"`
+	// NoPromptNotice turns off the lines Claude Code shows under a prompt
+	// when a compaction starts, is ready, swaps in or fails. On by default.
+	NoPromptNotice bool `json:"no_prompt_notice,omitempty"`
 }
 
 const (

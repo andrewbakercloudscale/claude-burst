@@ -235,6 +235,9 @@ func serve(args []string) {
 	if cfg.AdminListen != "" {
 		a := admin.New(srv, metricsPath, version, cfg.AdminHostname, rootHelperPath())
 		go a.StartNotifier(context.Background())
+		if err := admin.SyncPromptNoticeHook(cfg); err != nil {
+			logger.Printf("error stage=prompt_notice_hook err=%v", err)
+		}
 		fmt.Printf("admin:  %s\n", admin.Describe(cfg.AdminListen))
 		if cfg.AdminHostname != "" {
 			_, port, _ := strings.Cut(cfg.AdminListen, ":")

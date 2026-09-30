@@ -60,6 +60,25 @@ type compactState struct {
 	// the cause instead of guessing.
 	marks, nextMarks, pendingMarks []string
 	seen                           time.Time
+	// Memory only, for the prompt notice hook: lines not yet shown, whether
+	// the waiting summary has been announced, and the context before the
+	// latest swap until a response reports the context after it.
+	notices       []string
+	readyShown    bool
+	swappedFrom   int64
+	swappedMsgs   int
+}
+
+// maxNotices bounds a session's unshown notices, for a session whose
+// prompts never run the hook.
+const maxNotices = 5
+
+// notice queues a line for the session's next prompt. Caller holds mu.
+func (st *compactState) notice(format string, a ...any) {
+	st.notices = append(st.notices, "\u26a1 Pauseless compaction: "+fmt.Sprintf(format, a...))
+	if len(st.notices) > maxNotices {
+		st.notices = st.notices[len(st.notices)-maxNotices:]
+	}
 }
 
 type compactor struct {
@@ -216,7 +235,12 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		return
 	}
 	s.compaction.mu.Lock()
-	s.compaction.state(ci.key).lastContext = ctxTokens
+	st := s.compaction.state(ci.key)
+	st.lastContext = ctxTokens
+	if st.swappedFrom > 0 && ci.applied {
+		st.notice("done. %d earlier messages now go as a summary; context %dk \u2192 %dk", st.swappedMsgs, st.swappedFrom/1000, ctxTokens/1000)
+		st.swappedFrom, st.swappedMsgs = 0, 0
+	}
 	s.compaction.mu.Unlock()
 }
 
@@ -259,12 +283,14 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches (cleared, compacted or rewound; %s); window reopened", rid, key, divergence(msgs, st.p0, st.marks))
 		st.summary, st.hash, st.p0, st.swapAt, st.marks = "", "", 0, 0, nil
 		st.startedAt = time.Time{}
+		st.notice("the summary no longer fits (history cleared, compacted or rewound), so the full history goes again; a new summary can start at once")
 		dirty = true
 	}
 	if st.next != "" && (len(msgs) <= st.nextP0 || prefixHash(msgs, st.nextP0) != st.nextHash) {
 		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary (%s); window reopened", rid, key, divergence(msgs, st.nextP0, st.nextMarks))
 		st.next, st.nextHash, st.nextP0, st.nextMarks = "", "", 0, nil
 		st.startedAt = time.Time{}
+		st.notice("the waiting summary no longer fits (history cleared, compacted or rewound) and was dropped; a new one can start at once")
 		dirty = true
 	}
 
@@ -298,6 +324,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			hash := prefixHash(msgs, p)
 			st.pendingMarks = messageMarks(msgs, p)
 			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages", rid, key, st.lastContext/1000, p, len(msgs))
+			st.notice("context is %dk, so %d earlier messages are being summarised in the background. Keep working: it swaps in at a later prompt, with no pause", st.lastContext/1000, p)
 			s.compaction.running.Add(1)
 			// Its own copy of top: this same request may still be rewritten
 			// below (the current summary stays in force), which writes
@@ -327,6 +354,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		st.marks, st.nextMarks = st.nextMarks, nil
 		st.next, st.nextP0, st.nextHash = "", 0, ""
 		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary", rid, key, st.p0)
+		st.swappedFrom, st.swappedMsgs, st.readyShown = st.lastContext, st.p0, false
 		dirty = true
 	}
 	if st.summary == "" || st.swapAt == 0 {
@@ -397,9 +425,15 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 			st.startedAt = time.Now().Add(retryAfterFailure - w)
 		}
 		s.logger.Printf("compaction failed session=%s: %v (next attempt in %s)", key, err, retryAfterFailure)
+		reason := err.Error()
+		if len(reason) > 160 {
+			reason = reason[:160] + "..."
+		}
+		st.notice("the summary failed (%s); the next attempt is in %s", reason, retryAfterFailure)
 		return
 	}
 	st.next, st.nextP0, st.nextHash, st.nextMarks = summary, p0, hash, st.pendingMarks
+	st.readyShown = false
 	s.logger.Printf("compaction summary ready session=%s: %d messages summarised into %d characters; applies from the next plain prompt", key, p0, len(summary))
 }
 
@@ -551,6 +585,37 @@ func readSSEText(r io.Reader) (text, stop string, tok tokenUsage) {
 		}
 	}
 	return sb.String(), stop, tok
+}
+
+// PromptNotices returns, and forgets, the lines to show under the prompt
+// session sid is sending now: what compaction did since its last prompt,
+// and a waiting summary, which swaps in with this very prompt. Nothing when
+// compaction or the notices are off.
+func (s *Server) PromptNotices(sid string) []string {
+	s.compaction.mu.Lock()
+	defer s.compaction.mu.Unlock()
+	cfg := s.compaction.cfg
+	if sid == "" || !cfg.Enabled || cfg.NoPromptNotice {
+		return nil
+	}
+	keys := make([]string, 0, 2)
+	for k := range s.compaction.sessions {
+		if strings.HasPrefix(k, sid+"|") {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var out []string
+	for _, k := range keys {
+		st := s.compaction.sessions[k]
+		out = append(out, st.notices...)
+		st.notices = nil
+		if st.next != "" && !st.readyShown {
+			st.readyShown = true
+			out = append(out, fmt.Sprintf("\u26a1 Pauseless compaction: the summary is ready and swaps in with this message (%d earlier messages, context %dk now)", st.nextP0, st.lastContext/1000))
+		}
+	}
+	return out
 }
 
 // CompactionSession is one tracked session, for the admin page.

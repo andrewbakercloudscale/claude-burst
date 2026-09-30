@@ -108,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/pruning", s.mutating(s.handlePruning))
 	mux.HandleFunc("/api/compaction", s.mutating(s.handleCompaction))
+	mux.HandleFunc("/api/prompt-notice", s.mutating(s.handlePromptNotice))
 	mux.HandleFunc("/api/handover", s.mutating(s.handleHandover))
 	mux.HandleFunc("/api/handover-install", s.mutating(s.handleHandoverInstall))
 	mux.HandleFunc("/api/handover-audit", s.readOnly(s.handleHandoverAudit))

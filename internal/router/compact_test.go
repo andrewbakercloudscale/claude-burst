@@ -639,3 +639,39 @@ func TestDroppedSummaryNamesTheChangeAndReopensTheWindow(t *testing.T) {
 	// not an hour later.
 	waitFor(t, func() bool { return f.summaryCount() > n })
 }
+
+func TestPromptNoticesFollowACompaction(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+
+	got := strings.Join(s.PromptNotices("S"), "\n")
+	if !strings.Contains(got, "450k, so 4 earlier messages are being summarised") || !strings.Contains(got, "ready and swaps in with this message") {
+		t.Fatalf("want the start and the ready line, got:\n%s", got)
+	}
+	if again := s.PromptNotices("S"); len(again) != 0 {
+		t.Fatalf("each line is shown once, got %q", again)
+	}
+	if other := s.PromptNotices("T"); len(other) != 0 {
+		t.Fatalf("another session sees nothing, got %q", other)
+	}
+
+	f.mu.Lock()
+	f.context = 60_000
+	f.mu.Unlock()
+	send(t, s, "S", all[:9])
+	got = strings.Join(s.PromptNotices("S"), "\n")
+	if !strings.Contains(got, "done. 4 earlier messages now go as a summary; context 450k → 60k") {
+		t.Fatalf("want the result of the swap, got:\n%s", got)
+	}
+
+	// Turned off: nothing, and nothing queued is shown later either.
+	s.SetCompaction(config.CompactionConfig{Enabled: true, NoPromptNotice: true})
+	send(t, s, "S", msgs(t, `[{"role":"user","content":"a fresh start"}]`))
+	if got := s.PromptNotices("S"); got != nil {
+		t.Fatalf("notices off, got %q", got)
+	}
+}
