@@ -606,7 +606,9 @@ func (s *Server) PromptNotices(sid string) []string {
 	defer s.compaction.mu.Unlock()
 	cfg := s.compaction.cfg
 	if sid == "" || !cfg.Enabled || cfg.NoPromptNotice {
-		return nil
+		// Compaction lines obey these; failover ones do not, because
+		// spending money is the one thing that must never be silent.
+		return s.takeFailoverNotices()
 	}
 	keys := make([]string, 0, 2)
 	for k := range s.compaction.sessions {
@@ -615,7 +617,7 @@ func (s *Server) PromptNotices(sid string) []string {
 		}
 	}
 	sort.Strings(keys)
-	var out []string
+	out := s.takeFailoverNotices()
 	for _, k := range keys {
 		st := s.compaction.sessions[k]
 		out = append(out, st.notices...)

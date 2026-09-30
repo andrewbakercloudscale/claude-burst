@@ -112,8 +112,14 @@ type Server struct {
 	statePath         string
 	state             State
 	mu                sync.RWMutex
-	recent            recentRing
-	logger            *log.Logger
+
+	// failoverNotices are lines waiting to be shown in Claude Code's window
+	// at the next prompt of any session: a switch to the paid secondary is
+	// never silent. Held by failoverMu; not part of state.json.
+	failoverMu      sync.Mutex
+	failoverNotices []string
+	recent          recentRing
+	logger          *log.Logger
 	// warnedUnpriced deduplicates the "no pricing entry" warning per served
 	// model. Without it a whole overflow window logs one line per request.
 	warnedUnpriced sync.Map
@@ -356,6 +362,41 @@ func (s *Server) HasSecondary() bool {
 	return s.secondary != nil
 }
 
+// plainReason says, in one line of plain English, why Burst started sending
+// requests to the paid secondary.
+func plainReason(claim, reason string) string {
+	switch claim {
+	case "metered_sustained_failures", "metered_single_failure":
+		return "the connection to Anthropic kept failing"
+	case "five_hour":
+		return "the subscription's five-hour limit was reached"
+	case "weekly":
+		return "the subscription's weekly limit was reached"
+	}
+	if r := strings.TrimSpace(reason); r != "" {
+		return r
+	}
+	return "Anthropic refused the model"
+}
+
+// addFailoverNotice queues a line for Claude Code's window, shown at each
+// session's next prompt: a switch to the secondary spends money, so it is
+// never silent.
+func (s *Server) addFailoverNotice(line string) {
+	s.failoverMu.Lock()
+	defer s.failoverMu.Unlock()
+	s.failoverNotices = append(s.failoverNotices, line)
+}
+
+// takeFailoverNotices returns and clears the pending lines.
+func (s *Server) takeFailoverNotices() []string {
+	s.failoverMu.Lock()
+	defer s.failoverMu.Unlock()
+	out := s.failoverNotices
+	s.failoverNotices = nil
+	return out
+}
+
 // isOutageClaim reports whether a failover was armed by failures rather than by
 // Anthropic saying a limit was reached.
 func isOutageClaim(claim string) bool { return strings.HasPrefix(claim, "metered_") }
@@ -375,6 +416,7 @@ func (s *Server) releaseOutageWindow(model string) {
 	delete(s.state.ModelClaim, model)
 	s.saveStateLocked()
 	s.logger.Printf("released outage window for model=%q: the secondary also failed at the transport level, so the next request tries the primary", model)
+	s.addFailoverNotice(fmt.Sprintf("\u26a1 Claude Burst: back on Anthropic for %s. The secondary could not answer either, so the outage is being treated as this machine's network.", model))
 }
 
 // ClearOverflow reopens every route: the forced account-wide window and each
@@ -564,8 +606,19 @@ func (s *Server) activateOverflow(model string, resetAt int64, claim, reason str
 	s.state.LimitClaim, s.state.LastReason = claim, reason
 	s.saveStateLocked()
 	s.mu.Unlock()
+	// Shown in Claude Code's window at each session's next prompt, so a
+	// switch to the paid secondary is never silent.
+	what := "requests"
+	if model != "" {
+		what = model + " requests"
+	}
+	s.addFailoverNotice(fmt.Sprintf("\u26a1 Claude Burst: %s now go to the secondary until %s, because %s", what, time.Unix(resetAt, 0).Format("15:04"), plainReason(claim, reason)))
 	s.logger.Printf("model=%q rejected until %s claim=%s reason=%s", model, time.Unix(resetAt, 0).Format(time.RFC3339), claim, reason)
 }
+
+// primaryRetryDelays are the waits between retries of a primary request that
+// failed at the transport level, about 30 seconds in all. A variable for tests.
+var primaryRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
 
 // ServeHTTP is the entrypoint Go's http package calls for every request. It
 // never contains business logic itself: its only jobs are to (1) assign a
@@ -837,6 +890,10 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	}
 
 	resp, err := s.clientFor(in.URL.Path).Do(req)
+	// A stale write on the FIRST attempt gets one immediate retry on a fresh
+	// connection (below), then the timed ladder; the ladder does not repeat
+	// that first retry.
+	staleWriteRetried := false
 	if err != nil && isStaleWriteFailure(err) && in.Context().Err() == nil {
 		// The kept-alive connection died under us (a network switch), and the
 		// write onto it failed, so the server never saw the request. Drop the
@@ -849,6 +906,12 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			s.logger.Printf("req=%s retry route=%s reason=%q -> one more attempt on a fresh connection", rid, p.Name(), err)
 			req = retry
 			resp, err = s.clientFor(in.URL.Path).Do(req)
+			staleWriteRetried = true
+			// Counted once here, after the immediate retry also failed: the
+			// ladder below must not count it again per step.
+			if err != nil && isStaleWriteFailure(err) && allowFailover && slot == "primary" && !isLocalConnectivityFailure(err) && !isClientCancellation(err) {
+				_ = fd.OnError(err)
+			}
 		}
 	}
 	if resp != nil {
@@ -905,6 +968,43 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
+		}
+		// A transport error on the primary is retried for about 30 seconds
+		// before it can count towards failing over -- and only once the local
+		// network is known to be up, so a dead network still answers fast.
+		// Anthropic is almost never what failed: it is a network change, a
+		// stalled mobile link or a DNS hiccup, and each of those sent requests
+		// to the paid secondary on 2026-09-30 when a single failure was enough.
+		// Nothing has reached the client yet at this point, so a retry is
+		// invisible to it.
+		for i, d := range primaryRetryDelays {
+			// Only errors with no bytes read from the server are retried at
+			// all. A read-side reset may mean the server already ran the
+			// request, so replaying it could run one generation twice
+			// (TestReadSideResetIsNotRetried). A stale write already had its
+			// one immediate fresh-connection retry above; the ladder then
+			// waits for the network to recover instead of hammering.
+			if err == nil || slot != "primary" || !allowFailover || in.Context().Err() != nil || staleWriteRetried || !safeToResend(err) {
+				break
+			}
+			s.logger.Printf("req=%s retry route=%s attempt=%d of %d in %s reason=%q", rid, p.Name(), i+2, len(primaryRetryDelays)+1, d, err)
+			select {
+			case <-in.Context().Done():
+			case <-time.After(d):
+			}
+			if in.Context().Err() != nil {
+				break
+			}
+			s.clientFor(in.URL.Path).CloseIdleConnections()
+			retry, _, perr := p.Prepare(in.Context(), in, body)
+			if perr != nil {
+				break
+			}
+			req = retry
+			resp, err = s.clientFor(in.URL.Path).Do(req)
+			if err == nil {
+				s.logger.Printf("req=%s retry route=%s attempt=%d worked; no failover", rid, p.Name(), i+2)
+			}
 		}
 		if allowFailover {
 			if d := fd.OnError(err); d.Failover {
@@ -1144,6 +1244,22 @@ func (p netProbe) snapshot(route string, triggerErr error) string {
 // probe above is worth consulting.
 func peerAnswered(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET)
+}
+
+// safeToResend says whether a transport error left the request certainly
+// unrun on the server, so replaying it cannot double-charge or double-run:
+// a write-side failure (nothing was sent), or a timeout or EOF with no
+// response bytes read. A read-side reset is NOT safe: the request may have
+// run.
+func safeToResend(err error) bool {
+	if isStaleWriteFailure(err) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return false
 }
 
 // isStaleWriteFailure reports whether err is a WRITE onto a connection that
