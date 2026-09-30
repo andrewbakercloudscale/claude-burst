@@ -1078,7 +1078,7 @@
       <div id="kaNote"></div>
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
-      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst joins it whenever this Mac has been offline for a minute. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
+      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it once this Mac has been offline for about 20 seconds, then 30 seconds after each attempt, up to 30 attempts (about half an hour), and starts again after the next time it is back online. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
       <div class="set-grid" style="margin-top:10px">
         <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select></label>
         <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select></label>
@@ -3733,7 +3733,7 @@ $("hsJoin").onclick = () => {
     "On the phone, open <b>Settings &gt; Personal Hotspot</b> and leave that screen open: an iPhone only broadcasts while it is open or something is connected.",
     "Turn on <b>Allow Others to Join</b>, and <b>Maximise Compatibility</b> on an iPhone 12 or later.",
     pw,
-    "This Mac leaves its current Wi-Fi for up to a minute. Open sessions reconnect afterwards.",
+    "This Mac leaves its current Wi-Fi for up to two minutes: a join is tried up to 3 times. Open sessions reconnect afterwards.",
   ];
   $("hsItems").innerHTML = (known ? "" : `<li class="bad"><b>${esc(ssid)}</b> is not a network this Mac has joined before: join it once from the Wi-Fi menu first.</li>`) +
     items.map(t => `<li>${t}</li>`).join("");
@@ -3749,7 +3749,7 @@ $("hsStart").onclick = async () => {
   const ssid = $("hsSsid").value;
   $("hsStart").disabled = true;
   $("hsResultHead").hidden = false;
-  $("hsResult").innerHTML = `<li><span class="mark">&#x22EF;</span><span>Joining ${esc(ssid)}... up to a minute</span></li>`;
+  $("hsResult").innerHTML = `<li><span class="mark">&#x22EF;</span><span>Joining ${esc(ssid)}... up to 3 attempts, up to two minutes</span></li>`;
   try {
     if ($("hsPw").value) { await post("/api/settings-save", {hotspot_password: $("hsPw").value}); $("hsPw").value = ""; }
     const r = await post("/api/hotspot-join", {ssid});

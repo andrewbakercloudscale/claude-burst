@@ -63,10 +63,10 @@ type compactState struct {
 	// Memory only, for the prompt notice hook: lines not yet shown, whether
 	// the waiting summary has been announced, and the context before the
 	// latest swap until a response reports the context after it.
-	notices       []string
-	readyShown    bool
-	swappedFrom   int64
-	swappedMsgs   int
+	notices     []string
+	readyShown  bool
+	swappedFrom int64
+	swappedMsgs int
 }
 
 // maxNotices bounds a session's unshown notices, for a session whose
