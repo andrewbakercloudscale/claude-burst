@@ -148,11 +148,12 @@ func (f *fakeAnthropic) handler(w http.ResponseWriter, r *http.Request) {
 		f.summaries++
 	}
 	ctx := f.context
+	n := f.summaries
 	f.mu.Unlock()
 	w.Header().Set("content-type", "text/event-stream")
 	text := "ok"
 	if isSummary {
-		text = "<summary>THE GIST OF THE FIRST TASK</summary>"
+		text = fmt.Sprintf("<summary>THE GIST OF THE FIRST TASK #%d</summary>", n)
 		ctx = 1000
 	}
 	fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":%d,\"output_tokens\":1}}}\n\n", ctx)
@@ -535,5 +536,66 @@ func TestCompactionPendingAtRestartReopensTheWindow(t *testing.T) {
 	st := c.sessions["S|m"]
 	if st == nil || !st.startedAt.IsZero() || st.pending || st.lastContext != 450000 {
 		t.Fatalf("got %+v", st)
+	}
+}
+
+// A second summary that becomes ready in the middle of a tool loop waits for
+// the next plain prompt, and until then the first one stays in force. On
+// 2026-09-30 the first was dropped as soon as the second was ready, and for
+// five minutes a live session sent its whole uncompacted history: 936k
+// tokens a turn, starting with a 907k cache write.
+func TestSecondSummaryWaitsWithoutDroppingTheFirst(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	all := msgs(t, strings.TrimSuffix(session, "]")+`,
+ {"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Read","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":"third output"}]},
+ {"role":"assistant","content":[{"type":"text","text":"done with third"}]},
+ {"role":"user","content":[{"type":"text","text":"fourth task"}]},
+ {"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t4","content":"fourth output"}]},
+ {"role":"assistant","content":[{"type":"tool_use","id":"t5","name":"Bash","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t5","content":"fifth output"}]},
+ {"role":"assistant","content":[{"type":"text","text":"done with fourth"}]},
+ {"role":"user","content":[{"type":"text","text":"fifth task"}]}
+]`)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "TASK #1") {
+		t.Fatal("the first summary must apply at the third task")
+	}
+
+	// Reopen the window: the next prompt starts a second summary.
+	s.compaction.mu.Lock()
+	for _, st := range s.compaction.sessions {
+		st.startedAt = time.Time{}
+	}
+	s.compaction.mu.Unlock()
+	send(t, s, "S", all[:13])
+	waitFor(t, func() bool {
+		s.compaction.mu.Lock()
+		defer s.compaction.mu.Unlock()
+		for _, st := range s.compaction.sessions {
+			if st.next != "" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Mid tool loop: the second waits, and the first is still applied.
+	for _, n := range []int{15, 17} {
+		send(t, s, "S", all[:n])
+		got := f.last()
+		if !strings.Contains(got, "TASK #1") || strings.Contains(got, "old file") {
+			t.Fatalf("turn of %d messages went out without the first summary:\n%s", n, got)
+		}
+	}
+	// The next plain prompt swaps to the second.
+	send(t, s, "S", all[:19])
+	if got := f.last(); !strings.Contains(got, "TASK #2") || strings.Contains(got, "TASK #1") {
+		t.Fatalf("the plain prompt must carry the second summary alone:\n%s", got)
 	}
 }

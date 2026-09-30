@@ -44,8 +44,14 @@ type compactState struct {
 	summary     string
 	p0          int    // original messages [0, p0) are summarised
 	hash        string // prefixHash of those messages
-	swapAt      int    // message count when the swap was first applied; 0 = not yet
-	seen        time.Time
+	swapAt      int    // message count when the swap was first applied
+	// A newer summary waiting for a plain prompt. The current one stays in
+	// force until it swaps: dropping it early sent a session's whole
+	// uncompacted history (936k, and a 907k cache write) for five minutes.
+	next     string
+	nextP0   int
+	nextHash string
+	seen     time.Time
 }
 
 type compactor struct {
@@ -76,6 +82,9 @@ type savedCompaction struct {
 	P0          int       `json:"p0,omitempty"`
 	Hash        string    `json:"hash,omitempty"`
 	SwapAt      int       `json:"swap_at,omitempty"`
+	Next        string    `json:"next,omitempty"`
+	NextP0      int       `json:"next_p0,omitempty"`
+	NextHash    string    `json:"next_hash,omitempty"`
 	Seen        time.Time `json:"seen"`
 }
 
@@ -99,7 +108,13 @@ func (c *compactor) load() {
 	}
 	for k, v := range saved {
 		st := &compactState{lastContext: v.LastContext, warnedAt: v.WarnedAt, startedAt: v.StartedAt,
-			summary: v.Summary, p0: v.P0, hash: v.Hash, swapAt: v.SwapAt, seen: v.Seen}
+			summary: v.Summary, p0: v.P0, hash: v.Hash, swapAt: v.SwapAt,
+			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, seen: v.Seen}
+		// Saved before summaries waited as next: an unapplied summary.
+		if st.summary != "" && st.swapAt == 0 && st.next == "" {
+			st.next, st.nextP0, st.nextHash = st.summary, st.p0, st.hash
+			st.summary, st.p0, st.hash = "", 0, ""
+		}
 		// A summary in flight died with the old process. Reopen its window
 		// so the next prompt starts another, rather than waiting an hour
 		// for a result that will never arrive.
@@ -124,7 +139,8 @@ func (c *compactor) save() {
 			continue
 		}
 		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
-			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt, Seen: st.seen}
+			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt,
+			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, Seen: st.seen}
 	}
 	b, err := json.Marshal(out)
 	if err == nil {
@@ -176,7 +192,7 @@ func (s *Server) compactionReady(sid string) bool {
 	s.compaction.mu.Lock()
 	defer s.compaction.mu.Unlock()
 	for k, st := range s.compaction.sessions {
-		if strings.HasPrefix(k, sid+"|") && st.summary != "" {
+		if strings.HasPrefix(k, sid+"|") && (st.summary != "" || st.next != "") {
 			return true
 		}
 	}
@@ -233,6 +249,11 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		st.summary, st.hash, st.p0, st.swapAt = "", "", 0, 0
 		dirty = true
 	}
+	if st.next != "" && (len(msgs) <= st.nextP0 || prefixHash(msgs, st.nextP0) != st.nextHash) {
+		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary", rid, key)
+		st.next, st.nextHash, st.nextP0 = "", "", 0
+		dirty = true
+	}
 
 	if st.lastContext >= cfg.WarnAtTokens && (st.warnedAt.IsZero() || now.Sub(st.warnedAt) >= window) {
 		st.warnedAt = now
@@ -251,7 +272,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		view, offset = rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt), st.p0
 	}
 
-	if st.lastContext >= cfg.CompactAtTokens && !st.pending && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window) {
+	if st.lastContext >= cfg.CompactAtTokens && !st.pending && st.next == "" && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window) {
 		// Only a compaction that actually starts opens the window. A skip
 		// (no boundary yet, typically one long prompt) must leave the next
 		// prompt free to compact.
@@ -272,21 +293,26 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		}
 	}
 
-	if st.summary != "" && st.swapAt == 0 && !fresh {
-		s.logger.Printf("req=%s compaction waiting session=%s: summary ready, request ends in %s, applies at the next plain prompt",
-			rid, key, lastMessageShape(msgs))
+	if st.next != "" && !fresh {
+		kept := ""
+		if st.summary != "" {
+			kept = " (the previous summary stays in force)"
+		}
+		s.logger.Printf("req=%s compaction waiting session=%s: summary ready, request ends in %s, applies at the next plain prompt%s",
+			rid, key, lastMessageShape(msgs), kept)
 	}
-	if st.summary == "" || (st.swapAt == 0 && !fresh) {
+	if st.next != "" && fresh {
+		st.summary, st.p0, st.hash, st.swapAt = st.next, st.nextP0, st.nextHash, len(msgs)
+		st.next, st.nextP0, st.nextHash = "", 0, ""
+		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary", rid, key, st.p0)
+		dirty = true
+	}
+	if st.summary == "" || st.swapAt == 0 {
 		if dirty {
 			s.compaction.save()
 		}
 		s.compaction.mu.Unlock()
 		return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
-	}
-	if st.swapAt == 0 {
-		st.swapAt = len(msgs)
-		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary", rid, key, st.p0)
-		dirty = true
 	}
 	out := rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt)
 	if dirty {
@@ -346,7 +372,7 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 		s.logger.Printf("compaction failed session=%s: %v (next attempt after the window)", key, err)
 		return
 	}
-	st.summary, st.p0, st.hash, st.swapAt = summary, p0, hash, 0
+	st.next, st.nextP0, st.nextHash = summary, p0, hash
 	s.logger.Printf("compaction summary ready session=%s: %d messages summarised into %d characters; applies from the next plain prompt", key, p0, len(summary))
 }
 
