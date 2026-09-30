@@ -352,18 +352,38 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// handleHotspotJoin joins the chosen network now, as a test.
+// handleHotspotJoin joins a network now, as a test: the one in the body if
+// given (so a choice can be tried before saving), else the saved one. Only a
+// network this Mac already knows is accepted, so the name reaching
+// networksetup is one macOS itself listed.
 func (s *Server) handleHotspotJoin(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.Load()
-	if err != nil || cfg.Hotspot.SSID == "" {
-		http.Error(w, "choose a network and save first", http.StatusBadRequest)
+	var req struct {
+		SSID string `json:"ssid"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ssid := req.SSID
+	if ssid == "" {
+		if cfg, err := config.Load(); err == nil {
+			ssid = cfg.Hotspot.SSID
+		}
+	}
+	if ssid == "" {
+		http.Error(w, "choose a network first", http.StatusBadRequest)
+		return
+	}
+	known := false
+	for _, n := range hotspot.KnownNetworks() {
+		known = known || n == ssid
+	}
+	if !known {
+		http.Error(w, fmt.Sprintf("%q is not a network this Mac has joined before; join it once from the Wi-Fi menu first", ssid), http.StatusBadRequest)
 		return
 	}
 	start := time.Now()
-	msg, err := hotspot.Join(cfg.Hotspot.SSID)
+	msg, err := hotspot.Join(ssid)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("could not join %q: %v %s", cfg.Hotspot.SSID, err, msg), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("could not join %q: %v %s", ssid, err, msg), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, map[string]string{"ok": fmt.Sprintf("joined %q and online in %s", cfg.Hotspot.SSID, time.Since(start).Round(time.Second))})
+	writeJSON(w, map[string]string{"ok": fmt.Sprintf("joined %q and online in %s", ssid, time.Since(start).Round(time.Second))})
 }

@@ -538,8 +538,8 @@
   <a class="navlink" data-target="cards"><span class="nd" id="nd-overview"></span><span class="label">Overview</span><span class="count" id="nc-overview"></span></a>
   <a class="navlink" data-target="sec-activity"><span class="nd" id="nd-activity"></span><span class="label">Activity</span><span class="count" id="nc-activity"></span></a>
   <a class="navlink" data-target="sec-analytics"><span class="nd"></span><span class="label">Analytics</span></a>
-  <a class="navlink" data-target="sec-responses"><span class="nd" id="nd-responses"></span><span class="label">Responses</span><span class="count" id="nc-responses"></span></a>
-  <a class="navlink" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
+  <a class="navlink" data-target="sec-models"><span class="nd"></span><span class="label">Spend by model</span></a>
+  <a class="navlink" data-target="sec-repos"><span class="nd"></span><span class="label">Spend by repository</span></a>
 
   <div class="navgroup">Context</div>
   <a class="navlink nav-pc" data-target="sec-compaction"><span class="nd" id="nd-compaction"></span><span class="label">Pauseless Compaction</span></a>
@@ -562,10 +562,14 @@
   <div class="navgroup">Health</div>
   <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
   <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
+  <a class="navlink" data-target="sec-advanced"><span class="nd"></span><span class="label">Advanced</span></a>
+
+  <div class="navgroup">Requests</div>
+  <a class="navlink" data-target="sec-responses"><span class="nd" id="nd-responses"></span><span class="label">Responses</span><span class="count" id="nc-responses"></span></a>
+  <a class="navlink" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
 
   <div class="navgroup">Setup</div>
   <a class="navlink" data-target="installSection"><span class="nd" id="nd-install"></span><span class="label">Install</span></a>
-  <a class="navlink" data-target="sec-advanced"><span class="nd"></span><span class="label">Advanced</span></a>
 
   <div class="sidefoot">
     <span id="gatewayAddr"></span>
@@ -631,29 +635,6 @@
        reply to a Test connection button nobody clicked. -->
   <div id="liveAlert"></div>
 
-  <section id="installSection" style="scroll-margin-top:70px">
-    <h2>
-      <span id="installTitle">Install</span>
-      <span class="hint" id="installHint">opens a Terminal window and runs the install there, so you can watch every command</span>
-    </h2>
-    <div class="body">
-      <div id="inuse"></div>
-      <div class="row">
-        <!-- Transparent first, and the only one styled primary. It is the mode
-             this is FOR: base-url makes Claude Code disable Remote Control,
-             which is the feature transparent mode exists to preserve. Listing
-             the fallback first read as a recommendation of it. -->
-        <button class="primary" id="installTransparent">⤓ Install: transparent proxy <small style="opacity:.75">(recommended)</small></button>
-        <button id="installBaseUrl">⤓ Install: base-url <small style="opacity:.75">(fallback)</small></button>
-      </div>
-      <div class="hint" style="margin-top:8px">
-        <b>transparent proxy, recommended.</b> Redirects at the DNS layer, so Claude Code still believes it reached Anthropic and <b>Remote Control keeps working</b>. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac, which is why it comes with the two guards below.<br>
-        <b>base-url, fallback.</b> Writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password and nothing machine-wide, so it is the right choice when you cannot or would rather not touch system files, but Claude Code <b>turns Remote Control off</b> while that variable names a non-Anthropic host.<br>
-        Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
-      </div>
-      <div id="installNote"></div>
-    </div>
-  </section>
 
   <div id="restartBanner" class="note warn" hidden></div>
   <div id="attention" hidden></div>
@@ -1031,7 +1012,7 @@
           </div>
           <div class="set-grid" style="margin-top:8px">
             <label>Alert only above ($)<input type="number" min="0" step="0.5" data-pnum="alert_min_usd"></label>
-            <label>Restart warning at (tokens of context, 0 = off)<input type="number" min="0" step="50000" data-pnum="restart_tokens"></label>
+            <label>Restart warning at (tokens, 0 = off)<input type="number" min="0" step="50000" data-pnum="restart_tokens"></label>
           </div>
           <div id="pnNote"></div>
         </div>
@@ -1052,6 +1033,10 @@
         <label><input type="radio" name="kaMode" value="ac"> <b>Plugged in only</b><span>awake with the lid shut on mains power; unplugging lets it sleep again</span></label>
         <label><input type="radio" name="kaMode" value="always"> <b>Plugged in and on battery</b><span>always awake with the lid shut. Watch the battery, and do not put it in a bag like this: it will get hot</span></label>
       </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="kaApply" disabled>&#x2713; Apply</button>
+        <span id="kaPending" class="hint"></span>
+      </div>
       <div id="kaLive" class="hint" style="margin-top:8px"></div>
       <div id="kaNote"></div>
 
@@ -1060,7 +1045,7 @@
       <div class="set-grid" style="margin-top:10px">
         <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select></label>
         <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select></label>
-        <label>Password <span class="hint" style="font-weight:400">(optional)</span><input id="hsPw" type="password" autocomplete="off" placeholder="use the one macOS has"></label>
+        <label><span>Password <span class="hint" style="font-weight:400">(optional)</span></span><input id="hsPw" type="password" autocomplete="off" placeholder="use the one macOS has"></label>
       </div>
       <div class="row" style="margin-top:8px">
         <button class="primary" id="hsSave">&#x2713; Save</button>
@@ -1199,6 +1184,31 @@
   <section id="sec-requests" style="scroll-margin-top:70px">
     <h2>Recent requests <span class="hint">metadata only; no prompt or response content is stored or shown</span></h2>
     <div class="scroll" id="requests"><div class="empty">No requests yet.</div></div>
+  </section>
+
+  <div class="pagegroup">Setup</div>
+  <section id="installSection" style="scroll-margin-top:70px">
+    <h2>
+      <span id="installTitle">Install</span>
+      <span class="hint" id="installHint">opens a Terminal window and runs the install there, so you can watch every command</span>
+    </h2>
+    <div class="body">
+      <div id="inuse"></div>
+      <div class="row">
+        <!-- Transparent first, and the only one styled primary. It is the mode
+             this is FOR: base-url makes Claude Code disable Remote Control,
+             which is the feature transparent mode exists to preserve. Listing
+             the fallback first read as a recommendation of it. -->
+        <button class="primary" id="installTransparent">⤓ Install: transparent proxy <small style="opacity:.75">(recommended)</small></button>
+        <button id="installBaseUrl">⤓ Install: base-url <small style="opacity:.75">(fallback)</small></button>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        <b>transparent proxy, recommended.</b> Redirects at the DNS layer, so Claude Code still believes it reached Anthropic and <b>Remote Control keeps working</b>. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac, which is why it comes with the two guards below.<br>
+        <b>base-url, fallback.</b> Writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password and nothing machine-wide, so it is the right choice when you cannot or would rather not touch system files, but Claude Code <b>turns Remote Control off</b> while that variable names a non-Anthropic host.<br>
+        Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
+      </div>
+      <div id="installNote"></div>
+    </div>
   </section>
 </div>
 </main>
@@ -2796,6 +2806,10 @@ document.addEventListener("click", e => {
   if (el.id === "handoverSection") setHandoverOpen(true);
   if (el.id === "installSection" && el.hidden) $("installRevealBtn").click();
   scrollToEl(el, "start");
+  // Sections below the fold are still filling in (settings, prices, the
+  // panel) and grow the page above the target after the scroll has aimed.
+  // Keep the target pinned until the layout settles or you scroll yourself.
+  navPin = {el, until: Date.now() + 3000};
   // The rail's highlight is otherwise driven by the scroll listener, which
   // has not run yet at this point -- so a click would move the page and
   // leave the entry you clicked unmarked until you scrolled by hand. Twice,
@@ -2810,17 +2824,48 @@ document.addEventListener("click", e => {
 // viewport, so the rail says where you are rather than only where you can go.
 const NAV_TARGETS = [...document.querySelectorAll(".navlink")].map(a => a.dataset.target);
 function syncNavActive() {
-  let best = null, bestTop = -Infinity;
+  // The line is a third of the way down, not at the top edge: otherwise the
+  // tail of a long section kept its entry marked while the next section
+  // already filled the window.
+  const line = Math.max(90, innerHeight / 3);
+  let best = null, bestTop = -Infinity, lastVisible = null, lastTop = -Infinity;
   for (const id of NAV_TARGETS) {
     const el = $(id);
     if (!el || el.hidden) continue;
-    const top = el.getBoundingClientRect().top - 90;
+    const r = el.getBoundingClientRect(), top = r.top - line;
     if (top <= 0 && top > bestTop) { bestTop = top; best = id; }
+    if (r.top < innerHeight && r.bottom > 0 && r.top > lastTop) { lastTop = r.top; lastVisible = id; }
   }
+  // At the very bottom the last sections can never reach the line.
+  if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4 && lastVisible) best = lastVisible;
+  // Above the first section's line (the top of the page): the first one shown.
+  if (!best) best = NAV_TARGETS.find(id => { const el = $(id); return el && !el.hidden; }) || null;
   document.querySelectorAll(".navlink").forEach(a =>
     a.classList.toggle("on", a.dataset.target === best));
+  // The menu is taller than the window: keep the marked entry in view by
+  // scrolling the rail itself, never the page.
+  const on = document.querySelector(".navlink.on"), rail = document.querySelector(".side");
+  if (on && rail && rail.scrollHeight > rail.clientHeight) {
+    const r = on.getBoundingClientRect(), rr = rail.getBoundingClientRect();
+    if (r.top < rr.top + 40) rail.scrollTop -= rr.top + 40 - r.top;
+    else if (r.bottom > rr.bottom - 60) rail.scrollTop += r.bottom - (rr.bottom - 60);
+  }
 }
 window.addEventListener("scroll", syncNavActive, {passive: true});
+
+// Layout changes without a scroll (a section loading or collapsing) move the
+// sections under a still viewport; without this the rail kept marking the
+// section that used to be there.
+let navPin = null, navFrame = 0;
+for (const ev of ["wheel", "touchmove", "keydown"]) window.addEventListener(ev, () => { navPin = null; }, {passive: true});
+new ResizeObserver(() => {
+  cancelAnimationFrame(navFrame);
+  navFrame = requestAnimationFrame(() => {
+    if (navPin && Date.now() < navPin.until) navPin.el.scrollIntoView({block: "start"});
+    else navPin = null;
+    syncNavActive();
+  });
+}).observe(document.querySelector("main"));
 
 // --- activity chart --------------------------------------------------------
 
@@ -3279,12 +3324,14 @@ async function loadMac() {
 function renderMac() {
   const m = macState; if (!m) return;
   const ka = m.keep_awake, lv = ka.live;
-  for (const r of document.querySelectorAll('input[name="kaMode"]')) r.checked = r.value === ka.mode;
+  // A choice not yet applied survives a refresh; otherwise show what is saved.
+  if (!kaPick) for (const r of document.querySelectorAll('input[name="kaMode"]')) r.checked = r.value === ka.mode;
+  kaUpdateApply();
   const power = lv.on_ac ? "on mains power" : "on battery";
   const bits = [`Now ${power}${lv.battery ? ` (${esc(lv.battery)})` : ""}`,
     `lid sleep is ${lv.sleep_disabled ? "<b>overridden</b>: the Mac stays awake with the lid shut" : "<b>normal</b>: closing the lid sleeps the Mac"}`];
   let html = bits.join(". ") + ".";
-  if (ka.problem) html += `<div class="note warn" style="margin-top:6px">Not applied as set: ${esc(ka.problem)}. Choose the option again to reapply.</div>`;
+  if (ka.problem) html += `<div class="note warn" style="margin-top:6px">Saved but not applied on this Mac: ${esc(ka.problem)}. Click <b>Apply</b> to apply it (the machine-wide part asks for your password in a Terminal window).</div>`;
   const bl = (lv.blockers || []).filter(b => b.process !== "powerd");
   if (bl.length) html += `<div class="note warn" style="margin-top:6px">Also keeping this Mac awake, whatever is chosen here: ${bl.map(b => esc((b.for || b.process + " (pid " + b.pid + ")").replace(/^caffeinate asserting on behalf of /, "caffeinate for "))).join("; ")}. A program holding "prevent system sleep" can keep a closed laptop awake on battery.</div>`;
   $("kaLive").innerHTML = html;
@@ -3321,15 +3368,32 @@ function renderMac() {
   clearTimeout(panelPoll);
   if (p.running) panelPoll = setTimeout(loadMac, 1500);
 }
-for (const r of document.querySelectorAll('input[name="kaMode"]')) {
-  r.addEventListener("change", async () => {
-    if (r.value === "always" && !confirm("Stay awake with the lid shut on battery too?\n\nThe Mac will not sleep in a bag. It keeps using the battery and can get hot.")) { renderMac(); return; }
-    note($("kaNote"), "warn", "Applying...");
-    try { const x = await post("/api/keep-awake", {mode: r.value}); note($("kaNote"), "ok", x.detail); }
-    catch (e) { note($("kaNote"), "bad", e.message); }
-    loadMac();
-  });
+// Choosing an option only selects it; Apply saves it and runs the change,
+// which for the machine-wide part means a password prompt.
+let kaPick = null;
+const kaLabels = {off: "Off", ac: "Plugged in only", always: "Plugged in and on battery"};
+function kaUpdateApply() {
+  const ka = macState && macState.keep_awake;
+  if (!ka) return;
+  const sel = (document.querySelector('input[name="kaMode"]:checked') || {}).value;
+  const changed = sel && sel !== ka.mode;
+  $("kaApply").disabled = !(changed || ka.problem);
+  $("kaApply").textContent = changed ? "\u2713 Apply" : "\u2713 Apply again";
+  $("kaPending").textContent = changed ? `Not applied yet: now ${kaLabels[ka.mode] || ka.mode}.` : "";
 }
+for (const r of document.querySelectorAll('input[name="kaMode"]')) {
+  r.addEventListener("change", () => { kaPick = r.value; kaUpdateApply(); });
+}
+$("kaApply").onclick = async () => {
+  const mode = (document.querySelector('input[name="kaMode"]:checked') || {}).value;
+  if (!mode) return;
+  if (mode === "always" && !confirm("Stay awake with the lid shut on battery too?\n\nThe Mac will not sleep in a bag. It keeps using the battery and can get hot.")) return;
+  $("kaApply").disabled = true;
+  note($("kaNote"), "warn", "Applying...");
+  try { const x = await post("/api/keep-awake", {mode}); note($("kaNote"), "ok", x.detail); kaPick = null; }
+  catch (e) { note($("kaNote"), "bad", e.message); }
+  loadMac();
+};
 for (const cb of document.querySelectorAll("[data-popt]")) {
   cb.addEventListener("change", async () => {
     try { const x = await post("/api/panel-options", {[cb.dataset.popt]: cb.checked}); note($("poNote"), "ok", x.detail); }
@@ -3455,7 +3519,7 @@ function renderSettings() {
     $("hsPw").placeholder = hs.password_stored ? "stored in the Keychain" : "use the one macOS has";
   }
   $("hsForget").hidden = !hs.password_stored;
-  $("hsJoin").disabled = !hs.ssid;
+  $("hsJoin").disabled = !$("hsSsid").value;
   $("hsLive").innerHTML = `Now: ${hs.online ? "<b>online</b>" : "<b>offline</b>"}, lid ${hs.lid_closed ? "shut" : "open"}. ` +
     (hs.ssid ? `Joins <b>${esc(hs.ssid)}</b> after a minute offline${hs.when === "always" ? "" : " with the lid shut"}.` : "Not joining anything.") +
     ` Networks listed are the ones this Mac has joined before: join the hotspot once by hand so macOS knows its password.`;
@@ -3470,6 +3534,7 @@ for (const inp of document.querySelectorAll("[data-adv]")) inp.addEventListener(
 $("fcText").addEventListener("input", () => markDirty("fc"));
 $("prBody").addEventListener("input", () => markDirty("pr"));
 for (const id of ["hsSsid", "hsWhen", "hsPw"]) $(id).addEventListener("input", () => markDirty("hs"));
+$("hsSsid").addEventListener("change", () => { $("hsJoin").disabled = !$("hsSsid").value; });
 
 async function saveSettings(body, noteEl, form) {
   try {
@@ -3538,9 +3603,10 @@ $("hsSave").onclick = () => {
 };
 $("hsForget").onclick = () => saveSettings({hotspot_password: "-"}, $("hsNote"));
 $("hsJoin").onclick = async () => {
-  if (!confirm(`Join ${settings.hotspot.ssid} now?\n\nThis Mac leaves its current Wi-Fi. Make sure the hotspot is on.`)) return;
+  const ssid = $("hsSsid").value;
+  if (!ssid || !confirm(`Join ${ssid} now?\n\nThis Mac leaves its current Wi-Fi. Make sure the hotspot is on, with Allow Others to Join. Your current Wi-Fi stays remembered; switch back from the Wi-Fi menu.`)) return;
   note($("hsNote"), "warn", "Joining... up to a minute.");
-  try { note($("hsNote"), "ok", (await post("/api/hotspot-join")).ok); }
+  try { note($("hsNote"), "ok", (await post("/api/hotspot-join", {ssid})).ok); }
   catch (e) { note($("hsNote"), "bad", e.message); }
   loadSettings();
 };
@@ -3555,6 +3621,8 @@ function renderAttention() {
   const items = [];
   const go = (id, text) => items.push(`<li><a data-go="${id}">${text}</a></li>`);
   const s = lastState;
+  if (s && s.intercept && !s.config_error && !s.intercept.active)
+    go("installSection", "Claude Burst is not in use: Claude Code is talking to Anthropic directly. Install it here.");
   if (s && s.intercept) {
     const guards = [s.intercept.self_heal].concat(s.intercept.mode === "transparent" && s.intercept.pf_heal ? [s.intercept.pf_heal] : []);
     if (guards.some(g => g && isBad(s, g))) go("guardsSection", "A guard is not running, so a broken redirect would not be repaired.");

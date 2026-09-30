@@ -31,13 +31,16 @@ It binds loopback only and needs no login (see [the admin UI](#the-local-admin-u
 
 The menu down the left follows you as you scroll, grouped by job:
 
-- **Observe**: Overview, Activity, Analytics (latency, error rate, spend per model, and **spend per repository**, each session filed under the repository its Claude Code transcript says it ran in), Responses, Requests.
+- **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, and **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in).
 - **Context**: [Pauseless Compaction](#pauseless-compaction-long-sessions-without-the-pause-experimental), Context & cache.
 - **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
 - **Sessions**: [Session handover](#session-handover-handoffmd-read-at-start-written-at-close-optional), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
 - **This Mac**: [lid closed and hotspot](#keeping-claude-code-working-with-the-lid-shut-optional), [Notifications](#notifications).
-- **Health**: Guards, Actions.
-- **Setup**: Install, Advanced (timeouts and limits).
+- **Health**: Guards, Actions, Advanced (timeouts and limits).
+- **Requests**: Responses and Requests, the audit trail of recent traffic.
+- **Setup**: Install (shown when Burst is not in use, or from **Reinstall**).
+
+The page follows the same order, most used first, and the menu marks the section you are reading.
 
 Every control section says where it is saved and when it applies, as a chip beside its title: **applies at once**, **applies to the next session**, or **applies after a restart**. Settings the gateway only reads at startup (pricing, fallback models, failover thresholds and strategy, intercept mode, the secondary, timeouts and limits) are compared with the running gateway, and a banner at the top lists any that are saved but not yet in use, with a **Restart the gateway now** button.
 
@@ -138,7 +141,7 @@ keep awake lid closed: on, mode ac (now on AC: SleepDisabled on, Ghostty App Nap
 
 Any line starting `->` beneath it is drift, with the command that fixes it.
 
-**From the dashboard** (This Mac, Lid & hotspot): pick **Off**, **Plugged in only** (`ac`) or **Plugged in and on battery** (`always`, asks you to confirm). It saves `config.json`, sets Ghostty's App Nap, and applies the root half with cached sudo or in a Terminal window that asks for your password. It shows the live state (power source, battery, whether lid sleep is overridden) and anything not applied as set.
+**From the dashboard** (This Mac, Lid & hotspot): select **Off**, **Plugged in only** (`ac`) or **Plugged in and on battery** (`always`, asks you to confirm), then click **Apply**; selecting alone changes nothing. Apply saves `config.json`, sets Ghostty's App Nap, and applies the root half with cached sudo or in a Terminal window that asks for your password. It shows the live state (power source, battery, whether lid sleep is overridden) and anything not applied as set.
 
 It also lists **other programs keeping this Mac awake**: any process holding a `PreventSystemSleep` assertion (for example `caffeinate -s`) keeps a closed laptop awake on battery whatever this setting says. The idle assertions `caffeinate -i` takes, which Claude Code holds, do not, so they are not listed.
 
