@@ -37,9 +37,9 @@ const KeychainService = "claude-burst-hotspot"
 
 // Tunables, as variables for tests.
 var (
-	checkEvery   = 10 * time.Second // so a 1 minute gap is 60 to 70s, not up to 120
-	offlineAfter = 2                // consecutive failed checks before acting
-	retryEvery   = time.Minute // gap after one background attempt ends
+	checkEvery   = 5 * time.Second // two failed checks: about 10s after Wi-Fi is lost
+	offlineAfter = 2               // consecutive failed checks before acting
+	retryEvery   = time.Minute     // gap after one background attempt ends
 	probeAddrs   = []string{"1.1.1.1:443", "8.8.8.8:443"}
 )
 

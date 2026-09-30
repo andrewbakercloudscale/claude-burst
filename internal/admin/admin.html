@@ -1081,7 +1081,7 @@
       <div id="kaNote"></div>
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
-      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it once this Mac has been offline for about 20 seconds, then a minute after each attempt, for up to <b>Keep trying for</b> minutes (default 30), and starts again after the next time it is back online. The password is required: without it macOS refuses a join made in the background. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
+      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it about 10 seconds after this Mac goes offline, then a minute after each attempt, for up to <b>Keep trying for</b> minutes (default 30), and starts again after the next time it is back online. The password is required: without it macOS refuses a join made in the background. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
       <div class="set-grid" style="margin-top:10px">
         <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select></label>
         <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select></label>
@@ -3644,7 +3644,7 @@ function renderSettings() {
   $("hsForget").hidden = !hs.password_stored;
   $("hsJoin").disabled = !$("hsSsid").value;
   $("hsLive").innerHTML = `Now: ${hs.online ? "<b>online</b>" : "<b>offline</b>"}, lid ${hs.lid_closed ? "shut" : "open"}. ` +
-    (hs.ssid ? `Joins <b>${esc(hs.ssid)}</b> after about 20 seconds offline${hs.when === "always" ? "" : " with the lid shut"}, then a minute after each attempt, for up to <b>${hs.give_up_minutes || 30} minutes</b>.` : "Not joining anything.") +
+    (hs.ssid ? `Joins <b>${esc(hs.ssid)}</b> about 10 seconds after going offline${hs.when === "always" ? "" : " with the lid shut"}, then a minute after each attempt, for up to <b>${hs.give_up_minutes || 30} minutes</b>.` : "Not joining anything.") +
     (hs.ssid && !hs.password_stored ? ` <b style="color:var(--bad)">No password stored: joins will fail until you type it and Save.</b>` : "") +
     ` Networks listed are the ones this Mac has joined before: join the hotspot once by hand so macOS knows its password.`;
   $("hsLog").hidden = !(hs.events || []).length;
