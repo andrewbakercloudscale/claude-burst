@@ -380,9 +380,9 @@ func (s *Server) handleHotspotJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	msg, err := hotspot.Join(ssid)
+	_, err := hotspot.Join(ssid)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("could not join %q: %v %s", ssid, err, msg), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("Could not join %q: %v", ssid, err), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, map[string]string{"ok": fmt.Sprintf("joined %q and online in %s", ssid, time.Since(start).Round(time.Second))})

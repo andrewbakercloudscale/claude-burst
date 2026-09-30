@@ -210,6 +210,20 @@
     width: 100%; box-sizing: border-box; resize: vertical;
   }
   textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
+  .ho-table td { vertical-align: middle; }
+  .ho-sub { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .ho-btns .h2btn + .h2btn { margin-left: 4px; }
+  .ho-hist td { background: var(--panel-2); padding: 6px 12px 8px 24px; }
+  .ho-hist ul { margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+  .ho-hist li { padding: 3px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .ho-repo b { display: block; font-weight: 600; }
+  .ho-repo span { display: block; font: 11px var(--mono); color: var(--faint); overflow-wrap: anywhere; }
+  .nowrap { white-space: nowrap; }
+  .ho-step { display: inline-block; white-space: nowrap; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border); color: var(--text); }
+  .ho-step.p { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: var(--ok-bg); }
+  .ho-step.muted { color: var(--muted); }
+  .ho-step.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: var(--bad-bg); }
+  #hoAudit td { vertical-align: middle; }
   pre.hoLog { font: 12px/1.5 var(--mono); background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; margin: 6px 0 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
   input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
 
@@ -956,11 +970,8 @@
       </div>
       <div id="hoNote"></div>
 
-      <h3 style="margin:18px 0 0;font-size:13px">Recent activity <span class="hint" style="font-weight:400">newest last; <span id="hoLogPath"></span></span></h3>
-      <pre class="hoLog" id="hoLog"></pre>
-
-      <h3 style="margin:22px 0 4px;font-size:13px">Handover files written automatically <span class="hint" style="font-weight:400" id="hoAuditSummary"></span></h3>
-      <div class="hint" style="margin-bottom:8px">Every HANDOFF.md the writer has changed, from the handover log. <strong>View</strong> opens the document here. <strong>Delete all</strong> moves each file into a dated backup folder beside the log (with a MANIFEST.tsv of where each came from) and removes it from its repository, which also turns handover off there, since the hooks only act where HANDOFF.md exists. In a repository that tracks the file, the deletion then shows as a change to commit.</div>
+      <h3 style="margin:22px 0 4px;font-size:13px">Handover by repository <span class="hint" style="font-weight:400" id="hoAuditSummary"></span></h3>
+      <div class="hint" style="margin-bottom:8px">Every repository the handover hooks have acted in, most recent first, from <span id="hoLogPath"></span>. <strong>Last activity</strong> is what happened when a session last ended there; <strong>History</strong> lists the recent steps. <strong>View</strong> opens its HANDOFF.md here and <strong>Finder</strong> shows it in Finder. <strong>Delete all</strong> moves each file into a dated backup folder beside the log (with a MANIFEST.tsv of where each came from) and removes it from its repository, which also turns handover off there, since the hooks only act where HANDOFF.md exists. In a repository that tracks the file, the deletion then shows as a change to commit.</div>
       <div class="scroll" id="hoAudit"></div>
       <div class="row" style="margin-top:8px;align-items:center">
         <button id="hoDeleteAll" class="danger" hidden>Delete all</button>
@@ -987,6 +998,7 @@
         <label><input type="checkbox" data-popt="caffeinate"> <b>Keep the Mac awake while a session runs</b><span><code>caffeinate -i</code> for as long as the panel runs: stops idle sleep, not lid-close sleep (that is the setting above)</span></label>
         <label><input type="checkbox" id="macHandover"> <b>Write a handover when a session closes</b><span>updates HANDOFF.md in repos that have one; details and the texts used are in <a href="#" id="macHoLink">Session handover</a></span></label>
       </div>
+<div class="row" style="margin-top:10px"><button class="primary" id="poSave" disabled>&#x2713; Save</button></div>
       <div id="poNote"></div>
     </div>
   </section>
@@ -1014,7 +1026,8 @@
             <label>Alert only above ($)<input type="number" min="0" step="0.5" data-pnum="alert_min_usd"></label>
             <label>Restart warning at (tokens, 0 = off)<input type="number" min="0" step="50000" data-pnum="restart_tokens"></label>
           </div>
-          <div id="pnNote"></div>
+<div class="row" style="margin-top:10px"><button class="primary" id="pnSave" disabled>&#x2713; Save</button></div>
+      <div id="pnNote"></div>
         </div>
       </div>
     </div>
@@ -1067,6 +1080,7 @@
         <label><input type="checkbox" data-notify="compaction"> <b>A session was compacted</b><span>when Pauseless Compaction swaps a session onto its summary</span></label>
         <label><input type="checkbox" data-notify="guards"> <b>A guard acted</b><span>when the pf guard or the gateway watchdog repaired something, or removed the redirect so Claude Code could reach Anthropic directly</span></label>
       </div>
+<div class="row" style="margin-top:10px"><button class="primary" id="ntSave" disabled>&#x2713; Save</button></div>
       <div id="ntNote"></div>
     </div>
   </section>
@@ -2255,7 +2269,7 @@ function renderHandover(s) {
   $("hoSummary").textContent = h.error ? "error" : h.installed ? (eff.write ? "on" : "briefing only") : h.legacy ? "old hooks, install to switch" : partial ? "half installed" : "not installed";
   setHeadState("handoverHead", h.error || partial ? "bad" : h.installed ? "ok" : h.legacy ? "warn" : "");
   setDot("nd-handover", h.error || partial ? "bad" : h.installed ? "ok" : "");
-  $("macHandover").checked = !!(h.installed && eff.write);
+  if (!formDirty.po) $("macHandover").checked = !!(h.installed && eff.write);
   $("hoInstall").textContent = h.installed ? "⤓ Reinstall hooks" : "⤓ Install hooks";
   $("hoUninstall").disabled = !h.start_hook && !h.end_hook && !h.legacy;
 
@@ -2274,14 +2288,73 @@ function renderHandover(s) {
   }
   $("hoCommit").disabled = !$("hoWrite").checked;
   $("hoLogPath").textContent = (h.dir || "") + "/handover.log";
-  const lines = h.log || [];
-  $("hoLog").textContent = lines.length ? lines.join("\n") : "Nothing yet. A line appears here each time a session in an opted-in repo ends.";
+  hoLogLines = h.log || [];
+  renderHoLog();
   loadHandoverAudit();
 }
 
 // --- handover audit --------------------------------------------------------
 
 let hoAuditJSON = "", hoAuditRows = [], hoDeleteArmed = null;
+
+// The handover log, one line per step:
+//   2026-09-29 22:53:10 queue  /path: 2 typed prompts, session ended (other) [session-id]
+// shown as a table, newest first, with the file's buttons where one exists.
+let hoLogLines = [];
+const HO_STEPS = {
+  queue: ["Queued", ""], write: ["Writing", ""], wrote: ["Written", "p"],
+  none: ["Nothing to hand over", "muted"], skip: ["Skipped", "muted"],
+};
+function parseHoLine(line) {
+  const m = line.match(/^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\S+)\s+(.*?)(?: \[([0-9a-f-]{8,})\])?$/);
+  if (!m) return {raw: line};
+  let rest = m[3], root = rest, detail = "";
+  const cut = rest.search(/: | with |, /);
+  if (cut > 0) { root = rest.slice(0, cut); detail = rest.slice(cut).replace(/^: |^, /, "").replace(/^ with /, "with "); }
+  return {when: m[1].replace(" ", "T"), step: m[2], root, detail, session: m[4] || ""};
+}
+function hoRepoCell(root, title) {
+  const name = root.split("/").filter(Boolean).pop() || root;
+  return `<td class="ho-repo" title="${esc(title || root)}"><b>${esc(name)}</b><span>${esc(root)}</span></td>`;
+}
+function hoButtons(root) {
+  const i = hoAuditRows.findIndex(r => r.root === root && r.exists);
+  return i < 0 ? "" : `<button class="h2btn" data-view="${i}">View</button> <button class="h2btn" data-reveal="${i}" title="Show HANDOFF.md in Finder">Finder</button>`;
+}
+// One row per repository: the audit's file facts beside the log's latest
+// step, with that repository's recent steps one click away.
+const hoOpen = new Set();
+function renderHoTable() {
+  const steps = hoLogLines.map(parseHoLine).filter(r => !r.raw);
+  const byRoot = new Map();
+  for (const r of steps) { if (!byRoot.has(r.root)) byRoot.set(r.root, []); byRoot.get(r.root).push(r); }
+  const roots = new Set([...hoAuditRows.map(a => a.root), ...byRoot.keys()]);
+  const lastAt = root => { const l = byRoot.get(root); const a = hoAuditRows.find(x => x.root === root);
+    return Math.max(l ? Date.parse(l[l.length - 1].when) : 0, a && a.last_write ? Date.parse(a.last_write) : 0); };
+  const rows = [...roots].sort((x, y) => lastAt(y) - lastAt(x));
+  const live = hoAuditRows.filter(r => r.exists).length;
+  $("hoAuditSummary").textContent = rows.length ? `${rows.length} repositor${rows.length === 1 ? "y" : "ies"}, ${live} file${live === 1 ? "" : "s"} present` : "";
+  if (!rows.length) { $("hoAudit").innerHTML = `<div class="empty">Nothing yet. A row appears the first time a session ends in a repository that has a HANDOFF.md.</div>`; return; }
+  const pill = r => { const [label, cls] = HO_STEPS[r.step] || [r.step, /fail|error/i.test(r.step) ? "bad" : ""]; return `<span class="ho-step ${cls}">${esc(label)}</span>`; };
+  $("hoAudit").innerHTML = `<table class="ho-table"><thead><tr>
+      <th>Repository</th><th>Last activity</th><th class="num">Size</th><th class="num">Writes</th><th>Commits</th><th>Last written</th><th></th>
+    </tr></thead><tbody>${rows.map(root => {
+      const a = hoAuditRows.find(x => x.root === root), l = byRoot.get(root) || [], last = l[l.length - 1];
+      const open = hoOpen.has(root);
+      const hist = open ? `<tr class="ho-hist"><td colspan="7"><ul>${l.slice().reverse().map(r =>
+        `<li><span class="mono nowrap">${esc(stamp(r.when))}</span> ${pill(r)} ${esc(r.detail)}${r.session ? ` <span class="hint mono" title="${esc(r.session)}">${esc(r.session.slice(0, 8))}</span>` : ""}</li>`).join("")}</ul></td></tr>` : "";
+      return `<tr>
+        ${hoRepoCell(root, a ? a.file : root)}
+        <td>${last ? `${pill(last)}<span class="ho-sub">${esc(stamp(last.when))}${last.detail ? " &middot; " + esc(last.detail) : ""}</span>` : `<span class="hint">not in the recent log</span>`}</td>
+        <td class="num nowrap">${a ? (a.exists ? esc(num(Math.round(a.bytes / 102.4) / 10)) + " KB" : `<span class="hint">deleted</span>`) : "-"}</td>
+        <td class="num">${a ? esc(num(a.writes)) + (a.failures ? ` <span style="color:var(--bad)">(${esc(num(a.failures))} failed)</span>` : "") : "0"}</td>
+        <td class="mono">${a && a.commits.length ? esc(a.commits.slice(-2).join(" ")) + (a.commits.length > 2 ? " &hellip;" : "") : "-"}</td>
+        <td class="mono nowrap" title="${a && a.first_write ? "first written " + esc(stamp(a.first_write)) : ""}">${a && a.last_write ? esc(stamp(a.last_write)) : "-"}</td>
+        <td class="nowrap ho-btns">${l.length ? `<button class="h2btn" data-hist="${esc(root)}" aria-expanded="${open}">${open ? "Hide" : "History"}</button>` : ""}${hoButtons(root)}</td>
+      </tr>${hist}`;
+    }).join("")}</tbody></table>`;
+}
+function renderHoLog() { renderHoTable(); }
 
 async function loadHandoverAudit() {
   let rows;
@@ -2290,26 +2363,7 @@ async function loadHandoverAudit() {
   if (j === hoAuditJSON) return; // unchanged: leave the table (and any open view) alone
   hoAuditJSON = j;
   hoAuditRows = rows;
-  const live = rows.filter(r => r.exists);
-  $("hoAuditSummary").textContent = rows.length
-    ? `${rows.length} repositor${rows.length === 1 ? "y" : "ies"}, ${live.length} file${live.length === 1 ? "" : "s"} present`
-    : "";
-  if (!rows.length) {
-    $("hoAudit").innerHTML = `<div class="empty">None yet. A row appears the first time the writer changes a HANDOFF.md.</div>`;
-  } else {
-    $("hoAudit").innerHTML = `<table><thead><tr>
-        <th>Repository</th><th class="num">Size</th><th class="num">Writes</th><th>Commits</th>
-        <th>First written</th><th>Last written</th><th></th>
-      </tr></thead><tbody>${rows.map((r, i) => `<tr>
-        <td class="mono" title="${esc(r.file)}">${esc(r.root)}</td>
-        <td class="num">${r.exists ? esc(num(Math.round(r.bytes / 102.4) / 10)) + " KB" : `<span class="hint">deleted</span>`}</td>
-        <td class="num">${esc(num(r.writes))}${r.failures ? ` <span style="color:var(--bad)">(${esc(num(r.failures))} failed)</span>` : ""}</td>
-        <td class="mono">${r.commits.length ? esc(r.commits.slice(-3).join(" ")) + (r.commits.length > 3 ? " &hellip;" : "") : "-"}</td>
-        <td class="mono">${esc(stamp(r.first_write))}</td>
-        <td class="mono">${esc(stamp(r.last_write))}</td>
-        <td>${r.exists ? `<button class="h2btn" data-view="${i}">View</button>` : ""}</td>
-      </tr>`).join("")}</tbody></table>`;
-  }
+  renderHoTable();
   resetDeleteAll();
 }
 
@@ -2321,7 +2375,16 @@ function resetDeleteAll() {
   $("hoDeleteAll").textContent = `Delete all ${n} file${n === 1 ? "" : "s"}`;
 }
 
-$("hoAudit").onclick = async e => {
+$("hoAudit").onclick = e => hoTableClick(e);
+async function hoTableClick(e) {
+  const h = e.target.closest("button[data-hist]");
+  if (h) { const r = h.dataset.hist; hoOpen.has(r) ? hoOpen.delete(r) : hoOpen.add(r); renderHoTable(); return; }
+  const f = e.target.closest("button[data-reveal]");
+  if (f) {
+    try { await post("/api/handover-reveal", {root: hoAuditRows[+f.dataset.reveal].root}); }
+    catch (err) { note($("hoDeleteNote"), "bad", err.message); }
+    return;
+  }
   const b = e.target.closest("button[data-view]");
   if (!b) return;
   const r = hoAuditRows[+b.dataset.view];
@@ -2336,7 +2399,7 @@ $("hoAudit").onclick = async e => {
     $("hoViewBody").textContent = "Could not read it: " + err.message;
   }
   $("hoView").scrollIntoView({block: "nearest"});
-};
+}
 $("hoViewClose").onclick = () => { $("hoView").hidden = true; };
 
 // Two clicks, no browser dialog: the first arms the button for five seconds.
@@ -3341,7 +3404,7 @@ function renderMac() {
   setDot("nd-panel", p.installed ? "ok" : "");
   setDot("nd-sessions", p.installed && Object.values(p.options).some(Boolean) ? "ok" : "");
   for (const cb of document.querySelectorAll("[data-popt]")) {
-    cb.checked = !!p.options[cb.dataset.popt];
+    if (!formDirty[cb.closest("#sec-panel") ? "pn" : "po"]) cb.checked = !!p.options[cb.dataset.popt];
     cb.disabled = !p.installed;
     cb.closest("label").classList.toggle("disabled", !p.installed);
   }
@@ -3361,7 +3424,7 @@ function renderMac() {
       : "It failed; the output is below.");
   }
   for (const inp of document.querySelectorAll("[data-pnum]")) {
-    if (document.activeElement !== inp) inp.value = p.numbers ? p.numbers[inp.dataset.pnum] : "";
+    if (!formDirty.pn && document.activeElement !== inp) inp.value = p.numbers ? p.numbers[inp.dataset.pnum] : "";
     inp.disabled = !p.installed;
   }
   renderAttention();
@@ -3394,23 +3457,37 @@ $("kaApply").onclick = async () => {
   catch (e) { note($("kaNote"), "bad", e.message); }
   loadMac();
 };
-for (const cb of document.querySelectorAll("[data-popt]")) {
-  cb.addEventListener("change", async () => {
-    try { const x = await post("/api/panel-options", {[cb.dataset.popt]: cb.checked}); note($("poNote"), "ok", x.detail); }
-    catch (e) { note($("poNote"), "bad", e.message); }
-    loadMac();
-  });
-}
-$("macHandover").addEventListener("change", async () => {
-  const on = $("macHandover").checked;
+// Ticking a box only changes the form; Save writes it. A form with unsaved
+// changes is left alone by the refreshes that would otherwise reset it.
+const formDirty = {po: false, pn: false, nt: false};
+const formSave = {po: "poSave", pn: "pnSave", nt: "ntSave"};
+function markForm(f) { formDirty[f] = true; $(formSave[f]).disabled = false; }
+function cleanForm(f) { formDirty[f] = false; $(formSave[f]).disabled = true; }
+for (const el of document.querySelectorAll("#sec-sessions [data-popt], #macHandover")) el.addEventListener("change", () => markForm("po"));
+for (const el of document.querySelectorAll("#sec-panel [data-popt], [data-pnum]")) el.addEventListener("input", () => markForm("pn"));
+for (const el of document.querySelectorAll("[data-notify]")) el.addEventListener("change", () => markForm("nt"));
+const poptValues = scope => Object.fromEntries([...document.querySelectorAll(scope + " [data-popt]")].map(c => [c.dataset.popt, c.checked]));
+
+$("poSave").onclick = async () => {
+  $("poSave").disabled = true;
+  const done = [];
   try {
+    if (!document.querySelector("#sec-sessions [data-popt]").disabled) {
+      await post("/api/panel-options", poptValues("#sec-sessions"));
+      done.push("session options");
+    }
+    const on = $("macHandover").checked;
     const st = await (await fetch("/api/state")).json(), h = st.handover || {};
-    if (on && !h.installed) await post("/api/handover-install", {install: true});
-    const r = await post("/api/handover", {...(h.config || {}), no_write: !on});
-    note($("poNote"), "ok", r.ok);
-  } catch (e) { note($("poNote"), "bad", e.message); }
-  refresh();
-});
+    if (!!(h.installed && (h.effective || {}).write) !== on) {
+      if (on && !h.installed) await post("/api/handover-install", {install: true});
+      await post("/api/handover", {...(h.config || {}), no_write: !on});
+      done.push("handover writer " + (on ? "on" : "off"));
+    }
+    cleanForm("po");
+    note($("poNote"), "ok", done.length ? "Saved: " + done.join(", ") + ". Applies to the next session you start." : "Nothing changed.");
+  } catch (e) { $("poSave").disabled = false; note($("poNote"), "bad", e.message); }
+  loadMac(); refresh();
+};
 $("macHoLink").onclick = e => { e.preventDefault(); scrollToEl($("handoverSection")); };
 $("panelInstall").onclick = async () => {
   try { await post("/api/panel-install", {action: "install"}); } catch (e) { note($("panelNote"), "bad", e.message); }
@@ -3505,7 +3582,7 @@ function renderSettings() {
   const unpriced = (st.pricing || []).filter(p => !p.price && p.unpriced).length;
   setDot("nd-failover", unpriced ? "warn" : "");
 
-  for (const cb of document.querySelectorAll("[data-notify]")) cb.checked = !!(st.notify || {})[cb.dataset.notify];
+  if (!formDirty.nt) for (const cb of document.querySelectorAll("[data-notify]")) cb.checked = !!(st.notify || {})[cb.dataset.notify];
   setDot("nd-notify", Object.values(st.notify || {}).some(Boolean) ? "ok" : "");
 
   const hs = st.hotspot;
@@ -3591,10 +3668,11 @@ $("prAdd").onclick = () => {
   settings.pricing.unshift({model: m, price: null, requests: 0});
   setDirty.pr = false; renderSettings(); setDirty.pr = true; $("prNew").value = "";
 };
-for (const cb of document.querySelectorAll("[data-notify]")) cb.addEventListener("change", () => {
+$("ntSave").onclick = async () => {
   const n = Object.fromEntries([...document.querySelectorAll("[data-notify]")].map(c => [c.dataset.notify, c.checked]));
-  saveSettings({notify: n}, $("ntNote"));
-});
+  cleanForm("nt");
+  await saveSettings({notify: n}, $("ntNote"));
+};
 $("hsSave").onclick = () => {
   const body = {hotspot: {ssid: $("hsSsid").value, when: $("hsWhen").value}};
   if ($("hsPw").value) body.hotspot_password = $("hsPw").value;
@@ -3610,11 +3688,14 @@ $("hsJoin").onclick = async () => {
   catch (e) { note($("hsNote"), "bad", e.message); }
   loadSettings();
 };
-for (const inp of document.querySelectorAll("[data-pnum]")) inp.addEventListener("change", async () => {
-  try { const x = await post("/api/panel-options", {[inp.dataset.pnum]: Number(inp.value)}); note($("pnNote"), "ok", x.detail); }
-  catch (e) { note($("pnNote"), "bad", e.message); }
+$("pnSave").onclick = async () => {
+  const body = poptValues("#sec-panel");
+  for (const inp of document.querySelectorAll("[data-pnum]")) body[inp.dataset.pnum] = Number(inp.value);
+  $("pnSave").disabled = true;
+  try { const x = await post("/api/panel-options", body); cleanForm("pn"); note($("pnNote"), "ok", "Saved; " + x.detail); }
+  catch (e) { $("pnSave").disabled = false; note($("pnNote"), "bad", e.message); }
   loadMac();
-});
+};
 
 // ---- Needs attention: everything not doing what it is set to do ---------
 function renderAttention() {

@@ -132,6 +132,34 @@ var join = func(ctx context.Context, ssid string) (string, error) {
 	return msg, err
 }
 
+// Explain turns networksetup's failures into what to do about them.
+func Explain(msg string) string {
+	switch {
+	case strings.Contains(msg, "Could not find network"):
+		return "the Mac cannot see it. An iPhone only broadcasts its hotspot while Settings > Personal Hotspot is open on the phone, or while something is connected to it: open that screen, turn on Maximise Compatibility, and try again."
+	case strings.Contains(msg, "-3900"), strings.Contains(msg, "Failed to join"):
+		return "the Mac saw it but could not join. Usually the password: macOS keeps it where a background process cannot read it, so type it into the Password field and Save, then try again."
+	}
+	return ""
+}
+
+// restore gives Wi-Fi back if a failed join left the Mac offline: leaving
+// the old network is the first thing a join does. Turning Wi-Fi off and on
+// makes macOS rejoin its best known network, as it would at wake.
+var restore = func() {
+	for i := 0; i < 5; i++ {
+		if Online() {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	dev := WiFiDevice()
+	_ = exec.Command("networksetup", "-setairportpower", dev, "off").Run()
+	time.Sleep(time.Second)
+	_ = exec.Command("networksetup", "-setairportpower", dev, "on").Run()
+	logEvent("still offline after the failed join: turned Wi-Fi off and on so macOS rejoins a known network")
+}
+
 // Join joins ssid now and reports whether the Mac is online afterwards.
 func Join(ssid string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
@@ -139,6 +167,10 @@ func Join(ssid string) (string, error) {
 	msg, err := join(ctx, ssid)
 	if err != nil {
 		logEvent("join %q failed: %v", ssid, err)
+		restore()
+		if why := Explain(err.Error() + " " + msg); why != "" {
+			return msg, fmt.Errorf("%s", why)
+		}
 		return msg, err
 	}
 	for i := 0; i < 10 && !Online(); i++ {

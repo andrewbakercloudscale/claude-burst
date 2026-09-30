@@ -1,6 +1,7 @@
 package hotspot
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -45,5 +46,17 @@ func TestDecide(t *testing.T) {
 		if got := decide(c.cfg, c.lid, c.off, c.since); got != c.want {
 			t.Errorf("%s: got %v", c.name, got)
 		}
+	}
+}
+
+func TestExplain(t *testing.T) {
+	if !strings.Contains(Explain("Could not find network Phone."), "Personal Hotspot") {
+		t.Error("not found: no advice")
+	}
+	if !strings.Contains(Explain("Failed to join network Phone. Error: -3900"), "password") {
+		t.Error("-3900: no advice")
+	}
+	if Explain("something else") != "" {
+		t.Error("unknown failure should not guess")
 	}
 }

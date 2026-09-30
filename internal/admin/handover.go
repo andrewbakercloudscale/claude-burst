@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os/exec"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/handover"
 )
@@ -101,4 +102,37 @@ func (s *Server) handleHandoverDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"backup": backup, "results": results})
+}
+
+// revealFile shows a file selected in Finder; a variable so tests never open
+// a window.
+var revealFile = func(path string) error { return exec.Command("open", "-R", path).Run() }
+
+// handleHandoverReveal shows one audited HANDOFF.md in Finder. The root must
+// be in the audit and the file must exist, so this cannot reveal, or open,
+// anything else.
+func (s *Server) handleHandoverReveal(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Root string `json:"root"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Root == "" {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	entries, err := handover.Audit()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, e := range entries {
+		if e.Root == req.Root && e.Exists {
+			if err := revealFile(e.File); err != nil {
+				http.Error(w, "could not open Finder: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]string{"ok": "shown in Finder"})
+			return
+		}
+	}
+	http.Error(w, "no handover file for that repository", http.StatusNotFound)
 }
