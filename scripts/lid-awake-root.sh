@@ -30,6 +30,15 @@
 # wakes the Mac and starts a new window. With a window set, the daemon runs in
 # both modes and checks every minute as well as on power-source changes.
 #
+# The screen: with SleepDisabled the built-in screen stays lit behind the
+# shut lid (seen 2026-09-30), using power and warming the lid for nobody.
+# While the lid is shut and SleepDisabled is 1, the daemon turns the display
+# off (`pmset displaysleepnow`: display sleep only, the Mac and Claude Code
+# keep running) within about 5 seconds, and again if anything wakes it. Not
+# while an external display is connected: that is someone working in
+# clamshell mode, and display sleep would blank their monitor. The daemon
+# therefore now runs in both modes.
+#
 # The daemon runs a root-owned COPY in /usr/local/libexec/claude-burst, never
 # this file: a root job pointed at a user-writable script under ~/Desktop is a
 # root shell for anyone who can edit it (same reasoning as install-pf-heal.sh).
@@ -44,6 +53,7 @@
 #   sudo lid-awake-root.sh remove
 #        lid-awake-root.sh status                # no root
 #        lid-awake-root.sh desired [ac|always]   # no root; what reconcile would set now
+#        lid-awake-root.sh screen                # no root; "off" or "leave": what the screen check would do
 #   (daemon only) reconcile | watch
 set -uo pipefail
 
@@ -107,9 +117,36 @@ desired_for() { # mode -> 0|1
   if [[ "$1" == always || "$(power_source)" == ac ]] && in_use; then echo 1; else echo 0; fi
 }
 
-needs_daemon() { # mode
-  local idle; idle="$(cat "$IDLE_FILE" 2>/dev/null)"
-  [[ "$1" == ac ]] || { valid_idle "$idle" && (( idle > 0 )); }
+# Always: the screen check below runs in every mode.
+needs_daemon() { return 0; }
+
+# external_displays: how many displays are online and not built in.
+# CLAUDE_BURST_TEST_DISPLAYS (system_profiler-shaped text) is for the tests.
+external_displays() {
+  { if [[ -n "${CLAUDE_BURST_TEST_DISPLAYS:-}" ]]; then print -r -- "$CLAUDE_BURST_TEST_DISPLAYS"
+    else system_profiler SPDisplaysDataType 2>/dev/null; fi } | awk '
+    /^        [^ ].*:$/ { if (name != "" && online && !internal) n++; name = $0; online = 0; internal = 0; next }
+    /Online: Yes/ { online = 1 }
+    /Connection Type: Internal/ { internal = 1 }
+    END { if (name != "" && online && !internal) n++; print n + 0 }'
+}
+
+# screen_decision: "off" when the lid is shut, SleepDisabled is 1 (so the
+# Mac is being kept awake) and no external display is connected; else
+# "leave". CLAUDE_BURST_TEST_SLEEPDISABLED stands in for pmset in the tests.
+screen_decision() {
+  local sd="${CLAUDE_BURST_TEST_SLEEPDISABLED:-$(current)}"
+  if lid_closed && [[ "$sd" == 1 ]] && (( $(external_displays) == 0 )); then echo off; else echo leave; fi
+}
+
+DARK_FILE="$STATE_DIR/lid-awake.dark"   # exists while the screen is off for this closing
+screen_check() {
+  if [[ "$(screen_decision)" == off ]]; then
+    pmset displaysleepnow 2>/dev/null
+    [[ -f "$DARK_FILE" ]] || { touch "$DARK_FILE"; log "lid shut: screen off, the Mac stays awake"; }
+  else
+    rm -f "$DARK_FILE"
+  fi
 }
 
 set_sleep_disabled() {
@@ -218,7 +255,11 @@ do_watch() {
   do_reconcile
   # The idle window needs a clock as well as power-source events.
   ( while sleep 60; do do_reconcile; done ) &
-  trap 'kill $! 2>/dev/null' EXIT
+  local clock=$!
+  # The screen, every 5 seconds: dark within moments of the lid shutting.
+  ( while sleep 5; do screen_check; done ) &
+  local screen=$!
+  trap "kill $clock $screen 2>/dev/null" EXIT
   # pslog prints a line on every power-source change and keeps running.
   # If it ever exits, so do we, and launchd's KeepAlive restarts the watch.
   pmset -g pslog 2>/dev/null | while IFS= read -r _; do do_reconcile; done
@@ -252,6 +293,7 @@ case "${1:-}" in
   remove)    do_remove ;;
   status)    do_status ;;
   desired)   valid_mode "${2:-ac}" || die "mode must be ac or always"; desired_for "${2:-ac}" ;;
+  screen)    screen_decision ;;
   reconcile) do_reconcile ;;
   watch)     do_watch ;;
   *) echo "usage: sudo $SELF apply [ac|always] | remove   |   $SELF status | desired [ac|always]" >&2; exit 2 ;;

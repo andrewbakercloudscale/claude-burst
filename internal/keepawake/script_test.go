@@ -55,3 +55,47 @@ func TestIdleWindow(t *testing.T) {
 		t.Errorf("lid just closed after being open: new window, got %s", got)
 	}
 }
+
+// screen runs the real root script's no-root "screen" check.
+func screen(t *testing.T, lid, sleepDisabled, displays string) string {
+	t.Helper()
+	cmd := exec.Command("zsh", "../../scripts/lid-awake-root.sh", "screen")
+	cmd.Env = append(os.Environ(), "CLAUDE_BURST_ROOT_STATE_DIR="+t.TempDir(), "CLAUDE_BURST_TEST_LID="+lid,
+		"CLAUDE_BURST_TEST_SLEEPDISABLED="+sleepDisabled, "CLAUDE_BURST_TEST_DISPLAYS="+displays)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("screen: %v: %s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+const builtInOnly = `Graphics/Displays:
+    Apple M4:
+      Displays:
+        Color LCD:
+          Display Type: Built-in Liquid Retina Display
+          Online: Yes
+          Connection Type: Internal
+`
+
+const withMonitor = builtInOnly + `        LG HDR 4K:
+          Resolution: 3840 x 2160
+          Online: Yes
+`
+
+// The screen goes off with the lid shut while the Mac is being kept awake,
+// and only then: never with the lid open, never when the Mac would sleep
+// anyway, and never with an external monitor (clamshell mode, in use).
+func TestScreenOffBehindAShutLid(t *testing.T) {
+	cases := []struct{ lid, sd, displays, want string }{
+		{"shut", "1", builtInOnly, "off"},
+		{"open", "1", builtInOnly, "leave"},
+		{"shut", "0", builtInOnly, "leave"},
+		{"shut", "1", withMonitor, "leave"},
+	}
+	for _, c := range cases {
+		if got := screen(t, c.lid, c.sd, c.displays); got != c.want {
+			t.Errorf("lid %s, SleepDisabled %s, monitor %v: got %s, want %s", c.lid, c.sd, strings.Contains(c.displays, "LG"), got, c.want)
+		}
+	}
+}
