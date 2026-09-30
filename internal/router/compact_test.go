@@ -648,14 +648,14 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	send(t, s, "S", all[:7])
 	waitFor(t, func() bool { return s.compactionReady("S") })
 
-	got := strings.Join(s.PromptNotices("S"), "\n")
+	got := strings.Join(s.PromptNotices("S", false), "\n")
 	if !strings.Contains(got, "450k, so 4 earlier messages are being summarised") || !strings.Contains(got, "ready and swaps in with this message") {
 		t.Fatalf("want the start and the ready line, got:\n%s", got)
 	}
-	if again := s.PromptNotices("S"); len(again) != 0 {
+	if again := s.PromptNotices("S", false); len(again) != 0 {
 		t.Fatalf("each line is shown once, got %q", again)
 	}
-	if other := s.PromptNotices("T"); len(other) != 0 {
+	if other := s.PromptNotices("T", false); len(other) != 0 {
 		t.Fatalf("another session sees nothing, got %q", other)
 	}
 
@@ -663,7 +663,7 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	f.context = 60_000
 	f.mu.Unlock()
 	send(t, s, "S", all[:9])
-	got = strings.Join(s.PromptNotices("S"), "\n")
+	got = strings.Join(s.PromptNotices("S", false), "\n")
 	if !strings.Contains(got, "Claude Burst, pauseless compaction: done. Context down 87%, 450k → 60k: 4 earlier messages now go as a summary") {
 		t.Fatalf("want the result of the swap, got:\n%s", got)
 	}
@@ -671,8 +671,43 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	// Turned off: nothing, and nothing queued is shown later either.
 	s.SetCompaction(config.CompactionConfig{Enabled: true, NoPromptNotice: true})
 	send(t, s, "S", msgs(t, `[{"role":"user","content":"a fresh start"}]`))
-	if got := s.PromptNotices("S"); got != nil {
+	if got := s.PromptNotices("S", false); got != nil {
 		t.Fatalf("notices off, got %q", got)
+	}
+}
+
+// Inside a long turn the summary cannot swap in. The hook after a tool call
+// says so once, and the next prompt still gets its own ready line.
+func TestPromptNoticesMidTurnSayItWaitsForTheNextPrompt(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+
+	got := strings.Join(s.PromptNotices("S", true), "\n")
+	if !strings.Contains(got, "being summarised") || !strings.Contains(got, "swaps in when this turn finishes and you send your next prompt") {
+		t.Fatalf("mid-turn: want the start and the waiting line, got:\n%s", got)
+	}
+	if strings.Contains(got, "swaps in with this message") {
+		t.Fatalf("mid-turn must not claim this message swaps it in:\n%s", got)
+	}
+	if again := s.PromptNotices("S", true); len(again) != 0 {
+		t.Fatalf("the waiting line is shown once per summary, got %q", again)
+	}
+	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "ready and swaps in with this message") {
+		t.Fatalf("the next prompt still gets its ready line, got:\n%s", got)
+	}
+
+	// After the swap nothing is waiting, so mid-turn says only what happened.
+	f.mu.Lock()
+	f.context = 60_000
+	f.mu.Unlock()
+	send(t, s, "S", all[:9])
+	got = strings.Join(s.PromptNotices("S", true), "\n")
+	if !strings.Contains(got, "done. Context down") || strings.Contains(got, "swaps in") {
+		t.Fatalf("after the swap, want only the done line, got:\n%s", got)
 	}
 }
 

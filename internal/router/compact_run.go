@@ -66,6 +66,7 @@ type compactState struct {
 	// latest swap until a response reports the context after it.
 	notices     []string
 	readyShown  bool
+	waitShown   bool // told mid-turn that it waits for the next prompt
 	swappedFrom int64
 	swappedMsgs int
 }
@@ -364,7 +365,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		st.marks, st.nextMarks = st.nextMarks, nil
 		st.next, st.nextP0, st.nextHash = "", 0, ""
 		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary", rid, key, st.p0)
-		st.swappedFrom, st.swappedMsgs, st.readyShown = st.lastContext, st.p0, false
+		st.swappedFrom, st.swappedMsgs, st.readyShown, st.waitShown = st.lastContext, st.p0, false, false
 		dirty = true
 	}
 	if st.summary == "" || st.swapAt == 0 {
@@ -443,7 +444,7 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 		return
 	}
 	st.next, st.nextP0, st.nextHash, st.nextMarks = summary, p0, hash, st.pendingMarks
-	st.readyShown = false
+	st.readyShown, st.waitShown = false, false
 	s.logger.Printf("compaction summary ready session=%s: %d messages summarised into %d characters; applies from the next plain prompt", key, p0, len(summary))
 }
 
@@ -601,7 +602,12 @@ func readSSEText(r io.Reader) (text, stop string, tok tokenUsage) {
 // session sid is sending now: what compaction did since its last prompt,
 // and a waiting summary, which swaps in with this very prompt. Nothing when
 // compaction or the notices are off.
-func (s *Server) PromptNotices(sid string) []string {
+//
+// midTurn is the same hook after a tool call, inside a turn. A summary
+// cannot swap in there (it would cut the turn's own tool calls), so it says
+// once that the summary waits for the turn to finish and the next prompt:
+// a long turn otherwise looked like compaction had not fired at all.
+func (s *Server) PromptNotices(sid string, midTurn bool) []string {
 	s.compaction.mu.Lock()
 	defer s.compaction.mu.Unlock()
 	cfg := s.compaction.cfg
@@ -622,6 +628,13 @@ func (s *Server) PromptNotices(sid string) []string {
 		st := s.compaction.sessions[k]
 		out = append(out, st.notices...)
 		st.notices = nil
+		if st.next != "" && midTurn {
+			if !st.waitShown {
+				st.waitShown = true
+				out = append(out, fmt.Sprintf("\u26a1 Claude Burst, pauseless compaction: the summary is ready (%d earlier messages, context %dk now). It swaps in when this turn finishes and you send your next prompt; nothing to do meanwhile", st.nextP0, st.lastContext/1000))
+			}
+			continue
+		}
 		if st.next != "" && !st.readyShown {
 			st.readyShown = true
 			out = append(out, fmt.Sprintf("\u26a1 Claude Burst, pauseless compaction: the summary is ready and swaps in with this message (%d earlier messages, context %dk now)", st.nextP0, st.lastContext/1000))
