@@ -1138,9 +1138,10 @@
             <label><input type="checkbox" data-popt="cost_alerts"> <b>Cost alerts in the chat</b><span>a message in the conversation (it reaches Remote Control too) when a session costs well above your average, or the day is heading for a bad total</span></label>
           </div>
           <div class="set-grid" style="margin-top:8px">
-            <label>Alert only above ($)<input type="number" min="0" step="0.5" data-pnum="alert_min_usd"></label>
+            <label>Session alert only above ($)<input type="number" min="0" step="0.5" data-pnum="alert_min_usd"></label>
             <label>Restart warning at (tokens, 0 = off)<input type="number" min="0" step="50000" data-pnum="restart_tokens"></label>
           </div>
+          <div class="hint" style="margin-top:6px"><strong>Session alert only above</strong>: a cost alert line appears in the Claude Code chat (so on Remote Control too, with a Mac notification) when a session costs over 2x (red) or 3x (purple) your average session this week. A session that has cost less than this many dollars never alerts, however big the multiple, so cheap sessions stay quiet. The day alerts (a day heading for, or past, an unusually high total) do not use it. <strong>Restart warning at</strong>: the context size at which the panel shows a red restart line.</div>
 <div class="row" style="margin-top:10px"><button class="primary" id="pnSave" disabled>&#x2713; Save</button></div>
       <div id="pnNote"></div>
         </div>
