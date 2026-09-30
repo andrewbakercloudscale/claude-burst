@@ -318,6 +318,13 @@ func TestCompactionFailedSummaryNeverSwaps(t *testing.T) {
 	if s.compactionReady("S") {
 		t.Fatal("a summary that ended in a tool call must not be used")
 	}
+	// A failure retries after retryAfterFailure, not after the whole window.
+	s.compaction.mu.Lock()
+	next := s.compaction.sessions["S|claude-opus-5-5"].startedAt.Add(time.Duration(s.compaction.cfg.WindowMinutes) * time.Minute)
+	s.compaction.mu.Unlock()
+	if d := time.Until(next); d > retryAfterFailure+time.Second || d < retryAfterFailure-time.Minute {
+		t.Fatalf("next attempt in %s, want about %s", d, retryAfterFailure)
+	}
 }
 
 func TestCompactionRecordsWhatTheSwapRemoved(t *testing.T) {

@@ -25,7 +25,7 @@ import (
 // prompt (claude-api skill, model-migration.md). Its last sentence matters:
 // the summary request carries the session's tools, and without it the
 // model occasionally calls one instead of writing the summary.
-const compactionSummaryPrompt = "Summarize the transcript inside <summary></summary> tags. Include relevant information in the summary such that this conversation will be continued by a new context window without needing to redo work or be reprovided with relevant constraints or context. Be sure to preserve: (1) any difficulties or problems that came up, and how they were handled or resolved; (2) any possibilities, options, or approaches that were raised, tried, or set aside, and why; (3) anything that was asked for, decided, agreed, ruled out, or established as a preference, constraint, or boundary - stated exactly; (4) exactly where things stand now - what has been covered, settled, or completed so far; (5) anything still open, unresolved, promised, or expected to happen next; (6) specific details that would be hard to reconstruct - names, numbers, dates, exact wording, links or references - kept exactly. Be complete on these even at the cost of length; keep everything else concise. Weight the two voices differently: keep what the user said, asked for, shared, or established carefully and close to their own words; your own explanations and reasoning can be condensed much further, to what they concluded or produced - as long as nothing in the six items above is dropped. Do not call any tools while writing this summary; respond with text only."
+const compactionSummaryPrompt = "Summarize the transcript inside <summary></summary> tags. Include relevant information in the summary such that this conversation will be continued by a new context window without needing to redo work or be reprovided with relevant constraints or context. Be sure to preserve: (1) any difficulties or problems that came up, and how they were handled or resolved; (2) any possibilities, options, or approaches that were raised, tried, or set aside, and why; (3) anything that was asked for, decided, agreed, ruled out, or established as a preference, constraint, or boundary - stated exactly; (4) exactly where things stand now - what has been covered, settled, or completed so far; (5) anything still open, unresolved, promised, or expected to happen next; (6) specific details that would be hard to reconstruct - names, numbers, dates, exact wording, links or references - kept exactly. Be complete on these even at the cost of length; keep everything else concise. Weight the two voices differently: keep what the user said, asked for, shared, or established carefully and close to their own words; your own explanations and reasoning can be condensed much further, to what they concluded or produced - as long as nothing in the six items above is dropped. Do not call any tools while writing this summary, even if the conversation above was in the middle of using them: tools are unavailable here and any tool call fails. Respond with text only, beginning with <summary>."
 
 // minSummarisedShare is the least share of a session's bytes a compaction
 // must summarise to be worth a summary call and a cache rewrite.
@@ -34,6 +34,10 @@ const minSummarisedShare = 0.30
 // summaryTimeout bounds one summary call: a 400k-token read plus a few
 // thousand tokens of summary.
 const summaryTimeout = 5 * time.Minute
+
+// retryAfterFailure is how soon a session tries again after a summary fails.
+// On 2026-09-30 a failure meant another hour on a 475k history.
+var retryAfterFailure = 5 * time.Minute
 
 type compactState struct {
 	lastContext int64
@@ -387,7 +391,12 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 	st.pending = false
 	defer s.compaction.save()
 	if err != nil {
-		s.logger.Printf("compaction failed session=%s: %v (next attempt after the window)", key, err)
+		// A failed attempt must not hold the session on its full history
+		// for the whole window: try again after retryAfterFailure.
+		if w := time.Duration(s.compaction.cfg.WindowMinutes) * time.Minute; w > retryAfterFailure {
+			st.startedAt = time.Now().Add(retryAfterFailure - w)
+		}
+		s.logger.Printf("compaction failed session=%s: %v (next attempt in %s)", key, err, retryAfterFailure)
 		return
 	}
 	st.next, st.nextP0, st.nextHash, st.nextMarks = summary, p0, hash, st.pendingMarks
