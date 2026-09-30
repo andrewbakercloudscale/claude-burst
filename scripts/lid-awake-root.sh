@@ -225,6 +225,20 @@ do_apply() {
     echo "lid-closed awake: ON, on mains power only (now on $(power_source): SleepDisabled $after; was $before)"
     echo "  daemon $LABEL follows the power source; log: $LOG"
   fi
+  screen_line
+}
+
+# screen_line: which of the two is true right now, in so many words.
+screen_line() {
+  if [[ "$(screen_decision)" == off ]]; then
+    echo "Screen Turned Off (lid shut; the Mac and Claude Code keep running)"
+  elif (( $(external_displays) > 0 )); then
+    echo "Screen Turned On (an external display is connected, so it is left on even with the lid shut)"
+  elif lid_closed; then
+    echo "Screen Turned On (the Mac is not being kept awake, so the lid sleeps it as usual)"
+  else
+    echo "Screen Turned On (lid open; it turns off within about 5 seconds of the lid shutting)"
+  fi
 }
 
 do_remove() {
@@ -294,6 +308,7 @@ case "${1:-}" in
   status)    do_status ;;
   desired)   valid_mode "${2:-ac}" || die "mode must be ac or always"; desired_for "${2:-ac}" ;;
   screen)    screen_decision ;;
+  screen-line) screen_line ;;
   reconcile) do_reconcile ;;
   watch)     do_watch ;;
   *) echo "usage: sudo $SELF apply [ac|always] | remove   |   $SELF status | desired [ac|always]" >&2; exit 2 ;;

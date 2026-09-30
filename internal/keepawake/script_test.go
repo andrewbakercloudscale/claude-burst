@@ -59,7 +59,12 @@ func TestIdleWindow(t *testing.T) {
 // screen runs the real root script's no-root "screen" check.
 func screen(t *testing.T, lid, sleepDisabled, displays string) string {
 	t.Helper()
-	cmd := exec.Command("zsh", "../../scripts/lid-awake-root.sh", "screen")
+	return runScreen(t, "screen", lid, sleepDisabled, displays)
+}
+
+func runScreen(t *testing.T, sub, lid, sleepDisabled, displays string) string {
+	t.Helper()
+	cmd := exec.Command("zsh", "../../scripts/lid-awake-root.sh", sub)
 	cmd.Env = append(os.Environ(), "CLAUDE_BURST_ROOT_STATE_DIR="+t.TempDir(), "CLAUDE_BURST_TEST_LID="+lid,
 		"CLAUDE_BURST_TEST_SLEEPDISABLED="+sleepDisabled, "CLAUDE_BURST_TEST_DISPLAYS="+displays)
 	out, err := cmd.CombinedOutput()
@@ -96,6 +101,22 @@ func TestScreenOffBehindAShutLid(t *testing.T) {
 	for _, c := range cases {
 		if got := screen(t, c.lid, c.sd, c.displays); got != c.want {
 			t.Errorf("lid %s, SleepDisabled %s, monitor %v: got %s, want %s", c.lid, c.sd, strings.Contains(c.displays, "LG"), got, c.want)
+		}
+	}
+}
+
+// apply ends with one line saying which is true right now, in the words the
+// user asked for: "Screen Turned Off" or "Screen Turned On", and why.
+func TestApplySaysWhetherTheScreenIsOff(t *testing.T) {
+	cases := []struct{ lid, sd, displays, want string }{
+		{"shut", "1", builtInOnly, "Screen Turned Off"},
+		{"open", "1", builtInOnly, "Screen Turned On (lid open"},
+		{"shut", "0", builtInOnly, "Screen Turned On (the Mac is not being kept awake"},
+		{"shut", "1", withMonitor, "Screen Turned On (an external display"},
+	}
+	for _, c := range cases {
+		if got := runScreen(t, "screen-line", c.lid, c.sd, c.displays); !strings.HasPrefix(got, c.want) {
+			t.Errorf("lid %s, SleepDisabled %s: got %q, want prefix %q", c.lid, c.sd, got, c.want)
 		}
 	}
 }
