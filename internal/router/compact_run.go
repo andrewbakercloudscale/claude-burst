@@ -51,7 +51,11 @@ type compactState struct {
 	next     string
 	nextP0   int
 	nextHash string
-	seen     time.Time
+	// Per-message hashes of the summarised prefix, memory only: when a
+	// summary is dropped they say which message changed, so the log names
+	// the cause instead of guessing.
+	marks, nextMarks, pendingMarks []string
+	seen                           time.Time
 }
 
 type compactor struct {
@@ -244,14 +248,19 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	dirty := false
 
 	// A summary only fits the history it was made from.
+	// A dropped summary also reopens the window: the session is back to its
+	// full history, and on 2026-09-30 the window kept it there, at 450k and
+	// growing, for the rest of the hour after a drop.
 	if st.summary != "" && (len(msgs) <= st.p0 || prefixHash(msgs, st.p0) != st.hash) {
-		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches (cleared, compacted or rewound)", rid, key)
-		st.summary, st.hash, st.p0, st.swapAt = "", "", 0, 0
+		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches (cleared, compacted or rewound; %s); window reopened", rid, key, divergence(msgs, st.p0, st.marks))
+		st.summary, st.hash, st.p0, st.swapAt, st.marks = "", "", 0, 0, nil
+		st.startedAt = time.Time{}
 		dirty = true
 	}
 	if st.next != "" && (len(msgs) <= st.nextP0 || prefixHash(msgs, st.nextP0) != st.nextHash) {
-		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary", rid, key)
-		st.next, st.nextHash, st.nextP0 = "", "", 0
+		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary (%s); window reopened", rid, key, divergence(msgs, st.nextP0, st.nextMarks))
+		st.next, st.nextHash, st.nextP0, st.nextMarks = "", "", 0, nil
+		st.startedAt = time.Time{}
 		dirty = true
 	}
 
@@ -283,6 +292,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			dirty = true
 			history := append([]json.RawMessage(nil), view...)
 			hash := prefixHash(msgs, p)
+			st.pendingMarks = messageMarks(msgs, p)
 			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages", rid, key, st.lastContext/1000, p, len(msgs))
 			s.compaction.running.Add(1)
 			// Its own copy of top: this same request may still be rewritten
@@ -310,6 +320,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	}
 	if st.next != "" && fresh {
 		st.summary, st.p0, st.hash, st.swapAt = st.next, st.nextP0, st.nextHash, len(msgs)
+		st.marks, st.nextMarks = st.nextMarks, nil
 		st.next, st.nextP0, st.nextHash = "", 0, ""
 		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary", rid, key, st.p0)
 		dirty = true
@@ -379,7 +390,7 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 		s.logger.Printf("compaction failed session=%s: %v (next attempt after the window)", key, err)
 		return
 	}
-	st.next, st.nextP0, st.nextHash = summary, p0, hash
+	st.next, st.nextP0, st.nextHash, st.nextMarks = summary, p0, hash, st.pendingMarks
 	s.logger.Printf("compaction summary ready session=%s: %d messages summarised into %d characters; applies from the next plain prompt", key, p0, len(summary))
 }
 
@@ -594,4 +605,31 @@ func compactionStatePath(statePath string) string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(statePath), "compaction-state.json")
+}
+
+// messageMarks is prefixHash per message, for divergence.
+func messageMarks(msgs []json.RawMessage, n int) []string {
+	out := make([]string, 0, n)
+	for i := 0; i < n && i < len(msgs); i++ {
+		out = append(out, prefixHash(msgs[i:i+1], 1))
+	}
+	return out
+}
+
+// divergence says where a history stopped matching its summary: the length,
+// or the first changed message with its role and block types (never its
+// text).
+func divergence(msgs []json.RawMessage, p0 int, marks []string) string {
+	if len(msgs) <= p0 {
+		return fmt.Sprintf("history now %d messages, summary covers %d", len(msgs), p0)
+	}
+	if len(marks) == 0 {
+		return "which message changed is unknown (summary made before a restart)"
+	}
+	for i := 0; i < len(marks) && i < len(msgs); i++ {
+		if prefixHash(msgs[i:i+1], 1) != marks[i] {
+			return fmt.Sprintf("message %d of %d changed, now %s", i, p0, lastMessageShape(msgs[i:i+1]))
+		}
+	}
+	return "no single message differs"
 }

@@ -599,3 +599,36 @@ func TestSecondSummaryWaitsWithoutDroppingTheFirst(t *testing.T) {
 		t.Fatalf("the plain prompt must carry the second summary alone:\n%s", got)
 	}
 }
+
+// When Claude Code changes an early message, the summary no longer fits and
+// is dropped. The log must say which message changed, and the window must
+// reopen: on 2026-09-30 a drop left the session on its full history for the
+// rest of the hour.
+func TestDroppedSummaryNamesTheChangeAndReopensTheWindow(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	var logBuf strings.Builder
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	s.logger.SetOutput(io.MultiWriter(testLogWriter{t}, &logBuf))
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the summary must apply first")
+	}
+
+	changed := append([]json.RawMessage(nil), all[:9]...)
+	changed[2] = json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"[cleared]"}]}`)
+	n := f.summaryCount()
+	send(t, s, "S", changed)
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("a changed history must go without the summary")
+	}
+	if !strings.Contains(logBuf.String(), "message 2 of 4 changed") {
+		t.Fatalf("the log must name the changed message:\n%s", logBuf.String())
+	}
+	// Still over the threshold: a new summary starts on that same request,
+	// not an hour later.
+	waitFor(t, func() bool { return f.summaryCount() > n })
+}
