@@ -776,7 +776,7 @@
         <button data-metric="requests" class="on">Requests</button>
         <button data-metric="tokens">Tokens</button>
         <button data-metric="spend">Spend</button>
-        <button data-metric="saved" title="What pruning removed from overflow input, and what pauseless compaction meant was never resent">Saved</button>
+        <button data-metric="saved" title="What pruning removed from overflow input, and the context Pauseless Compaction compacted">Saved</button>
       </span>
       <span class="seg" id="daysSeg">
         <button data-days="7">7d</button>
@@ -2421,7 +2421,7 @@ function renderCompaction(s) {
       <td class="num">${x ? tok(x.before) : "-"}</td>
       <td class="num">${x ? tok(x.after) : "-"}</td>
       <td class="num">${x ? `<b style="color:var(--pc-a)">${tok(x.per_turn_tokens)}</b> <span class="hint">${esc(smallUSD(x.per_turn_usd))}</span>` : "-"}</td>
-      <td class="num" title="${x ? esc(`$${x.saved_usd.toFixed(2)} not resent, less $${x.summary_usd.toFixed(2)} summaries and $${x.rewrite_usd.toFixed(2)} cache rewrites, over ${x.requests} turns and ${x.compactions} compaction(s)`) : ""}">${x ? `${esc(signedUSD(x.net_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
+      <td class="num" title="${x ? esc(`$${x.saved_usd.toFixed(2)} of context compacted, less $${x.summary_usd.toFixed(2)} summaries and $${x.rewrite_usd.toFixed(2)} cache rewrites, over ${x.requests} turns and ${x.compactions} compaction(s)`) : ""}">${x ? `${esc(signedUSD(x.net_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
       <td class="mono">${x ? esc(stamp(x.at)) : "-"}</td>
     </tr>`;
     }).join("")}</tbody></table>`;
@@ -3257,7 +3257,7 @@ const METRICS = {
       }
       if (d.compacted_tokens || d.compaction_summary_usd) {
         const net = (d.compacted_usd || 0) - (d.compaction_summary_usd || 0) - (d.compaction_rewrite_usd || 0);
-        out += `<div class="r"><span>Compaction not resent</span><b>${esc(signedUSD(d.compacted_usd))}</b></div>` +
+        out += `<div class="r"><span>Context compacted</span><b>${esc(signedUSD(d.compacted_usd))}</b></div>` +
                `<div class="r"><span>Summaries + rewrites</span><b>${esc(smallUSD((d.compaction_summary_usd || 0) + (d.compaction_rewrite_usd || 0)))}</b></div>` +
                `<div class="r"><span>Compaction net</span><b>${esc(signedUSD(net))}</b></div>`;
       }
@@ -3412,7 +3412,7 @@ function drawChart() {
 }
 
 // savingsTiles words the two savings tiles. Tokens: what share of the
-// context the compacted requests would have sent was not resent. Money:
+// context the compacted requests would have sent was compacted away. Money:
 // the async context savings after costs, what the costs took out of the
 // gross, and what share of those requests' context cost was avoided.
 // Pure, for page_script_test.go.
@@ -3421,13 +3421,13 @@ function savingsTiles(cs) {
   const big = n => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "k";
   const reqs = cs.compacted_requests || 0;
   if (!reqs) return {
-    tokens: {value: "-", text: "tokens not resent: none yet"},
+    tokens: {value: "-", text: "context compacted: none yet"},
     money: {value: "-", text: "async context savings after costs (API-equivalent): none yet"},
   };
   const gross = cs.saved_usd || 0, cost = (cs.summary_usd || 0) + (cs.rewrite_usd || 0);
   return {
     tokens: {value: `${big(cs.tokens_not_resent || 0)} <span style="font-size:15px">(${pct(cs.tokens_not_resent || 0, cs.twin_tokens || 0)})</span>`,
-      text: `tokens not resent\n${pct(cs.tokens_not_resent || 0, cs.twin_tokens || 0)} of the ${big(cs.twin_tokens || 0)} that would have been sent without Burst, over ${num(reqs)} requests`},
+      text: `tokens of context compacted\n${pct(cs.tokens_not_resent || 0, cs.twin_tokens || 0)} of the ${big(cs.twin_tokens || 0)} that would have been sent without Burst, over ${num(reqs)} requests`},
     money: {value: `${signedUSD(cs.net_usd)} <span style="font-size:15px">(${pct(cs.net_usd || 0, cs.twin_usd || 0)})</span>`,
       text: `async context savings, after costs\n$${gross.toFixed(2)} saved, $${cost.toFixed(2)} costs (${pct(cost, gross)} of the saving)\n` +
         `${pct(cs.net_usd || 0, cs.twin_usd || 0)} off what these requests' context would have cost`,
@@ -3435,7 +3435,7 @@ function savingsTiles(cs) {
   };
 }
 
-// The Pauseless Compaction savings chart: per day, what was not resent
+// The Pauseless Compaction savings chart: per day, the context compacted
 // (up, from the zero line) and what it cost, summaries and cache rewrites
 // (down). Net is the difference, in the tooltip and the table; the total
 // in the header matches the net saved tile, since both sum the same days.
@@ -3486,7 +3486,7 @@ function drawSavingsChart() {
     parts.push(`<text x="${padL + band * i + band / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--faint)">${esc(dayLabel(d.date))}</text>`);
   });
   days.forEach((d, i) => parts.push(`<rect class="hit" data-i="${i}" x="${padL + band * i}" y="${padT}" width="${band}" height="${plotH}" fill="transparent"/>`));
-  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Pauseless Compaction savings per day: not resent above the line, summaries and cache rewrites below">${parts.join("")}</svg>`;
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Pauseless Compaction savings per day: context compacted above the line, summaries and cache rewrites below">${parts.join("")}</svg>`;
 
   const wrap = $("pcChartWrap");
   host.querySelectorAll("rect.hit").forEach(r => {

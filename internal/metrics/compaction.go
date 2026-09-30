@@ -49,7 +49,7 @@ type CompactionStats struct {
 	NetUSD            float64 `json:"net_usd"`
 	// TwinTokens and TwinUSD are what the same compacted requests would
 	// have sent without Burst: the base for "what share of the context was
-	// not resent". TokensNotResent / TwinTokens is that share.
+	// compacted". TokensNotResent / TwinTokens is that share.
 	TwinTokens int64   `json:"twin_tokens"`
 	TwinUSD    float64 `json:"twin_usd"`
 	// TwinCompactions is how many times the twin reached Claude Code's

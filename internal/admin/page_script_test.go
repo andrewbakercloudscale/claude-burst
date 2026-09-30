@@ -245,7 +245,7 @@ func TestStateCarriesPrimaryHealthForTheCheck(t *testing.T) {
 	}
 }
 
-// The savings chart's series: up is what was not resent, down is what the
+// The savings chart's series: up is the context compacted, down is what the
 // summaries and cache rewrites cost, and net is kept from the server.
 func TestSavingsSeries(t *testing.T) {
 	type d struct {
@@ -279,7 +279,7 @@ func TestSavingsChartIsOnThePage(t *testing.T) {
 	}
 }
 
-// The savings tiles give the share of the context not resent, and the
+// The savings tiles give the share of the context compacted, and the
 // money after costs with the costs as a share of the saving.
 func TestSavingsTiles(t *testing.T) {
 	type tile struct {
