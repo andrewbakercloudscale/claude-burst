@@ -2387,14 +2387,13 @@ function renderCompaction(s) {
   $("compactNoticeState").textContent = c.prompt_notice === "installed" ? "hook installed" : (k.enabled && !k.no_prompt_notice ? "hook missing, press Save" : "off");
   const cs = c.compaction_stats || {}, kk = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "k";
   const days = c.window_days || 7;
+  const sv = savingsTiles(cs);
   $("pcStats").innerHTML = [
     [cs.compactions || 0, `Pauseless compaction${cs.compactions === 1 ? "" : "s"} in ${days} days`],
     [cs.largest_before ? `${kk(cs.largest_before)} &rarr; ${kk(cs.largest_after)}` : "-", "biggest single drop in context"],
-    [cs.tokens_not_resent ? kk(cs.tokens_not_resent) : "-", `tokens not resent, across ${num(cs.compacted_requests || 0)} requests`],
-    [cs.compacted_requests ? signedUSD(cs.net_usd) : "-", cs.compacted_requests
-      ? `net saved: $${(cs.saved_usd || 0).toFixed(2)} not resent, less $${(cs.summary_usd || 0).toFixed(2)} of summaries and $${(cs.rewrite_usd || 0).toFixed(2)} of cache rewrites`
-      : "net saved (API-equivalent)"],
-  ].map(([v, t]) => `<div class="pc-stat"><div class="v">${v}</div><div class="k">${esc(t)}</div></div>`).join("");
+    [sv.tokens.value, sv.tokens.text],
+    [sv.money.value, sv.money.text, sv.money.title],
+  ].map(([v, t, tip]) => `<div class="pc-stat"${tip ? ` title="${esc(tip)}"` : ""}><div class="v">${v}</div><div class="k">${esc(t).replace(/^([^\n]*)\n/, '<b style="color:var(--text)">$1</b><br>').replace(/\n/g, "<br>")}</div></div>`).join("");
   lastSavings = cs.daily || null;
   drawSavingsChart();
   setDot("nd-compaction", k.enabled ? "ok" : "");
@@ -3410,6 +3409,30 @@ function drawChart() {
     });
     r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
   });
+}
+
+// savingsTiles words the two savings tiles. Tokens: what share of the
+// context the compacted requests would have sent was not resent. Money:
+// the async context savings after costs, what the costs took out of the
+// gross, and what share of those requests' context cost was avoided.
+// Pure, for page_script_test.go.
+function savingsTiles(cs) {
+  const pct = (a, b) => b > 0 ? Math.round(a / b * 100) + "%" : "-";
+  const big = n => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "k";
+  const reqs = cs.compacted_requests || 0;
+  if (!reqs) return {
+    tokens: {value: "-", text: "tokens not resent: none yet"},
+    money: {value: "-", text: "async context savings after costs (API-equivalent): none yet"},
+  };
+  const gross = cs.saved_usd || 0, cost = (cs.summary_usd || 0) + (cs.rewrite_usd || 0);
+  return {
+    tokens: {value: `${big(cs.tokens_not_resent || 0)} <span style="font-size:15px">(${pct(cs.tokens_not_resent || 0, cs.twin_tokens || 0)})</span>`,
+      text: `tokens not resent\n${pct(cs.tokens_not_resent || 0, cs.twin_tokens || 0)} of the ${big(cs.twin_tokens || 0)} that would have been sent without Burst, over ${num(reqs)} requests`},
+    money: {value: `${signedUSD(cs.net_usd)} <span style="font-size:15px">(${pct(cs.net_usd || 0, cs.twin_usd || 0)})</span>`,
+      text: `async context savings, after costs\n$${gross.toFixed(2)} saved, $${cost.toFixed(2)} costs (${pct(cost, gross)} of the saving)\n` +
+        `${pct(cs.net_usd || 0, cs.twin_usd || 0)} off what these requests' context would have cost`,
+      title: `Costs: $${(cs.summary_usd || 0).toFixed(2)} for the summaries and $${(cs.rewrite_usd || 0).toFixed(2)} for cache rewrites after each swap. API-equivalent dollars: on a subscription the saving is your limits lasting longer.`},
+  };
 }
 
 // The Pauseless Compaction savings chart: per day, what was not resent
