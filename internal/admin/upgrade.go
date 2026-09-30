@@ -62,6 +62,7 @@ type upgradeStatus struct {
 	LatestVersion  string    `json:"latest_version,omitempty"`
 	LatestCommit   string    `json:"latest_commit,omitempty"`
 	Behind         int       `json:"behind"`                // commits on GitHub the running build lacks
+	Ahead          int       `json:"ahead"`                 // commits in the running build GitHub lacks (not pushed yet)
 	NewCommits     []string  `json:"new_commits,omitempty"` // their subjects, newest first
 	UpToDate       bool      `json:"up_to_date"`
 	CanUpgrade     bool      `json:"can_upgrade"`
@@ -145,6 +146,9 @@ func (s *Server) computeUpgrade(ctx context.Context) upgradeStatus {
 	} else {
 		return fail("the running build's commit %s is not in this checkout: %v", short(base), err)
 	}
+	if n, err := runGit(ctx, dir, "rev-list", "--count", "origin/main.."+base); err == nil {
+		st.Ahead, _ = strconv.Atoi(n)
+	}
 	if st.Behind > 0 {
 		if log, err := runGit(ctx, dir, "log", "--format=%s", "-n", "10", base+"..origin/main"); err == nil && log != "" {
 			st.NewCommits = strings.Split(log, "\n")
@@ -155,6 +159,8 @@ func (s *Server) computeUpgrade(ctx context.Context) upgradeStatus {
 	// Can the checkout fast-forward to it? deploy.sh builds the working
 	// tree, so uncommitted changes would ship alongside the upgrade.
 	switch {
+	case st.UpToDate && st.Ahead > 0:
+		st.Reason = "running a newer build than GitHub has"
 	case st.UpToDate:
 		st.Reason = "already running the latest version"
 	default:
