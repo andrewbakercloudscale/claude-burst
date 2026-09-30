@@ -613,6 +613,13 @@
 .mac-modes label:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .mac-modes input, .mac-toggles input { width: 16px !important; height: 16px; margin: 3px 0 0; grid-row: span 2; }
 .mac-modes span, .mac-toggles span { grid-column: 2; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+/* A number setting laid out like a toggle: name and explanation on the
+   left, the field on the right. */
+.mac-toggles label.mac-num { grid-template-columns: minmax(0, 1fr) 150px; column-gap: 16px; row-gap: 4px; align-items: center; cursor: default; }
+.mac-toggles label.mac-num b { grid-column: 1; }
+.mac-toggles label.mac-num span { grid-column: 1; }
+.mac-toggles label.mac-num input { grid-column: 2; grid-row: 1 / span 2; width: 100% !important; min-width: 0; height: auto; margin: 0; box-sizing: border-box; }
+@media (max-width: 560px) { .mac-toggles label.mac-num { grid-template-columns: 1fr; } .mac-toggles label.mac-num input { grid-column: 1; grid-row: auto; } }
 .mac-toggles label.disabled { opacity: .55; cursor: not-allowed; }
 .mac-panel { display: grid; grid-template-columns: minmax(0, 260px) 1fr; gap: 18px; align-items: start; }
 .mac-shot img { width: 100%; border-radius: 10px; border: 1px solid var(--border); display: block; }
@@ -1135,13 +1142,15 @@
           <pre id="panelLog" class="mac-log" hidden></pre>
           <h3 class="mac-h">Panel settings</h3>
           <div class="mac-toggles">
-            <label><input type="checkbox" data-popt="cost_alerts"> <b>Cost alerts in the chat</b><span>a message in the conversation (it reaches Remote Control too) when a session costs well above your average, or the day is heading for a bad total</span></label>
+            <label><input type="checkbox" data-popt="cost_alerts"> <b>Cost alerts in the chat</b><span>A line in the Claude Code conversation itself, so it reaches Remote Control on your phone too, plus a Mac notification when you are at the Mac. It fires once per level, not on every prompt, when:
+              <br>&bull; <b>this session</b> costs over 2x (red) or 3x (purple) your average session of the last 7 days, and at least the amount below;
+              <br>&bull; <b>today</b> is heading for, or has passed, an unusually high total for you (worked out from your own daily history).
+              <br>A panel that failed to open is always reported, even with this off.</span></label>
           </div>
-          <div class="set-grid" style="margin-top:8px">
-            <label>Session alert only above ($)<input type="number" min="0" step="0.5" data-pnum="alert_min_usd"></label>
-            <label>Restart warning at (tokens, 0 = off)<input type="number" min="0" step="50000" data-pnum="restart_tokens"></label>
+          <div class="mac-toggles">
+            <label class="mac-num"><b>Session alert only above ($)</b><input type="number" min="0" step="0.5" data-pnum="alert_min_usd"><span>A session that has cost less than this never alerts and its Session line on the panel stays green, however far above your average it is. Stops a $0.40 session against a $0.10 average from counting as 4x. Default $5; the day alerts do not use it.</span></label>
+            <label class="mac-num"><b>Restart warning at (tokens)</b><input type="number" min="0" step="50000" data-pnum="restart_tokens"><span>From this context size the panel shows <code>*** RESTART DUE TO HIGH CONTEXT ***</code> in red, because every turn re-reads the whole context. Default 400k; 0 turns it off. With Pauseless Compaction on, long sessions are shrunk at <b>Compact at</b> instead, so there is no need to restart: set this well above it (900k, near Claude Code's own compaction) or to 0.</span></label>
           </div>
-          <div class="hint" style="margin-top:6px"><strong>Session alert only above</strong>: a cost alert line appears in the Claude Code chat (so on Remote Control too, with a Mac notification) when a session costs over 2x (red) or 3x (purple) your average session this week. A session that has cost less than this many dollars never alerts, however big the multiple, so cheap sessions stay quiet. The day alerts (a day heading for, or past, an unusually high total) do not use it. <strong>Restart warning at</strong>: the context size at which the panel shows a red restart line.</div>
 <div class="row" style="margin-top:10px"><button class="primary" id="pnSave" disabled>&#x2713; Save</button></div>
       <div id="pnNote"></div>
         </div>
