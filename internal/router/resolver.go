@@ -112,7 +112,18 @@ func (r *interceptResolver) lookup(ctx context.Context, host string) ([]string, 
 
 	addrs, ttl, err := r.queryDoH(ctx, host)
 	if err != nil {
-		return nil, err
+		// Anthropic's address rarely changes, and the lookup fails mostly
+		// while the Mac is changing networks. The last address it had is far
+		// likelier to work than no address at all: on 2026-09-30 one reset
+		// connection to the DoH server, with a good address in the cache
+		// minutes stale, sent both sessions to the paid secondary.
+		r.mu.Lock()
+		e, ok := r.cache[host]
+		r.mu.Unlock()
+		if ok && len(e.addrs) > 0 {
+			return e.addrs, nil
+		}
+		return nil, &LookupError{Host: host, Err: err}
 	}
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("no A records for %s", host)
@@ -129,6 +140,18 @@ func (r *interceptResolver) lookup(ctx context.Context, host string) ([]string, 
 	r.mu.Unlock()
 	return addrs, nil
 }
+
+// LookupError is a failed DoH lookup with no address to fall back on. It
+// says nothing about Anthropic, which was never contacted, so the failover
+// detector treats it as this machine's network, never as an upstream
+// failure.
+type LookupError struct {
+	Host string
+	Err  error
+}
+
+func (e *LookupError) Error() string { return "lookup " + e.Host + ": " + e.Err.Error() }
+func (e *LookupError) Unwrap() error { return e.Err }
 
 type dohAnswer struct {
 	Name string `json:"name"`

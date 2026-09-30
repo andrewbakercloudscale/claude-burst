@@ -31,19 +31,22 @@ func writeEPIPE() error {
 // records every request body, which is the point: a retry must resend the
 // whole request intact.
 type flakyTransport struct {
-	mu     sync.Mutex
-	fail   int
-	err    error
-	bodies []string
-	next   http.RoundTripper
+	mu   sync.Mutex
+	fail int
+	// neverRecover keeps failing instead of only the first `fail` calls: a
+	// network that stays broken, so the ladder runs to its end.
+	neverRecover bool
+	err          error
+	bodies       []string
+	next         http.RoundTripper
 }
 
 func (f *flakyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	b, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	f.bodies = append(f.bodies, string(b))
-	fail := f.fail > 0
-	if fail {
+	fail := f.fail > 0 || f.neverRecover
+	if fail && f.fail > 0 {
 		f.fail--
 	}
 	f.mu.Unlock()
@@ -77,18 +80,31 @@ func TestStaleConnectionWriteIsRetriedOnceAndDoesNotCountAsAFailure(t *testing.T
 	}
 }
 
-// One retry, not a loop: a second failure is a real one.
+// A dead pooled connection gets exactly one immediate retry. It is not
+// retried again inside the 30s ladder: the first retry proved the network
+// is really failing, so the ladder would only hammer. The ladder itself is
+// TestPrimaryTransportErrorsAreRetriedBeforeFailover.
 func TestStaleWriteRetryIsBoundedToOne(t *testing.T) {
+	old := primaryRetryDelays
+	primaryRetryDelays = []time.Duration{10 * time.Millisecond}
+	t.Cleanup(func() { primaryRetryDelays = old })
 	up := newRecordingUpstream(t)
 	s, _ := newChainServer(t, up.srv.URL, nil)
 	ft := &flakyTransport{fail: 5, err: writeEPIPE(), next: s.client.Transport}
 	s.client.Transport = ft
 	s.probe = func() netProbe { return netProbe{dnsOK: true} }
 
+	start := time.Now()
 	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
 	if len(ft.bodies) != 2 {
 		t.Fatalf("expected the original attempt plus exactly one retry, got %d attempts", len(ft.bodies))
 	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("one retry only: the ladder must not wait on a stale write, took %v", time.Since(start))
+	}
+	// With the default subscription-limit strategy a transport error never
+	// fails over; that a stale write counts as a failure is asserted under
+	// the metered strategy by TestPrimaryTransportErrorsAreRetriedBeforeFailover.
 }
 
 // A read-side reset gives no guarantee the server did not process the request,
@@ -266,5 +282,46 @@ func TestFailingSecondaryDoesNotReleaseARateLimitWindow(t *testing.T) {
 
 	if !s.modelInOverflow("claude-sonnet-5", time.Now()) {
 		t.Fatal("a genuine rate-limit window must survive the secondary failing")
+	}
+}
+
+// The 30s ladder: a primary transport error that is NOT a stale write (a
+// timeout on a live connection) is retried over about 30 seconds, and only
+// then counted once towards failover. On 2026-09-30 one reset DoH
+// connection, with no Anthropic involvement, opened the paid window in a
+// second.
+func TestPrimaryTransportErrorsAreRetriedBeforeFailover(t *testing.T) {
+	old := primaryRetryDelays
+	primaryRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
+	t.Cleanup(func() { primaryRetryDelays = old })
+	up := newRecordingUpstream(t)
+	s, logBuf := newChainServer(t, up.srv.URL, nil)
+	s.probe = func() netProbe { return netProbe{dnsOK: true} }
+	ft := &flakyTransport{fail: 5, err: timeoutErr{}, next: s.client.Transport}
+	s.client.Transport = ft
+	// The metered strategy, the one whose transport_error_min_failures is 1.
+	s.primaryDetector = newMeteredFailureDetector(60, 3, 1)
+	ft.neverRecover = true
+
+	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
+	if n := len(ft.bodies); n != len(primaryRetryDelays)+1 {
+		t.Fatalf("got %d attempts, want the original plus the ladder, no secondary replay", n)
+	}
+	if !s.inOverflow(time.Now()) {
+		t.Fatal("the ladder exhausted with the network up, so the failure must count and fail over")
+	}
+	if c := strings.Count(logBuf.String(), "retry route="); c != len(primaryRetryDelays) {
+		t.Fatalf("each ladder step logged once, got %d", c)
+	}
+
+	// A stale write is NOT ladder-retried: it had its one immediate retry,
+	// which the second flakyTransport also fails, so the request ends there
+	// with the primary and one counted failure.
+	s.releaseOutageWindow("claude-sonnet-5")
+	ft2 := &flakyTransport{neverRecover: true, err: writeEPIPE(), next: s.client.Transport}
+	s.client.Transport = ft2
+	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
+	if len(ft2.bodies) != 2 {
+		t.Fatalf("a stale write: original plus one immediate retry, got %d", len(ft2.bodies))
 	}
 }
