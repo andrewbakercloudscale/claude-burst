@@ -811,7 +811,7 @@
       <div class="pc-stats" id="pcStats"></div>
       <div class="pc-chart" id="pcChartBox" hidden>
         <div class="pc-chart-head"><h3>Savings per day</h3><span class="sum" id="pcChartSum"></span>
-          <span class="legend"><span><i style="background:var(--pcs-saved)"></i>Not resent</span><span><i style="background:var(--pcs-cost)"></i>Summaries and cache rewrites</span></span></div>
+          <span class="legend"><span><i style="background:var(--pcs-saved)"></i>Savings from Async Compaction</span><span><i style="background:var(--pcs-cost)"></i>Cost of Async Compaction</span></span></div>
         <div class="chart-wrap" id="pcChartWrap"><div id="pcChart"></div><div class="chart-tip" id="pcTip"></div></div>
         <details><summary>Show as a table</summary><div id="pcChartTable"></div></details>
       </div>
@@ -3461,7 +3461,7 @@ function drawSavingsChart() {
       const d = days[+r.dataset.i];
       const row = (c, k, v) => `<div class="r"><span>${c ? `<i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${c};margin-right:6px"></i>` : ""}${k}</span><b>${esc(v)}</b></div>`;
       tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))}</div>` +
-        row("var(--pcs-saved)", "Not resent", "$" + d.up.toFixed(2)) +
+        row("var(--pcs-saved)", "Savings from Async Compaction", "$" + d.up.toFixed(2)) +
         row("var(--pcs-cost)", "Summaries", "-$" + d.summary.toFixed(2)) +
         row("var(--pcs-cost)", "Cache rewrites", "-$" + d.rewrite.toFixed(2)) +
         row("", "<b>Net</b>", signedUSD(d.net)) +
@@ -3473,7 +3473,7 @@ function drawSavingsChart() {
     });
     r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
   });
-  $("pcChartTable").innerHTML = `<table><thead><tr><th>Day</th><th class="num">Not resent</th><th class="num">Summaries</th><th class="num">Cache rewrites</th><th class="num">Net</th><th class="num">Compactions</th></tr></thead><tbody>` +
+  $("pcChartTable").innerHTML = `<table><thead><tr><th>Day</th><th class="num">Savings</th><th class="num">Summaries</th><th class="num">Cache rewrites</th><th class="num">Net</th><th class="num">Compactions</th></tr></thead><tbody>` +
     days.slice().reverse().map(d => `<tr><td>${esc(dayLabel(d.date))}</td><td class="num">$${d.up.toFixed(2)}</td><td class="num">$${d.summary.toFixed(2)}</td><td class="num">$${d.rewrite.toFixed(2)}</td><td class="num">${esc(signedUSD(d.net))}</td><td class="num">${d.compactions}</td></tr>`).join("") + `</tbody></table>`;
 }
 window.addEventListener("resize", () => { clearTimeout(window.__pcResize); window.__pcResize = setTimeout(drawSavingsChart, 120); });

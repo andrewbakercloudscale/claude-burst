@@ -272,7 +272,7 @@ out(savingsSeries([
 // a legend and a table view.
 func TestSavingsChartIsOnThePage(t *testing.T) {
 	src := string(indexHTML)
-	for _, want := range []string{`id="pcChartBox" hidden`, "Savings per day", "Not resent", "Summaries and cache rewrites", `id="pcChartTable"`, "drawSavingsChart();"} {
+	for _, want := range []string{`id="pcChartBox" hidden`, "Savings per day", "Savings from Async Compaction", "Cost of Async Compaction", `id="pcChartTable"`, "drawSavingsChart();"} {
 		if !strings.Contains(src, want) {
 			t.Errorf("missing %q", want)
 		}
