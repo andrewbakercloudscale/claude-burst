@@ -175,6 +175,18 @@ func TestUpgradeComparesTheRunningBuildNotTheCheckout(t *testing.T) {
 	}
 }
 
+// A build with commits GitHub lacks (not pushed yet) is up to date, and
+// says it is ahead rather than "the latest on GitHub".
+func TestUpgradeRunningAheadOfGitHub(t *testing.T) {
+	r := newUpgradeRig(t)
+	commitFile(t, r.checkout, "local.txt", "mine\n", "not pushed")
+	r.running = git(t, r.checkout, "rev-parse", "HEAD")
+	st := r.status(true)
+	if !st.UpToDate || st.Ahead != 1 || st.Behind != 0 || st.CanUpgrade {
+		t.Fatalf("status = %+v", st)
+	}
+}
+
 func TestUpgradeRefusesADirtyCheckout(t *testing.T) {
 	r := newUpgradeRig(t)
 	r.publish("README.md", "docs\n", "newer")
@@ -307,6 +319,7 @@ func TestVersionMessage(t *testing.T) {
 const base = {running_version: "0.2.0", running_commit: "98f965b"};
 out({
   current: versionMessage({...base, up_to_date: true}),
+  ahead: versionMessage({...base, up_to_date: true, ahead: 2, latest_commit: "66bdcb1"}),
   newer: versionMessage({...base, behind: 12, can_upgrade: true, latest_version: "0.3.0", latest_commit: "abc1234",
     new_commits: ["Release 0.3.0", "Fix <b>escaping</b>"]}),
   blocked: versionMessage({...base, behind: 1, can_upgrade: false, reason: "the checkout has uncommitted changes", latest_commit: "abc1234", new_commits: ["x"]}),
@@ -315,6 +328,9 @@ out({
 
 	if c := got["current"]; !strings.Contains(c.Title, "Up to date") || !strings.Contains(c.Body, "0.2.0 (98f965b)") || c.CanUpgrade {
 		t.Errorf("current: %+v", c)
+	}
+	if c := got["ahead"]; !strings.Contains(c.Title, "Up to date") || !strings.Contains(c.Body, "ahead of GitHub (66bdcb1) by 2 commits") || strings.Contains(c.Body, "the latest on GitHub") {
+		t.Errorf("ahead: %+v", c)
 	}
 	c := got["newer"]
 	if !strings.Contains(c.Title, "Upgrade available") || !strings.Contains(c.Title, "0.3.0 (abc1234)") || !c.CanUpgrade {

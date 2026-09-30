@@ -3757,6 +3757,8 @@ async function loadUpgrade(refresh) {
 function versionMessage(u) {
   const running = `${u.running_version} (${u.running_commit || "unknown build"})`;
   if (u.error) return {title: "Could not check the version", body: `The check failed: ${esc(u.error)}`, canUpgrade: false};
+  if (u.up_to_date && u.ahead > 0) return {title: "\u2713 Up to date",
+    body: `Running <b>${esc(running)}</b>, which is ahead of GitHub (${esc(u.latest_commit)}) by ${u.ahead} commit${u.ahead === 1 ? "" : "s"} not pushed yet. Nothing newer to install.`, canUpgrade: false};
   if (u.up_to_date) return {title: "\u2713 Up to date",
     body: `Running <b>${esc(running)}</b>, the latest on GitHub.`, canUpgrade: false};
   const to = `${u.latest_version || ""} (${u.latest_commit})`.trim();
