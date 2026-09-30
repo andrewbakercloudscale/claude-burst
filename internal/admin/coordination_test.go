@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,5 +55,55 @@ func TestCoordinationSwitchInstallsAndRemovesTheHooks(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json")); strings.Contains(string(b), " coord ") {
 		t.Fatalf("off must remove the hooks:\n%s", b)
+	}
+}
+
+// The dashboard's actions: message a session, hand a file on, and the
+// activity log that records both.
+func TestCoordinationActions(t *testing.T) {
+	s := newTestServer(t)
+	writeConfig(t, os.Getenv("HOME"))
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_BURST_COORD_DIR", dir)
+	cfg, _ := config.Load()
+	c, _ := Coordinator(cfg)
+	file := filepath.Join(t.TempDir(), "notes.txt")
+	os.WriteFile(file, []byte("x"), 0o644)
+	for _, sid := range []string{"aaaa1111-x", "bbbb2222-y"} {
+		c.Hook("session-start", strings.NewReader(`{"session_id":"`+sid+`","cwd":"/tmp"}`), io.Discard)
+	}
+	c.Hook("pre-tool", strings.NewReader(`{"session_id":"aaaa1111-x","cwd":"/tmp","tool_name":"Edit","tool_input":{"file_path":"`+file+`"}}`), io.Discard)
+
+	if rr := mutate(t, s, "/api/coordination-act", `{"session":"bbbb","message":"leave notes.txt to aaaa"}`); rr.Code != http.StatusOK {
+		t.Fatalf("message: %d %s", rr.Code, rr.Body)
+	}
+	var out strings.Builder
+	c.Hook("prompt", strings.NewReader(`{"session_id":"bbbb2222-y","cwd":"/tmp"}`), &out)
+	if !strings.Contains(out.String(), "from the user") || !strings.Contains(out.String(), "leave notes.txt to aaaa") {
+		t.Fatalf("the session must get the dashboard's message:\n%s", out.String())
+	}
+	if rr := mutate(t, s, "/api/coordination-act", `{"session":"zzzz","message":"x"}`); rr.Code != http.StatusNotFound {
+		t.Fatalf("unknown session: want 404, got %d", rr.Code)
+	}
+
+	if rr := mutate(t, s, "/api/coordination-act", `{"release":"`+file+`"}`); rr.Code != http.StatusOK {
+		t.Fatalf("hand on: %d %s", rr.Code, rr.Body)
+	}
+	if st, _ := c.Status(); len(st.Files) != 0 {
+		t.Fatalf("handed on with nobody else in it: the file is free, got %+v", st.Files)
+	}
+	if rr := mutate(t, s, "/api/coordination-act", `{"release":"`+file+`"}`); rr.Code != http.StatusConflict {
+		t.Fatalf("nothing to hand on: want 409, got %d", rr.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/coordination", nil)
+	get := httptest.NewRecorder()
+	s.Handler().ServeHTTP(get, req)
+	var d struct {
+		Activity []string `json:"activity"`
+	}
+	json.Unmarshal(get.Body.Bytes(), &d)
+	if len(d.Activity) < 2 || !strings.Contains(d.Activity[0], "released") || !strings.Contains(strings.Join(d.Activity, "\n"), "message from the dashboard to bbbb2222") {
+		t.Fatalf("activity, newest first: %q", d.Activity)
 	}
 }

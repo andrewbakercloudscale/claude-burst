@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -92,12 +93,77 @@ func (s *Server) handleCoordination(w http.ResponseWriter, r *http.Request) {
 		Resolved  config.CoordinationConfig `json:"resolved"`
 		Installed bool                      `json:"installed"`
 		Status    coord.Status              `json:"status"`
+		Activity  []string                  `json:"activity"`
 		Error     string                    `json:"error,omitempty"`
-	}{Config: cfg.SessionCoordination, Resolved: cfg.SessionCoordination.Resolved(), Installed: coord.Installed()}
+	}{Config: cfg.SessionCoordination, Resolved: cfg.SessionCoordination.Resolved(), Installed: coord.Installed(),
+		Activity: logTail(filepath.Join(c.Dir, "coord.log"), 40)}
 	if st, err := c.Status(); err != nil {
 		resp.Error = err.Error()
 	} else {
 		resp.Status = st
 	}
 	writeJSON(w, resp)
+}
+
+// logTail is the last n lines of path, newest first.
+func logTail(path string, n int) []string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	var out []string
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if lines[i] != "" {
+			out = append(out, lines[i])
+		}
+	}
+	return out
+}
+
+// handleCoordinationAct is the dashboard's two actions: hand a file on
+// (as if its master had ended), or send a session a message from you.
+func (s *Server) handleCoordinationAct(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Release string `json:"release"`
+		Session string `json:"session"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	c, err := Coordinator(cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	switch {
+	case req.Release != "":
+		if err := c.Release(req.Release, ""); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		c.Log("released %s from the dashboard", req.Release)
+		writeJSON(w, map[string]string{"ok": "handed on: the session that most recently changed it too now commits it, or it is free"})
+	case req.Session != "" && strings.TrimSpace(req.Message) != "":
+		if len(req.Message) > 2000 {
+			http.Error(w, "keep it under 2000 characters", http.StatusBadRequest)
+			return
+		}
+		to, err := c.Send(req.Session, "", strings.TrimSpace(req.Message))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		c.Log("message from the dashboard to %s", to[:min(8, len(to))])
+		writeJSON(w, map[string]string{"ok": "queued: the session sees it at its next tool call or prompt"})
+	default:
+		http.Error(w, "nothing to do", http.StatusBadRequest)
+	}
 }

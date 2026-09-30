@@ -1135,6 +1135,10 @@
       <div class="scroll" id="coFiles"></div>
       <h3 style="margin:18px 0 6px;font-size:13px">Sessions taking part</h3>
       <div class="scroll" id="coSessions"></div>
+      <div id="coActNote"></div>
+      <h3 style="margin:18px 0 6px;font-size:13px">Recent activity</h3>
+      <div class="hint" style="margin-bottom:6px">What the coordinator did, newest first: files shared, refusals, hand-ons and files freed by a commit.</div>
+      <div id="coActivity"></div>
     </div>
   </section>
 
@@ -4132,18 +4136,63 @@ async function loadCoord() {
   }
   setDot("nd-coord", on ? (d.installed ? "ok" : "warn") : "");
   const st = d.status || {}, files = st.files || [], sess = st.sessions || [];
+  coNames = {};
+  for (const x of sess) coNames[x.id.slice(0, 8)] = x.name || `${x.label} ${x.id.slice(0, 8)}`;
+  $("coActivity").innerHTML = (d.activity || []).length ? d.activity.map(coActivityLine).join("") : '<div class="empty">Nothing yet.</div>';
+  // A refresh must not throw away a message being typed.
+  const typing = document.activeElement && document.activeElement.closest("#coSessions tr[id^=coMsg-]");
   const cwds = [...new Set(sess.map(x => x.cwd))].sort((a, b) => b.length - a.length);
   const shared = files.filter(f => (f.contributors || []).length).length;
   $("coSummary").textContent = on
     ? `${files.length} file${files.length === 1 ? "" : "s"} being edited, ${shared} shared, ${sess.length} session${sess.length === 1 ? "" : "s"} active` + (d.installed ? "" : ": hooks missing, save to reinstall")
     : "off";
-  $("coFiles").innerHTML = files.length ? `<table><thead><tr><th>File</th><th>Master (commits it)</th><th>Coordinating with the master</th><th class="num">Master for</th></tr></thead><tbody>${
-    files.map(f => `<tr><td class="mono">${coPath(f.path, cwds)}</td><td>${coWho(f.master_label, f.master_name)}</td><td>${(f.contributors || []).map((c, i) => coWho(c, (f.contributor_names || [])[i])).join("<br>") || '<span class="hint">nobody else</span>'}</td><td class="num">${esc(coAgo(f.since_s))}</td></tr>`).join("")
+  $("coFiles").innerHTML = files.length ? `<table><thead><tr><th>File</th><th>Master (commits it)</th><th>Coordinating with the master</th><th class="num">Master for</th><th></th></tr></thead><tbody>${
+    files.map(f => `<tr><td class="mono">${coPath(f.path, cwds)}</td><td>${coWho(f.master_label, f.master_name)}</td><td>${(f.contributors || []).map((c, i) => coWho(c, (f.contributor_names || [])[i])).join("<br>") || '<span class="hint">nobody else</span>'}</td><td class="num">${esc(coAgo(f.since_s))}</td><td><button data-co-release="${esc(f.path)}" title="As if the master had closed: the session that most recently changed it too becomes master and commits it; with nobody else, the file is free. Nothing in the file changes.">Hand on</button></td></tr>`).join("")
   }</tbody></table>` : `<div class="empty">${on ? "No uncommitted edits by any session right now." : "Switch it on to see who is editing what."}</div>`;
-  $("coSessions").innerHTML = sess.length ? `<table><thead><tr><th>Session</th><th>Folder</th><th>Master of</th><th class="num">Last active</th></tr></thead><tbody>${
-    sess.map(x => `<tr><td>${coWho(`${x.label} [${x.id.slice(0, 8)}]`, x.name)}</td><td class="mono">${esc((x.cwd || "").replace(/^\/Users\/[^/]+/, "~"))}</td><td>${(x.master_of || []).length ? (x.master_of || []).map(p => `<span class="mono">${coPath(p, cwds)}</span>`).join("<br>") : '<span class="hint">-</span>'}</td><td class="num">${esc(coAgo(x.active_ago_s))} ago</td></tr>`).join("")
+  const open = [...document.querySelectorAll("#coSessions tr[id^=coMsg-]:not([hidden])")].map(r => r.id);
+  if (!typing) $("coSessions").innerHTML = sess.length ? `<table><thead><tr><th>Session</th><th>Folder</th><th>Master of</th><th class="num">Last active</th><th></th></tr></thead><tbody>${
+    sess.map(x => `<tr><td>${coWho(`${x.label} [${x.id.slice(0, 8)}]`, x.name)}</td><td class="mono">${esc((x.cwd || "").replace(/^\/Users\/[^/]+/, "~"))}</td><td>${(x.master_of || []).length ? (x.master_of || []).map(p => `<span class="mono">${coPath(p, cwds)}</span>`).join("<br>") : '<span class="hint">-</span>'}</td><td class="num">${esc(coAgo(x.active_ago_s))} ago</td><td><button data-co-msg="${esc(x.id)}" title="Send this session a note; it sees it at its next tool call or prompt">Message</button></td></tr>
+      <tr id="coMsg-${esc(x.id)}" hidden><td colspan="5"><div class="row" style="align-items:center"><input placeholder="to ${esc(x.name || x.label)}: for example, leave the config loader to the other session" style="flex:1;min-width:260px" maxlength="2000"><button class="primary" data-co-send="${esc(x.id)}">Send</button></div></td></tr>`).join("")
   }</tbody></table>` : `<div class="empty">No sessions seen yet${on ? "; a session appears at its next tool call or prompt" : ""}.</div>`;
+  for (const id of open) { const r = $(id); if (r) r.hidden = false; }
 }
+// Names by short id, so the activity log reads "Rollback script fix"
+// rather than "9f9de95b".
+let coNames = {};
+function coActivityLine(line) {
+  const m = /^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}) (.*)$/.exec(line);
+  let text = esc(m ? m[2] : line).replace(/\/(?:private\/)?(?:var\/folders|Users)\/[^\s]*\/([^\s/]+\/[^\s/]+)(?=[\s:)]|$)/g, "$1");
+  for (const [id, name] of Object.entries(coNames)) text = text.split(id).join(`<b>${esc(name)}</b>`);
+  return `<div class="mono" style="font-size:12px;padding:2px 0"><span class="hint">${m ? m[1] : ""}</span> ${text}</div>`;
+}
+async function coAct(body, btn) {
+  if (btn) btn.disabled = true;
+  try { note($("coActNote"), "ok", (await post("/api/coordination-act", body)).ok); }
+  catch (e) { note($("coActNote"), "err", e.message); }
+  if (btn) btn.disabled = false;
+  loadCoord();
+}
+document.addEventListener("click", e => {
+  const rel = e.target.closest("[data-co-release]");
+  if (rel) {
+    // Two clicks: the first arms it, as with the other buttons that act on
+    // someone else's work.
+    if (rel.dataset.armed !== "1") { rel.dataset.armed = "1"; rel.textContent = "Confirm hand on"; setTimeout(() => { rel.dataset.armed = ""; rel.textContent = "Hand on"; }, 4000); return; }
+    coAct({release: rel.dataset.coRelease}, rel);
+    return;
+  }
+  const msg = e.target.closest("[data-co-msg]");
+  if (msg) {
+    const row = $("coMsg-" + msg.dataset.coMsg);
+    if (row) { row.hidden = !row.hidden; if (!row.hidden) row.querySelector("input").focus(); }
+    return;
+  }
+  const send = e.target.closest("[data-co-send]");
+  if (send) {
+    const input = $("coMsg-" + send.dataset.coSend).querySelector("input");
+    coAct({session: send.dataset.coSend, message: input.value}, send).then(() => { input.value = ""; });
+  }
+});
 $("coSave").onclick = async () => {
   try {
     const r = await post("/api/coordination-save", {enabled: $("coOn").checked,

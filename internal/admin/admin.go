@@ -112,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/prompt-notice-test", s.mutating(s.handlePromptNoticeTest))
 	mux.HandleFunc("/api/coordination", s.readOnly(s.handleCoordination))
 	mux.HandleFunc("/api/coordination-save", s.mutating(s.handleCoordination))
+	mux.HandleFunc("/api/coordination-act", s.mutating(s.handleCoordinationAct))
 	mux.HandleFunc("/api/handover", s.mutating(s.handleHandover))
 	mux.HandleFunc("/api/handover-install", s.mutating(s.handleHandoverInstall))
 	mux.HandleFunc("/api/handover-audit", s.readOnly(s.handleHandoverAudit))
