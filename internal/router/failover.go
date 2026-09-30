@@ -252,10 +252,6 @@ func isLocalConnectivityFailure(err error) bool {
 	if errors.As(err, &dnsErr) {
 		return true
 	}
-	var lookupErr *LookupError
-	if errors.As(err, &lookupErr) {
-		return true
-	}
 	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 

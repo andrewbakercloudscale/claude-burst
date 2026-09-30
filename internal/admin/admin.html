@@ -657,6 +657,11 @@
          recommended button in the Install panel, put where the eye already is:
          the panel is the fix, and this is the fix without having to look for it. -->
     <button class="success" id="installTop" style="margin-left:10px" hidden>⤓ Install Transparent Proxy</button>
+    <!-- Shown only while any request is being sent to the secondary. The
+         same action as Back to primary in Actions, put where the SECONDARY
+         badge is: on 2026-09-30 the page said PRIMARY while one model's
+         traffic went to GLM, and the reset was four cards down. -->
+    <button class="warn" id="resetTop" style="margin-left:10px" hidden>↩ Back to primary</button>
     <button class="danger" id="revertTop" style="margin-left:10px">↺ Revert to normal Claude</button>
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
   </header>
@@ -1654,11 +1659,20 @@ function renderActiveBadge(s, verdict) {
   // the exact thing that made this dashboard look healthy while every request
   // went straight to Anthropic. So it appears only once the probe has actually
   // confirmed the path.
+  // Per-model windows count too: they are how every outage and most limits
+  // send traffic to the secondary, and a badge that only read the
+  // account-wide window said PRIMARY while Opus went to GLM (2026-09-30).
+  const now = Date.now();
+  const onSecondary = ((s.downgrade && s.downgrade.rejected) || [])
+    .filter(r => Date.parse(r.until) > now).map(r => r.model);
+  $("resetTop").hidden = !(s.overflow || onSecondary.length);
   $("routeBadge").innerHTML = !(verdict && verdict.ok)
     ? ""
     : s.overflow
       ? `<span class="badge warn"><span class="dot"></span>OVERFLOW \u2192 SECONDARY</span>`
-      : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
+      : onSecondary.length
+        ? `<span class="badge warn" title="until ${esc(new Date(Math.max(...s.downgrade.rejected.map(r => Date.parse(r.until)))).toLocaleTimeString())}"><span class="dot"></span>SECONDARY \u00b7 ${esc(onSecondary.join(", "))}</span>`
+        : `<span class="badge ok"><span class="dot"></span>PRIMARY</span>`;
 }
 
 // liveCheck runs the same probe as the Test connection button, automatically,
@@ -2621,6 +2635,7 @@ $("reset").onclick = async () => {
   try { note($("actNote"), "ok", (await post("/api/reset")).ok); refresh(); }
   catch (e) { note($("actNote"), "bad", e.message); }
 };
+$("resetTop").onclick = () => $("reset").onclick();
 
 $("restart").onclick = async () => {
   if (!confirm("Restart the gateway?\n\nIn-flight requests will be dropped. If it is managed by launchd it comes straight back; if you started it by hand, it will simply stop.")) return;
@@ -2804,6 +2819,25 @@ function readinessChecks(s, verdict) {
       : (sec.key_env_var && !sec.key_present) ? "configured, but no API key was found"
       : `${sec.model || sec.provider}, key ok`,
   });
+
+  // Is Anthropic answering NOW. Critical, because it is the one check that
+  // fails while every request is failing: the error rate below averages 14
+  // days, and on 2026-09-30 minutes of 502s on every request left it green.
+  const ph = s.primary_health;
+  if (ph) {
+    // Go sends a never-set time as year 1, not as a missing field.
+    const at = v => v && !v.startsWith("0001-") ? Date.parse(v) : 0;
+    ph.last_answer = at(ph.last_answer) ? ph.last_answer : "";
+    const failing = ph.failures > 0 && Date.now() - at(ph.last_failure) < 10 * 60 * 1000;
+    const t = v => new Date(at(v)).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    out.push({
+      key: "primary", label: "Anthropic answering", target: "sec-activity",
+      ok: !failing, critical: true,
+      detail: failing
+        ? `${ph.failures} request${ph.failures === 1 ? "" : "s"} failed since ${t(ph.failing_since)}${ph.last_answer ? `, last answer ${t(ph.last_answer)}` : ", no answer since the gateway started"}: ${(ph.last_error || "").slice(0, 240)}`
+        : ph.last_answer ? `last answer ${t(ph.last_answer)}` : "no request yet since the gateway started",
+    });
+  }
 
   // Error rate over the charted window. Uses the same numbers the chart
   // draws, so the check and the picture below it can never disagree.
