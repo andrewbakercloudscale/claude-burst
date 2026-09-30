@@ -825,7 +825,7 @@
       <div class="row" style="align-items:flex-start;margin:16px 0 12px">
         <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
           <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
-          On for my subscription sessions <span class="pill">experimental</span> <span id="compactState" class="pill"></span>
+          On for my subscription sessions <span class="pill" title="New and in daily use; report anything odd on GitHub">Leading Edge</span> <span id="compactState" class="pill"></span>
         </label>
       </div>
       <div class="row" style="align-items:flex-start;margin:-4px 0 12px">
@@ -4075,7 +4075,10 @@ loadFinder();
 for (const el of document.querySelectorAll(".applies")) {
   const when = el.dataset.when, cls = when === "now" ? "w-now" : when === "restart" ? "w-restart" : "";
   const label = when === "now" ? "applies at once" : when === "restart" ? "applies after a restart" : "applies to the " + when;
-  el.innerHTML = `<i title="saved in ${esc(el.dataset.where)}">${esc(el.dataset.where)}</i><i class="${cls}">${esc(label)}</i>`;
+  const whenTip = when === "now" ? "Takes effect from the next request after you save. No restart of the gateway or of Claude Code."
+    : when === "restart" ? "Takes effect once the gateway restarts."
+    : `Takes effect from the ${when} you start; ones already open keep the old setting.`;
+  el.innerHTML = `<i title="${esc(`Where this setting is stored: ${el.dataset.where}`)}">saved in ${esc(el.dataset.where)}</i><i class="${cls}" title="${esc(whenTip)}">${esc(label)}</i>`;
 }
 
 function setAdvOpen(open) {

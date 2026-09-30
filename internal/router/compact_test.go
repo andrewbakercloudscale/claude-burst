@@ -744,3 +744,59 @@ func TestSubagentDoesNotDropTheParentsSummary(t *testing.T) {
 		t.Fatal("the parent must still carry its summary after a subagent request")
 	}
 }
+
+// /compact-async: a prompt carrying the marker starts a summary at once,
+// well below Compact at and inside the window, and it swaps in with the
+// next plain prompt.
+func TestCompactAsyncStartsASummaryNow(t *testing.T) {
+	f := &fakeAnthropic{context: 50_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	if f.summaryCount() != 0 {
+		t.Fatal("50k is far below Compact at: no summary without the command")
+	}
+	cmd := json.RawMessage(`{"role":"user","content":[{"type":"text","text":"(` + CompactAsyncMarker + `) reply with one line"}]}`)
+	withCmd := append(append([]json.RawMessage(nil), all[:8]...), cmd)
+	send(t, s, "S", withCmd)
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "/compact-async: 8 earlier messages") {
+		t.Fatalf("want the /compact-async start line, got:\n%s", got)
+	}
+
+	// Asking again while one is ready starts nothing new and says so.
+	n := f.summaryCount()
+	send(t, s, "S", withCmd)
+	if f.summaryCount() != n {
+		t.Fatal("a second /compact-async must not start another summary")
+	}
+	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "already ready") {
+		t.Fatalf("want already ready, got:\n%s", got)
+	}
+
+	// The next plain prompt carries the summary.
+	next := append(append([]json.RawMessage(nil), withCmd...),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"Pauseless compaction started"}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"text","text":"carry on"}]}`))
+	send(t, s, "S", next)
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatalf("the next prompt must carry the summary:\n%s", f.last())
+	}
+}
+
+// The marker counts only in a plain prompt: a tool result that happens to
+// contain it (a file that mentions the command) starts nothing.
+func TestCompactAsyncMarkerInAToolResultIsIgnored(t *testing.T) {
+	f := &fakeAnthropic{context: 50_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	h := append(append([]json.RawMessage(nil), all[:6]...),
+		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"grep hit: `+CompactAsyncMarker+`"}]}`))
+	send(t, s, "S", h)
+	time.Sleep(100 * time.Millisecond)
+	if f.summaryCount() != 0 {
+		t.Fatal("a tool result mentioning the marker must not start a summary")
+	}
+}

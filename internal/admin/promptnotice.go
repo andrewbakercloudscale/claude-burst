@@ -12,6 +12,7 @@ import (
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 )
 
 // The prompt notice: a UserPromptSubmit hook that shows, under the prompt in
@@ -61,6 +62,9 @@ func noticeURL(adminListen string) string {
 // on and removes it otherwise. It touches only its own entry in
 // ~/.claude/settings.json.
 func SyncPromptNoticeHook(cfg config.Config) error {
+	if err := SyncCompactCommand(cfg); err != nil {
+		return err
+	}
 	c := cfg.PrimaryCompaction
 	want := cfg.AdminListen != "" && c.Enabled && !c.NoPromptNotice
 	dir, err := config.ConfigDir()
@@ -153,4 +157,49 @@ func promptNoticeState() string {
 		return "installed"
 	}
 	return "not installed"
+}
+
+// compactCommandText is ~/.claude/commands/compact-async.md: the prompt it
+// sends carries router.CompactAsyncMarker, which makes the gateway start a
+// summary now. The model only has to acknowledge it.
+const compactCommandText = `---
+description: Pauseless compaction (Claude Burst) - summarise this session in the background now, with no pause
+---
+(` + router.CompactAsyncMarker + `) The Claude Burst gateway has started Pauseless Compaction for this conversation: a background summary that swaps in with the next prompt. Reply with exactly this one line and nothing else, using no tools: "Pauseless compaction started: it swaps in with your next prompt, keep working."
+`
+
+// compactCommandPath is where Claude Code looks for the user's commands.
+func compactCommandPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude", "commands", "compact-async.md"), nil
+}
+
+// SyncCompactCommand installs /compact-async while Pauseless Compaction is
+// on and removes it when off. A file there that is not ours is left alone.
+func SyncCompactCommand(cfg config.Config) error {
+	p, err := compactCommandPath()
+	if err != nil {
+		return err
+	}
+	old, rerr := os.ReadFile(p)
+	ours := rerr == nil && strings.Contains(string(old), router.CompactAsyncMarker)
+	if rerr == nil && !ours {
+		return nil
+	}
+	if !cfg.PrimaryCompaction.Enabled {
+		if ours {
+			return os.Remove(p)
+		}
+		return nil
+	}
+	if ours && string(old) == compactCommandText {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(compactCommandText), 0o644)
 }

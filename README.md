@@ -1,13 +1,13 @@
 # Claude Burst: pauseless compaction and overflow for Claude Code
 
-**Pauseless compaction for Claude Code: long sessions are summarised in the background, with no pause. Plus your Claude subscription as the engine, and Together AI's GLM as cheap overflow.**
+**Pauseless compaction for Claude Code: Compact Sessions without the Pause. The summary is written in the background while you keep working. Plus your Claude subscription as the engine, and Together AI's GLM as cheap overflow.**
 
 Claude Burst is a Mac-only local gateway for Claude Code:
 
 1. **Overflow.** It keeps your normal Claude Pro/Max login as the primary credential, watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests to a secondary, this README works through **Together AI serving GLM**, then returns to the subscription when the reset timestamp arrives.
 2. **Overflow pruning.** Every overflow request resends the whole conversation to a metered provider, and most of it is old tool output. Before it is sent, tool results older than the most recent 10 are replaced with a one-line note, and any single result over 40 KB keeps only its start and end. The subscription is never pruned: Anthropic caches its context, and rewriting it on every request would break the cache (pauseless compaction, below, rewrites it once, on purpose). The dashboard's **Context & cache** panel has the switches, what was not sent, the cache hit rate per route, and a verdict that turns red if pruned requests fail more often than unpruned ones.
 
-3. **Pauseless compaction** (experimental, off by default). **Long subscription sessions are compacted in the background, with no pause.** When a session's context passes a threshold (default 400k), Burst has the same model summarise the older history while you keep working, and swaps the summary in on your next prompt. See [Pauseless compaction](#pauseless-compaction-compact-sessions-without-the-pause-experimental).
+3. **Pauseless compaction** (Leading Edge, off by default). **Compact Sessions without the Pause: subscription sessions are compacted in the background while you keep working.** When a session's context passes a threshold (default 400k), Burst has the same model summarise the older history while you keep working, and swaps the summary in on your next prompt. See [Pauseless compaction](#pauseless-compaction-compact-sessions-without-the-pause-leading-edge).
 
 Token shunting, an earlier second job for the secondary, was switched off on 2026-09-21 because it saved nothing, and has been removed from the dashboard; see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context).
 
@@ -34,7 +34,7 @@ It binds loopback only and needs no login (see [the admin UI](#the-local-admin-u
 The menu down the left follows you as you scroll, grouped by job:
 
 - **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, and **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in).
-- **Context**: [Pauseless Compaction](#pauseless-compaction-compact-sessions-without-the-pause-experimental), Context & cache.
+- **Context**: [Pauseless Compaction](#pauseless-compaction-compact-sessions-without-the-pause-leading-edge), Context & cache.
 - **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
 - **Sessions**: [Session handover](#session-handover-handoffmd-read-at-start-written-at-close-optional), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
 - **This Mac**: [lid closed and hotspot](#keeping-claude-code-working-with-the-lid-shut-optional), [Notifications](#notifications).
@@ -74,13 +74,15 @@ See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-op
 
 **Keeping Remote Control.** Pointing Claude Code at any local gateway normally costs you its Remote Control feature, Claude Code disables Remote Control the moment `ANTHROPIC_BASE_URL` names anything other than `api.anthropic.com`, and the default setup below sets exactly that variable. Claude Burst's `transparent` intercept mode solves this by never touching `ANTHROPIC_BASE_URL` at all: instead of using that config mechanism, it gets into the path a level lower, at DNS, so Claude Code's own settings never change and it believes it is still talking to `api.anthropic.com` directly. See [Keeping Remote Control: transparent intercept mode](#keeping-remote-control-transparent-intercept-mode-optional) below.
 
-## Pauseless compaction: Compact Sessions without the Pause (experimental)
+## Pauseless compaction: Compact Sessions without the Pause (Leading Edge)
 
 **Claude Code's `/compact` stops the session while it summarises. Burst's compaction never does.**
 
 **What is pauseless compaction?** Claude Code has no pauseless compaction mode of its own: its `/compact`, and the auto-compact near the end of its context window, stop the session while the conversation is summarised. Pauseless compaction is Claude Burst's alternative. A local gateway between Claude Code and Anthropic writes the summary in a background request while you keep working, then swaps it in on your next prompt. Claude Code is unchanged, your place in the conversation is kept, and there is nothing to type. Turn it on in the dashboard under **Pauseless Compaction**.
 
 **You see it in Claude Code itself.** A line appears under the prompt you send, for example `⚡ Claude Burst, pauseless compaction: done. Context down 88%, 666k → 78k: 1074 earlier messages now go as a summary`. There are lines for when a summary starts, when it is ready, when it has cut the context, and when it fails or no longer fits. They come from a hook the dashboard installs (on by default, with a switch): under each prompt (`UserPromptSubmit`), and after each tool call inside a long turn (`PostToolUse`). A summary that is ready mid-turn waits for your next prompt, and the hook says so once, so a long turn never looks like compaction has not fired. Claude does not see these lines, so they cost no context.
+
+**Compact now with `/compact-async`.** Type `/compact-async` in Claude Code to start a pauseless compaction straight away, whatever the context size and however recently the last one ran. Claude replies with one line and you keep working; the summary is written in the background and swaps in with your next prompt once it is ready. It is Burst's pauseless version of `/compact`: the dashboard installs it as `~/.claude/commands/compact-async.md` while Pauseless Compaction is on, and removes it when it is off (a command of that name you wrote yourself is never touched). It needs some conversation before the prompt to summarise; with too little, the line under your prompt says so.
 
 On the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window. With pauseless compaction on:
 

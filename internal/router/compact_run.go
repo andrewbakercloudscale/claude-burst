@@ -2,6 +2,7 @@ package router
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -322,7 +323,16 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		view, offset = rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt), st.p0
 	}
 
-	if st.lastContext >= cfg.CompactAtTokens && !st.pending && st.next == "" && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window) {
+	// /compact-async asks for a summary now, whatever the context size and
+	// the window: the user chose the moment.
+	forced := fresh && RequestsCompaction(msgs[len(msgs)-1])
+	if forced && st.pending {
+		st.notice("/compact-async: a summary is already being written; it swaps in at a later prompt")
+	} else if forced && st.next != "" {
+		st.notice("/compact-async: a summary is already ready; it swaps in with your next prompt")
+	}
+	auto := st.lastContext >= cfg.CompactAtTokens && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window)
+	if (auto || forced) && !st.pending && st.next == "" {
 		// Only a compaction that actually starts opens the window. A skip
 		// (no boundary yet, typically one long prompt) must leave the next
 		// prompt free to compact.
@@ -334,8 +344,16 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			history := append([]json.RawMessage(nil), view...)
 			hash := prefixHash(msgs, p)
 			st.pendingMarks = messageMarks(msgs, p)
-			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages", rid, key, st.lastContext/1000, p, len(msgs))
-			st.notice("context is %dk, so %d earlier messages are being summarised in the background. Keep working: it swaps in at a later prompt, with no pause", st.lastContext/1000, p)
+			why := ""
+			if forced {
+				why = " (requested with /compact-async)"
+			}
+			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages%s", rid, key, st.lastContext/1000, p, len(msgs), why)
+			if forced {
+				st.notice("/compact-async: %d earlier messages (context %dk) are being summarised in the background. Keep working: it swaps in with your next prompt once ready, with no pause", p, st.lastContext/1000)
+			} else {
+				st.notice("context is %dk, so %d earlier messages are being summarised in the background. Keep working: it swaps in at a later prompt, with no pause", st.lastContext/1000, p)
+			}
 			s.compaction.running.Add(1)
 			// Its own copy of top: this same request may still be rewritten
 			// below (the current summary stays in force), which writes
@@ -345,6 +363,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 				own[k] = v
 			}
 			go s.summarise(in.Clone(context.Background()), own, history, cut, key, p, hash)
+		} else if forced {
+			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: /compact-async with too little before this prompt to summarise", rid, key, st.lastContext/1000)
+			st.notice("/compact-async: nothing to compact yet; there is too little conversation before this prompt to summarise")
 		} else if st.skippedAt.IsZero() || now.Sub(st.skippedAt) >= window {
 			st.skippedAt = now
 			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no prompt boundary leaves at least %.0f%% to summarise",
@@ -392,6 +413,15 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	}
 	ci.applied, ci.removedMsgs, ci.removedBytes = true, len(msgs)-len(out), int64(len(body)-len(newBody))
 	return newBody, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
+}
+
+// CompactAsyncMarker is in the prompt the /compact-async command sends; a
+// plain prompt whose last message carries it asks for a summary now.
+const CompactAsyncMarker = "claude-burst:compact-async"
+
+// RequestsCompaction reports whether a message is a /compact-async prompt.
+func RequestsCompaction(msg json.RawMessage) bool {
+	return bytes.Contains(msg, []byte(CompactAsyncMarker))
 }
 
 // compactionBoundary picks the latest plain prompt past offset that leaves
