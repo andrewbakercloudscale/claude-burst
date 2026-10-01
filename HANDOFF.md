@@ -1,3 +1,46 @@
+# Handover, 2026-10-01 20:43: coordination metrics and issues, masters commit others' work first, subagents, lock starvation fix
+<!-- session: 0125e44d-d7bf-4778-8143-1c51dcab7da4 -->
+
+## State right now
+
+- Written at 20:43. Verify before acting.
+- `main` at `774da37`, pushed, working tree clean (git status at 20:43). Every commit below deployed with `scripts/deploy.sh`; gateway running under launchd (pid 43873).
+- Session coordination is ON with seven hooks in `~/.claude/settings.json` (SubagentStop added today).
+- Every repo under `~/Desktop/github` was in step with GitHub at about 19:00 (fetched, 0 ahead / 0 behind), except files other sessions have left uncommitted (listed under Open 4).
+- Dashboard Issues: 12 lock errors from 18:18-18:19 cleared with the new Clear button; 0 open at 20:40.
+
+## What was done
+
+- `7bcf6de` Dashboard "Is it working?": Today / 7 days / 14 days, tiles (Coordinated = shared + refused + taken over + handed on + asked for), per-day table, Issues table (hook errors, stopped with uncommitted work), red menu dot while any is open. Counted from `~/.config/claude-burst/coord/coord.log` by `internal/admin/coordstats.go`; `/api/coordination?days=`. Scratch and temp-dir files are no longer tracked (`scratchPath`; tests set `CLAUDE_BURST_COORD_TRACK_TMP=1`).
+- `917ef4b` The user's direction: nobody waits on a master, commits are accelerated.
+  - Shared edit: the master gets a PRIORITY message at its next tool call to commit the file now, ahead of its own work ("WIP:" if unfinished).
+  - Refused deploy: the coordinator itself messages each master holding uncommitted work in that repo (`mastersIn`); the deployer is told to carry on and retry.
+  - Briefing rule 7: PRIORITY messages first, never make another session wait.
+  - Subagents: hook input from inside a subagent carries `agent_id` with the parent's session id. Files record the subagent that last edited them (`shared.Agent`), sessions keep running agents (`session.Agents`, removed by the SubagentStop hook, gone after 2h silent), and Stop skips a running agent's files. Cause: cyber-devtools session held at 18:08 to commit its comment-flood agent's files.
+  - Each session shows the latest typed request of 5+ words (`sessionTask`), because folder-named sessions share a window title. `ab37b02` skips `[Image ...]` placeholders and reads up to 16 MB back.
+- `fa39692` Lock starvation: every hook held the state lock while running one git process per tracked file in series; with many agents firing hooks, others waited out the 3s lockWait (12 errors at 18:18-18:19). Now `prewarm` asks git about all tracked files in parallel before the lock (`tx.git` uses the answers); holds over 1s log "slow: held the state lock". `TestBusyHooksDoNotStarveTheLock` fails on the old code.
+- `e657906` Clear hook errors button (logs a marker line; earlier errors leave Issues, stay counted). `774da37` stopped-uncommitted issues ask git whether pending files are still dirty (a merged worktree left one open forever); Status() now logs the files it frees.
+- `715f541` README coordination section rewritten: design rule, subagents, metrics, Issues, three Mermaid diagrams.
+- Outside this repo: pushed cyber-devtools (32 commits), CloudScale-Wp-Proxy (3), cloudscale-wp-shared (1), cloudscale-submission-validator (1), iphone-image-manager (5); deploy-record ignores (`archive/*.manifest.txt`, `*.uncommitted.patch`, `*.untracked.tgz`) added to all five plugins' `.gitignore`; cleanup and crash-recovery SVN-mirror clones reset to GitHub (they were 114 and 44 behind, their one commit would have deleted newer work; backups deleted on the user's word); `claude-traffic-light` fast-forwarded 824 commits.
+- A blog brief on how coordination works (with three Mermaid diagrams) was put on the clipboard for the CloudScale-Wp-Proxy session to write up.
+
+## Open
+
+1. **Offered, user not yet answered:** an `--only-committed` mode for each plugin's `deploy-wordpress.sh` (build from a throwaway worktree of HEAD, like `scripts/deploy.sh --only-committed`), which removes the last case where a deploy waits on another session. Gitignored script, five repos.
+2. Unverified live: that Claude Code fires SubagentStop for background agents (unit tests only). Check: after a session's background agent finishes, `~/.config/claude-burst/coord/state.json` has no entry for it under that session's `agents`.
+3. `scripts/coord-live-test.sh` not rerun since these changes; the dashboard section not checked in a browser (Chrome extension was not connected); the API and served page were checked, and the page JS parses.
+4. Uncommitted work left by others, not touched: `CloudScaleWpPluginHelpDocs/plugins/cyber-devtools/generate.js`; `deploy-wordpress.sh` in `cloudscale-test-accounts` and `cloudscale-sql-runner`; `raspberry-pis` submodule changes and untracked `andrew-baker-cobalt/`; `.omc/`, `.codex/`, `.playwright-mcp/` clutter; `linkedin-chrome-plugin/HANDOVER.md`.
+5. From the 17:25 handover, still open unless done since: screen-off with lid shut (`scripts/lid-awake-root.sh`), P0 list in memory `claude_burst_next_priorities.md`, restart-warning decision.
+
+## Things that will bite you
+
+- Running sessions only see briefing rule 7 when they next start; PRIORITY messages reach them now.
+- `prewarm` reads `state.json` without the lock (safe: written by rename) and its answers are milliseconds old under the lock. A file not tracked before the hook is asked live.
+- Test repos are temp dirs, which coordination now ignores: any new test that runs hooks needs `CLAUDE_BURST_COORD_TRACK_TMP=1` (set in coord's TestMain; set per test in admin).
+- Error issues stay open 24h unless cleared; the Clear marker is the literal line `hook errors cleared from the dashboard` in coord.log.
+- This session ran `git stash -- internal/coord/coord.go` once in the shared claude-burst tree (popped at once, own file only). Do not: rule 4.
+- No em or en dashes; no Claude co-author trailers in commits.
+
 # Handover, 2026-10-01 17:25: session coordination, single plan, version check, /compact-async, screen off with lid shut
 <!-- session: e84447e0-d2f1-4a53-a55d-17c6390846ba -->
 
