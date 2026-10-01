@@ -49,6 +49,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -144,6 +145,60 @@ type tx struct {
 	*Coordinator
 	d   *state
 	now float64
+	// gitc is each tracked file's git state, read before the lock was
+	// taken (prewarm); git() falls back to asking git for anything else.
+	gitc map[string]fileState
+}
+
+// git is path's git state: from the prewarm when it has it, else from git.
+func (t *tx) git(path string) fileState {
+	if st, ok := t.gitc[path]; ok {
+		return st
+	}
+	st := gitState(path)
+	if t.gitc == nil {
+		t.gitc = map[string]fileState{}
+	}
+	t.gitc[path] = st
+	return st
+}
+
+// prewarm asks git about every tracked file before the lock is taken, in
+// parallel. Holding the lock while one git process ran per file, one after
+// another, made each hook hold it for a second or more; with several
+// sessions and their background subagents all firing hooks, the others
+// waited out lockWait and went through uncoordinated (12 times in two
+// minutes on 2026-10-01 18:18). The state is read without the lock: it is
+// replaced by rename, so a read sees a whole old or new file.
+func (c *Coordinator) prewarm() map[string]fileState {
+	b, err := os.ReadFile(filepath.Join(c.Dir, "state.json"))
+	if err != nil {
+		return nil
+	}
+	var d struct {
+		Files map[string]json.RawMessage `json:"files"`
+	}
+	if json.Unmarshal(b, &d) != nil || len(d.Files) == 0 {
+		return nil
+	}
+	out := make(map[string]fileState, len(d.Files))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for p := range d.Files {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(p string) {
+			defer wg.Done()
+			st := gitState(p)
+			<-sem
+			mu.Lock()
+			out[p] = st
+			mu.Unlock()
+		}(p)
+	}
+	wg.Wait()
+	return out
 }
 
 // with runs fn on the state under an exclusive lock and saves it if fn
@@ -157,6 +212,7 @@ func (c *Coordinator) with(fn func(t *tx) error) error {
 		return err
 	}
 	defer lf.Close()
+	gitc := c.prewarm()
 	deadline := time.Now().Add(lockWait)
 	for {
 		err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
@@ -169,6 +225,14 @@ func (c *Coordinator) with(fn func(t *tx) error) error {
 		time.Sleep(20 * time.Millisecond)
 	}
 	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	held := time.Now()
+	defer func() {
+		// Say so when the lock was held long enough to make others wait:
+		// the log is the only way to find out why a hook gave up on it.
+		if d := time.Since(held); d > time.Second {
+			c.Log("slow: held the state lock %.1fs", d.Seconds())
+		}
+	}()
 
 	d := &state{}
 	path := filepath.Join(c.Dir, "state.json")
@@ -184,7 +248,7 @@ func (c *Coordinator) with(fn func(t *tx) error) error {
 	if d.Inbox == nil {
 		d.Inbox = map[string][]message{}
 	}
-	t := &tx{Coordinator: c, d: d, now: c.now()}
+	t := &tx{Coordinator: c, d: d, now: c.now(), gitc: gitc}
 	if err := fn(t); err != nil {
 		return err
 	}
@@ -303,7 +367,7 @@ func (t *tx) takeOver(path, sid string) (ctx string, dirty bool) {
 	f := t.d.Files[path]
 	old := f.Master
 	idle, _ := t.idleFor(f)
-	dirty = gitState(path) == fileDirty
+	dirty = t.git(path) == fileDirty
 	delete(f.Contributors, sid)
 	if dirty {
 		if f.Contributors == nil {
@@ -719,7 +783,7 @@ func (c *Coordinator) preTool(h hookInput, out io.Writer) error {
 		f := t.valid(path)
 		if f == nil {
 			t.d.Files[path] = &shared{Master: sid, Since: t.now, Touched: t.now, Agent: h.AgentID}
-			if gitState(path) == fileDirty {
+			if t.git(path) == fileDirty {
 				// Work no session is recorded as making: by hand, by a shell
 				// command, or by a session that ended without committing.
 				t.Log("%s masters %s, which already had uncommitted changes", short(sid), path)
@@ -835,7 +899,7 @@ func (t *tx) mastersIn(root, sid string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for p, f := range t.d.Files {
-		if f.Master == sid || seen[f.Master] || !strings.HasPrefix(p, root+string(filepath.Separator)) || gitState(p) != fileDirty {
+		if f.Master == sid || seen[f.Master] || !strings.HasPrefix(p, root+string(filepath.Separator)) || t.git(p) != fileDirty {
 			continue
 		}
 		seen[f.Master] = true
@@ -863,7 +927,7 @@ func (t *tx) othersIn(root, sid string) (who, files []string) {
 				mine = false
 			}
 		}
-		if mine || gitState(p) != fileDirty {
+		if mine || t.git(p) != fileDirty {
 			continue
 		}
 		for o := range f.Contributors {
@@ -977,7 +1041,7 @@ func (c *Coordinator) preBash(h hookInput, out io.Writer) error {
 // would ever settle.
 func (t *tx) settle(sid string, turnOver bool) {
 	for p, f := range t.d.Files {
-		switch gitState(p) {
+		switch t.git(p) {
 		case fileClean:
 			delete(t.d.Files, p)
 			t.Log("free %s (committed)", p)
@@ -1080,7 +1144,7 @@ func (c *Coordinator) stop(h hookInput, out io.Writer) error {
 			if t.agentRunning(sid, t.d.Files[p].Agent) {
 				continue
 			}
-			if gitState(p) == fileDirty {
+			if t.git(p) == fileDirty {
 				dirty = append(dirty, p)
 			}
 		}
@@ -1283,7 +1347,7 @@ func (c *Coordinator) Status() (Status, error) {
 	err := c.with(func(t *tx) error {
 		t.gc()
 		for p := range t.d.Files {
-			if gitState(p) == fileClean {
+			if t.git(p) == fileClean {
 				delete(t.d.Files, p)
 			}
 		}
