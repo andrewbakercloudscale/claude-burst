@@ -505,7 +505,29 @@ do_install() {
   # this Mac to a port with nothing behind it.
   local scheme
   if ! scheme=$(probe_gateway "$gport"); then
-    die "gateway is not responding on 127.0.0.1:$gport -- start it before installing the redirect"
+    # A redirect rule left loaded from an earlier install makes its own
+    # target port unreachable (README "Verify", issue #1), so this probe
+    # can never pass while it is there. On 2026-10-01 a rollback that had no
+    # root left the rule loaded with /etc/hosts already clean, and every
+    # reinstall died here against a healthy gateway. With /etc/hosts not
+    # redirecting, the rule serves nothing: clear it and look again.
+    #
+    # And when /etc/hosts DOES redirect, this is a reinstall over a working
+    # install: the same rule hides the port, but the real path proves the
+    # gateway. Also 2026-10-01: the redirect had been installed from the
+    # dashboard minutes earlier and was serving every request, and the
+    # reinstall still died here.
+    if ! grep -qF "$BEGIN $TAG_HOSTS" "$HOSTS_FILE" 2>/dev/null &&
+       pfctl -a "$ANCHOR_NAME" -s nat 2>/dev/null | grep -q '^rdr'; then
+      echo "  a redirect rule from an earlier install is still loaded (nothing uses it: /etc/hosts is clean); clearing it"
+      pfctl -a "$ANCHOR_NAME" -F all 2>&1 | quiet_pf
+      sleep 1
+      scheme=$(probe_gateway "$gport") || scheme=""
+    elif grep -qF "$BEGIN $TAG_HOSTS" "$HOSTS_FILE" 2>/dev/null; then
+      echo "  the direct port is hidden by the redirect already installed; checking the real path instead"
+      real_path_retry 5 && scheme=https || scheme=""
+    fi
+    [[ -n "$scheme" ]] || die "gateway is not responding on 127.0.0.1:$gport -- start it before installing the redirect"
   fi
   echo "gateway healthy on 127.0.0.1:$gport (serving $scheme)"
 
