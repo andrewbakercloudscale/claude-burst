@@ -1,13 +1,30 @@
-# Claude Burst: pauseless compaction and overflow for Claude Code
+# Claude Burst: a local gateway that keeps Claude Code working
 
-**Pauseless compaction for Claude Code: Compact Sessions without the Pause. The summary is written in the background while you keep working. Plus your Claude subscription as the engine, and Together AI's GLM as cheap overflow.**
+**Claude Burst sits between Claude Code and Anthropic on your Mac. It keeps your Claude subscription as the engine, keeps you working when a limit is hit, keeps long sessions from pausing, keeps several sessions in one repository from wrecking each other's work, and shows you all of it on one dashboard.**
 
-Claude Burst is a Mac-only local gateway for Claude Code:
+Claude Code talks to it exactly as it talks to Anthropic: nothing in your workflow changes, and **Revert to normal Claude** takes it out of the path in one click. Mac only. What it does:
 
-1. **Overflow.** It keeps your normal Claude Pro/Max login as the primary credential, watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests to a secondary, this README works through **Together AI serving GLM**, then returns to the subscription when the reset timestamp arrives.
-2. **Overflow pruning.** Every overflow request resends the whole conversation to a metered provider, and most of it is old tool output. Before it is sent, tool results older than the most recent 10 are replaced with a one-line note, and any single result over 40 KB keeps only its start and end. The subscription is never pruned: Anthropic caches its context, and rewriting it on every request would break the cache (pauseless compaction, below, rewrites it once, on purpose). The dashboard's **Context & cache** panel has the switches, what was not sent, the cache hit rate per route, and a verdict that turns red if pruned requests fail more often than unpruned ones.
+**Keep working past a limit**
 
-3. **Pauseless compaction** (Leading Edge, off by default). **Compact Sessions without the Pause: subscription sessions are compacted in the background while you keep working.** When a session's context passes a threshold (default 400k), Burst has the same model summarise the older history while you keep working, and swaps the summary in on your next prompt. Type `/compact-async` to compact now, the pauseless version of `/compact`. See [Pauseless compaction](#pauseless-compaction-compact-sessions-without-the-pause-leading-edge).
+1. **Overflow.** Your normal Claude Pro/Max login stays the primary credential. Burst watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests to a secondary (this README works through **Together AI serving GLM**), then returns to the subscription when the reset timestamp arrives. Fallback models on your own plan (Fable to Opus) work with no secondary at all.
+2. **Overflow pruning.** Every overflow request resends the whole conversation to a metered provider, and most of it is old tool output. Before it is sent, tool results older than the most recent 10 are replaced with a one-line note, and any single result over 40 KB keeps only its start and end. The subscription is never pruned: Anthropic caches its context, and rewriting it on every request would break the cache. The dashboard's **Context & cache** panel has the switches, what was not sent, the cache hit rate per route, and a verdict that turns red if pruned requests fail more often than unpruned ones.
+
+**Keep long sessions moving**
+
+3. **Pauseless compaction** (Leading Edge, off by default). When a session's context passes a threshold (default 400k), the same model summarises the older history in the background while you keep working, and the summary is swapped in on your next prompt. `/compact-async` compacts now, the pauseless version of `/compact`. See [Pauseless compaction](#pauseless-compaction-compact-sessions-without-the-pause-leading-edge).
+
+**Keep several sessions working together**
+
+4. **Session coordination** (Leading Edge, off by default). Several Claude Code sessions, and their background subagents, can edit the same repository at once without overwriting, sweeping up or shipping each other's uncommitted work, and nobody waits: the first editor of a file commits it, and is asked to commit other sessions' changes first. See [Session coordination](#session-coordination-several-sessions-one-working-tree-optional).
+5. **Session handover.** Each session reads `HANDOFF.md` when it starts and writes it when it closes, so the next one picks up where the last left off. See [Session handover](#session-handover-handoffmd-read-at-start-written-at-close-optional).
+
+**Keep the Mac working**
+
+6. **Lid shut, offline.** Claude Code keeps running with the lid shut, the screen goes off behind it, and the Mac can join your phone's hotspot when it loses the network. See [Keeping Claude Code working with the lid shut](#keeping-claude-code-working-with-the-lid-shut-optional).
+
+**See everything**
+
+7. **The dashboard** on `http://127.0.0.1:7788`: health checks, routing, spend by model and by repository, compaction savings, who is editing what, and a **Needs attention** list. A terminal **usage panel** shows the same at a glance beside each session. See [Dashboard](#dashboard).
 
 Token shunting, an earlier second job for the secondary, was switched off on 2026-09-21 because it saved nothing, and has been removed from the dashboard; see [Token shunting](#token-shunting-keep-the-boring-work-out-of-claudes-context).
 
