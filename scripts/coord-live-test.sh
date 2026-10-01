@@ -54,7 +54,8 @@ cat > "$SETTINGS" <<JSON
  "Stop":[$(hook "" stop)]
 }}
 JSON
-export CLAUDE_BURST_COORD_FORCE=1 CLAUDE_BURST_COORD_DIR="$TMP/coord"
+# Its repository is a temporary directory, which coordination otherwise ignores.
+export CLAUDE_BURST_COORD_FORCE=1 CLAUDE_BURST_COORD_TRACK_TMP=1 CLAUDE_BURST_COORD_DIR="$TMP/coord"
 
 ALPHA="$(uuidgen | tr 'A-Z' 'a-z')"
 BETA="$(uuidgen | tr 'A-Z' 'a-z')"

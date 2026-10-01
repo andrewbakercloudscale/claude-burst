@@ -65,6 +65,7 @@ func TestCoordinationActions(t *testing.T) {
 	writeConfig(t, os.Getenv("HOME"))
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_BURST_COORD_DIR", dir)
+	t.Setenv("CLAUDE_BURST_COORD_TRACK_TMP", "1") // the file below is in a temp dir
 	cfg, _ := config.Load()
 	c, _ := Coordinator(cfg)
 	file := filepath.Join(t.TempDir(), "notes.txt")
