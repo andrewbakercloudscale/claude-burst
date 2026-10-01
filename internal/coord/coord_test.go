@@ -284,6 +284,59 @@ func TestTheEndOfATurnLetsGoOfFilesGitDoesNotTrack(t *testing.T) {
 	}
 }
 
+func held(out string) bool { return strings.Contains(out, `"decision":"block"`) }
+
+// A turn that leaves files its session masters uncommitted is held once,
+// with the instruction to commit them; a second stop in the same turn is
+// let go, and a turn with everything committed is never held.
+func TestATurnIsHeldUntilItsFilesAreCommitted(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	r.start("B")
+	r.edit("A", "a.go", "package x", "package x // A")
+	r.edit("B", "a.go", "// A", "// A B")
+	r.edit("B", "b.go", "package x", "package x // B")
+
+	out := r.hook("stop", "A", nil)
+	if !held(out) || !strings.Contains(out, "a.go") || strings.Contains(out, "b.go") {
+		t.Fatalf("A must be held to commit a.go, and only the files it masters:\n%s", out)
+	}
+	if !strings.Contains(out, "also holds changes from") || !strings.Contains(out, "do not push") || !strings.Contains(out, "WIP:") {
+		t.Fatalf("the instruction names the contributor, forbids pushing and allows WIP:\n%s", out)
+	}
+	// B contributed to a.go (A commits it) and masters b.go.
+	if out := r.hook("stop", "B", nil); !held(out) || strings.Contains(out, "a.go") {
+		t.Fatalf("B is held for b.go only:\n%s", out)
+	}
+
+	// The second stop of the same turn is let go, so a failed commit never loops.
+	if out := r.hook("stop", "A", map[string]any{"stop_hook_active": true}); held(out) {
+		t.Fatalf("a session already held this turn must be let go:\n%s", out)
+	}
+
+	// After committing, the turn ends without being held.
+	r.bash("A", "git add a.go && git commit -qm 'A and B'")
+	if out := r.hook("stop", "A", nil); held(out) {
+		t.Fatalf("nothing uncommitted, nothing to hold:\n%s", out)
+	}
+	if f := r.file("a.go"); f != nil {
+		t.Fatalf("committed a.go stops being shared, got %+v", f)
+	}
+
+	// A session that edited nothing is never held.
+	r.start("C")
+	if out := r.hook("stop", "C", nil); out != "" {
+		t.Fatalf("C edited nothing:\n%s", out)
+	}
+}
+
+func TestSessionStartAsksForCommitsBeforeStopping(t *testing.T) {
+	r := newRig(t)
+	if out := r.start("A"); !strings.Contains(out, "Commit the files you master before you stop") {
+		t.Fatalf("the briefing must state the rule:\n%s", out)
+	}
+}
+
 func TestAMasterSittingOnOthersChangesIsNudged(t *testing.T) {
 	r := newRig(t)
 	r.start("A")
