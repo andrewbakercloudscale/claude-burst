@@ -142,7 +142,9 @@ The dashboard shows the net figure in the Pauseless Compaction section (per sess
 
 ![The Pauseless Compaction section: headline results, settings, and each session's context before and after, with the saving per turn](docs/screenshots/pauseless-compaction.png)
 
-![The Saved view of Daily activity: tokens removed by compaction and by pruning, per day](docs/screenshots/saved-chart.png)
+![The Saved view of Daily activity: tokens removed by compaction and by pruning, per day. Example month scaled from real data](docs/screenshots/saved-chart.png)
+
+The Saved view above is also an example month: the real daily average so far (2026-09-29 to 10-01, about 195M tokens of context compacted per active day) spread over 30 days, weekdays varying by a fixed pattern and weekends at 35%.
 
 ### Savings per day, and what a month looks like
 
