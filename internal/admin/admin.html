@@ -1180,7 +1180,7 @@
         <input type="checkbox" id="coOn" style="width:auto;margin:0">
         On for every Claude Code session on this Mac <span class="pill edge" title="New; report anything odd on GitHub">Leading Edge</span>
       </label>
-      <div class="hint" style="margin:6px 0 10px">When several Claude Code sessions work in the same repository, the first one to edit a file becomes that file's <strong>master</strong> and is responsible for committing it. Other sessions can still edit the file: their changes go through, the master is told what changed and commits those changes with its own, and the other session is told not to commit the file itself. Three things are blocked while another session has uncommitted work in the repository: overwriting a whole file the master is still working on, sweeping commands (<code>git add -A</code>, <code>git add .</code>, <code>git commit -a</code>) that would commit someone else's work, and running a deploy or install script, which would ship that work although it is in no commit. A file is no longer shared once it is committed. A session also has to commit the files it is master of before it stops: if a turn would end with any of them uncommitted, the session is asked once to commit them (on this Mac only, never pushed, marked "WIP:" if unfinished), so a file passed to another session is always passed on committed. Every session is told these rules when it starts. It works through Claude Code hooks in <code>~/.claude/settings.json</code>, added when you switch it on and removed when you switch it off; if a hook ever fails, the edit goes ahead as if coordination were off.</div>
+      <div class="hint" style="margin:6px 0 10px">When several Claude Code sessions work in the same repository, the first one to edit a file becomes that file's <strong>master</strong> and is responsible for committing it. Other sessions can still edit the file: their changes go through, the master is asked to commit them at its next tool call, ahead of its own work, and the other session is told not to commit the file itself. Nobody waits on a master: a deploy held up by uncommitted work asks the masters to commit at once, and the deploying session carries on meanwhile. Files a background subagent is still working on never hold up its session. Three things are blocked while another session has uncommitted work in the repository: overwriting a whole file the master is still working on, sweeping commands (<code>git add -A</code>, <code>git add .</code>, <code>git commit -a</code>) that would commit someone else's work, and running a deploy or install script, which would ship that work although it is in no commit. A file is no longer shared once it is committed. A session also has to commit the files it is master of before it stops: if a turn would end with any of them uncommitted, the session is asked once to commit them (on this Mac only, never pushed, marked "WIP:" if unfinished), so a file passed to another session is always passed on committed. Every session is told these rules when it starts. It works through Claude Code hooks in <code>~/.claude/settings.json</code>, added when you switch it on and removed when you switch it off; if a hook ever fails, the edit goes ahead as if coordination were off.</div>
       <div class="row">
         <div>
           <label for="coIdle">Let another session take a file over when its master is idle for (minutes)</label>
@@ -4305,13 +4305,16 @@ function coAgo(sec) {
 }
 // A session reads as its name in Claude Code, then its folder and id:
 // "Fix the rollback script  claude-burst e84447e0". Without a name, the
-// folder is the name.
-function coWho(label, name) {
+// folder is the name. Under it, what the user last asked it to do: two
+// sessions in one folder have the same window title, and that tells them
+// apart.
+function coWho(label, name, task) {
   const m = /^(.*) \[([\w-]+)\]$/.exec(label || "");
   const folder = m ? m[1] : (label || "?"), id = m ? m[2] : "";
-  return name
+  const who = name
     ? `<b>${esc(name)}</b> <span class="hint">${esc(folder)}</span> <span class="mono hint">${esc(id)}</span>`
     : `<b>${esc(folder)}</b> <span class="mono hint">${esc(id)}</span>`;
+  return task ? `${who}<div class="hint" style="font-size:11.5px;max-width:420px" title="The latest request typed in this session">&ldquo;${esc(task)}&rdquo;</div>` : who;
 }
 function coPath(p, cwds) {
   // Shown relative to a session's folder when it is inside one.
@@ -4353,7 +4356,7 @@ function coIssuesHTML(m) {
     is.map(x => {
       const what = x.kind === "error" ? "Hook error" : "Stopped with uncommitted work";
       const detail = x.kind === "error" ? esc(x.text)
-        : `${esc(coNames[x.session] || x.session)}: ${(x.files || []).map(f => `<span class="mono">${esc(f.replace(/^\/Users\/[^/]+/, "~"))}</span>`).join("<br>")}${!x.resolved && (x.pending || []).length < (x.files || []).length ? `<br><span class="hint">still uncommitted: ${(x.pending || []).length}</span>` : ""}`;
+        : `${esc(coNames[x.session] || x.session)}${coTasks[x.session] ? ` <span class="hint">&ldquo;${esc(coTasks[x.session])}&rdquo;</span>` : ""}: ${(x.files || []).map(f => `<span class="mono">${esc(f.replace(/^\/Users\/[^/]+/, "~"))}</span>`).join("<br>")}${!x.resolved && (x.pending || []).length < (x.files || []).length ? `<br><span class="hint">still uncommitted: ${(x.pending || []).length}</span>` : ""}`;
       return `<tr><td class="mono">${esc(x.at)}</td><td>${what}</td><td>${detail}</td><td>${x.resolved ? '<span class="pill p">resolved</span>' : '<span class="pill bad">open</span>'}</td></tr>`;
     }).join("")
   }</tbody></table>`;
@@ -4378,8 +4381,8 @@ async function loadCoord() {
   const m = d.metrics || {days: 1, totals: {}, all_time: {}};
   setDot("nd-coord", on ? (m.unresolved ? "bad" : d.installed ? "ok" : "warn") : "");
   const st = d.status || {}, files = st.files || [], sess = st.sessions || [];
-  coNames = {};
-  for (const x of sess) coNames[x.id.slice(0, 8)] = x.name || `${x.label} ${x.id.slice(0, 8)}`;
+  coNames = {}; coTasks = {};
+  for (const x of sess) { coNames[x.id.slice(0, 8)] = x.name || `${x.label} ${x.id.slice(0, 8)}`; coTasks[x.id.slice(0, 8)] = x.task || ""; }
   $("coSince").textContent = m.since ? `log starts ${m.since}` : "nothing logged yet";
   $("coTiles").innerHTML = coTilesHTML(m);
   $("coPerDay").innerHTML = coPerDayHTML(m);
@@ -4394,18 +4397,18 @@ async function loadCoord() {
     ? `${files.length} file${files.length === 1 ? "" : "s"} being edited, ${shared} shared, ${sess.length} session${sess.length === 1 ? "" : "s"} active` + (d.installed ? "" : ": hooks missing, save to reinstall")
     : "off";
   $("coFiles").innerHTML = files.length ? `<table><thead><tr><th>File</th><th>Master (commits it)</th><th>Coordinating with the master</th><th class="num">Master for</th><th></th></tr></thead><tbody>${
-    files.map(f => `<tr><td class="mono">${coPath(f.path, cwds)}</td><td>${coWho(f.master_label, f.master_name)}</td><td>${(f.contributors || []).map((c, i) => coWho(c, (f.contributor_names || [])[i])).join("<br>") || '<span class="hint">nobody else</span>'}</td><td class="num">${esc(coAgo(f.since_s))}${f.take_over ? `<br><span class="hint" title="The master has done nothing for this long. The next session to edit this file becomes its master.">idle ${esc(coAgo(f.idle_s))}, can be taken over</span>` : ""}${f.wanted ? `<br><span class="hint">asked for by ${esc(f.wanted)}</span>` : ""}</td><td><button data-co-release="${esc(f.path)}" title="As if the master had closed: the session that asked for it, or else the one that most recently changed it too, becomes master and commits it; with nobody else, the file is free. Nothing in the file changes.">Hand on</button></td></tr>`).join("")
+    files.map(f => `<tr><td class="mono">${coPath(f.path, cwds)}</td><td>${coWho(f.master_label, f.master_name, f.master_task)}</td><td>${(f.contributors || []).map((c, i) => coWho(c, (f.contributor_names || [])[i])).join("<br>") || '<span class="hint">nobody else</span>'}</td><td class="num">${esc(coAgo(f.since_s))}${f.take_over ? `<br><span class="hint" title="The master has done nothing for this long. The next session to edit this file becomes its master.">idle ${esc(coAgo(f.idle_s))}, can be taken over</span>` : ""}${f.wanted ? `<br><span class="hint">asked for by ${esc(f.wanted)}</span>` : ""}</td><td><button data-co-release="${esc(f.path)}" title="As if the master had closed: the session that asked for it, or else the one that most recently changed it too, becomes master and commits it; with nobody else, the file is free. Nothing in the file changes.">Hand on</button></td></tr>`).join("")
   }</tbody></table>` : `<div class="empty">${on ? "No uncommitted edits by any session right now." : "Switch it on to see who is editing what."}</div>`;
   const open = [...document.querySelectorAll("#coSessions tr[id^=coMsg-]:not([hidden])")].map(r => r.id);
   if (!typing) $("coSessions").innerHTML = sess.length ? `<table><thead><tr><th>Session</th><th>Folder</th><th>Master of</th><th class="num">Last active</th><th></th></tr></thead><tbody>${
-    sess.map(x => `<tr><td>${coWho(`${x.label} [${x.id.slice(0, 8)}]`, x.name)}</td><td class="mono">${esc((x.cwd || "").replace(/^\/Users\/[^/]+/, "~"))}</td><td>${(x.master_of || []).length ? (x.master_of || []).map(p => `<span class="mono">${coPath(p, cwds)}</span>`).join("<br>") : '<span class="hint">-</span>'}</td><td class="num">${esc(coAgo(x.active_ago_s))} ago</td><td><button data-co-msg="${esc(x.id)}" title="Send this session a note; it sees it at its next tool call or prompt">Message</button></td></tr>
+    sess.map(x => `<tr><td>${coWho(`${x.label} [${x.id.slice(0, 8)}]`, x.name, x.task)}</td><td class="mono">${esc((x.cwd || "").replace(/^\/Users\/[^/]+/, "~"))}</td><td>${(x.master_of || []).length ? (x.master_of || []).map(p => `<span class="mono">${coPath(p, cwds)}</span>`).join("<br>") : '<span class="hint">-</span>'}</td><td class="num">${esc(coAgo(x.active_ago_s))} ago</td><td><button data-co-msg="${esc(x.id)}" title="Send this session a note; it sees it at its next tool call or prompt">Message</button></td></tr>
       <tr id="coMsg-${esc(x.id)}" hidden><td colspan="5"><div class="row" style="align-items:center"><input placeholder="to ${esc(x.name || x.label)}: for example, leave the config loader to the other session" style="flex:1;min-width:260px" maxlength="2000"><button class="primary" data-co-send="${esc(x.id)}">Send</button></div></td></tr>`).join("")
   }</tbody></table>` : `<div class="empty">No sessions seen yet${on ? "; a session appears at its next tool call or prompt" : ""}.</div>`;
   for (const id of open) { const r = $(id); if (r) r.hidden = false; }
 }
 // Names by short id, so the activity log reads "Rollback script fix"
 // rather than "9f9de95b".
-let coNames = {};
+let coNames = {}, coTasks = {};
 function coActivityLine(line) {
   const m = /^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}) (.*)$/.exec(line);
   let text = esc(m ? m[2] : line).replace(/\/(?:private\/)?(?:var\/folders|Users)\/[^\s]*\/([^\s/]+\/[^\s/]+)(?=[\s:)]|$)/g, "$1");
