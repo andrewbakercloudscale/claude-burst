@@ -66,6 +66,25 @@ set -uo pipefail
 # unbound-variable error and the deploy dies before doing anything.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --only-committed: ship exactly HEAD, nobody's uncommitted work. The same
+# script runs from a throwaway worktree of HEAD (as the dashboard's "Install
+# GitHub version" does with origin/main), so the checkout is not touched.
+# Without it the working tree is built, and anything in no commit is listed
+# and kept (scripts/uncommitted.sh).
+case "${1:-}" in
+  --only-committed)
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/claude-burst-head.XXXXXX")" && rmdir "$tmp" || exit 1
+    git -C "$ROOT" worktree add --quiet --detach "$tmp" HEAD || { echo "[deploy] could not check out HEAD; nothing changed" >&2; exit 1; }
+    echo "[deploy] --only-committed: building $(git -C "$ROOT" log -1 --format='%h %s') from $tmp; uncommitted changes are not shipped"
+    zsh "$tmp/scripts/deploy.sh"
+    rc=$?
+    git -C "$ROOT" worktree remove --force "$tmp" >/dev/null 2>&1 || rm -rf "$tmp"
+    git -C "$ROOT" worktree prune >/dev/null 2>&1
+    exit $rc ;;
+  "") ;;
+  *) echo "usage: scripts/deploy.sh [--only-committed]" >&2; exit 2 ;;
+esac
+
 # One deploy at a time. Two at once (a dashboard "Install GitHub version"
 # while a checkout deploy runs, 2026-09-30 19:43) race each other's build,
 # binary swap and gateway restart, and whichever finishes last wins without
@@ -106,6 +125,8 @@ fail() { echo "[deploy] FAILED: $*" >&2; exit 1; }
 
 # shellcheck source=./health-diagnostics.sh
 source "$ROOT/scripts/health-diagnostics.sh"
+# shellcheck source=./uncommitted.sh
+source "$ROOT/scripts/uncommitted.sh"
 
 # Liveness polling wraps the shared gateway_healthy() from
 # health-diagnostics.sh -- see its comment for why probing 127.0.0.1:7777
@@ -207,6 +228,9 @@ if [[ -x "$TARGET" ]] && cmp -s "$TMPBIN" "$TARGET"; then
   log "new build is byte-identical to the installed binary -- nothing to deploy"
   exit 0
 fi
+
+# What is about to ship that no commit holds: listed, and kept.
+record_uncommitted "$ROOT" deploy
 
 # Determine mode via the (still-old, pre-swap) binary's own status output
 # rather than re-parsing config.json here in bash: it's the single place

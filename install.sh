@@ -98,6 +98,9 @@ install() {
   # on 2026-09-30 a rerun put a 28 Aug binary over a current one.
   if command -v go >/dev/null 2>&1; then
     echo "Building claude-burst from $ROOT..."
+    # The working tree is built: say what in it is in no commit, and keep it.
+    source "$ROOT/scripts/uncommitted.sh"
+    record_uncommitted "$ROOT" install
     (cd "$ROOT" && go build -o "$staged" ./cmd/claude-burst)
   elif [[ -x "$BIN" ]]; then
     echo "WARNING: Go is not installed, so installing the prebuilt $BIN" >&2
