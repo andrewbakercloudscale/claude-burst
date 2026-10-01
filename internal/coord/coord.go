@@ -15,7 +15,9 @@
 //   - A whole-file Write of a shared file by anyone but its master is
 //     refused: it would wipe the master's work.
 //   - `git add -A`, `git add .` and `git commit -a` are refused while another
-//     session has work in the same repository, and a contributor's git add or
+//     session has work in the same repository, and so is running a deploy or
+//     install script there (it builds the working tree, so it would ship that
+//     work in no commit), and a contributor's git add or
 //     commit that names a file someone else masters is refused.
 //   - A file stops being shared when it is committed, when its master's turn
 //     ends and git keeps no record of it (outside a repository, or ignored),
@@ -709,12 +711,106 @@ var (
 	gitAddAll    = regexp.MustCompile(`\bgit\s+(-C\s+\S+\s+)?add\s+(.*\s)?(-A|--all|\.|-u|--update)(\s|$|;|&)`)
 	gitCommitAll = regexp.MustCompile(`\bgit\s+(-C\s+\S+\s+)?commit\s+(.*\s)?(-a|-am|--all)(\s|$|;|&)`)
 	gitStaging   = regexp.MustCompile(`\bgit\s+(-C\s+\S+\s+)?(add|commit)\b`)
+	// shipScript is a script that builds the working tree and ships or
+	// installs it: claude-burst's scripts/deploy.sh and install.sh, the
+	// WordPress plugins' deploy-wordpress.sh.
+	// Only running it: at the start of a command, or after bash/zsh/sh, not
+	// reading it (cat, grep, an editor).
+	shipScript = regexp.MustCompile(`(?:^\s*|[;&|(]\s*|(?:^|[\s;&|(/])(?:bash|zsh|sh|exec)\s+)["']?(?:[^\s;&|()"']*/)?((?:deploy[\w-]*|install)\.sh)\b`)
+	cdArg      = regexp.MustCompile(`(?:^|[\s;&|(])cd\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`)
+	shipToken  = regexp.MustCompile(`("[^"]*|'[^']*|[^\s;&|("']*)(?:deploy[\w-]*|install)\.sh\b`)
 )
+
+// shipRepos are the repositories a ship command would build: the one it is
+// run in, any it cds into, and the one holding the script itself.
+func shipRepos(cmd, cwd string) []string {
+	abs := func(base, p string) string {
+		p = strings.Trim(p, `"'`)
+		if strings.HasPrefix(p, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				p = filepath.Join(home, p[2:])
+			}
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(base, p)
+		}
+		return p
+	}
+	dirs := []string{cwd}
+	for _, m := range cdArg.FindAllStringSubmatch(cmd, -1) {
+		dirs = append(dirs, abs(cwd, m[1]))
+	}
+	for _, m := range shipToken.FindAllStringSubmatch(cmd, -1) {
+		tok := strings.Trim(m[0], `"'`)
+		if !strings.Contains(tok, "/") {
+			continue
+		}
+		for _, base := range dirs {
+			dirs = append(dirs, filepath.Dir(abs(base, tok)))
+			if filepath.IsAbs(tok) {
+				break
+			}
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			continue
+		}
+		if root := repoRoot(filepath.Join(d, "x")); root != "" && !seen[root] {
+			seen[root] = true
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
+// othersIn is who else has uncommitted work in the repository at root,
+// and in which files, sorted.
+func (t *tx) othersIn(root, sid string) (who, files []string) {
+	seen := map[string]bool{}
+	add := func(o string) {
+		if o != sid && !seen[o] {
+			seen[o] = true
+			who = append(who, t.label(o))
+		}
+	}
+	for p, f := range t.d.Files {
+		if !strings.HasPrefix(p, root+string(filepath.Separator)) {
+			continue
+		}
+		mine := f.Master == sid
+		for o := range f.Contributors {
+			if o != sid {
+				mine = false
+			}
+		}
+		if mine || gitState(p) != fileDirty {
+			continue
+		}
+		for o := range f.Contributors {
+			add(o)
+		}
+		add(f.Master)
+		if r, err := filepath.Rel(root, p); err == nil {
+			p = r
+		}
+		files = append(files, p)
+	}
+	sort.Strings(who)
+	sort.Strings(files)
+	return who, files
+}
 
 // preBash refuses git commands that would sweep up another session's work.
 func (c *Coordinator) preBash(h hookInput, out io.Writer) error {
 	cmd, _ := h.ToolInput["command"].(string)
-	if !gitStaging.MatchString(cmd) {
+	ship := shipScript.MatchString(cmd) && !strings.Contains(cmd, "SHIP_UNCOMMITTED=1") && !strings.Contains(cmd, "--only-committed")
+	if !ship && !gitStaging.MatchString(cmd) {
 		return nil
 	}
 	return c.with(func(t *tx) error {
@@ -724,6 +820,27 @@ func (c *Coordinator) preBash(h hookInput, out io.Writer) error {
 		}
 		for p := range t.d.Files {
 			t.valid(p)
+		}
+		if ship {
+			script := shipScript.FindStringSubmatch(cmd)[1]
+			for _, root := range shipRepos(cmd, h.Cwd) {
+				who, files := t.othersIn(root, sid)
+				if len(files) == 0 {
+					continue
+				}
+				t.Log("refuse %s by %s in %s: uncommitted work of %s", script, short(sid), root, strings.Join(who, ", "))
+				only := ""
+				if script == "deploy.sh" {
+					only = " `scripts/deploy.sh --only-committed` ships HEAD alone and is let through."
+				}
+				deny(out, fmt.Sprintf("COORDINATION: %s has uncommitted work in %s (%s). %s builds the working tree, so it would ship that work, which is in no commit; nothing was run. Ask for it to be committed first: `%s`, then run it again.%s Only if the user says to ship it as it is, run the same command prefixed with SHIP_UNCOMMITTED=1.",
+					strings.Join(who, " and "), root, strings.Join(files, ", "), script,
+					c.cmdLine(fmt.Sprintf(`send <session> "please commit your work in %s, I need to deploy" --from %s`, filepath.Base(root), short(sid))), only))
+				return nil
+			}
+			if !gitStaging.MatchString(cmd) {
+				return nil
+			}
 		}
 		// Files another session masters that this one must not stage.
 		for _, p := range t.contributedTo(sid) {

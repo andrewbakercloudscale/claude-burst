@@ -107,32 +107,40 @@ Together: work is committed when a session goes quiet, and the file is free
 to whoever needs it next. No session waits on another, and there is nothing
 to inherit.
 
-## Layer 1: the ship guard (coordination on or off)
+## Layer 1: the ship guard (built 2026-10-01)
 
-A check that runs before any script that builds from the working tree:
-claude-burst's `scripts/deploy.sh` and `install.sh`, and each WordPress
-plugin's `deploy-wordpress.sh`.
+Two parts, because only coordination knows whose changes are whose.
 
-1. List what is uncommitted: `git status --porcelain`, with untracked files.
-2. Nothing uncommitted: go ahead, as now.
-3. Otherwise print the files, and for each one who changed it, where that is
-   known (coordination state, layer 2), else "unknown session".
-4. Refuse unless one of these is given:
-   - `--ship-uncommitted`: go ahead knowingly. The list is written to the
-     deploy log and the deploy archive's manifest, so "what shipped that was
-     not in git" can be answered later.
-   - `--only-committed`: build from a temporary checkout of HEAD
-     (`git worktree add`, build there, remove it). Nobody's work is touched
-     and nothing uncommitted ships.
+**In session coordination: refuse.** A Bash command that runs a deploy or
+install script (`deploy*.sh`, `install.sh`: claude-burst's
+`scripts/deploy.sh` and `install.sh`, the WordPress plugins'
+`deploy-wordpress.sh`) is refused, like `git add -A`, while ANOTHER session
+has uncommitted work in the repository it would build: the one it runs in,
+any it `cd`s into, and the one holding the script. The refusal names the
+sessions and files and says to ask for a commit. The session's own
+uncommitted work never blocks it. Reading a script (`cat`, `grep`) is not
+running it. Two ways through, both visible in the command: `--only-committed`
+(ships HEAD, so nobody's work) and a `SHIP_UNCOMMITTED=1` prefix, which the
+session is told to use only on the user's word.
 
-`--only-committed` should become the default once it is proven: shipping
-exactly a commit is what every reviewer assumes a deploy does. For now the
-refusal plus the two flags make the choice explicit, which is the part that
-was missing.
+**In the scripts: record, do not refuse.** A script cannot tell whose
+changes are whose, so refusing there would block every ordinary "edit, then
+deploy" and the override would become a habit. Instead `scripts/uncommitted.sh`
+(sourced by `deploy.sh` and `install.sh`) lists every uncommitted file that
+is about to ship, keeps a copy under
+`~/.config/claude-burst/shipped-uncommitted/` (a patch of tracked changes, a
+tarball of untracked files, and a line in `log`; newest 50 kept), and says
+to commit them. Git may not hold what is running, but that copy does: the
+same lesson as the WordPress deploy archive. It works with coordination off
+and for changes no session made (by hand, a shell command, OpenCode).
 
-One shared script, `scripts/check-uncommitted.sh`, called by every build or
-deploy script, like the WordPress build gates. One copy, not five: the
-help-doc generators drifted exactly because they were copied.
+`scripts/deploy.sh --only-committed` builds a throwaway worktree of HEAD,
+so the checkout is not touched and nothing uncommitted ships.
+
+Still to do: the same record in the five WordPress deploy scripts (their
+deploy archive already keeps the zip; what is missing is the list of files
+that were in no commit), and making `--only-committed` the default once
+proven.
 
 ## Layer 2: orphaned work in session coordination (the fallback)
 
@@ -230,10 +238,9 @@ and its briefing line says so.
    Smallest change with the biggest effect.
 2. **Rule 2**, take over from an idle or ended master on Edit, plus the
    "you lost the file" notice; remove the contributor hand-on.
-3. `check-uncommitted.sh` and the refusal in claude-burst's `deploy.sh` and
-   `install.sh` (layer 1; would have stopped this incident even with
-   coordination off).
-4. The same guard in the five WordPress deploy scripts.
+3. Done: the ship guard (layer 1) in coordination and in claude-burst's
+   `deploy.sh` and `install.sh`.
+4. The uncommitted-files record in the five WordPress deploy scripts.
 5. Orphan instead of free, with SessionStart briefing and resume reclaim.
 6. Dashboard list, Adopt and Take over buttons, notifications.
 7. Messages to ended sessions, shipped-orphan marking.

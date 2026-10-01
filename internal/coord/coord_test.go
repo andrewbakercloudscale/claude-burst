@@ -456,6 +456,63 @@ func TestAMasterSittingOnOthersChangesIsNudged(t *testing.T) {
 	}
 }
 
+// A deploy or install script builds the working tree, so running one while
+// another session has uncommitted work in the repository would ship that
+// work in no commit. It is refused like `git add -A`; the session's own
+// work never blocks it, and reading the script is not running it.
+func TestADeployIsRefusedWhileAnotherSessionHasUncommittedWork(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	r.start("B")
+	run := func(sid, cmd, cwd string) string {
+		return r.hook("pre-tool", sid, map[string]any{"cwd": cwd, "tool_name": "Bash", "tool_input": map[string]any{"command": cmd}})
+	}
+	elsewhere := realPath(t.TempDir())
+
+	r.edit("A", "a.go", "package x", "package x // A")
+	if out := run("A", "zsh scripts/deploy.sh", r.repo); denied(out) {
+		t.Fatalf("A's own uncommitted work does not block A's deploy:\n%s", out)
+	}
+
+	r.edit("B", "b.go", "package x", "package x // B")
+	for _, c := range []struct{ cmd, cwd string }{
+		{"zsh scripts/deploy.sh", r.repo},
+		{"cd " + r.repo + " && zsh scripts/deploy.sh 2>&1 | tail -3", elsewhere},
+		{"bash " + filepath.Join(r.repo, "deploy-wordpress.sh"), elsewhere},
+		{"./install.sh", r.repo},
+		{"git status && scripts/deploy.sh", r.repo},
+	} {
+		out := run("A", c.cmd, c.cwd)
+		if !denied(out) || !strings.Contains(out, "b.go") || !strings.Contains(out, "SHIP_UNCOMMITTED=1") {
+			t.Fatalf("%q must be refused, naming B's file and the override:\n%s", c.cmd, out)
+		}
+	}
+	if out := run("A", "zsh scripts/deploy.sh", r.repo); !strings.Contains(out, "--only-committed") {
+		t.Fatalf("claude-burst's deploy is offered --only-committed:\n%s", out)
+	}
+	for _, cmd := range []string{
+		"SHIP_UNCOMMITTED=1 zsh scripts/deploy.sh",
+		"zsh scripts/deploy.sh --only-committed",
+		"cat scripts/deploy.sh",
+		"grep -n foo scripts/deploy.sh install.sh",
+		"zsh scripts/deploy.sh", // from outside any repository with others' work
+	} {
+		cwd := r.repo
+		if cmd == "zsh scripts/deploy.sh" {
+			cwd = elsewhere
+		}
+		if out := run("A", cmd, cwd); denied(out) {
+			t.Fatalf("%q must go through:\n%s", cmd, out)
+		}
+	}
+
+	// B commits: nothing of anyone else's is left to ship.
+	r.bash("B", "git add b.go && git commit -qm B")
+	if out := run("A", "zsh scripts/deploy.sh", r.repo); denied(out) {
+		t.Fatalf("B committed, A's deploy goes through:\n%s", out)
+	}
+}
+
 func TestSessionsMessageEachOther(t *testing.T) {
 	r := newRig(t)
 	r.start("AAAA1111")
