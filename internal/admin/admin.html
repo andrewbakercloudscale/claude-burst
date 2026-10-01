@@ -281,6 +281,11 @@
           background: var(--panel-2); color: var(--muted); }
   .pill.p { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); background: var(--ok-bg); }
   .pill.s { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); background: var(--warn-bg); }
+  /* Maturity tags ("Leading Edge"): their own magenta, so they stand out
+     and are never read as a status (green/amber/red/blue). */
+  .pill.edge { --edge: #c0267f; color: var(--edge); font-weight: 700; border-color: color-mix(in srgb, var(--edge) 45%, transparent);
+               background: color-mix(in srgb, var(--edge) 12%, transparent); }
+  @media (prefers-color-scheme: dark) { .pill.edge { --edge: #f472b6; } }
   .pill.t { white-space: nowrap; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
   .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); } .st-wait { color: var(--muted); }
 
@@ -854,7 +859,7 @@
       <div class="row" style="align-items:flex-start;margin:16px 0 12px">
         <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
           <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
-          On for my subscription sessions <span class="pill" title="New and in daily use; report anything odd on GitHub">Leading Edge</span> <span id="compactState" class="pill"></span>
+          On for my subscription sessions <span class="pill edge" title="New and in daily use; report anything odd on GitHub">Leading Edge</span> <span id="compactState" class="pill"></span>
         </label>
       </div>
       <div class="row" style="align-items:flex-start;margin:-4px 0 12px">
@@ -1172,7 +1177,7 @@
     <div class="body">
       <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:600;font-size:13px;color:var(--text)">
         <input type="checkbox" id="coOn" style="width:auto;margin:0">
-        On for every Claude Code session on this Mac <span class="pill" title="New; report anything odd on GitHub">Leading Edge</span>
+        On for every Claude Code session on this Mac <span class="pill edge" title="New; report anything odd on GitHub">Leading Edge</span>
       </label>
       <div class="hint" style="margin:6px 0 10px">When several Claude Code sessions work in the same repository, the first one to edit a file becomes that file's <strong>master</strong> and is responsible for committing it. Other sessions can still edit the file: their changes go through, the master is told what changed and commits those changes with its own, and the other session is told not to commit the file itself. Two things are blocked while another session has uncommitted work in the repository: overwriting a whole file the master is still working on, and sweeping commands (<code>git add -A</code>, <code>git add .</code>, <code>git commit -a</code>) that would commit someone else's work. A file is no longer shared once it is committed. A session also has to commit the files it is master of before it stops: if a turn would end with any of them uncommitted, the session is asked once to commit them (on this Mac only, never pushed, marked "WIP:" if unfinished), so a file passed to another session is always passed on committed. Every session is told these rules when it starts. It works through Claude Code hooks in <code>~/.claude/settings.json</code>, added when you switch it on and removed when you switch it off; if a hook ever fails, the edit goes ahead as if coordination were off.</div>
       <div class="row">
