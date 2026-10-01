@@ -258,15 +258,116 @@ func TestAMasterThatLeavesHandsTheFileToItsContributor(t *testing.T) {
 	if out := r.hook("prompt", "B", nil); !strings.Contains(out, "You are now the master") || !strings.Contains(out, "git diff") {
 		t.Fatalf("B must be told it now commits the file:\n%s", out)
 	}
+}
 
-	// Idle, with no contributor: the file is simply let go.
-	r2 := newRig(t)
-	r2.start("A")
-	r2.edit("A", "a.go", "package x", "package x // A")
-	r2.advance(DefaultMasterIdle + time.Minute)
-	r2.start("B")
-	if f := r2.file("a.go"); f != nil {
-		t.Fatalf("an idle master with nobody else in the file lets it go, got %+v", f)
+// An idle master keeps its file until another session needs it. That
+// session's edit takes it over: it is told, the old master is told, and the
+// old master's uncommitted changes stay in the file for the new one to commit.
+func TestASessionTakesOverAFileFromAnIdleMaster(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	r.start("B")
+	r.edit("A", "a.go", "package x", "package x // A")
+	r.hook("prompt", "A", nil)
+
+	// Busy master: B's edit is a contribution, not a take-over.
+	r.edit("B", "b.go", "package x", "package x // B")
+	r.advance(5 * time.Minute)
+	r.hook("prompt", "B", nil)
+	if _, out := r.edit("B", "a.go", "// A", "// A B"); strings.Contains(out, "you are now the master") {
+		t.Fatalf("A is busy, B must not take a.go:\n%s", out)
+	}
+	if f := r.file("a.go"); f.Master != "A" {
+		t.Fatalf("A stays master while busy, got %+v", f)
+	}
+
+	// Idle with nobody asking: A keeps it.
+	r.advance(DefaultMasterIdle + time.Minute)
+	r.hook("prompt", "B", nil)
+	if f := r.file("a.go"); f == nil || f.Master != "A" || !f.TakeOver {
+		t.Fatalf("an idle master keeps its file, marked as open to take-over, got %+v", f)
+	}
+
+	// B needs it: B's edit takes it over.
+	ok, out := r.edit("B", "a.go", "// A B", "// A B again")
+	if !ok || !strings.Contains(out, "you are now the master of") || !strings.Contains(out, "idle for") || !strings.Contains(out, "not yours") {
+		t.Fatalf("B takes a.go over and is told about A's uncommitted changes:\n%s", out)
+	}
+	if f := r.file("a.go"); f.Master != "B" || len(f.Contributors) != 1 {
+		t.Fatalf("B masters a.go with A as a contributor, got %+v", f)
+	}
+	if out := r.hook("prompt", "A", nil); !strings.Contains(out, "has taken over") {
+		t.Fatalf("A must be told it lost the file:\n%s", out)
+	}
+	if ok, _ := r.bash("A", "git add a.go"); ok {
+		t.Fatal("A may no longer stage a.go: B commits it")
+	}
+	if out := r.hook("prompt", "B", nil); strings.Contains(out, "waiting for your commit") {
+		t.Fatalf("taking over is not a reason to nudge at once:\n%s", out)
+	}
+}
+
+func TestAWriteThatTakesOverUncommittedWorkIsRefused(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	r.start("B")
+	r.edit("A", "a.go", "package x", "package x // A")
+	r.advance(DefaultMasterIdle + time.Minute)
+	r.hook("prompt", "B", nil)
+	if ok, out := r.write("B", "a.go", "package y\n"); ok || !strings.Contains(out, "you are now the master") {
+		t.Fatalf("B takes over but its Write would wipe A's change, so it is refused:\n%s", out)
+	}
+	if f := r.file("a.go"); f.Master != "B" {
+		t.Fatalf("B is master, got %+v", f)
+	}
+	if ok, _ := r.edit("B", "a.go", "// A", "// A B"); !ok {
+		t.Fatal("B's Edit goes through")
+	}
+}
+
+func TestEditingAFileWithUnrecordedChangesWarns(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	os.WriteFile(filepath.Join(r.repo, "a.go"), []byte("package x // by hand\n"), 0o644)
+	if _, out := r.edit("A", "a.go", "// by hand", "// by hand, then A"); !strings.Contains(out, "already had uncommitted changes") {
+		t.Fatalf("A must be told the file held changes nobody recorded:\n%s", out)
+	}
+	if _, out := r.edit("A", "b.go", "package x", "package x // A"); strings.Contains(out, "already had") {
+		t.Fatalf("a clean file is taken silently:\n%s", out)
+	}
+}
+
+func TestTakeAsksABusyMasterAndHandsOnToTheAsker(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	r.start("B")
+	r.start("C")
+	r.edit("A", "a.go", "package x", "package x // A")
+	r.edit("C", "a.go", "// A", "// A C")
+	p := filepath.Join(r.repo, "a.go")
+
+	res, err := r.c.Take(p, "B")
+	if err != nil || !strings.Contains(res, "has been asked") {
+		t.Fatalf("A is busy, so B asks: %q %v", res, err)
+	}
+	if f := r.file("a.go"); f.Master != "A" || f.Wanted == "" {
+		t.Fatalf("A stays master with B's request on record, got %+v", f)
+	}
+	if out := r.hook("prompt", "A", nil); !strings.Contains(out, "I need") || !strings.Contains(out, "coord release") {
+		t.Fatalf("A is asked:\n%s", out)
+	}
+	if err := r.c.Release(p, "A"); err != nil {
+		t.Fatal(err)
+	}
+	if f := r.file("a.go"); f.Master != "B" {
+		t.Fatalf("released, a.go goes to B who asked, not C who contributed, got %+v", f)
+	}
+
+	// Idle master: take is immediate.
+	r.advance(DefaultMasterIdle + time.Minute)
+	r.hook("prompt", "C", nil)
+	if res, _ := r.c.Take(p, "C"); !strings.Contains(res, "you are now the master") {
+		t.Fatalf("B is idle, so C takes it at once: %q", res)
 	}
 }
 
