@@ -1,3 +1,48 @@
+# Handover, 2026-10-01 17:25: session coordination, single plan, version check, /compact-async, screen off with lid shut
+<!-- session: e84447e0-d2f1-4a53-a55d-17c6390846ba -->
+
+## State right now
+
+- Written at session close. Verify before acting.
+- git could not be run at close (read-only git commands needed approval), so everything below about commits and the working tree is from the conversation, not checked now.
+- Last known pushed and deployed: `main` at the commit "Session coordination dashboard: message a session, hand a file on, recent activity" (after `1f10b9d`), release tag `v0.3.0` at `74aa733`. Unverified whether later commits exist.
+- **Uncommitted at close (as last seen):** `scripts/lid-awake-root.sh`, the screen-off change (see Open 1). Not tested, not committed, not installed: the root daemon runs a root-owned copy in `/usr/local/libexec/claude-burst`, so it only takes effect after `sudo scripts/lid-awake-root.sh apply ...` (the dashboard's Apply, which asks for a password).
+- Several files under `internal/coord`, `internal/admin` (upgrade, finder), `scripts/coord-live-test.sh`, `internal/router/doh_outage_test.go` changed on disk after this session last touched them, by another session. The SessionStart briefing now mentions rules this session did not write (commit before stopping with "WIP:", `coord take`, an idle master's files going to whoever edits next). Treat `internal/coord` as moved on; read it before changing it.
+- Session coordination appears to be ON now (a SessionStart coordination briefing was injected at close). This session left it off; unverified who switched it on.
+- oh-my-claudecode autopilot keyword trigger disabled in `~/.config/claude-omc/config.jsonc` (`keywordDetector.disabled: ["autopilot"]`); plugin still installed. This session's autopilot state cleared.
+- Usage panel repo (claudecode-cost-usage-panel) pushed and deployed at close of that work: compaction rows "*** Async Compaction Started / Pending (next prompt) / Finished ***", fake Finished row fix, Sonnet 5.5 price, alert floor fix.
+- Live config: panel restart warning still 400000 (same as Compact at); user not yet asked to decide beyond the suggestion of 900k or 0.
+
+## What was done
+
+- Install race fix: `963d9df`, then the reload step moved to `scripts/launchagent-reload.sh` with stubbed-launchctl tests.
+- Tests for the 2026-09-30 fixes (DoH outage, dashboard JS under node): `86e28cd`.
+- Finder shortcuts install/remove: `be7c78d`.
+- Single plan (Claude Enterprise or one subscription): keyless secondary counts as none, Anthropic's 429 passes through unchanged, no window armed, stale windows ignored: `66bdcb1`.
+- Upgrade / Check version dialog, Install GitHub version (temp worktree, rollback for unpushed commits), release 0.3.0 `74aa733` tagged v0.3.0 with a GitHub release.
+- Pauseless Compaction: savings per day chart, tiles with percentages ("tokens of context compacted", "async context savings, after costs"), mid-turn PostToolUse notice, "Leading Edge" wording, README example month and screenshot `docs/screenshots/savings-per-day.png`.
+- `/compact-async` command (`~/.claude/commands/compact-async.md`, marker `claude-burst:compact-async`), README section.
+- Session coordination (master model, user's choice: first editor is master and commits; others' Edits go through; whole-file Write over a master's work, staging a file someone else masters, and `git add -A/./-u` / `commit -a` while others have work are refused): `internal/coord`, `claude-burst coord`, dashboard section with Message, Hand on, Recent activity; `scripts/coord-live-test.sh` passed 8/8 with two real Haiku sessions.
+- `deploy.sh` takes a lock (`~/.config/claude-burst/deploy.lock`); the GitHub install window closes itself 10s after success.
+- GitHub issue #3 (TLS storm) closed with daily counts.
+
+## Open
+
+1. **Screen stays lit with the lid shut** (user report). Draft in `scripts/lid-awake-root.sh` (uncommitted): `screen_decision` returns off when the lid is shut, SleepDisabled is 1 and no external display is online (parsed from `system_profiler SPDisplaysDataType`); the watch loop runs `pmset displaysleepnow` every 5s; `needs_daemon` now always true. Check: `zsh scripts/lid-awake-root.sh screen` with `CLAUDE_BURST_TEST_LID=shut CLAUDE_BURST_TEST_SLEEPDISABLED=1` prints off, and with a test external display prints leave; add a Go test in `internal/keepawake/script_test.go`; then commit, deploy, and the user presses Apply (password). Unverified on the real Mac that `displaysleepnow` darkens the built-in screen behind a shut lid.
+2. P0 list in memory `claude_burst_next_priorities.md`, none started: `Status()` returns live maps (concurrent map crash), dashboard Restart skips the drain, settings.json/config.json/state.json written in place, secondary stream errors look like success.
+3. Ask the user: restart warning 900k or 0 (it is 400k, equal to Compact at, so it nags during a pending compaction).
+4. User actions still pending: `bash install.sh` (needs sudo), keep-awake Apply.
+5. Offered, not started: compactions by repo table; decimal comma in price fields; swapping a ready summary on a mid-turn message.
+
+## Things that will bite you
+
+- A compaction summary only swaps in on a plain prompt; messages sent mid-turn arrive as system text, so a long turn holds it back (logged as "compaction waiting ... system[text]").
+- `claude -p` ends its session after each answer, so SessionEnd fires every turn; the live coord test leaves that hook out.
+- Two deploys at once race; `deploy.sh` now waits on a lock, but an older checkout's deploy.sh does not.
+- A Go file named `*_js_test.go` only builds for GOOS=js; dashboard JS tests live in `page_script_test.go`.
+- Keyword hooks from oh-my-claudecode may still inject "[MAGIC KEYWORD: ...]" for other skills; do not start workflows the user did not ask for by name.
+- No em or en dashes; no Claude co-author trailers in commits (memory rules), despite the attribution reminder.
+
 # Handover, 2026-09-30 15:21: DoH block outage, resolver fallbacks, Back to primary button
 <!-- session: dc634997-1f9a-42b8-a980-f04d6fc1016f -->
 
