@@ -379,6 +379,16 @@
   .navlink .nd { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex: none; }
   .navlink .nd.ok { background: var(--ok); } .navlink .nd.warn { background: var(--warn); }
   .navlink .nd.bad { background: var(--bad); }
+  /* Overview flashes red when Burst itself is broken (a critical check
+     failing, the gateway not answering, config.json unreadable), so it is
+     seen from anywhere on the page. Steady red for reduced motion. */
+  @keyframes nav-alarm { 0%, 100% { background: var(--bad); color: #fff; } 50% { background: transparent; color: var(--bad); } }
+  .navlink.alarm { animation: nav-alarm 1.2s ease-in-out infinite; font-weight: 650; border-left-color: var(--bad); }
+  .navlink.alarm .nd { background: #fff; box-shadow: 0 0 0 1.5px var(--bad); }
+  .navlink.alarm .count { color: inherit; }
+  @media (prefers-reduced-motion: reduce) {
+    .navlink.alarm { animation: none; background: var(--bad); color: #fff; }
+  }
   .navlink .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .navlink .count { font: 10.5px var(--mono); color: var(--faint); }
   .sidefoot { margin-top: auto; padding: 14px 18px 0; border-top: 1px solid var(--border);
@@ -3157,6 +3167,22 @@ function readinessChecks(s, verdict) {
 
 const C = 2 * Math.PI * 36; // the meter ring's circumference, r=36
 
+// checksState is the meter's colour: the WORST failing check, never the
+// proportion. Overview's rail entry uses it too, so they cannot disagree.
+function checksState(checks) {
+  const failed = checks.filter(c => !c.ok);
+  return failed.some(c => c.critical) ? "bad" : failed.length ? "warn" : "ok";
+}
+
+// setOverview colours Overview's rail entry, and flashes it red when Burst
+// is broken: a critical check failing, or the dashboard unable to read the
+// gateway or its config at all (alarm with no state).
+function setOverview(state) {
+  setDot("nd-overview", state);
+  const link = $("nd-overview") && $("nd-overview").closest(".navlink");
+  if (link) link.classList.toggle("alarm", state === "bad");
+}
+
 function renderHero(s) {
   const checks = readinessChecks(s, liveVerdict);
   const meter = $("meter");
@@ -3173,8 +3199,7 @@ function renderHero(s) {
     // proportion. Four passes beside one dead intercept is a red ring, not
     // an encouraging amber one -- averaging an outage into a score is how a
     // dashboard ends up looking healthy during an outage.
-    const failed = checks.filter(c => !c.ok);
-    const state = failed.some(c => c.critical) ? "bad" : failed.length ? "warn" : "ok";
+    const state = checksState(checks);
     meter.classList.add(state);
     $("meterNum").textContent = `${passed}/${checks.length}`;
     $("meterOf").textContent = "checks";
@@ -3242,7 +3267,8 @@ function renderNav(s, counts) {
   const noSecondary = sec.provider === "none" || !sec.provider;
   const missingKey = !noSecondary && sec.key_env_var && !sec.key_present;
 
-  setDot("nd-overview", liveVerdict === undefined ? "" : liveVerdict.ok ? "ok" : "bad");
+  const checks = readinessChecks(s, liveVerdict);
+  setOverview(checks ? checksState(checks) : "");
   setDot("nd-install", s.intercept.active ? "ok" : "bad");
   setDot("nd-secondary", missingKey ? "bad" : noSecondary ? "warn" : "ok");
   // Routing has a state like every other entry: blue on the subscription,
@@ -3278,7 +3304,10 @@ function renderNav(s, counts) {
 }
 
 function clearNav() {
-  ["overview", "activity", "responses", "requests", "guards", "secondary", "context", "config", "install"]
+  // Called when the gateway or its config cannot be read: Burst is broken,
+  // so Overview alarms rather than going blank like the rest.
+  setOverview("bad");
+  ["activity", "responses", "requests", "guards", "secondary", "context", "config", "install"]
     .forEach(k => setDot("nd-" + k, ""));
   ["overview", "activity", "responses", "requests", "guards"].forEach(k => setCount("nc-" + k, null));
 }
