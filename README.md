@@ -250,18 +250,73 @@ The dashboard edits the briefing text, the writer's instructions, the writer mod
 
 **Several Claude Code sessions can edit the same files without losing or sweeping up each other's work, and nobody waits.** Off by default; switch it on in the dashboard under **Session coordination** (Leading Edge).
 
-Two sessions in one repository go wrong in a few ways: one rewrites a file over the other's uncommitted change, one commits with `git add -A` and ships the other's half-done work, or one stashes or resets under the other. Coordination prevents those with Claude Code hooks, so every session on the Mac takes part without being asked:
+Two sessions in one repository go wrong in a few ways: one rewrites a file over the other's uncommitted change, one commits with `git add -A` and ships the other's half-done work, or one stashes or resets under the other. Coordination prevents those with Claude Code hooks (seven: SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop, SubagentStop, SessionEnd), so every session on the Mac takes part without being asked.
+
+The design rule is that **nobody waits on anybody**. There are no locks: edits always go through. Instead, commits are accelerated: a session holding uncommitted work that another session needs is told to commit it now, ahead of its own work, as "WIP:" if its part is unfinished. A small early commit is cheap; a session sitting idle behind a lock is not.
 
 - **The first session to edit a file is its master, and commits it.** That is the only session that commits it.
 - **Another session can still edit it, with no wait.** Claude Code's Edit replaces an exact piece of text and refuses when the file changed since it was read, so two sessions' edits cannot overwrite each other. The change goes through; the master is told what changed and asked to commit the file at its very next tool call, ahead of its own work (as "WIP:" if its part is unfinished), so nobody's change waits behind another session's; the other session is told the file is shared and not to commit it.
 - **What is refused:** a whole-file Write over a master's uncommitted work (use Edit instead); a git add or commit by another session that names a file someone else masters; `git add -A`, `git add .`, `git add -u` or `git commit -a` while another session has uncommitted work in the same repository; and, for the same reason, running a deploy or install script there (`deploy*.sh`, `install.sh`), which builds the working tree and would ship that work in no commit. A refused call is not run, and the session is told why and what to do instead. For a deploy, the sessions holding the uncommitted work are asked to commit it at once, and the deploying session is told to carry on with other work and run it again once they have, or to use `scripts/deploy.sh --only-committed`, or, only on your say-so, prefix `SHIP_UNCOMMITTED=1`.
 - **Every deploy says what it ships that git does not hold.** `scripts/deploy.sh` and `install.sh` build the working tree, so they list any uncommitted files they are about to ship and keep a copy (patch plus untracked files) in `~/.config/claude-burst/shipped-uncommitted/`, whether coordination is on or not. `scripts/deploy.sh --only-committed` ships exactly HEAD instead.
-- **A session commits before it stops.** A turn that would end with files its session masters uncommitted is held once, with the instruction to commit them now: locally only, never pushed, and with "WIP:" in the message if the work is unfinished. A second stop in the same turn is let go, so a commit that cannot be made never keeps a session going round. This is what makes handing a file on safe: whoever takes it next finds it committed. Files a background subagent (Agent tool) is still working on do not hold its session: the subagent's hooks carry the session's id, so coordination records which subagent last edited each file and leaves it alone until that subagent stops.
+- **A session commits before it stops.** A turn that would end with files its session masters uncommitted is held once, with the instruction to commit them now: locally only, never pushed, and with "WIP:" in the message if the work is unfinished. A second stop in the same turn is let go, so a commit that cannot be made never keeps a session going round. This is what makes handing a file on safe: whoever takes it next finds it committed.
+- **Subagents are not mistaken for their session.** A subagent (the Agent tool, often in the background and in its own worktree) runs its hooks with its parent session's id, so its edits used to read as the session's own, and the session was held at the end of its turn to commit files the agent was still writing. Hook calls from inside a subagent also carry an `agent_id`: coordination now records which subagent last edited each file, keeps each session's running subagents (added at their first tool call, removed by the SubagentStop hook, and counted as finished after 2 hours of silence in case that never arrives), and leaves a running subagent's files out of the end-of-turn check. Once the agent finishes, its files are the session's to commit.
 - **Every session is briefed when it starts:** the rules, and which other sessions are active, in which folders, mastering which files.
 - **A file stops being shared when it is committed.** A file git keeps no record of (outside a repository, or ignored, like memory files) is let go when its master's turn ends. A master that has been idle for 15 minutes keeps its files until another session needs one: that session's Edit makes it the master, it is told it now commits the file (and to keep any uncommitted changes in it), and the old master is told it lost it. A session can ask a busy master for a file with `claude-burst coord take <path> --session <id>`; the file is its when the master commits, releases or closes. A master that closes hands each file to the session that asked for it, else the one that most recently changed it too. Editing a file that already has uncommitted changes nobody recorded (by hand, or by a session that ended) warns the editor to keep them. A master sitting on other sessions' changes for 10 minutes is nudged to commit. Both times are settings.
 - **Sessions can message each other:** `claude-burst coord send <session> "message"`; it arrives at that session's next tool call or prompt. `claude-burst coord status` shows who masters what from the terminal.
 - **The dashboard shows who is editing what:** each file with its master (by session name, folder, id and the latest request typed in it, since sessions in the same folder share a window title), the sessions coordinating with that master, every session taking part, and a log of what the coordinator did (shares, refusals, hand-ons, files freed by a commit). **Message** sends a session a note from you; **Hand on** passes a file on as if its master had closed.
+- **Is it working?** The dashboard counts the coordinator's log over **Today, 7 days or 14 days**: **Coordinated** (times two sessions met over the same work: shared edits, blocked actions, files taken over or handed on, files asked for), then each of those, sessions asked to commit before stopping, sessions that stopped with work uncommitted, hook errors and files released after a commit, each with its all-time count and a per-day table. Coordinated at 0 means no two sessions have touched the same work yet, not that it is broken.
+- **Issues** lists hook errors (a tool call went ahead uncoordinated) and sessions that stopped with uncommitted work; the latter are marked resolved once every file is committed or handed on. The Session coordination menu item shows a red dot while any is open.
+- **Scratch files are ignored.** Files under temporary directories (session scratchpads, `/tmp`, `/var/folders`) are never tracked: only the session that made them edits them.
 - **It fails open.** If anything in it breaks, including its state lock being busy for 3 seconds, the tool call goes through as if coordination were off.
+
+### How it fits together
+
+An edit to a file another session masters:
+
+```mermaid
+sequenceDiagram
+    participant A as Session A (master of x.go)
+    participant C as Coordinator (hooks)
+    participant B as Session B
+    A->>C: Edit x.go (PreToolUse)
+    C-->>A: first editor: you are its master
+    B->>C: Edit x.go (PreToolUse)
+    C-->>B: goes through. Shared file: do not commit it, A will
+    C->>C: queue a PRIORITY message for A
+    A->>C: next tool call (PostToolUse)
+    C-->>A: PRIORITY: commit x.go now, before your next step (WIP: if unfinished)
+    A->>A: git add x.go, git commit
+    C->>C: x.go is clean: released
+```
+
+A deploy while another session has uncommitted work in the repository:
+
+```mermaid
+flowchart TD
+    D[Session B runs a deploy script] --> Q{Another session has uncommitted work in this repo?}
+    Q -- No --> RUN[Deploy runs]
+    Q -- Yes --> R[Refused, nothing run]
+    R --> M[Coordinator sends each master a PRIORITY: commit now, B needs to deploy]
+    R --> B2[B is told to carry on with other work and retry once the files are clean]
+    M --> CM[Masters commit, WIP: if unfinished]
+    CM --> RETRY[B retries] --> RUN
+    Q -- "deploy.sh --only-committed" --> HEAD[Builds a worktree of HEAD and runs]
+```
+
+The end of a turn, with a background subagent:
+
+```mermaid
+flowchart TD
+    S[A turn ends: Stop hook] --> F[Each file the session masters]
+    F --> AG{Last edited by a subagent that is still running?}
+    AG -- Yes --> SKIP[Left alone: the agent is still working on it]
+    AG -- No --> DIRTY{Uncommitted changes?}
+    DIRTY -- No --> OK[Nothing to do]
+    DIRTY -- Yes --> HOLD{Already held once this turn?}
+    HOLD -- No --> ASK[Hold the session: commit these now, locally, WIP: if unfinished]
+    HOLD -- Yes --> LOG[Let it stop, and record an Issue: stopped with uncommitted work]
+    SA[SubagentStop hook] --> GONE[Agent leaves the running list: its files are the session's to commit]
+```
 
 What it cannot do: stop an edit made through a shell command (sessions are told not to, and Claude Code follows that), or keep sessions sharing a working tree from seeing each other's uncommitted changes. For large parallel pieces of work, `claude --worktree` gives each session its own copy; this covers the shared-tree case.
 
