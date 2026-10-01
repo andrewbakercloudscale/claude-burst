@@ -606,6 +606,10 @@ func existingDir(p string) string {
 	}
 }
 
+// Uncommitted reports whether path has changes git holds in no commit.
+// A file that is gone, ignored or outside any repository has none.
+func Uncommitted(path string) bool { return gitState(path) == fileDirty }
+
 func gitState(path string) fileState {
 	out, err := exec.Command("git", "-C", existingDir(path), "status", "--porcelain", "--ignored", "--", path).Output()
 	if err != nil {
@@ -1349,6 +1353,7 @@ func (c *Coordinator) Status() (Status, error) {
 		for p := range t.d.Files {
 			if t.git(p) == fileClean {
 				delete(t.d.Files, p)
+				t.Log("free %s (committed)", p)
 			}
 		}
 		names, tasks := map[string]string{}, map[string]string{}
