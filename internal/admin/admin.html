@@ -2441,18 +2441,21 @@ function renderCompaction(s) {
   for (const x of cs.sessions || []) saved[x.session + "|" + x.model] = x;
   const tok = n => n ? esc(num(Math.round(n / 1000))) + "k" : "-";
   $("compactSessions").innerHTML = `<table><thead><tr>
-      <th>Session</th><th>Model</th><th class="num">Context now</th><th>State</th>
-      <th class="num">Before</th><th class="num">After</th><th class="num">Saved per turn</th><th class="num">Net saved</th>
+      <th>Session</th><th>Model</th><th>State</th>
+      <th class="num" title="Context size of the request before the latest compaction">Before</th>
+      <th class="num" title="Context size straight after the latest compaction">After</th>
+      <th class="num" title="Context size of this session's latest request. Amber from the warn size, red from the compact size">Context</th>
+      <th class="num">Saved per turn</th><th class="num">Net saved</th>
       <th>Last compaction</th>
     </tr></thead><tbody>${rows.map(r => {
       const x = saved[r.session + "|" + r.model];
       return `<tr>
       <td class="mono" title="${esc(r.session)}">${esc(r.session.slice(0, 8))}</td>
       <td class="mono">${esc(r.model || "-")}</td>
-      <td class="num ${r.context >= at ? "st-5" : r.context >= warnAt ? "st-4" : ""}">${tok(r.context)}</td>
       <td>${esc(r.state)}</td>
       <td class="num">${x ? tok(x.before) : "-"}</td>
       <td class="num">${x ? tok(x.after) : "-"}</td>
+      <td class="num ${r.context >= at ? "st-5" : r.context >= warnAt ? "st-4" : ""}">${tok(r.context)}</td>
       <td class="num">${x ? `<b style="color:var(--pc-a)">${tok(x.per_turn_tokens)}</b> <span class="hint">${esc(smallUSD(x.per_turn_usd))}</span>` : "-"}</td>
       <td class="num" title="${x ? esc(`$${x.saved_usd.toFixed(2)} of context compacted, less $${x.summary_usd.toFixed(2)} summaries and $${x.rewrite_usd.toFixed(2)} cache rewrites, over ${x.requests} turns and ${x.compactions} compaction(s)`) : ""}">${x ? `${esc(signedUSD(x.net_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
       <td class="mono">${x ? esc(stamp(x.at)) : "-"}</td>
