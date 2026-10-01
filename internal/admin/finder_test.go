@@ -288,13 +288,15 @@ out({
 	if b := got["some"]; b["install"].Disabled || !strings.Contains(b["install"].Text, "missing one (1)") || b["remove"].Disabled {
 		t.Errorf("one installed: %+v", b)
 	}
-	if b := got["all"]; !b["install"].Disabled || !strings.Contains(b["install"].Text, "Already installed") || b["remove"].Disabled {
+	// Install is never disabled: running it again only adds what is missing,
+	// and without Ghostty the server answers with why it cannot.
+	if b := got["all"]; b["install"].Disabled || !strings.Contains(b["install"].Text, "Installed: run again") || b["remove"].Disabled {
 		t.Errorf("all installed: %+v", b)
 	}
-	if b := got["foreign"]; !b["install"].Disabled || !b["remove"].Disabled {
-		t.Errorf("installed but not ours: nothing to install or remove: %+v", b)
+	if b := got["foreign"]; b["install"].Disabled || !b["remove"].Disabled {
+		t.Errorf("installed but not ours: install can run again, nothing to remove: %+v", b)
 	}
-	if b := got["noGhostty"]; !b["install"].Disabled {
-		t.Errorf("no Ghostty: install must be disabled: %+v", b)
+	if b := got["noGhostty"]; b["install"].Disabled {
+		t.Errorf("no Ghostty: install still runs and the server says why it cannot: %+v", b)
 	}
 }
