@@ -191,10 +191,13 @@ func coordStats(path string, days int, now time.Time) coordMetrics {
 		if is.Kind == "error" && is.Resolved {
 			continue // cleared: off the list, still in the counts
 		}
-		// An error is resolved only by the Clear button, so it also stops
-		// counting as open after a day: long enough to be seen, short
-		// enough not to stick.
-		if !is.Resolved && (is.Kind != "error" || now.Sub(t) < 24*time.Hour) {
+		// An error has nothing in the log to resolve it, so it is open for
+		// a day, long enough to be seen, then shows as resolved; Clear
+		// takes it off the list sooner.
+		if is.Kind == "error" && now.Sub(t) >= 24*time.Hour {
+			is.Resolved = true
+		}
+		if !is.Resolved {
 			m.Unresolved++
 		}
 		m.Issues = append(m.Issues, *is)
