@@ -44,6 +44,8 @@ type contextInfo struct {
 	Sessions   []router.CompactionSession `json:"sessions"`
 	// CompactionStats is what compaction did over the same window.
 	CompactionStats metrics.CompactionStats `json:"compaction_stats"`
+	// SavingsByRepo is the same savings split by repository.
+	SavingsByRepo []RepoSaving `json:"savings_by_repo,omitempty"`
 	// PromptNotice is whether the prompt notice hook is in settings.json.
 	PromptNotice string `json:"prompt_notice"`
 	// MidTurnOff: the API refused a mid-turn swap, so they are off until
@@ -75,6 +77,9 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.PromptNotice = promptNoticeState()
 	ci.MidTurnOff = s.gateway.MidTurnOff()
 	ci.CompactionStats, _ = metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
+	if s.repos != nil {
+		ci.SavingsByRepo = s.repos.savingsByRepo(ci.CompactionStats.Sessions)
+	}
 	ci.Verdict = pruneVerdict(ci)
 	ci.CacheVerdict = cacheVerdict(eff)
 	return ci
