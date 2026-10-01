@@ -22,6 +22,9 @@
 //     or with `coord release`. A master that ends or goes idle hands the file
 //     to its most recently active contributor, or lets it go.
 //   - A master sitting on others' uncommitted changes too long is nudged.
+//   - A turn cannot end with files its session masters uncommitted: the
+//     Stop hook holds the session, once per turn, to commit them (locally,
+//     "WIP:" if unfinished), so a file that passes on passes on clean.
 //
 // It fails open. Any error, including a lock it cannot get within a few
 // seconds, lets the tool call through: a broken coordinator must never stop
@@ -502,7 +505,7 @@ func (c *Coordinator) Hook(name string, in io.Reader, out io.Writer) error {
 	case "prompt":
 		return c.prompt(h, out)
 	case "stop":
-		return c.stop(h)
+		return c.stop(h, out)
 	case "session-end":
 		return c.with(func(t *tx) error {
 			if h.SessionID != "" {
@@ -528,6 +531,7 @@ func (c *Coordinator) sessionStart(h hookInput, out io.Writer) error {
 			"2. Use Edit, not Write, on a file another session masters: a whole-file Write would wipe its work, and is refused.",
 			"3. `git add` only files you changed, by name. `git add -A`, `git add .` and `git commit -a` are refused while another session has work in the same repository.",
 			"4. Never run git stash, git reset --hard, git checkout -- <file> or switch branches in a working tree another session is using.",
+			"5. Commit the files you master before you stop: a session that has gone idle hands its files to whoever needs them next, so they must not be left uncommitted. Commit locally only; unfinished work is committed with \"WIP:\" in the message. You will be reminded at the end of a turn that leaves any uncommitted.",
 			fmt.Sprintf("Your session id is %s. To message another session: `%s`.", sid, c.cmdLine(fmt.Sprintf(`send <session-id-prefix> "message" --from %s`, short(sid)))),
 		}
 		var others []string
@@ -793,12 +797,52 @@ func (c *Coordinator) prompt(h hookInput, out io.Writer) error {
 	})
 }
 
-func (c *Coordinator) stop(h hookInput) error {
+// stop ends a turn. Files git keeps no record of are let go; files this
+// session masters that still have uncommitted changes must be committed
+// first, so that whoever needs them next takes over a clean file. The
+// session is held once per turn with the instruction to commit; when it
+// stops again in the same turn (stop_hook_active) it is let go, so a
+// commit that cannot be made never keeps a session looping.
+func (c *Coordinator) stop(h hookInput, out io.Writer) error {
 	return c.with(func(t *tx) error {
-		if sid := t.touch(h); sid != "" {
-			t.settle(sid, true)
+		sid := t.touch(h)
+		if sid == "" {
+			return nil
 		}
-		return nil
+		t.settle(sid, true)
+		var dirty []string
+		for _, p := range t.masterOf(sid) {
+			if gitState(p) == fileDirty {
+				dirty = append(dirty, p)
+			}
+		}
+		if len(dirty) == 0 {
+			return nil
+		}
+		if h.StopHookActive {
+			t.Log("%s stopped with uncommitted %s", short(sid), strings.Join(dirty, ", "))
+			return nil
+		}
+		sort.Strings(dirty)
+		t.Log("hold %s to commit %s", short(sid), strings.Join(dirty, ", "))
+		var list []string
+		for _, p := range dirty {
+			line := "- " + p
+			if f := t.d.Files[p]; len(f.Contributors) > 0 {
+				var who []string
+				for o := range f.Contributors {
+					who = append(who, t.label(o))
+				}
+				sort.Strings(who)
+				line += " (also holds changes from " + strings.Join(who, ", ") + ": keep them, they are committed with yours)"
+			}
+			list = append(list, line)
+		}
+		enc := json.NewEncoder(out)
+		enc.SetEscapeHTML(false)
+		return enc.Encode(map[string]any{"decision": "block", "reason": "COORDINATION: before you stop, commit the files you master. Other sessions take over files from a session that has gone idle, so they must not be left uncommitted. These have uncommitted changes:\n" +
+			strings.Join(list, "\n") +
+			"\nStage them by name and commit them now, with a message saying what the change is. Commit locally only: do not push. If the work is unfinished, commit it anyway with \"WIP:\" at the start of the message, so the next session can see it and carry on. Then stop. If a commit cannot be made, say why in one line and stop."})
 	})
 }
 
