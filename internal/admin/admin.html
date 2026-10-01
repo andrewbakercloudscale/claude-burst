@@ -806,6 +806,12 @@
   <section id="sec-analytics" style="scroll-margin-top:70px">
     <h2>Analytics <span class="hint" id="analyticsWindow">latency, errors, and where the spend goes, over the Daily activity window</span></h2>
     <div class="tiles" id="activityTiles"></div>
+      <div class="pc-chart" id="pcChartBox" hidden>
+        <div class="pc-chart-head"><h3>Pauseless compaction: savings per day</h3><span class="sum" id="pcChartSum"></span>
+          <span class="legend"><span><i style="background:var(--pcs-saved)"></i>Savings from Pauseless Compaction</span><span><i style="background:var(--pcs-cost)"></i>Cost of Pauseless Compaction</span></span></div>
+        <div class="chart-wrap" id="pcChartWrap"><div id="pcChart"></div><div class="chart-tip" id="pcTip"></div></div>
+        <details><summary>Show as a table</summary><div id="pcChartTable"></div></details>
+      </div>
   </section>
 
   <section id="sec-models" style="scroll-margin-top:70px">
@@ -824,12 +830,7 @@
     <h2><span class="pc-mark">&#9889;</span> PAUSELESS COMPACTION <span class="applies" data-where="config.json" data-when="now"></span> <span class="hint">Compact Sessions without the Pause: the summary is written in the background, and you never wait</span></h2>
     <div class="body">
       <div class="pc-stats" id="pcStats"></div>
-      <div class="pc-chart" id="pcChartBox" hidden>
-        <div class="pc-chart-head"><h3>Savings per day</h3><span class="sum" id="pcChartSum"></span>
-          <span class="legend"><span><i style="background:var(--pcs-saved)"></i>Savings from Pauseless Compaction</span><span><i style="background:var(--pcs-cost)"></i>Cost of Pauseless Compaction</span></span></div>
-        <div class="chart-wrap" id="pcChartWrap"><div id="pcChart"></div><div class="chart-tip" id="pcTip"></div></div>
-        <details><summary>Show as a table</summary><div id="pcChartTable"></div></details>
-      </div>
+      <div class="hint" style="margin-top:10px">Savings per day are charted under <a href="#" data-target="sec-analytics">Analytics</a>.</div>
       <div class="row" style="align-items:flex-start;margin:16px 0 12px">
         <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
           <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
@@ -3285,6 +3286,8 @@ document.addEventListener("click", e => {
   if (!a) return;
   const el = $(a.dataset.target);
   if (!el) return;
+  // An <a href="#"> would otherwise jump back to the top after the scroll.
+  e.preventDefault();
   // Opening the panel is part of following the link: a collapsed Guards
   // section that scrolls into view and says nothing is not an answer.
   if (el.id === "guardsSection") setGuardsOpen(true);
