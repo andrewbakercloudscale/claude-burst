@@ -861,7 +861,19 @@
       <div class="hint" style="margin-top:6px"><strong>Warn at</strong>: a line in the gateway log and a flag in the table below (default 300k). <strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>At most once per</strong>: the least time between two compactions of the same session (default 60 minutes), so a session that grows fast is not summarised over and over.</div>
       <div class="hint" style="margin-top:6px"><strong>Before</strong>: the context the session would have had at its latest summary without Burst. <strong>After</strong>: what it actually sent. <strong>Saved per turn</strong>: the difference. <strong>Net saved</strong>: what Burst saved on the session after paying for its summaries and cache rewrites (hover for the parts). How these are worked out, including what happens when a session would have outgrown the 1M window: see <em>How the savings are calculated</em> below.</div>
       <div id="compactNote"></div>
-      <div class="scroll" id="compactSessions" style="margin-top:10px"></div>
+      <div class="row" style="align-items:center;gap:16px;margin-top:10px;flex-wrap:wrap">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-weight:normal">
+          <input type="checkbox" id="csOverOnly" style="width:auto;margin:0" checked> Only sessions over the compaction limit
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;font-weight:normal">Show
+          <select id="csTop" style="width:auto">
+            <option value="20">top 20</option><option value="40">top 40</option><option value="100">top 100</option>
+            <option value="200">top 200</option><option value="0">all</option>
+          </select> sessions, largest context first
+        </label>
+        <span class="hint" id="csShown"></span>
+      </div>
+      <div class="scroll" id="compactSessions" style="margin-top:6px"></div>
       <details style="margin-top:12px">
         <summary style="cursor:pointer;font-weight:650">How the savings are calculated</summary>
         <div class="hint" style="margin-top:8px;font-size:13.5px;line-height:1.55">
@@ -2403,8 +2415,28 @@ $("pruneSave").onclick = savePruning;
 
 let compactBusy = false;
 
+// The table's two view options, remembered per browser. Over the limit is
+// on by default: the sessions worth looking at are the ones about to compact.
+let csOverOnly = true, csTop = 20, lastCompactState = null;
+try {
+  const v = JSON.parse(localStorage.getItem("csView") || "{}");
+  if (typeof v.overOnly === "boolean") csOverOnly = v.overOnly;
+  if ([0, 20, 40, 100, 200].includes(v.top)) csTop = v.top;
+} catch (e) {}
+$("csOverOnly").checked = csOverOnly;
+$("csTop").value = String(csTop);
+function csViewChanged() {
+  csOverOnly = $("csOverOnly").checked;
+  csTop = Number($("csTop").value);
+  try { localStorage.setItem("csView", JSON.stringify({overOnly: csOverOnly, top: csTop})); } catch (e) {}
+  if (lastCompactState) renderCompaction(lastCompactState);
+}
+$("csOverOnly").addEventListener("change", csViewChanged);
+$("csTop").addEventListener("change", csViewChanged);
+
 function renderCompaction(s) {
-  const c = s.context || {}, k = c.compaction || {}, rows = c.sessions || [];
+  lastCompactState = s;
+  const c = s.context || {}, k = c.compaction || {}, allRows = c.sessions || [];
   if (!compactBusy) {
     $("compactOn").checked = !!k.enabled;
     $("compactNotice").checked = !k.no_prompt_notice;
@@ -2430,11 +2462,22 @@ function renderCompaction(s) {
   lastSavings = cs.daily || null;
   drawSavingsChart();
   setDot("nd-compaction", k.enabled ? "ok" : "");
+  const warnAt = k.warn_at_tokens || 300000, at = k.compact_at_tokens || 400000;
+  const sorted = [...allRows].sort((a, b) => (b.context || 0) - (a.context || 0));
+  const over = sorted.filter(r => (r.context || 0) >= at);
+  const pool = csOverOnly ? over : sorted;
+  const rows = csTop ? pool.slice(0, csTop) : pool;
+  $("csShown").textContent = allRows.length
+    ? `Showing ${rows.length} of ${allRows.length} session${allRows.length === 1 ? "" : "s"}; ${over.length} over the ${Math.round(at / 1000)}k limit.`
+    : "";
+  if (allRows.length && !rows.length) {
+    $("compactSessions").innerHTML = `<div class="empty">No session is over the ${Math.round(at / 1000)}k compaction limit right now. Untick the box above to see all ${allRows.length}.</div>`;
+    return;
+  }
   if (!rows.length) {
     $("compactSessions").innerHTML = `<div class="empty">No sessions tracked yet. A session appears here after its first reply since the gateway started${k.enabled ? "" : " (tracking only runs while this is on)"}.</div>`;
     return;
   }
-  const warnAt = k.warn_at_tokens || 300000, at = k.compact_at_tokens || 400000;
   // The live tracker says where each session is now; the metrics log says
   // what its latest compaction took out and has saved since.
   const saved = {};
