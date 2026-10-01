@@ -517,6 +517,7 @@
   .mrow { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 2fr) var(--amt-w, 200px); gap: 16px;
           align-items: center; padding: 7px 16px; font-size: 12.5px; }
   #repoSplit { --amt-w: 360px; }
+  #pcRepoSplit { --amt-w: 380px; }
   .mrow.mhead { background: var(--thead-bg); color: var(--text) !important;
                 border-top: 0 !important; border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
   .mrow.mhead .amt { color: var(--text); font: inherit; }
@@ -827,6 +828,10 @@
         <div class="chart-wrap" id="pcChartWrap"><div id="pcChart"></div><div class="chart-tip" id="pcTip"></div></div>
         <details><summary>Show as a table</summary><div id="pcChartTable"></div></details>
       </div>
+      <div class="pc-chart" id="pcRepoBox" style="margin:0;border:0;border-top:1px solid var(--border);border-radius:0" hidden>
+        <div class="pc-chart-head"><h3>Savings by repository</h3><span class="sum" id="pcRepoSum"></span></div>
+      </div>
+      <div id="pcRepoSplit" style="padding-bottom:6px"></div>
   </section>
 
   <section id="sec-models" style="scroll-margin-top:70px">
@@ -2527,6 +2532,8 @@ function renderCompaction(s) {
   ].map(([v, t, tip]) => `<div class="pc-stat"${tip ? ` title="${esc(tip)}"` : ""}><div class="v">${v}</div><div class="k">${esc(t).replace(/^([^\n]*)\n/, '<b style="color:var(--text)">$1</b><br>').replace(/\n/g, "<br>")}</div></div>`).join("");
   lastSavings = cs.daily || null;
   drawSavingsChart();
+  // The chart's own day count (its window includes today), so both headers agree.
+  renderSavingsByRepo(c.savings_by_repo || [], (cs.daily || []).length || days);
   setDot("nd-compaction", k.enabled ? "ok" : "");
   const warnAt = k.warn_at_tokens || 300000, at = k.compact_at_tokens || 400000;
   const sorted = [...allRows].sort((a, b) => (b.context || 0) - (a.context || 0));
@@ -3806,6 +3813,28 @@ function renderActivity() {
 // its Claude Code transcript says it ran in. Bars are by spend, since that
 // is the question; subscription spend is API-equivalent, like every figure
 // here.
+// renderSavingsByRepo splits the savings chart's money by repository: the
+// same sessions over the same days, so its net column adds up to the
+// chart's total. Bars are the net saving; a repository where compaction
+// cost more than it saved shows a red amount and no bar.
+function renderSavingsByRepo(repos, days) {
+  const box = $("pcRepoBox");
+  box.hidden = !repos.length;
+  if (!repos.length) { $("pcRepoSplit").innerHTML = ""; return; }
+  const top = Math.max(...repos.map(r => r.net_usd), 0.0001);
+  const total = repos.reduce((t, r) => t + r.net_usd, 0);
+  $("pcRepoSum").innerHTML = `net <b>${esc(signedUSD(total))}</b> over ${days} days, ${repos.length} ${repos.length === 1 ? "repository" : "repositories"}`;
+  $("pcRepoSplit").innerHTML =
+    `<div class="mrow mhead" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700">
+       <span>Repository</span><span>Share of net saving</span><span class="amt">Sessions · compactions · saved − costs = net</span></div>` +
+    repos.map(r => `<div class="mrow">
+      <span class="mono" title="${esc(r.path || r.repo)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.repo)}</span>
+      <span class="mbar"><span style="width:${(Math.max(r.net_usd, 0) / top * 100).toFixed(1)}%;background:var(--pcs-saved)"></span></span>
+      <span class="amt" title="${esc(`${num(r.requests)} compacted requests. Costs: $${(r.summary_usd || 0).toFixed(2)} for summaries, $${(r.rewrite_usd || 0).toFixed(2)} for cache rewrites.`)}">${esc(num(r.sessions))} · ${esc(num(r.compactions))} · $${(r.saved_usd || 0).toFixed(2)} − $${((r.summary_usd || 0) + (r.rewrite_usd || 0)).toFixed(2)} = <span style="color:${r.net_usd >= 0 ? "var(--pc-a)" : "var(--bad)"};font-weight:600">${esc(signedUSD(r.net_usd))}</span>${
+        total > 0 && r.net_usd > 0 ? ` <span style="color:var(--faint)">(${Math.round(100 * r.net_usd / total)}%)</span>` : ""}</span>
+    </div>`).join("");
+}
+
 function renderRepoSplit(h) {
   const repos = (h.repos || []).slice(0, 12);
   if (!repos.length) { $("repoSplit").innerHTML = ""; return; }

@@ -61,4 +61,19 @@ func TestRepoSpendGroupsSessionsByRepository(t *testing.T) {
 	if got[1].Compacted || got[1].SavedUSD != 0 {
 		t.Fatalf("nothing compacted in %s: %+v", got[1].Repo, got[1])
 	}
+
+	// The savings section's split: same sessions, grouped the same way,
+	// largest net first, every column summed.
+	sv := r.savingsByRepo([]metrics.CompactedSession{
+		{Session: "c", Compactions: 1, Requests: 2, SavedUSD: 1, SummaryUSD: 0.25, NetUSD: 0.75},
+		{Session: "a", Compactions: 2, Requests: 5, SavedTokens: 100, SavedUSD: 4, SummaryUSD: 0.5, RewriteUSD: 0.5, NetUSD: 3},
+		{Session: "b", Compactions: 1, Requests: 1, SavedTokens: 50, SavedUSD: 0.25, RewriteUSD: 0.75, NetUSD: -0.5},
+	})
+	if len(sv) != 2 || sv[0].Repo != "proj" || sv[1].Repo != tempRepo {
+		t.Fatalf("savings by repo: %+v", sv)
+	}
+	if p := sv[0]; p.Sessions != 2 || p.Compactions != 3 || p.Requests != 6 || p.SavedTokens != 150 ||
+		p.SavedUSD != 4.25 || p.SummaryUSD != 0.5 || p.RewriteUSD != 1.25 || p.NetUSD != 2.5 || p.Path != repo {
+		t.Fatalf("proj savings: %+v", p)
+	}
 }
