@@ -211,7 +211,13 @@
   }
 
   .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
-  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+  label { display: block; font-size: 13.5px; color: var(--muted); margin-bottom: 5px; font-weight: 600; }
+  /* Every tickbox and radio reads at one size, the size of the text around
+     it. It used to come from whichever inline style each one happened to
+     have: 12, 13, 13.5 and 15px side by side in one section. A section's
+     main switch stays bolder (font-weight 700 inline), not bigger. */
+  label:has(> input[type=checkbox]), label:has(> input[type=radio]) {
+    font-size: 15px !important; color: var(--text); }
   input, select {
     font: 13px/1.4 var(--mono); color: var(--text); background: var(--bg);
     border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; min-width: 210px;
@@ -304,7 +310,7 @@
   section.alert > h2 { background: var(--bad-bg); color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 25%, transparent); }
   section.alert > h2 .hint { color: var(--bad); opacity: .8; }
 
-  .note { padding: 11px 13px; border-radius: 8px; font-size: 12.5px; margin-top: 13px; white-space: pre-wrap; }
+  .note { padding: 11px 13px; border-radius: 8px; font-size: 13.5px; margin-top: 13px; white-space: pre-wrap; }
   /* A note's 13px top margin is for the control it hangs off. These two sit
      in the page flow instead, directly above the next block, so they need
      the spacing on the other side as well -- without it the banner's edge
@@ -540,7 +546,7 @@
 .applies i.w-now { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
 .applies i.w-restart { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
 .set-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 14px; }
-.set-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.set-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; font-weight: 600; color: var(--text); }
 .set-grid input, .set-grid select { min-width: 0; width: 100%; box-sizing: border-box; }
 .set-grid input.changed { border-color: var(--accent); }
 .set-grid .dflt { font-weight: 400; color: var(--muted); font-size: 11.5px; }
@@ -843,7 +849,11 @@
           Swap in mid-turn, as soon as the summary is ready <span class="pill">experimental</span> <span id="compactMidTurnState" class="pill"></span>
         </label>
       </div>
-      <div class="hint" style="margin:0 0 12px 0">Off, a ready summary waits for your next prompt, so a long run of tool calls can carry the session far past <strong>Compact at</strong>. On, it swaps in with the next request, inside the turn: the running turn is sent exactly as it was, and everything before its prompt goes as the summary, so compaction lands within about a minute of the threshold. Whether the API accepts a running turn's thinking after the history before it has changed is not documented. If it refuses (a 400), Burst undoes the swap and resends the request without it before Claude Code sees anything, the summary waits for your next prompt instead, and this stays off until you save these settings again; the gateway log says <code>mid-turn REJECTED</code> with the API's reason, or <code>mid-turn accepted</code>.</div>
+      <div class="row" style="align-items:center;gap:12px;margin:8px 0 10px">
+        <button class="primary" id="compactSaveTop">&#x2713; Save</button>
+        <span class="hint" id="compactPending"></span>
+      </div>
+      <div class="hint" style="margin:0 0 12px 0">When the summary is ready, Burst normally waits for your next prompt before swapping it in. During a long run of tool calls that can take a while, and the session keeps growing well past <strong>Compact at</strong>. Tick this to swap the summary in straight away instead, in the middle of the turn. The turn that is running is sent unchanged; everything before it is replaced by the summary. Compaction then happens within about a minute of the session reaching the threshold.<br><br><strong>The risk:</strong> it is not documented whether Anthropic accepts this. If it refuses, Burst quietly undoes the swap and resends the request as it was, so Claude Code never sees an error; the summary then waits for your next prompt as usual, and this setting stays off until you press Save again. The gateway log records <code>mid-turn accepted</code> or <code>mid-turn REJECTED</code> with Anthropic's reason.</div>
       <div class="hint" style="margin:-8px 0 12px 0">A line such as <code>&#9889; Claude Burst, pauseless compaction: done. Context down 88%, 666k &rarr; 78k: 1074 earlier messages now go as a summary</code> appears under the prompt you send, in Claude Code's own window: when a summary starts, when it is ready and swaps in with that prompt, when the swap has cut the context, and if it fails or no longer fits. It comes from a <code>UserPromptSubmit</code> hook Burst adds to <code>~/.claude/settings.json</code> and removes when this is off. Claude does not see these lines, so they cost no context. News that happens mid-turn shows on your next prompt.</div>
       <div class="hint" style="margin:-4px 0 12px 0;font-size:14px;line-height:1.55">
         <p style="margin:0 0 8px"><strong>Your session never stops to compact.</strong> Claude Code's own <code>/compact</code> makes you wait while it summarises. Burst writes the summary in the background while you keep working, and swaps it in on your next prompt. <strong>No pause, no lost place, nothing to type.</strong></p>
@@ -864,16 +874,18 @@
           <label for="compactWindow">At most once per (minutes)</label>
           <input type="number" id="compactWindow" min="1" max="1440" step="5" style="width:110px">
         </div>
-        <button id="compactSave">Save settings</button>
+        <button class="primary" id="compactSave">&#x2713; Save</button>
       </div>
       <div class="hint" style="margin-top:6px"><strong>Warn at</strong>: a line in the gateway log and a flag in the table below (default 300k). <strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>At most once per</strong>: the least time between two compactions of the same session (default 60 minutes), so a session that grows fast is not summarised over and over.</div>
       <div class="hint" style="margin-top:6px"><strong>Before</strong>: the context the session would have had at its latest summary without Burst. <strong>After</strong>: what it actually sent. <strong>Saved per turn</strong>: the difference. <strong>Net saved</strong>: what Burst saved on the session after paying for its summaries and cache rewrites (hover for the parts). How these are worked out, including what happens when a session would have outgrown the 1M window: see <em>How the savings are calculated</em> below.</div>
       <div id="compactNote"></div>
       <div class="row" style="align-items:center;gap:16px;margin-top:10px;flex-wrap:wrap">
-        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-weight:normal">
-          <input type="checkbox" id="csOverOnly" style="width:auto;margin:0" checked> Only sessions over the compaction limit
+        <!-- Sized like the toggles above, not the 12px caption style every
+             bare <label> gets: these are controls, and read as fine print. -->
+        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-size:15px;font-weight:600;color:var(--text);margin:0">
+          <input type="checkbox" id="csOverOnly" style="width:auto;margin:0;transform:scale(1.25)" checked> Only sessions over the compaction limit
         </label>
-        <label style="display:flex;gap:6px;align-items:center;font-weight:normal">Show
+        <label style="display:flex;gap:8px;align-items:center;font-size:15px;font-weight:600;color:var(--text);margin:0">Show
           <select id="csTop" style="width:auto">
             <option value="20">top 20</option><option value="40">top 40</option><option value="100">top 100</option>
             <option value="200">top 200</option><option value="0">all</option>
@@ -906,6 +918,10 @@
           Prune overflow requests <span id="pruneMasterState" class="pill"></span>
         </label>
       </div>
+      <div class="row" style="align-items:center;gap:12px;margin:-4px 0 10px">
+        <button class="primary" id="pruneSaveTop">&#x2713; Save</button>
+        <span class="hint" id="prunePending"></span>
+      </div>
       <div class="hint" style="margin:-4px 0 12px 0">Only requests sent to the <strong>paid secondary</strong> are pruned. Every overflow request resends the whole conversation and every token of it is billed, and most of that is old tool output: files read and commands run many turns ago. Your subscription (the primary) is never touched: Anthropic caches its context, so rewriting history there would break the cache and use up your limits faster. Changes apply to the next request; no restart.</div>
 
       <div class="row" style="align-items:flex-start">
@@ -937,7 +953,7 @@
           <label for="pruneCapKB">Cap (KB)</label>
           <input type="number" id="pruneCapKB" min="4" max="1024" step="4" style="width:100px">
         </div>
-        <button id="pruneSave">Save settings</button>
+        <button class="primary" id="pruneSave">&#x2713; Save</button>
       </div>
       <div class="hint" style="margin-top:6px"><strong>Keep recent</strong>: how many of the latest tool results are always sent in full (default 10). Raise it if the verdict above says pruned requests fail more often. <strong>Step</strong>: how many results the cut-off advances at a time (default 10); bigger keeps the prefix stable for longer but prunes a little less. <strong>Cap</strong>: the largest single tool result sent in full (default 40&nbsp;KB).</div>
       <div id="pruneNote"></div>
@@ -1137,18 +1153,18 @@
         <input type="checkbox" id="coOn" style="width:auto;margin:0">
         On for every Claude Code session on this Mac <span class="pill" title="New; report anything odd on GitHub">Leading Edge</span>
       </label>
-      <div class="hint" style="margin:6px 0 10px">The first session to edit a file is its <strong>master</strong> and commits it. Another session can still Edit it: the change goes through, the master is told what changed and commits it with its own, and that session is told not to commit the file itself. A whole-file Write over a master's uncommitted work is refused, and so are <code>git add -A</code>, <code>git add .</code> and <code>git commit -a</code> while another session has work in the same repository. A file stops being shared when it is committed. Every session is briefed on this when it starts. It works through Claude Code hooks in <code>~/.claude/settings.json</code>, added when you switch it on and removed when you switch it off; if anything in it fails, the edit goes through as if it were off.</div>
+      <div class="hint" style="margin:6px 0 10px">When several Claude Code sessions work in the same repository, the first one to edit a file becomes that file's <strong>master</strong> and is responsible for committing it. Other sessions can still edit the file: their changes go through, the master is told what changed and commits those changes with its own, and the other session is told not to commit the file itself. Two things are blocked while another session has uncommitted work in the repository: overwriting a whole file the master is still working on, and sweeping commands (<code>git add -A</code>, <code>git add .</code>, <code>git commit -a</code>) that would commit someone else's work. A file is no longer shared once it is committed. Every session is told these rules when it starts. It works through Claude Code hooks in <code>~/.claude/settings.json</code>, added when you switch it on and removed when you switch it off; if a hook ever fails, the edit goes ahead as if coordination were off.</div>
       <div class="row">
         <div>
-          <label for="coIdle">Master idle, then hand on (minutes)</label>
+          <label for="coIdle">Pass a file on when its master is idle for (minutes)</label>
           <input type="number" id="coIdle" min="1" max="240" step="1" style="width:100px;min-width:0">
         </div>
         <div>
-          <label for="coNudge">Nudge master to commit others' changes after (minutes)</label>
+          <label for="coNudge">Remind the master to commit after (minutes)</label>
           <input type="number" id="coNudge" min="1" max="240" step="1" style="width:100px;min-width:0">
         </div>
       </div>
-      <div class="hint" style="margin-top:4px">A master idle for the first time hands each file to the session that most recently changed it too, which is told it now commits it; with nobody else in the file, the file is simply let go. The nudge tells a master that other sessions' changes have waited that long for its commit.</div>
+      <div class="hint" style="margin-top:4px">If a file's master session has been idle this long, the file passes to whichever other session changed it most recently, and that session is told it is now responsible for committing it. If no other session has touched the file, it is simply released. The reminder tells a master that changes from other sessions have been waiting this long for it to commit them.</div>
       <div class="row" style="margin-top:10px"><button class="primary" id="coSave">&#x2713; Save</button></div>
       <div id="coNote"></div>
       <h3 style="margin:18px 0 6px;font-size:13px">Who is editing what <span class="hint" style="font-weight:400" id="coSummary"></span></h3>
@@ -1157,7 +1173,7 @@
       <div class="scroll" id="coSessions"></div>
       <div id="coActNote"></div>
       <h3 style="margin:18px 0 6px;font-size:13px">Recent activity</h3>
-      <div class="hint" style="margin-bottom:6px">What the coordinator did, newest first: files shared, refusals, hand-ons and files freed by a commit.</div>
+      <div class="hint" style="margin-bottom:6px">What session coordination has done, newest first: files shared between sessions, actions it blocked, files passed from one session to another, and files released after a commit.</div>
       <div id="coActivity"></div>
     </div>
   </section>
@@ -1237,7 +1253,7 @@
         <label><input type="radio" name="kaMode" value="ac"> <b>Plugged in only</b><span>awake with the lid shut on mains power; unplugging lets it sleep again</span></label>
         <label><input type="radio" name="kaMode" value="always"> <b>Plugged in and on battery</b><span>always awake with the lid shut. Watch the battery, and do not put it in a bag like this: it will get hot</span></label>
       </div>
-      <label style="display:block;margin-top:14px;font-size:inherit;font-weight:600;color:inherit">Stay awake with the lid shut
+      <label style="display:block;margin-top:14px;font-size:15px;font-weight:600;color:var(--text)">Stay awake with the lid shut
         <select id="kaIdle" style="margin-left:8px;font-weight:normal">
           <option value="0">as long as the choice above applies</option>
           <option value="30">for 30 minutes after I last used it</option>
@@ -1347,7 +1363,7 @@
       </div>
 
       <div class="hint" style="margin-top:12px">
-        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks the gateway is actually running, having a pid, not merely being registered with launchd, which keeps answering for a job whose process has died. The <b>pf guard</b> checks the real path end to end: that <code>api.anthropic.com</code> answers, <i>and answers from this gateway</i>. Neither touches anything while no <code>/etc/hosts</code> redirect is installed, so a rollback stays rolled back. If the guard cannot repair the path after four tries it removes the redirect entirely, because a Mac that reaches Anthropic directly beats one that cannot reach it at all.
+        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks that the gateway program is really running (macOS can report a background job as loaded after its program has died) and restarts it if not. The <b>pf guard</b> checks that requests to <code>api.anthropic.com</code> really arrive at this gateway, and repairs the redirect if they do not. Neither does anything after you have reverted to normal Claude, so a revert stays reverted. If the guard cannot repair the redirect after four tries, it removes it, so Claude Code talks to Anthropic directly: working without Burst is better than not working at all.
       </div>
       <div id="pfHealNote"></div>
     </div>
@@ -1389,8 +1405,10 @@
           <input type="checkbox" id="downgrade" style="width:auto;margin:0">
           Try another Claude model before the secondary
         </label>
+        <button class="primary" id="downgradeSave">&#x2713; Save</button>
+        <span class="hint" id="downgradePending"></span>
       </div>
-      <div class="hint" style="margin-top:4px">Anthropic meters Fable separately from Opus, so a refused Fable request is no evidence about Opus. With this on, a refused model falls down the chain in <code>fallback_chain</code> first, still on your subscription, still free, and only reaches the paid secondary when every rung has been refused too. Off, a refused model goes straight to the secondary.</div>
+      <div class="hint" style="margin-top:4px">Anthropic counts usage limits separately for each model, so Fable being refused says nothing about whether Opus is available. With this on, a refused model first tries the next Claude model in your <code>fallback_chain</code>, still on your subscription and still free, and only goes to the paid secondary once every model in the chain has been refused. With it off, a refused model goes straight to the secondary.</div>
       <div id="downgradeState" class="hint" style="margin-top:6px"></div>
       <div id="dgNote"></div>
     </div>
@@ -2336,15 +2354,24 @@ function signedUSD(n) { n = n || 0; return (n < 0 ? "-$" : "$") + Math.abs(n).to
 
 function smallUSD(n) { return "$" + (n || 0).toFixed((n || 0) < 1 ? 4 : 2); }
 
-let pruneBusy = false;
+let pruneBusy = false, pruneDirty = false;
 
 function pct(x) { return ((x || 0) * 100).toFixed(0) + "%"; }
+
+// A state pill is green when the thing is on and working, amber when it
+// needs something from you, plain when off.
+function setPill(id, text, kind) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = "pill" + (kind === "ok" ? " p" : kind === "warn" ? " s" : "");
+  el.hidden = !text;
+}
 
 function renderContext(s) {
   const c = s.context || {}, p = c.pruning || {}, e = c.efficiency || {};
   const pr = e.primary || {}, se = e.secondary || {};
   const on = !p.disabled && !(p.no_stub && p.no_cap);
-  if (!pruneBusy) {
+  if (!pruneBusy && !pruneDirty) {
     $("pruneMaster").checked = on;
     $("pruneStub").checked = !p.no_stub;
     $("pruneCap").checked = !p.no_cap;
@@ -2355,8 +2382,8 @@ function renderContext(s) {
       $("pruneCapKB").value = Math.round((p.max_tool_result_bytes || 40960) / 1024);
     }
   }
-  $("pruneMasterState").textContent = !c.applicable ? "n/a" : !on ? "off"
-    : p.no_stub ? "on · cap only" : p.no_cap ? "on · stub only" : "on";
+  setPill("pruneMasterState", !c.applicable ? "n/a" : !on ? "off"
+    : p.no_stub ? "on · cap only" : p.no_cap ? "on · stub only" : "on", c.applicable && on ? "ok" : "");
 
   const v = c.verdict || {level: "info", text: ""};
   const cls = {ok: "c-ok", bad: "c-bad", info: "c-info"}[v.level] || "c-info";
@@ -2398,6 +2425,8 @@ async function savePruning() {
     max_tool_result_bytes: (parseInt($("pruneCapKB").value, 10) || 0) * 1024,
   };
   pruneBusy = true;
+  pruneDirty = false;
+  $("prunePending").textContent = "";
   try {
     const r = await post("/api/pruning", body);
     note($("pruneNote"), "ok", r.ok);
@@ -2415,13 +2444,18 @@ $("pruneMaster").onchange = () => {
   if ($("pruneMaster").checked && !$("pruneStub").checked && !$("pruneCap").checked) {
     $("pruneStub").checked = $("pruneCap").checked = true;
   }
-  savePruning();
+  pruneChanged();
 };
-$("pruneStub").onchange = savePruning;
-$("pruneCap").onchange = savePruning;
+function pruneChanged() {
+  pruneDirty = true;
+  $("prunePending").textContent = "Not saved yet: press Save to apply.";
+}
+$("pruneStub").onchange = pruneChanged;
+$("pruneCap").onchange = pruneChanged;
 $("pruneSave").onclick = savePruning;
+$("pruneSaveTop").onclick = savePruning;
 
-let compactBusy = false;
+let compactBusy = false, compactDirty = false;
 
 // The table's two view options, remembered per browser. Over the limit is
 // on by default: the sessions worth looking at are the ones about to compact.
@@ -2445,7 +2479,9 @@ $("csTop").addEventListener("change", csViewChanged);
 function renderCompaction(s) {
   lastCompactState = s;
   const c = s.context || {}, k = c.compaction || {}, allRows = c.sessions || [];
-  if (!compactBusy) {
+  // Unsaved ticks survive the 2s refresh: overwriting them with the saved
+  // state is how a click appeared to do nothing.
+  if (!compactBusy && !compactDirty) {
     $("compactOn").checked = !!k.enabled;
     $("compactNotice").checked = !k.no_prompt_notice;
     $("compactNotice").disabled = !k.enabled;
@@ -2458,9 +2494,12 @@ function renderCompaction(s) {
       $("compactWindow").value = k.window_minutes || 60;
     }
   }
-  $("compactState").textContent = k.enabled ? "on" : "off";
-  $("compactMidTurnState").textContent = !k.mid_turn ? "" : c.mid_turn_off ? "refused by the API: off until you save again" : "on";
-  $("compactNoticeState").textContent = c.prompt_notice === "installed" ? "hook installed" : (k.enabled && !k.no_prompt_notice ? "hook missing, press Save" : "off");
+  setPill("compactState", k.enabled ? "on" : "off", k.enabled ? "ok" : "");
+  setPill("compactMidTurnState", !k.mid_turn ? "off" : c.mid_turn_off ? "refused by the API: off until you save again" : "on",
+    !k.mid_turn ? "" : c.mid_turn_off ? "warn" : "ok");
+  const hookOK = c.prompt_notice === "installed", hookWanted = k.enabled && !k.no_prompt_notice;
+  setPill("compactNoticeState", hookOK ? "hook installed" : hookWanted ? "hook missing, press Save" : "off",
+    hookOK ? "ok" : hookWanted ? "warn" : "");
   const cs = c.compaction_stats || {}, kk = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "k";
   const days = c.window_days || 7;
   const sv = savingsTiles(cs);
@@ -2529,6 +2568,8 @@ async function saveCompaction() {
   compactBusy = true;
   try {
     const r = await post("/api/compaction", body);
+    compactDirty = false;
+    $("compactPending").textContent = "";
     note($("compactNote"), "ok", r.ok);
   } catch (e) {
     note($("compactNote"), "bad", e.message);
@@ -2537,9 +2578,13 @@ async function saveCompaction() {
     refresh();
   }
 }
-$("compactOn").onchange = saveCompaction;
-$("compactNotice").onchange = saveCompaction;
-$("compactMidTurn").onchange = saveCompaction;
+// Ticking only changes the form; Save applies it, here or at the bottom.
+for (const id of ["compactOn", "compactNotice", "compactMidTurn"]) $(id).onchange = () => {
+  compactDirty = true;
+  $("compactPending").textContent = "Not saved yet: press Save to apply.";
+  $("compactNotice").disabled = $("compactMidTurn").disabled = !$("compactOn").checked;
+};
+$("compactSaveTop").onclick = saveCompaction;
 $("compactNoticeTest").onclick = async () => {
   try { note($("compactNote"), "ok", (await post("/api/prompt-notice-test", {})).ok); }
   catch (e) { note($("compactNote"), "bad", e.message); }
@@ -2794,7 +2839,7 @@ $("hoUninstall").onclick = () => handoverInstall(false);
 // reason to come to this page mid-limit at all.
 function renderDowngrade(s) {
   const d = s.downgrade || {};
-  $("downgrade").checked = !!d.enabled;
+  if (!downgradeDirty) $("downgrade").checked = !!d.enabled;
   const chain = d.chain || {};
   const pairs = Object.keys(chain).sort()
     .filter(m => (chain[m] || []).length)
@@ -2818,10 +2863,17 @@ function renderDowngrade(s) {
   $("downgradeState").innerHTML = parts.join("<br>");
 }
 
-$("downgrade").onchange = async () => {
+let downgradeDirty = false;
+$("downgrade").onchange = () => {
+  downgradeDirty = true;
+  $("downgradePending").textContent = "Not saved yet: press Save to apply.";
+};
+$("downgradeSave").onclick = async () => {
   const on = $("downgrade").checked;
   try {
     note($("dgNote"), on ? "ok" : "warn", (await post("/api/downgrade", {enabled: on})).ok);
+    downgradeDirty = false;
+    $("downgradePending").textContent = "";
     refresh();
   } catch (e) {
     // Put the box back: leaving it showing a state the gateway rejected is
@@ -3187,7 +3239,9 @@ function renderNav(s, counts) {
   setDot("nd-overview", liveVerdict === undefined ? "" : liveVerdict.ok ? "ok" : "bad");
   setDot("nd-install", s.intercept.active ? "ok" : "bad");
   setDot("nd-secondary", missingKey ? "bad" : noSecondary ? "warn" : "ok");
-  setDot("nd-config", "");
+  // Routing has a state like every other entry: blue on the subscription,
+  // amber while anything is going to the paid secondary.
+  setDot("nd-config", s.overflow || secondaryModels(s, Date.now()).length ? "warn" : "ok");
 
   const sh = s.intercept.self_heal;
   const ph = s.intercept.mode === "transparent" ? s.intercept.pf_heal : null;
@@ -3992,14 +4046,8 @@ $("panelInstall").onclick = async () => {
   try { await post("/api/panel-install", {action: "install"}); } catch (e) { note($("panelNote"), "bad", e.message); }
   loadMac();
 };
-let panelRemoveArmed = 0;
 $("panelRemove").onclick = async () => {
-  if (Date.now() - panelRemoveArmed > 5000) {
-    panelRemoveArmed = Date.now();
-    note($("panelNote"), "warn", "Click Remove again within 5 seconds to confirm. This also turns off Remote Control, folder names and caffeinate for new sessions, since the panel's hooks carry them out.");
-    return;
-  }
-  panelRemoveArmed = 0;
+  if (!confirm("Remove the usage panel?\n\nThis also turns off Remote Control, folder names and caffeinate for new sessions, because the panel's hooks are what carry them out.\n\nBackups of the files it edits are kept beside them.")) return;
   try { await post("/api/panel-install", {action: "remove"}); } catch (e) { note($("panelNote"), "bad", e.message); }
   loadMac();
 };
@@ -4141,8 +4189,10 @@ function renderFinder() {
       x.installed && !x.ours ? ` <span class="hint">(not made here; Remove leaves it alone)</span>` : ""}${
       x.tool_found ? "" : ` <span class="hint"><code>${esc(x.tool)}</code> is not installed</span>`}</div>`).join("");
   setDot("nd-finder", list.length && !missing.length ? "ok" : "");
-  $("finderInstall").disabled = !missing.length || !f.ghostty;
-  $("finderInstall").textContent = !missing.length ? "\u2713 Already installed"
+  // Never disabled: running it again is harmless (it only adds what is
+  // missing) and is how you check; without Ghostty the server says so.
+  $("finderInstall").disabled = false;
+  $("finderInstall").textContent = !missing.length ? "\u2713 Installed: run again"
     : missing.length === list.length ? "\u2913 Install Finder shortcuts"
     : `\u2913 Install the missing one${missing.length === 1 ? "" : "s"} (${missing.length})`;
   $("finderInstall").title = !missing.length ? "Every shortcut is already in ~/Library/Services" : "";
@@ -4157,14 +4207,8 @@ async function finderAction(action) {
   } catch (e) { note($("finderNote"), "bad", e.message); loadFinder(); }
 }
 $("finderInstall").onclick = () => finderAction("install");
-let finderRemoveArmed = 0;
 $("finderRemove").onclick = () => {
-  if (Date.now() - finderRemoveArmed > 5000) {
-    finderRemoveArmed = Date.now();
-    note($("finderNote"), "warn", "Click Remove again within 5 seconds to confirm.");
-    return;
-  }
-  finderRemoveArmed = 0;
+  if (!confirm("Remove the Finder shortcuts?\n\n\"Launch Claude Code in Ghostty\" and \"Launch OpenCode in Ghostty\" disappear from Finder's right-click menu. The launcher scripts in ~/.local/bin are kept.")) return;
   finderAction("remove");
 };
 loadFinder();
@@ -4240,9 +4284,8 @@ async function coAct(body, btn) {
 document.addEventListener("click", e => {
   const rel = e.target.closest("[data-co-release]");
   if (rel) {
-    // Two clicks: the first arms it, as with the other buttons that act on
-    // someone else's work.
-    if (rel.dataset.armed !== "1") { rel.dataset.armed = "1"; rel.textContent = "Confirm hand on"; setTimeout(() => { rel.dataset.armed = ""; rel.textContent = "Hand on"; }, 4000); return; }
+    // It acts on someone else's work, so it asks first.
+    if (!confirm("Hand this file on?\n\nThe session that changed it most recently becomes its master and is told it now commits it.")) return;
     coAct({release: rel.dataset.coRelease}, rel);
     return;
   }
