@@ -25,6 +25,10 @@ not a log line
 	p := filepath.Join(t.TempDir(), "coord.log")
 	os.WriteFile(p, []byte(log), 0o644)
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.Local)
+	// git says d.go still has uncommitted changes; no other file does.
+	old := uncommitted
+	uncommitted = func(p string) bool { return p == "/r/d.go" }
+	defer func() { uncommitted = old }()
 
 	today := coordStats(p, 1, now)
 	if today.Totals["refused"] != 1 || today.Totals["shared"] != 0 || today.Totals["taken"] != 1 || today.Totals["errors"] != 1 || today.Totals["stopped"] != 2 {
@@ -134,5 +138,27 @@ func TestClearErrorsAction(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(dir, "coord.log"))
 	if !strings.Contains(string(b), coordClearedLine) {
 		t.Fatalf("log: %s", b)
+	}
+}
+
+// A file that left tracking with no log line (committed in a worktree that
+// was then merged) still resolves its issue: git is asked.
+func TestCoordStatsAsksGitAboutPendingFiles(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "coord.log")
+	os.WriteFile(p, []byte("2026-10-01 18:08:13 ef7f6a74 stopped with uncommitted /w/a.php, /w/b.php\n"), 0o644)
+	old := uncommitted
+	defer func() { uncommitted = old }()
+	now := time.Date(2026, 10, 1, 20, 0, 0, 0, time.Local)
+	uncommitted = func(string) bool { return true }
+	if m := coordStats(p, 1, now); m.Unresolved != 1 {
+		t.Fatalf("still uncommitted: %+v", m.Issues)
+	}
+	uncommitted = func(p string) bool { return p == "/w/b.php" }
+	if m := coordStats(p, 1, now); m.Unresolved != 1 || len(m.Issues[0].Pending) != 1 {
+		t.Fatalf("a.php committed: %+v", m.Issues)
+	}
+	uncommitted = func(string) bool { return false }
+	if m := coordStats(p, 1, now); m.Unresolved != 0 || !m.Issues[0].Resolved {
+		t.Fatalf("both committed: %+v", m.Issues)
 	}
 }

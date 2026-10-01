@@ -2,6 +2,8 @@ package admin
 
 import (
 	"os"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/coord"
 	"regexp"
 	"strings"
 	"time"
@@ -164,6 +166,21 @@ func coordStats(path string, days int, now time.Time) coordMetrics {
 			}
 		}
 	}
+	// A file can leave tracking without a log line (committed while no hook
+	// ran, or its worktree merged and removed), so an issue still pending
+	// asks git: whatever has nothing uncommitted any more is settled.
+	for _, is := range all {
+		if is.Kind != "stopped" || is.Resolved {
+			continue
+		}
+		var still []string
+		for _, p := range is.Pending {
+			if uncommitted(p) {
+				still = append(still, p)
+			}
+		}
+		is.Pending, is.Resolved = still, len(still) == 0
+	}
 	// Newest first, only those inside the window.
 	for i := len(all) - 1; i >= 0; i-- {
 		is := all[i]
@@ -184,6 +201,9 @@ func coordStats(path string, days int, now time.Time) coordMetrics {
 	}
 	return m
 }
+
+// uncommitted asks git; a variable so tests can answer for it.
+var uncommitted = coord.Uncommitted
 
 func without(list []string, s string) []string {
 	var out []string
