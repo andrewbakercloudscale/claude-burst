@@ -657,6 +657,7 @@
   <a class="navlink" data-target="cards"><span class="nd" id="nd-overview"></span><span class="label">Overview</span><span class="count" id="nc-overview"></span></a>
   <a class="navlink" data-target="sec-activity"><span class="nd" id="nd-activity"></span><span class="label">Activity</span><span class="count" id="nc-activity"></span></a>
   <a class="navlink" data-target="sec-analytics"><span class="nd"></span><span class="label">Analytics</span></a>
+  <a class="navlink" data-target="sec-savings"><span class="nd"></span><span class="label">Compaction savings</span></a>
   <a class="navlink" data-target="sec-models"><span class="nd"></span><span class="label">Spend by model</span></a>
   <a class="navlink" data-target="sec-repos"><span class="nd"></span><span class="label">Spend by repository</span></a>
 
@@ -806,8 +807,12 @@
   <section id="sec-analytics" style="scroll-margin-top:70px">
     <h2>Analytics <span class="hint" id="analyticsWindow">latency, errors, and where the spend goes, over the Daily activity window</span></h2>
     <div class="tiles" id="activityTiles"></div>
-      <div class="pc-chart" id="pcChartBox" hidden>
-        <div class="pc-chart-head"><h3>Pauseless compaction: savings per day</h3><span class="sum" id="pcChartSum"></span>
+  </section>
+
+  <section id="sec-savings" style="scroll-margin-top:70px" hidden>
+    <h2>Compaction savings <span class="hint">what Pauseless Compaction saved each day, after paying for its summaries and cache rewrites</span></h2>
+      <div class="pc-chart" id="pcChartBox" style="margin:0;border:0">
+        <div class="pc-chart-head"><h3>Savings per day</h3><span class="sum" id="pcChartSum"></span>
           <span class="legend"><span><i style="background:var(--pcs-saved)"></i>Savings from Pauseless Compaction</span><span><i style="background:var(--pcs-cost)"></i>Cost of Pauseless Compaction</span></span></div>
         <div class="chart-wrap" id="pcChartWrap"><div id="pcChart"></div><div class="chart-tip" id="pcTip"></div></div>
         <details><summary>Show as a table</summary><div id="pcChartTable"></div></details>
@@ -830,7 +835,7 @@
     <h2><span class="pc-mark">&#9889;</span> PAUSELESS COMPACTION <span class="applies" data-where="config.json" data-when="now"></span> <span class="hint">Compact Sessions without the Pause: the summary is written in the background, and you never wait</span></h2>
     <div class="body">
       <div class="pc-stats" id="pcStats"></div>
-      <div class="hint" style="margin-top:10px">Savings per day are charted under <a href="#" data-target="sec-analytics">Analytics</a>.</div>
+      <div class="hint" style="margin-top:10px">Savings per day are charted under <a href="#" data-target="sec-savings">Compaction savings</a>.</div>
       <div class="row" style="align-items:flex-start;margin:16px 0 12px">
         <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
           <input type="checkbox" id="compactOn" style="width:auto;margin:0;transform:scale(1.25)">
@@ -3599,6 +3604,8 @@ function drawSavingsChart() {
   const days = savingsSeries(lastSavings);
   const any = days.some(d => d.up || d.down);
   box.hidden = !any;
+  $("sec-savings").hidden = !any;
+  for (const a of document.querySelectorAll('.navlink[data-target="sec-savings"]')) a.hidden = !any;
   tip.style.opacity = "0";
   if (!any) { host.innerHTML = ""; return; }
   const total = days.reduce((t, d) => t + d.net, 0);
