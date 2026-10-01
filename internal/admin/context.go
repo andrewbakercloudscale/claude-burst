@@ -46,6 +46,9 @@ type contextInfo struct {
 	CompactionStats metrics.CompactionStats `json:"compaction_stats"`
 	// PromptNotice is whether the prompt notice hook is in settings.json.
 	PromptNotice string `json:"prompt_notice"`
+	// MidTurnOff: the API refused a mid-turn swap, so they are off until
+	// the compaction settings are saved again.
+	MidTurnOff bool `json:"mid_turn_off,omitempty"`
 }
 
 type verdict struct {
@@ -70,6 +73,7 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.Compaction = cfg.PrimaryCompaction
 	ci.Sessions = s.gateway.CompactionSessions()
 	ci.PromptNotice = promptNoticeState()
+	ci.MidTurnOff = s.gateway.MidTurnOff()
 	ci.CompactionStats, _ = metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
 	ci.Verdict = pruneVerdict(ci)
 	ci.CacheVerdict = cacheVerdict(eff)
@@ -232,6 +236,9 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		state = fmt.Sprintf("compaction on: warn at %dk, compact at %dk, at most once per %d minutes per session", res.WarnAtTokens/1000, res.CompactAtTokens/1000, res.WindowMinutes)
 		if !req.NoPromptNotice {
 			state += ", shown under your prompt"
+		}
+		if req.MidTurn {
+			state += ", swapped in mid-turn (experimental)"
 		}
 	}
 	if err := SyncPromptNoticeHook(cfg); err != nil {

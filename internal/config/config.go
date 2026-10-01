@@ -70,6 +70,13 @@ type CompactionConfig struct {
 	// NoPromptNotice turns off the lines Claude Code shows under a prompt
 	// when a compaction starts, is ready, swaps in or fails. On by default.
 	NoPromptNotice bool `json:"no_prompt_notice,omitempty"`
+	// MidTurn swaps a ready summary in on the next request, even inside a
+	// turn, instead of waiting for the next plain prompt. The turn in
+	// progress keeps its thinking; only what came before it is summarised.
+	// Off by default: whether the API accepts a running turn's thinking
+	// after the history before it has changed is not documented, so the
+	// gateway undoes the swap and resends on a 400 (see compact_run.go).
+	MidTurn bool `json:"mid_turn,omitempty"`
 }
 
 const (

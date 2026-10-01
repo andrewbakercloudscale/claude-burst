@@ -137,6 +137,10 @@ type fakeAnthropic struct {
 	bodies    []string
 	summaries int
 	context   int64
+	// rejectMidTurn answers 400 to a summarised request that still carries
+	// the running turn's thinking (signature s2): an API that refuses a
+	// mid-turn swap.
+	rejectMidTurn bool
 }
 
 func (f *fakeAnthropic) handler(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +153,14 @@ func (f *fakeAnthropic) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := f.context
 	n := f.summaries
+	reject := f.rejectMidTurn && !isSummary && strings.Contains(string(b), "THE GIST") && strings.Contains(string(b), `"signature":"s2"`)
 	f.mu.Unlock()
+	if reject {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: invalid thinking signature"}}`)
+		return
+	}
 	w.Header().Set("content-type", "text/event-stream")
 	text := "ok"
 	if isSummary {
@@ -798,5 +809,120 @@ func TestCompactAsyncMarkerInAToolResultIsIgnored(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if f.summaryCount() != 0 {
 		t.Fatal("a tool result mentioning the marker must not start a summary")
+	}
+}
+
+// sendCode is send, returning the status Claude Code would see.
+func sendCode(t *testing.T, s *Server, sid string, history []json.RawMessage) int {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "stream": true, "max_tokens": 100,
+		"system": "sys", "tools": []any{}, "messages": history})
+	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", bytes.NewReader(b))
+	req.Header.Set("x-claude-code-session-id", sid)
+	req.Header.Set("authorization", "Bearer oauth")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	return rec.Code
+}
+
+// readyMidTurn brings session S to a ready summary of messages [0, 4) while
+// the turn started by the "second task" prompt (message 4) is still running.
+func readyMidTurn(t *testing.T, f *fakeAnthropic, midTurn bool) (*Server, []json.RawMessage) {
+	t.Helper()
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, MidTurn: midTurn})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	return s, all
+}
+
+// Off (the default), a ready summary still waits for the next plain prompt.
+func TestMidTurnSwapIsOffByDefault(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s, all := readyMidTurn(t, f, false)
+	send(t, s, "S", all[:8])
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("with mid_turn off, a request inside a turn must not swap")
+	}
+}
+
+// On, the next request swaps even inside a turn: everything before the
+// running turn's prompt is summarised, and the running turn goes exactly
+// as Claude Code sent it, thinking and all.
+func TestMidTurnSwapKeepsTheRunningTurn(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s, all := readyMidTurn(t, f, true)
+	if code := sendCode(t, s, "S", all[:8]); code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	got := f.last()
+	if !strings.Contains(got, "THE GIST OF THE FIRST TASK") {
+		t.Fatalf("mid-turn request must carry the summary:\n%s", got)
+	}
+	if strings.Contains(got, "old file") || strings.Contains(got, `"signature":"s1"`) {
+		t.Fatalf("the summarised turn must be gone:\n%s", got)
+	}
+	for _, want := range []string{"second task", `"signature":"s2"`, `"signature":"s3"`, "done with second"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the running turn must go as sent, missing %s:\n%s", want, got)
+		}
+	}
+	s.compaction.mu.Lock()
+	st := stateFor(s, "S")
+	proven, off := !st.midTurnUnproven, s.compaction.midTurnOff
+	s.compaction.mu.Unlock()
+	if !proven || off {
+		t.Fatalf("a normal answer proves the swap: proven=%v off=%v", proven, off)
+	}
+	// The next prompt keeps the swap; the turn that was running keeps its thinking.
+	send(t, s, "S", all[:9])
+	if got := f.last(); !strings.Contains(got, "THE GIST") || !strings.Contains(got, `"signature":"s2"`) {
+		t.Fatalf("after the turn, the swap stays and so does that turn's thinking:\n%s", got)
+	}
+}
+
+// THE RISK, contained: if the API refuses the swapped request, Claude Code
+// never sees the 400. The request is resent as it would have been without
+// the swap, the summary goes back to waiting for the next plain prompt, and
+// mid-turn swaps stop until the settings are saved again.
+func TestMidTurnSwapRejectedIsUndoneAndResent(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000, rejectMidTurn: true}
+	s, all := readyMidTurn(t, f, true)
+	if code := sendCode(t, s, "S", all[:8]); code != http.StatusOK {
+		t.Fatalf("Claude Code must not see the rejection, got status %d", code)
+	}
+	if got := f.last(); strings.Contains(got, "THE GIST") || !strings.Contains(got, "old file") {
+		t.Fatalf("the resend must be the request without the swap:\n%s", got)
+	}
+	s.compaction.mu.Lock()
+	st := stateFor(s, "S")
+	waiting, off, notes := st.next != "" && st.summary == "", s.compaction.midTurnOff, strings.Join(st.notices, "\n")
+	s.compaction.mu.Unlock()
+	if !waiting || !off {
+		t.Fatalf("summary must wait again and mid-turn go off: waiting=%v off=%v", waiting, off)
+	}
+	if !strings.Contains(notes, "refused the summary mid-turn") {
+		t.Fatalf("the user is told, got:\n%s", notes)
+	}
+	// Later requests in the turn are not swapped again.
+	send(t, s, "S", all[:8])
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("after a rejection no more mid-turn swaps")
+	}
+	// The next plain prompt swaps the ordinary way: thinking before it stripped.
+	if code := sendCode(t, s, "S", all[:9]); code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	if got := f.last(); !strings.Contains(got, "THE GIST") || strings.Contains(got, `"signature":"s2"`) {
+		t.Fatalf("the next prompt swaps as before mid-turn existed:\n%s", got)
+	}
+	// Saving the settings again re-arms it.
+	s.SetCompaction(config.CompactionConfig{Enabled: true, MidTurn: true})
+	s.compaction.mu.Lock()
+	off = s.compaction.midTurnOff
+	s.compaction.mu.Unlock()
+	if off {
+		t.Fatal("saving the settings must re-arm mid-turn swaps")
 	}
 }
