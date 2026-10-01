@@ -1200,7 +1200,8 @@
       <div class="hint" style="margin-bottom:6px">Counted from coordination's log. <b>Coordinated</b> is every time two sessions met over the same file or repository and coordination stepped in: a shared edit, a blocked action, a file taken over or handed on, or a session asking for a file. If it stays at 0, no two sessions have touched the same work yet, so there has been nothing to coordinate.</div>
       <div class="tiles" id="coTiles"></div>
       <div class="scroll" id="coPerDay" style="margin-top:10px"></div>
-      <h3 style="margin:18px 0 6px;font-size:13px">Issues <span class="hint" style="font-weight:400" id="coIssueSummary"></span></h3>
+      <h3 style="margin:18px 0 6px;font-size:13px;display:flex;align-items:center;gap:10px">Issues <span class="hint" style="font-weight:400" id="coIssueSummary"></span>
+        <button id="coClearErrors" hidden title="Mark every hook error so far as dealt with. They stay in the log and in the counts.">Clear hook errors</button></h3>
       <div class="hint" style="margin-bottom:6px">Things that went wrong in the window above. <b>Hook error</b>: coordination failed on one tool call, and that call went ahead uncoordinated (counts as open for 24 hours). <b>Stopped with uncommitted work</b>: a session ended its turn with files it masters still uncommitted; it is resolved once each file is committed or handed to another session.</div>
       <div id="coIssues"></div>
       <h3 style="margin:18px 0 6px;font-size:13px">Who is editing what <span class="hint" style="font-weight:400" id="coSummary"></span></h3>
@@ -4338,7 +4339,9 @@ function coTilesHTML(m) {
   const win = m.days === 1 ? "today" : `${m.days} days`;
   return coTileDefs.map(t => {
     const n = coSum(m.totals, t.keys);
-    const cls = n && t.bad ? "bad" : n && t.warn ? "warn" : "";
+    // Hook errors turn red only while one is open: cleared ones stay counted.
+    const openErr = (m.issues || []).some(x => x.kind === "error" && !x.resolved);
+    const cls = n && t.bad && openErr ? "bad" : n && t.warn ? "warn" : "";
     return `<div class="tile"><div class="k">${esc(t.k)}</div><div class="v"${cls ? ` style="color:var(--${cls})"` : ""}>${n}</div><div class="h">${esc(t.h)}; ${coSum(m.all_time, t.keys)} all time</div></div>`;
   }).join("");
 }
@@ -4388,6 +4391,7 @@ async function loadCoord() {
   $("coPerDay").innerHTML = coPerDayHTML(m);
   $("coIssues").innerHTML = coIssuesHTML(m);
   $("coIssueSummary").textContent = m.unresolved ? `${m.unresolved} open` : (m.issues || []).length ? "all resolved" : "";
+  $("coClearErrors").hidden = !(m.issues || []).some(x => x.kind === "error" && !x.resolved);
   $("coActivity").innerHTML = (d.activity || []).length ? d.activity.map(coActivityLine).join("") : '<div class="empty">Nothing yet.</div>';
   // A refresh must not throw away a message being typed.
   const typing = document.activeElement && document.activeElement.closest("#coSessions tr[id^=coMsg-]");
@@ -4442,6 +4446,7 @@ document.addEventListener("click", e => {
     coAct({session: send.dataset.coSend, message: input.value}, send).then(() => { input.value = ""; });
   }
 });
+$("coClearErrors").onclick = () => coAct({clear_errors: true}, $("coClearErrors"));
 $("coSave").onclick = async () => {
   try {
     const r = await post("/api/coordination-save", {enabled: $("coOn").checked,

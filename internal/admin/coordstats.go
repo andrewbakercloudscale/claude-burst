@@ -37,6 +37,10 @@ var (
 	coordPassRe    = regexp.MustCompile(`^master of (.*) (?:passes from|taken over by) `)
 )
 
+// coordClearedLine is logged by the dashboard's Clear button: every hook
+// error before it counts as dealt with.
+const coordClearedLine = "hook errors cleared from the dashboard"
+
 type coordDay struct {
 	Day    string         `json:"day"` // YYYY-MM-DD, local
 	Counts map[string]int `json:"counts"`
@@ -109,6 +113,14 @@ func coordStats(path string, days int, now time.Time) coordMetrics {
 		if m.Since == "" {
 			m.Since = at
 		}
+		if msg == coordClearedLine {
+			for _, is := range all {
+				if is.Kind == "error" {
+					is.Resolved = true
+				}
+			}
+			continue
+		}
 		t, err := time.ParseInLocation("2006-01-02 15:04:05", at, now.Location())
 		if err != nil {
 			continue
@@ -159,8 +171,12 @@ func coordStats(path string, days int, now time.Time) coordMetrics {
 		if err != nil || t.Before(start) {
 			continue
 		}
-		// An error has nothing to resolve it, so it counts as open for a
-		// day: long enough to be seen, short enough not to stick.
+		if is.Kind == "error" && is.Resolved {
+			continue // cleared: off the list, still in the counts
+		}
+		// An error is resolved only by the Clear button, so it also stops
+		// counting as open after a day: long enough to be seen, short
+		// enough not to stick.
 		if !is.Resolved && (is.Kind != "error" || now.Sub(t) < 24*time.Hour) {
 			m.Unresolved++
 		}

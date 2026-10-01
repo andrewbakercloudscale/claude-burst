@@ -106,3 +106,33 @@ out({Tiles: coTilesHTML(m), PerDay: coPerDayHTML(m), Today: coPerDayHTML({...m, 
 		t.Errorf("no issues: %s", got.None)
 	}
 }
+
+// The Clear button takes the errors so far off the Issues list; they stay
+// counted, and a later error shows again.
+func TestCoordStatsClearedErrors(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "coord.log")
+	os.WriteFile(p, []byte(`2026-10-01 18:18:20 ERROR in prompt: state lock: resource temporarily unavailable
+2026-10-01 18:19:36 ERROR in post-tool: state lock: resource temporarily unavailable
+2026-10-01 18:40:00 `+coordClearedLine+`
+2026-10-01 19:00:00 ERROR in stop: something new
+`), 0o644)
+	m := coordStats(p, 1, time.Date(2026, 10, 1, 20, 0, 0, 0, time.Local))
+	if m.Totals["errors"] != 3 || len(m.Issues) != 1 || m.Issues[0].Text != "ERROR in stop: something new" || m.Unresolved != 1 {
+		t.Fatalf("totals %v, issues %+v, open %d", m.Totals, m.Issues, m.Unresolved)
+	}
+}
+
+func TestClearErrorsAction(t *testing.T) {
+	s := newTestServer(t)
+	writeConfig(t, os.Getenv("HOME"))
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_BURST_COORD_DIR", dir)
+	rr := mutate(t, s, "/api/coordination-act", `{"clear_errors":true}`)
+	if rr.Code != 200 {
+		t.Fatalf("%d %s", rr.Code, rr.Body)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "coord.log"))
+	if !strings.Contains(string(b), coordClearedLine) {
+		t.Fatalf("log: %s", b)
+	}
+}
