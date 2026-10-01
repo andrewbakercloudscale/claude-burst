@@ -1202,7 +1202,7 @@
       <div class="scroll" id="coPerDay" style="margin-top:10px"></div>
       <h3 style="margin:18px 0 6px;font-size:13px;display:flex;align-items:center;gap:10px">Issues <span class="hint" style="font-weight:400" id="coIssueSummary"></span>
         <button id="coClearErrors" hidden title="Mark every hook error so far as dealt with. They stay in the log and in the counts.">Clear hook errors</button></h3>
-      <div class="hint" style="margin-bottom:6px">Things that went wrong in the window above. <b>Hook error</b>: coordination failed on one tool call, and that call went ahead uncoordinated (counts as open for 24 hours). <b>Stopped with uncommitted work</b>: a session ended its turn with files it masters still uncommitted; it is resolved once each file is committed or handed to another session.</div>
+      <div class="hint" style="margin-bottom:6px">Things that went wrong in the window above. <b>Hook error</b>: coordination failed on one tool call, and that call went ahead uncoordinated (open for 24 hours, then resolved; Clear takes them off the list sooner). <b>Stopped with uncommitted work</b>: a session ended its turn with files it masters still uncommitted; it is resolved once each file is committed or handed to another session.</div>
       <div id="coIssues"></div>
       <h3 style="margin:18px 0 6px;font-size:13px">Who is editing what <span class="hint" style="font-weight:400" id="coSummary"></span></h3>
       <div class="scroll" id="coFiles"></div>

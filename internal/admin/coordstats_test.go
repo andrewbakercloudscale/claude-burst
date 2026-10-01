@@ -54,9 +54,10 @@ not a log line
 	if today.Unresolved != 2 {
 		t.Fatalf("unresolved: %d", today.Unresolved)
 	}
-	// A day later the error no longer counts as open.
-	if n := coordStats(p, 7, now.Add(24*time.Hour)).Unresolved; n != 1 {
-		t.Fatalf("unresolved next day: %d", n)
+	// A day later the error no longer counts as open, and says resolved.
+	next := coordStats(p, 7, now.Add(24*time.Hour))
+	if next.Unresolved != 1 || next.Issues[0].Kind != "error" || !next.Issues[0].Resolved {
+		t.Fatalf("next day: open %d, %+v", next.Unresolved, next.Issues)
 	}
 }
 
