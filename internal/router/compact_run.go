@@ -70,6 +70,17 @@ type compactState struct {
 	waitShown   bool // told mid-turn that it waits for the next prompt
 	swappedFrom int64
 	swappedMsgs int
+	// A mid-turn swap the API has not yet answered with a success. Memory
+	// only: undo holds what was in force before it, to put back on a 400.
+	midTurnUnproven bool
+	undo            *swapUndo
+}
+
+// swapUndo is the summary state from before a mid-turn swap.
+type swapUndo struct {
+	summary, hash string
+	p0, swapAt    int
+	marks         []string
 }
 
 // maxNotices bounds a session's unshown notices, for a session whose
@@ -91,6 +102,11 @@ type compactor struct {
 	path     string                   // where sessions survive a restart; "" = memory only
 	logger   *log.Logger
 	running  sync.WaitGroup // summary calls in flight
+	// midTurnOff: the API rejected a mid-turn swap, so none are tried again
+	// until the settings are saved again (SetCompaction). One rejection is
+	// taken as the API's answer: retrying each turn would cost a wasted
+	// round trip every time to learn the same thing.
+	midTurnOff bool
 }
 
 func newCompactor(c config.CompactionConfig, path string, logger *log.Logger) *compactor {
@@ -200,6 +216,11 @@ type compactInfo struct {
 	applied      bool
 	removedMsgs  int
 	removedBytes int64
+	// midTurn: this request carries a mid-turn swap the API has not yet
+	// accepted. original is what Claude Code sent, to rebuild the request
+	// without the swap if the API rejects it.
+	midTurn  bool
+	original []byte
 }
 
 type compactInfoKey struct{}
@@ -213,7 +234,44 @@ func compactInfoFrom(ctx context.Context) compactInfo {
 func (s *Server) SetCompaction(c config.CompactionConfig) {
 	s.compaction.mu.Lock()
 	s.compaction.cfg = c.Resolved()
+	s.compaction.midTurnOff = false
 	s.compaction.mu.Unlock()
+}
+
+// MidTurnOff reports whether the API refused a mid-turn swap since the
+// compaction settings were last applied.
+func (s *Server) MidTurnOff() bool {
+	s.compaction.mu.Lock()
+	defer s.compaction.mu.Unlock()
+	return s.compaction.midTurnOff
+}
+
+// rejectMidTurn undoes the unproven mid-turn swap the request in carried,
+// after the API answered it with a 400: the summary goes back to waiting
+// for the next plain prompt, whatever was in force before is restored, and
+// no more mid-turn swaps are tried. It reports whether there was one.
+func (s *Server) rejectMidTurn(in *http.Request, reason string) bool {
+	ci := compactInfoFrom(in.Context())
+	if !ci.midTurn {
+		return false
+	}
+	s.compaction.mu.Lock()
+	defer s.compaction.mu.Unlock()
+	st := s.compaction.sessions[ci.key]
+	s.compaction.midTurnOff = true
+	if st == nil || !st.midTurnUnproven || st.undo == nil {
+		return false
+	}
+	st.next, st.nextP0, st.nextHash, st.nextMarks = st.summary, st.p0, st.hash, st.marks
+	u := st.undo
+	st.summary, st.hash, st.p0, st.swapAt, st.marks = u.summary, u.hash, u.p0, u.swapAt, u.marks
+	st.undo, st.midTurnUnproven = nil, false
+	st.swappedFrom, st.swappedMsgs = 0, 0
+	s.logger.Printf("req=%s compaction mid-turn REJECTED session=%s: the API answered 400 (%s); swap undone, request resent without it, the summary waits for the next plain prompt, and mid-turn swaps are off until the compaction settings are saved again",
+		requestIDFrom(in.Context()), ci.key, reason)
+	st.notice("the API refused the summary mid-turn, so this turn carries on unchanged; the summary swaps in with your next prompt instead")
+	s.compaction.save()
+	return true
 }
 
 // compactionReady reports whether a summary is waiting to be applied, or
@@ -240,6 +298,10 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 	s.compaction.mu.Lock()
 	st := s.compaction.state(ci.key)
 	st.lastContext = ctxTokens
+	if ci.midTurn && st.midTurnUnproven {
+		st.midTurnUnproven, st.undo = false, nil
+		s.logger.Printf("req=%s compaction mid-turn accepted session=%s: the API answered the swapped request normally", requestIDFrom(in.Context()), ci.key)
+	}
 	if st.swappedFrom > 0 && ci.applied {
 		cut := 0
 		if st.swappedFrom > 0 && ctxTokens < st.swappedFrom {
@@ -381,13 +443,39 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		s.logger.Printf("req=%s compaction waiting session=%s: summary ready, request ends in %s, applies at the next plain prompt%s",
 			rid, key, lastMessageShape(msgs), kept)
 	}
-	if st.next != "" && fresh {
-		st.summary, st.p0, st.hash, st.swapAt = st.next, st.nextP0, st.nextHash, len(msgs)
+	// Mid-turn: swap at the prompt that started the running turn. Its own
+	// messages keep their thinking (they are past swapAt); everything before
+	// it is summarised or loses thinking, exactly as at a plain prompt.
+	turnStart := 0
+	if len(bounds) > 0 {
+		turnStart = bounds[len(bounds)-1]
+	}
+	midTurn := !fresh && st.next != "" && cfg.MidTurn && !s.compaction.midTurnOff &&
+		turnStart > 0 && turnStart >= st.nextP0
+	if st.next != "" && (fresh || midTurn) {
+		if midTurn {
+			st.undo = &swapUndo{summary: st.summary, hash: st.hash, p0: st.p0, swapAt: st.swapAt, marks: st.marks}
+			st.midTurnUnproven = true
+		} else {
+			st.undo, st.midTurnUnproven = nil, false
+		}
+		swapAt := len(msgs)
+		if midTurn {
+			swapAt = turnStart
+		}
+		st.summary, st.p0, st.hash, st.swapAt = st.next, st.nextP0, st.nextHash, swapAt
 		st.marks, st.nextMarks = st.nextMarks, nil
 		st.next, st.nextP0, st.nextHash = "", 0, ""
-		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary", rid, key, st.p0)
+		where := ""
+		if midTurn {
+			where = fmt.Sprintf(" mid-turn (the running turn, from message %d, kept as it was)", turnStart)
+		}
+		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary%s", rid, key, st.p0, where)
 		st.swappedFrom, st.swappedMsgs, st.readyShown, st.waitShown = st.lastContext, st.p0, false, false
 		dirty = true
+	}
+	if st.midTurnUnproven {
+		ci.midTurn, ci.original = true, body
 	}
 	if st.summary == "" || st.swapAt == 0 {
 		if dirty {
@@ -658,7 +746,7 @@ func (s *Server) PromptNotices(sid string, midTurn bool) []string {
 		st := s.compaction.sessions[k]
 		out = append(out, st.notices...)
 		st.notices = nil
-		if st.next != "" && midTurn {
+		if st.next != "" && midTurn && !(cfg.MidTurn && !s.compaction.midTurnOff) {
 			if !st.waitShown {
 				st.waitShown = true
 				out = append(out, fmt.Sprintf("\u26a1 Claude Burst, pauseless compaction: the summary is ready (%d earlier messages, context %dk now). It swaps in when this turn finishes and you send your next prompt; nothing to do meanwhile", st.nextP0, st.lastContext/1000))
@@ -722,6 +810,8 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			state = "summary ready, applies at next prompt"
 		case st.lastContext >= cfg.CompactAtTokens && !st.startedAt.IsZero() && time.Since(st.startedAt) < time.Duration(cfg.WindowMinutes)*time.Minute:
 			state = "over threshold, next compaction after " + st.startedAt.Add(time.Duration(cfg.WindowMinutes)*time.Minute).Format("15:04")
+		case st.lastContext >= cfg.CompactAtTokens && cfg.MidTurn && !s.compaction.midTurnOff:
+			state = "over threshold, compacts at the next request"
 		case st.lastContext >= cfg.CompactAtTokens:
 			state = "over threshold, compacts at the next prompt"
 		case st.lastContext >= cfg.WarnAtTokens:

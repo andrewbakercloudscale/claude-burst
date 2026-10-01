@@ -1165,6 +1165,19 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	_ = resp.Body.Close()
 
+	// A 400 on a request carrying an unproven mid-turn compaction swap: undo
+	// the swap and send what it would have been without it. Nothing has been
+	// written to the client yet, so Claude Code sees only a slower reply,
+	// never the error. Before the failover detector, so the swap's 400 is
+	// never counted against the primary.
+	if resp.StatusCode == http.StatusBadRequest && slot == "primary" && s.rejectMidTurn(in, errorExcerpt(errBody)) {
+		orig := compactInfoFrom(in.Context()).original
+		resent, in2 := s.applyCompaction(in, orig)
+		s.logger.Printf("req=%s retry route=%s reason=%q -> resending without the mid-turn compaction swap", rid, p.Name(), "mid-turn swap rejected")
+		s.forward(w, in2, resent, slot, p, fd, allowFailover, note, ladder)
+		return
+	}
+
 	if allowFailover {
 		if d := fd.OnResponse(resp.StatusCode, resp.Header, errBody); d.Failover {
 			s.activateOverflow(model, d.ResetAt, d.Claim, d.Reason)
