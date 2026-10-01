@@ -108,19 +108,29 @@ func (r *repoResolver) repoOf(dir string) (name, root string) {
 }
 
 // repoSpend groups per-session spend by repository, largest spend first.
-func (r *repoResolver) repoSpend(sessions map[string]metrics.SessionUse) []metrics.RepoUse {
+// saved is compaction's net saving per session id over the same window.
+func (r *repoResolver) repoSpend(sessions map[string]metrics.SessionUse, saved map[string]float64) []metrics.RepoUse {
 	by := map[string]*metrics.RepoUse{}
-	for sid, su := range sessions {
+	row := func(sid string) *metrics.RepoUse {
 		name, root := r.resolve(sid)
 		u := by[name]
 		if u == nil {
 			u = &metrics.RepoUse{Repo: name, Path: root}
 			by[name] = u
 		}
+		return u
+	}
+	for sid, su := range sessions {
+		u := row(sid)
 		u.Sessions++
 		u.Requests += su.Requests
 		u.USD += su.USD
 		u.Unpriced = u.Unpriced || su.Unpriced
+	}
+	for sid, usd := range saved {
+		u := row(sid)
+		u.SavedUSD += usd
+		u.Compacted = true
 	}
 	out := make([]metrics.RepoUse, 0, len(by))
 	for _, u := range by {

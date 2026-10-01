@@ -36,7 +36,7 @@ func TestRepoSpendGroupsSessionsByRepository(t *testing.T) {
 	got := r.repoSpend(map[string]metrics.SessionUse{
 		"a": {Requests: 2, USD: 1}, "b": {Requests: 3, USD: 4},
 		"c": {Requests: 1, USD: 0.5}, "gone": {Requests: 1, USD: 0.25},
-	})
+	}, map[string]float64{"a": 3, "b": -0.5})
 	want := []struct {
 		repo     string
 		sessions int
@@ -52,5 +52,13 @@ func TestRepoSpendGroupsSessionsByRepository(t *testing.T) {
 	}
 	if got[0].Path != repo {
 		t.Fatalf("repo path: %q", got[0].Path)
+	}
+	// Compaction's saving adds up per repository, net (b's is negative),
+	// and a repository nothing was compacted in says so.
+	if !got[0].Compacted || got[0].SavedUSD != 2.5 {
+		t.Fatalf("proj saved: %+v", got[0])
+	}
+	if got[1].Compacted || got[1].SavedUSD != 0 {
+		t.Fatalf("nothing compacted in %s: %+v", got[1].Repo, got[1])
 	}
 }
