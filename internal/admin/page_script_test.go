@@ -268,11 +268,11 @@ out(savingsSeries([
 	}
 }
 
-// The chart is on the page, hidden until there is something to draw, with
-// a legend and a table view.
+// The chart is on the page in its own section, hidden until there is
+// something to draw, with a legend and a table view.
 func TestSavingsChartIsOnThePage(t *testing.T) {
 	src := string(indexHTML)
-	for _, want := range []string{`id="pcChartBox" hidden`, "Savings per day", "Savings from Pauseless Compaction", "Cost of Pauseless Compaction", `id="pcChartTable"`, "drawSavingsChart();"} {
+	for _, want := range []string{`id="sec-savings" style="scroll-margin-top:70px" hidden`, `data-target="sec-savings"`, "Savings per day", "Savings from Pauseless Compaction", "Cost of Pauseless Compaction", `id="pcChartTable"`, "drawSavingsChart();"} {
 		if !strings.Contains(src, want) {
 			t.Errorf("missing %q", want)
 		}
