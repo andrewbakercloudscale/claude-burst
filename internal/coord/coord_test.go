@@ -3,10 +3,12 @@ package coord
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -715,5 +717,47 @@ func TestMastersAreAskedToCommitOthersWorkFirst(t *testing.T) {
 	}
 	if _, aOut := r.bash("A", "true"); !strings.Contains(aOut, "deploy-wordpress.sh") || !strings.Contains(aOut, "PRIORITY") {
 		t.Fatalf("A is asked to commit for B's deploy:\n%s", aOut)
+	}
+}
+
+// Many sessions and subagents firing hooks at once must not starve each
+// other of the state lock. Git is asked about tracked files before the
+// lock is taken, so a hook holds it for milliseconds, not one git process
+// per tracked file (2026-10-01 18:18: 12 hooks gave up in two minutes).
+func TestBusyHooksDoNotStarveTheLock(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	for i := 0; i < 20; i++ {
+		f := fmt.Sprintf("f%02d.go", i)
+		os.WriteFile(filepath.Join(r.repo, f), []byte("package x\n"), 0o644)
+		r.git("add", f)
+	}
+	r.git("commit", "-qm", "files")
+	for i := 0; i < 20; i++ {
+		r.edit("A", fmt.Sprintf("f%02d.go", i), "package x", "package x // A")
+	}
+	if st := r.c.prewarm(); len(st) != 20 || st[filepath.Join(r.repo, "f07.go")] != fileDirty {
+		t.Fatalf("prewarm: %d files, f07 %v", len(st), st[filepath.Join(r.repo, "f07.go")])
+	}
+	in, _ := json.Marshal(map[string]any{"session_id": "A", "cwd": r.repo, "tool_name": "Bash", "tool_input": map[string]any{"command": "git commit -m x"}})
+	var wg sync.WaitGroup
+	errs := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var out bytes.Buffer
+			if err := r.c.Hook("post-tool", bytes.NewReader(in), &out); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("a hook gave up: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.c.Dir, "coord.log")); strings.Contains(string(b), "slow: held the state lock") {
+		t.Errorf("a hook held the lock over a second:\n%s", b)
 	}
 }
