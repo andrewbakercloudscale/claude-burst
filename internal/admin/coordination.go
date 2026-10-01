@@ -142,6 +142,9 @@ func (s *Server) handleCoordinationAct(w http.ResponseWriter, r *http.Request) {
 		Release string `json:"release"`
 		Session string `json:"session"`
 		Message string `json:"message"`
+		// ClearErrors marks every hook error so far as dealt with: they
+		// stay in the log and the counts, and stop showing as open.
+		ClearErrors bool `json:"clear_errors"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request body", http.StatusBadRequest)
@@ -158,6 +161,9 @@ func (s *Server) handleCoordinationAct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case req.ClearErrors:
+		c.Log("%s", coordClearedLine)
+		writeJSON(w, map[string]string{"ok": "hook errors so far marked as cleared; they stay in the log and the counts"})
 	case req.Release != "":
 		if err := c.Release(req.Release, ""); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
