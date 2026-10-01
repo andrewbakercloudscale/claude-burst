@@ -506,7 +506,7 @@
      every line. */
   .mrow { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 2fr) var(--amt-w, 200px); gap: 16px;
           align-items: center; padding: 7px 16px; font-size: 12.5px; }
-  #repoSplit { --amt-w: 270px; }
+  #repoSplit { --amt-w: 360px; }
   .mrow.mhead { background: var(--thead-bg); color: var(--text) !important;
                 border-top: 0 !important; border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
   .mrow.mhead .amt { color: var(--text); font: inherit; }
@@ -825,7 +825,7 @@
   </section>
 
   <section id="sec-repos" style="scroll-margin-top:70px">
-    <h2>Spend by repository <span class="hint">each session's spend, under the repository it ran in</span></h2>
+    <h2>Spend by repository <span class="hint">each session's spend, under the repository it ran in, and what Pauseless Compaction saved it</span></h2>
     <div id="repoSplit" style="padding-bottom:6px"></div>
   </section>
 
@@ -3784,12 +3784,13 @@ function renderRepoSplit(h) {
   const total = repos.reduce((t, r) => t + r.usd, 0);
   $("repoSplit").innerHTML =
     `<div class="mrow mhead" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700">
-       <span>Repository</span><span>Share of spend</span><span class="amt">Sessions · requests · spend</span></div>` +
+       <span>Repository</span><span>Share of spend</span><span class="amt">Sessions · requests · spend · compaction saved</span></div>` +
     repos.map(r => `<div class="mrow">
       <span class="mono" title="${esc(r.path || r.repo)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.repo)}</span>
       <span class="mbar"><span style="width:${(r.usd / top * 100).toFixed(1)}%;background:var(--s-primary)"></span></span>
       <span class="amt">${esc(num(r.sessions))} · ${esc(num(r.requests))} · ${esc(money(r.usd))}${r.unpriced ? " +unpriced" : ""}${
-        total ? ` <span style="color:var(--faint)">(${Math.round(100 * r.usd / total)}%)</span>` : ""}</span>
+        total ? ` <span style="color:var(--faint)">(${Math.round(100 * r.usd / total)}%)</span>` : ""} · ${
+        r.compacted ? `<span style="color:${r.saved_usd >= 0 ? "var(--pc-a)" : "var(--bad)"};font-weight:600" title="Pauseless Compaction's saving on this repository's sessions over the same days, after paying for its summaries and cache rewrites">${esc(signedUSD(r.saved_usd))}</span>` : `<span style="color:var(--faint)" title="No session in this repository was compacted in this window">–</span>`}</span>
     </div>`).join("");
 }
 

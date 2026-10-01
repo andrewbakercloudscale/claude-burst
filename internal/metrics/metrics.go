@@ -360,6 +360,11 @@ type RepoUse struct {
 	Requests int     `json:"requests"`
 	USD      float64 `json:"usd"`
 	Unpriced bool    `json:"unpriced,omitempty"`
+	// SavedUSD is what Pauseless Compaction saved the repository's sessions
+	// over the same window, net of summaries and cache rewrites (it can be
+	// negative), and Compacted whether any of them was compacted at all.
+	SavedUSD  float64 `json:"saved_usd,omitempty"`
+	Compacted bool    `json:"compacted,omitempty"`
 }
 
 // ModelUse is one served model's share of the window. This is the answer to

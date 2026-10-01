@@ -577,7 +577,16 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.repos != nil {
-		h.Repos = s.repos.repoSpend(h.SessionUse)
+		// Compaction's saving per session over the same days as the spend,
+		// so the two columns describe one window.
+		y, m, d := time.Now().AddDate(0, 0, -(days - 1)).Date()
+		saved := map[string]float64{}
+		if cs, err := metrics.CompactionStatsSince(s.metricsPath, time.Date(y, m, d, 0, 0, 0, 0, time.Local)); err == nil {
+			for _, c := range cs.Sessions {
+				saved[c.Session] += c.NetUSD
+			}
+		}
+		h.Repos = s.repos.repoSpend(h.SessionUse, saved)
 	}
 	writeJSON(w, h)
 }
