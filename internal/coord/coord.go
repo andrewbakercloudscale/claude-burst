@@ -1188,20 +1188,44 @@ func sessionName(transcript, folder string) string {
 // words or more ("now?" and "retry" say nothing about the work), else the
 // latest at all, on one line and cut to 120 characters. Sessions named
 // after their folder all look alike in the dashboard and in their window
-// titles; what they were last asked to do tells them apart.
+// titles; what they were last asked to do tells them apart. It reads the
+// last megabyte, and the last 16 when that holds no long request: tool
+// output fills transcripts fast.
 func sessionTask(transcript string) string {
+	short := ""
+	for _, tail := range []int64{1 << 20, 16 << 20} {
+		long, last, whole := scanTask(transcript, tail)
+		if long != "" {
+			return long
+		}
+		if short == "" {
+			short = last
+		}
+		if whole {
+			break
+		}
+	}
+	return short
+}
+
+var imageRef = regexp.MustCompile(`\[Image[^\]]*\]`)
+
+// scanTask reads the last tail bytes of a transcript: the latest request
+// of five words or more, the latest of any length, and whether it read
+// the whole file.
+func scanTask(transcript string, tail int64) (long, last string, whole bool) {
 	f, err := os.Open(transcript)
 	if err != nil {
-		return ""
+		return "", "", true
 	}
 	defer f.Close()
-	const tail = 1 << 20
+	whole = true
 	if fi, err := f.Stat(); err == nil && fi.Size() > tail {
 		f.Seek(fi.Size()-tail, io.SeekStart)
+		whole = false
 	}
 	b, _ := io.ReadAll(f)
 	lines := bytes.Split(b, []byte("\n"))
-	short := ""
 	for i := len(lines) - 1; i >= 0; i-- {
 		if !bytes.Contains(lines[i], []byte(`"type":"user"`)) {
 			continue
@@ -1225,29 +1249,31 @@ func sessionTask(transcript string) string {
 			if json.Unmarshal(e.Message.Content, &parts) != nil {
 				continue
 			}
+			var texts []string
 			for _, p := range parts {
-				if p.Type == "text" && text == "" {
-					text = p.Text
+				if p.Type == "text" {
+					texts = append(texts, p.Text)
 				}
 			}
+			text = strings.Join(texts, " ")
 		}
 		// Tool results, slash-command echoes and hook or system notes are
-		// not something the user typed.
-		text = strings.Join(strings.Fields(text), " ")
-		if text == "" || strings.HasPrefix(text, "<") || strings.HasPrefix(text, "[Image") && len(text) < 16 {
+		// not something the user typed; image placeholders say nothing.
+		text = strings.Join(strings.Fields(imageRef.ReplaceAllString(text, " ")), " ")
+		if text == "" || strings.HasPrefix(text, "<") {
 			continue
 		}
 		if r := []rune(text); len(r) > 120 {
 			text = string(r[:119]) + "…"
 		}
 		if len(strings.Fields(text)) >= 5 {
-			return text
+			return text, last, whole
 		}
-		if short == "" {
-			short = text
+		if last == "" {
+			last = text
 		}
 	}
-	return short
+	return "", last, whole
 }
 
 // Status tidies the state (idle masters, dead sessions, committed files)

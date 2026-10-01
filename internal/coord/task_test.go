@@ -10,7 +10,7 @@ func TestSessionTaskIsTheLatestTypedRequest(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "t.jsonl")
 	os.WriteFile(p, []byte(`{"type":"user","message":{"role":"user","content":"fix the comment flood limits"}}
 {"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"now   add the\nCloudflare rule"},{"type":"image"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Image: source: /tmp/1.png]"},{"type":"text","text":"[Image #1] now   add the\nCloudflare rule"},{"type":"image"}]}}
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"x"}]}}
 {"type":"user","isMeta":true,"message":{"role":"user","content":"Caveat: meta"}}
 {"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"}}
