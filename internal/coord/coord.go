@@ -19,8 +19,12 @@
 //     commit that names a file someone else masters is refused.
 //   - A file stops being shared when it is committed, when its master's turn
 //     ends and git keeps no record of it (outside a repository, or ignored),
-//     or with `coord release`. A master that ends or goes idle hands the file
-//     to its most recently active contributor, or lets it go.
+//     or with `coord release`. A master that ends hands the file to the
+//     session that asked for it (`coord take`), else its most recently
+//     active contributor, or lets it go.
+//   - A master that has gone idle keeps its files until another session
+//     needs one: that session's Edit or Write takes it over on the spot, and
+//     the old master is told. `coord take` asks a busy master for a file.
 //   - A master sitting on others' uncommitted changes too long is nudged.
 //   - A turn cannot end with files its session masters uncommitted: the
 //     Stop hook holds the session, once per turn, to commit them (locally,
@@ -111,6 +115,7 @@ type shared struct {
 	Touched      float64            `json:"touched"`
 	Contributors map[string]float64 `json:"contributors,omitempty"`
 	Nudged       float64            `json:"nudged,omitempty"`
+	Wanted       string             `json:"wanted,omitempty"` // a session that asked to take it over
 }
 
 type message struct {
@@ -260,22 +265,63 @@ func (t *tx) fmtMsgs(msgs []message) string {
 }
 
 // valid returns the file's entry if its master still stands, handing it on
-// (or letting it go) when the master has ended or gone idle.
+// (or letting it go) when the master has ended. An idle master keeps the
+// file: it is taken over only when another session needs it (takeOver).
 func (t *tx) valid(path string) *shared {
 	f := t.d.Files[path]
 	if f == nil {
 		return nil
 	}
-	s := t.d.Sessions[f.Master]
-	if t.alive(f.Master) && t.now-max(f.Touched, lastActive(s)) <= t.Settings.MasterIdle.Seconds() {
+	if t.alive(f.Master) {
 		return f
 	}
-	t.handOn(path, "master idle or gone")
+	t.handOn(path, "its session ended")
 	return t.d.Files[path]
 }
 
-// handOn passes the file to its most recently active live contributor,
-// who is told it now commits the file, or lets it go when there is none.
+// idleFor is how long the file's master has done nothing, and whether that
+// is long enough for another session to take the file over.
+func (t *tx) idleFor(f *shared) (float64, bool) {
+	d := t.now - max(f.Touched, lastActive(t.d.Sessions[f.Master]))
+	return d, !t.alive(f.Master) || d > t.Settings.MasterIdle.Seconds()
+}
+
+// takeOver makes sid the master of path in place of an idle or ended one,
+// tells the old master, and returns what sid must be told. The old master's
+// uncommitted changes, if any, stay in the file: it becomes a contributor,
+// so it may not commit the file, and the new master commits them.
+func (t *tx) takeOver(path, sid string) (ctx string, dirty bool) {
+	f := t.d.Files[path]
+	old := f.Master
+	idle, _ := t.idleFor(f)
+	dirty = gitState(path) == fileDirty
+	delete(f.Contributors, sid)
+	if dirty {
+		if f.Contributors == nil {
+			f.Contributors = map[string]float64{}
+		}
+		f.Contributors[old] = t.now
+	}
+	f.Master, f.Since, f.Touched, f.Nudged, f.Wanted = sid, t.now, t.now, t.now, ""
+	was := fmt.Sprintf("%s was, and had been idle for %s", t.label(old), t.ago(t.now-idle))
+	if !t.alive(old) {
+		was = t.label(old) + " was, and has ended"
+	}
+	ctx = fmt.Sprintf("COORDINATION: you are now the master of %s (%s). Commit it when your work in it is done.", path, was)
+	if dirty {
+		ctx += fmt.Sprintf(" It holds uncommitted changes that are not yours: read `git diff -- %s` and keep them, they are committed with your work.", path)
+	}
+	if t.alive(old) {
+		t.notify(old, "system", fmt.Sprintf("You were idle for %s, so %s has taken over %s and now commits it. Do not git add or commit it yourself; any changes of yours still in it are committed by the new master. If you need to change it again, use Edit: it goes through and the new master is told.",
+			t.ago(t.now-idle), t.label(sid), path))
+	}
+	t.Log("master of %s taken over by %s from %s (idle %s)", path, short(sid), short(old), t.ago(t.now-idle))
+	return ctx, dirty
+}
+
+// handOn passes the file to the session that asked for it, else its most
+// recently active live contributor, who is told it now commits the file,
+// or lets it go when there is none.
 func (t *tx) handOn(path, why string) {
 	f := t.d.Files[path]
 	if f == nil {
@@ -290,13 +336,16 @@ func (t *tx) handOn(path, why string) {
 			}
 		}
 	}
+	if f.Wanted != "" && f.Wanted != old && t.alive(f.Wanted) {
+		next = f.Wanted
+	}
 	if next == "" {
 		delete(t.d.Files, path)
 		t.Log("free %s from %s (%s)", path, short(old), why)
 		return
 	}
 	delete(f.Contributors, next)
-	f.Master, f.Since, f.Touched, f.Nudged = next, t.now, t.now, 0
+	f.Master, f.Since, f.Touched, f.Nudged, f.Wanted = next, t.now, t.now, 0, ""
 	t.notify(next, "system", fmt.Sprintf("You are now the master of %s (%s was, %s). It may hold uncommitted changes from other sessions as well as yours: look at `git diff -- %s`, keep them, and commit the file when your work in it is done.",
 		path, t.label(old), why, path))
 	t.Log("master of %s passes from %s to %s (%s)", path, short(old), short(next), why)
@@ -532,6 +581,8 @@ func (c *Coordinator) sessionStart(h hookInput, out io.Writer) error {
 			"3. `git add` only files you changed, by name. `git add -A`, `git add .` and `git commit -a` are refused while another session has work in the same repository.",
 			"4. Never run git stash, git reset --hard, git checkout -- <file> or switch branches in a working tree another session is using.",
 			"5. Commit the files you master before you stop: a session that has gone idle hands its files to whoever needs them next, so they must not be left uncommitted. Commit locally only; unfinished work is committed with \"WIP:\" in the message. You will be reminded at the end of a turn that leaves any uncommitted.",
+			fmt.Sprintf("6. If a file's master has been idle for %d minutes or has ended, your Edit of it makes you its master and you commit it. To ask a busy master for a file: `%s`.",
+				int(t.Settings.MasterIdle.Minutes()), c.cmdLine(fmt.Sprintf(`take <path> --session %s`, short(sid)))),
 			fmt.Sprintf("Your session id is %s. To message another session: `%s`.", sid, c.cmdLine(fmt.Sprintf(`send <session-id-prefix> "message" --from %s`, short(sid)))),
 		}
 		var others []string
@@ -608,10 +659,26 @@ func (c *Coordinator) preTool(h hookInput, out io.Writer) error {
 		f := t.valid(path)
 		if f == nil {
 			t.d.Files[path] = &shared{Master: sid, Since: t.now, Touched: t.now}
-			return nil // the first to edit it: master, silently
+			if gitState(path) == fileDirty {
+				// Work no session is recorded as making: by hand, by a shell
+				// command, or by a session that ended without committing.
+				t.Log("%s masters %s, which already had uncommitted changes", short(sid), path)
+				emit(out, "PreToolUse", map[string]any{"additionalContext": fmt.Sprintf("COORDINATION: you are now the master of %s, and it already had uncommitted changes before this edit that no running session is recorded as making (made by hand, by a shell command, or by a session that has ended). Read `git diff -- %s` and keep them: commit them with your work, or ask the user if they look unintended. Never discard them yourself.",
+					path, path)})
+			}
+			return nil // the first to edit it: master
 		}
 		if f.Master == sid {
 			f.Touched = t.now
+			return nil
+		}
+		if _, can := t.idleFor(f); can {
+			ctx, dirty := t.takeOver(path, sid)
+			if h.ToolName == "Write" && dirty {
+				deny(out, ctx+" A whole-file Write would wipe those changes, so it was NOT applied. Re-read the file and use Edit for the parts you need to change.")
+				return nil
+			}
+			emit(out, "PreToolUse", map[string]any{"additionalContext": ctx})
 			return nil
 		}
 		if h.ToolName == "Write" {
@@ -864,11 +931,16 @@ type SessionStatus struct {
 }
 
 type FileStatus struct {
-	Path         string   `json:"path"`
-	Master       string   `json:"master"`
-	MasterLabel  string   `json:"master_label"`
-	MasterName   string   `json:"master_name,omitempty"`
-	SinceS       int      `json:"since_s"`
+	Path        string `json:"path"`
+	Master      string `json:"master"`
+	MasterLabel string `json:"master_label"`
+	MasterName  string `json:"master_name,omitempty"`
+	SinceS      int    `json:"since_s"`
+	// IdleS is how long the master has done nothing; past Master idle,
+	// TakeOver is set and another session's edit takes the file over.
+	IdleS        int      `json:"idle_s"`
+	TakeOver     bool     `json:"take_over,omitempty"`
+	Wanted       string   `json:"wanted,omitempty"` // the label of a session that asked for it
 	Contributors []string `json:"contributors,omitempty"`
 	// ContributorNames is Contributors' session names, in the same order.
 	ContributorNames []string `json:"contributor_names,omitempty"`
@@ -931,7 +1003,12 @@ func (c *Coordinator) Status() (Status, error) {
 		}
 		sort.Slice(st.Sessions, func(i, j int) bool { return st.Sessions[i].ActiveAgoS < st.Sessions[j].ActiveAgoS })
 		for p, f := range t.d.Files {
-			fs := FileStatus{Path: p, Master: f.Master, MasterLabel: t.label(f.Master), MasterName: names[f.Master], SinceS: int(t.now - f.Since)}
+			idle, can := t.idleFor(f)
+			fs := FileStatus{Path: p, Master: f.Master, MasterLabel: t.label(f.Master), MasterName: names[f.Master], SinceS: int(t.now - f.Since),
+				IdleS: int(idle), TakeOver: can}
+			if f.Wanted != "" {
+				fs.Wanted = t.label(f.Wanted)
+			}
 			var cs []string
 			for c := range f.Contributors {
 				cs = append(cs, c)
@@ -982,6 +1059,43 @@ func (c *Coordinator) Send(to, from, text string) (string, error) {
 		return nil
 	})
 	return target, err
+}
+
+// Take makes the session whose id starts with sessionPrefix the master of
+// path. An idle or ended master loses it now; a busy one is asked, and the
+// file passes to the asker when the master releases it or ends (a commit
+// frees it, so the asker's next edit makes it master). It returns what
+// happened, in a sentence for the asker.
+func (c *Coordinator) Take(path, sessionPrefix string) (string, error) {
+	path = realPath(path)
+	var res string
+	err := c.with(func(t *tx) error {
+		sid, err := t.resolve(sessionPrefix)
+		if err != nil {
+			return err
+		}
+		f := t.valid(path)
+		switch {
+		case f == nil:
+			t.d.Files[path] = &shared{Master: sid, Since: t.now, Touched: t.now}
+			res = "nobody was editing it: you are now its master"
+		case f.Master == sid:
+			res = "you are already its master"
+		default:
+			if _, can := t.idleFor(f); can {
+				res, _ = t.takeOver(path, sid)
+				return nil
+			}
+			f.Wanted = sid
+			t.notify(f.Master, sid, fmt.Sprintf("I need %s. When your work in it is done, commit it (by name), or hand it to me uncommitted: `%s`.",
+				path, c.cmdLine(fmt.Sprintf("release %q --session %s", path, short(f.Master)))))
+			t.Log("%s asks %s for %s", short(sid), short(f.Master), path)
+			res = fmt.Sprintf("%s is busy in it, so it has been asked. The file is yours when it commits or releases it, or after it has been idle %d minutes; meanwhile your Edits go through and it commits them.",
+				t.label(f.Master), int(t.Settings.MasterIdle.Minutes()))
+		}
+		return nil
+	})
+	return res, err
 }
 
 // Release hands path on, as if its master had ended. With a session

@@ -15,6 +15,7 @@ const coordUsage = `claude-burst coord: session coordination between Claude Code
 
   coord status                                   who is running, which files are shared, who masters them
   coord send <session> <message> [--from <id>]   message a session (id prefix); it sees it at its next tool call or prompt
+  coord take <path> --session <id>               become a file's master: now if its master is idle or ended, else ask it
   coord release <path> [--session <id>]          hand a file on, as if its master had ended
 
 Hooks (run by Claude Code, not typed): session-start, pre-tool, post-tool, prompt, stop, session-end.
@@ -103,7 +104,14 @@ func coordCmd(args []string) {
 			if len(f.Contributors) > 0 {
 				also = "; also changed by " + strings.Join(f.Contributors, ", ")
 			}
-			fmt.Printf("  %s\n      master %s for %s%s\n", f.Path, f.MasterLabel, (time.Duration(f.SinceS) * time.Second).String(), also)
+			idle := ""
+			if f.TakeOver {
+				idle = fmt.Sprintf(", idle %s: another session's edit takes it over", (time.Duration(f.IdleS) * time.Second).String())
+			}
+			if f.Wanted != "" {
+				also += "; asked for by " + f.Wanted
+			}
+			fmt.Printf("  %s\n      master %s for %s%s%s\n", f.Path, f.MasterLabel, (time.Duration(f.SinceS) * time.Second).String(), idle, also)
 		}
 	case "send":
 		from, rest := flag("--from")
@@ -117,6 +125,18 @@ func coordCmd(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("queued for %s; it sees it at its next tool call or prompt\n", to[:min(8, len(to))])
+	case "take":
+		sess, rest := flag("--session")
+		if len(rest) != 1 || sess == "" {
+			fmt.Fprint(os.Stderr, coordUsage)
+			os.Exit(2)
+		}
+		res, err := c.Take(rest[0], sess)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(res)
 	case "release":
 		sess, rest := flag("--session")
 		if len(rest) != 1 {
