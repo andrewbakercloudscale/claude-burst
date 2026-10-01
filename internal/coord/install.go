@@ -13,6 +13,7 @@ var hookEvents = []struct{ event, matcher, sub string }{
 	{"PostToolUse", "Edit|Write|MultiEdit|NotebookEdit|Bash", "post-tool"},
 	{"UserPromptSubmit", "", "prompt"},
 	{"Stop", "", "stop"},
+	{"SubagentStop", "", "subagent-stop"},
 	{"SessionEnd", "", "session-end"},
 }
 
@@ -20,7 +21,7 @@ const hookTimeout = 10
 
 // ours matches a coordination hook command, whatever the binary's path or
 // name was when it was installed.
-var ours = regexp.MustCompile(`" coord (session-start|pre-tool|pre-edit|post-tool|prompt|stop|session-end)$`)
+var ours = regexp.MustCompile(`" coord (session-start|pre-tool|pre-edit|post-tool|prompt|stop|subagent-stop|session-end)$`)
 
 // IsOurs recognises a coordination hook command.
 func IsOurs(cmd string) bool { return ours.MatchString(cmd) }

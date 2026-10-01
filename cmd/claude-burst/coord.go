@@ -18,7 +18,7 @@ const coordUsage = `claude-burst coord: session coordination between Claude Code
   coord take <path> --session <id>               become a file's master: now if its master is idle or ended, else ask it
   coord release <path> [--session <id>]          hand a file on, as if its master had ended
 
-Hooks (run by Claude Code, not typed): session-start, pre-tool, post-tool, prompt, stop, session-end.
+Hooks (run by Claude Code, not typed): session-start, pre-tool, post-tool, prompt, stop, subagent-stop, session-end.
 Turn it on or off in the dashboard, under Session coordination.
 `
 
@@ -28,7 +28,7 @@ func newCoordinator(cfg config.Config) (*coord.Coordinator, error) {
 	return admin.Coordinator(cfg)
 }
 
-var coordHooks = map[string]bool{"session-start": true, "pre-tool": true, "post-tool": true, "prompt": true, "stop": true, "session-end": true}
+var coordHooks = map[string]bool{"session-start": true, "pre-tool": true, "post-tool": true, "prompt": true, "stop": true, "subagent-stop": true, "session-end": true}
 
 func coordCmd(args []string) {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {

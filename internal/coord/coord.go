@@ -38,6 +38,7 @@
 package coord
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,6 +108,11 @@ type session struct {
 	Cwd        string  `json:"cwd,omitempty"`
 	Label      string  `json:"label,omitempty"`
 	Ended      bool    `json:"ended,omitempty"`
+	// Agents is the session's subagents (Agent tool) that are still
+	// running: agent id to the time of their last tool call. Their hooks
+	// carry the session's own id, so without this a background agent's
+	// files read as the session's own, left uncommitted at its turn's end.
+	Agents map[string]float64 `json:"agents,omitempty"`
 }
 
 // shared is one file being edited: its master, and who else changed it
@@ -118,6 +124,7 @@ type shared struct {
 	Contributors map[string]float64 `json:"contributors,omitempty"`
 	Nudged       float64            `json:"nudged,omitempty"`
 	Wanted       string             `json:"wanted,omitempty"` // a session that asked to take it over
+	Agent        string             `json:"agent,omitempty"`  // the master's subagent that last edited it, if one did
 }
 
 type message struct {
@@ -361,6 +368,7 @@ type hookInput struct {
 	ToolName       string         `json:"tool_name"`
 	ToolInput      map[string]any `json:"tool_input"`
 	StopHookActive bool           `json:"stop_hook_active"`
+	AgentID        string         `json:"agent_id"` // set when the hook fires inside a subagent
 }
 
 func (t *tx) touch(h hookInput) string {
@@ -387,7 +395,28 @@ func (t *tx) touch(h hookInput) string {
 		}
 	}
 	s.Ended = false
+	if h.AgentID != "" {
+		if s.Agents == nil {
+			s.Agents = map[string]float64{}
+		}
+		s.Agents[h.AgentID] = t.now
+	}
 	return sid
+}
+
+// agentGone is how long a subagent may go without a tool call before it
+// counts as finished, should its SubagentStop never arrive (a crash, a
+// killed session).
+const agentGone = 2 * 60 * 60
+
+// agentRunning reports whether sid's subagent id is still at work.
+func (t *tx) agentRunning(sid, id string) bool {
+	s := t.d.Sessions[sid]
+	if s == nil || id == "" {
+		return false
+	}
+	ts, ok := s.Agents[id]
+	return ok && t.now-ts < agentGone
 }
 
 func (t *tx) gc() {
@@ -578,6 +607,13 @@ func (c *Coordinator) Hook(name string, in io.Reader, out io.Writer) error {
 		return c.prompt(h, out)
 	case "stop":
 		return c.stop(h, out)
+	case "subagent-stop":
+		return c.with(func(t *tx) error {
+			if s := t.d.Sessions[h.SessionID]; s != nil && h.AgentID != "" {
+				delete(s.Agents, h.AgentID)
+			}
+			return nil
+		})
 	case "session-end":
 		return c.with(func(t *tx) error {
 			if h.SessionID != "" {
@@ -599,13 +635,14 @@ func (c *Coordinator) sessionStart(h hookInput, out io.Writer) error {
 		me := t.d.Sessions[sid]
 		lines := []string{
 			"SESSION COORDINATION is on for this Mac (Claude Burst). Other Claude Code sessions may be editing the same files. Nobody waits; the rules keep work from being lost or swept up:",
-			"1. The first session to edit a file is its MASTER and commits it. You may still Edit a file another session masters: your change is applied, the master is told, and the master commits it with its own. Do not `git add` or commit a file another session masters; you will be told which ones those are.",
+			"1. The first session to edit a file is its MASTER and commits it. You may still Edit a file another session masters: your change is applied and the master is asked to commit it straight away, ahead of its own work. Do not `git add` or commit a file another session masters; you will be told which ones those are.",
 			"2. Use Edit, not Write, on a file another session masters: a whole-file Write would wipe its work, and is refused.",
 			"3. `git add` only files you changed, by name. `git add -A`, `git add .` and `git commit -a` are refused while another session has work in the same repository.",
 			"4. Never run git stash, git reset --hard, git checkout -- <file> or switch branches in a working tree another session is using.",
 			"5. Commit the files you master before you stop: a session that has gone idle hands its files to whoever needs them next, so they must not be left uncommitted. Commit locally only; unfinished work is committed with \"WIP:\" in the message. You will be reminded at the end of a turn that leaves any uncommitted.",
 			fmt.Sprintf("6. If a file's master has been idle for %d minutes or has ended, your Edit of it makes you its master and you commit it. To ask a busy master for a file: `%s`.",
 				int(t.Settings.MasterIdle.Minutes()), c.cmdLine(fmt.Sprintf(`take <path> --session %s`, short(sid)))),
+			"7. PRIORITY messages come first: when another session's change is waiting in a file you master, or your uncommitted work is holding up its deploy, commit those files at once (\"WIP:\" if your part is unfinished), then carry on. Never make another session wait on you.",
 			fmt.Sprintf("Your session id is %s. To message another session: `%s`.", sid, c.cmdLine(fmt.Sprintf(`send <session-id-prefix> "message" --from %s`, short(sid)))),
 		}
 		var others []string
@@ -681,7 +718,7 @@ func (c *Coordinator) preTool(h hookInput, out io.Writer) error {
 		}
 		f := t.valid(path)
 		if f == nil {
-			t.d.Files[path] = &shared{Master: sid, Since: t.now, Touched: t.now}
+			t.d.Files[path] = &shared{Master: sid, Since: t.now, Touched: t.now, Agent: h.AgentID}
 			if gitState(path) == fileDirty {
 				// Work no session is recorded as making: by hand, by a shell
 				// command, or by a session that ended without committing.
@@ -692,7 +729,7 @@ func (c *Coordinator) preTool(h hookInput, out io.Writer) error {
 			return nil // the first to edit it: master
 		}
 		if f.Master == sid {
-			f.Touched = t.now
+			f.Touched, f.Agent = t.now, h.AgentID
 			return nil
 		}
 		if _, can := t.idleFor(f); can {
@@ -717,11 +754,11 @@ func (c *Coordinator) preTool(h hookInput, out io.Writer) error {
 		}
 		_, again := f.Contributors[sid]
 		f.Contributors[sid] = t.now
-		t.notify(f.Master, sid, fmt.Sprintf("I also changed %s, which you are master of: %s. Keep my change and commit it with yours. If it gets in the way of what you are doing, message me: `%s`.",
+		t.notify(f.Master, sid, fmt.Sprintf("PRIORITY: I changed %s, which you are master of: %s. Commit it now, before your next step, so my change is not held up behind yours: stage it by name and commit it, with \"WIP:\" at the start of the message if your own part of it is unfinished. Keep my change. If it gets in the way of what you are doing, message me: `%s`.",
 			path, describeEdit(h), c.cmdLine(fmt.Sprintf(`send %s "..." --from %s`, short(sid), short(f.Master)))))
 		t.Log("share %s: %s edits, master %s", path, short(sid), short(f.Master))
 		if !again {
-			emit(out, "PreToolUse", map[string]any{"additionalContext": fmt.Sprintf("COORDINATION: %s is shared. Its master is %s, which is also changing it and has not committed it yet. Your edit goes through and the master has been told; it commits the file, your change included. Do NOT git add or commit %s yourself. If your work needs it committed by a certain point, tell the master: `%s`.",
+			emit(out, "PreToolUse", map[string]any{"additionalContext": fmt.Sprintf("COORDINATION: %s is shared. Its master is %s, which is also changing it and has not committed it yet. Your edit goes through and the master has been asked to commit the file now, your change included, ahead of its own work. Do NOT git add or commit %s yourself; carry on with your work. If you need it committed by a certain point, tell the master: `%s`.",
 				path, t.label(f.Master), path, c.cmdLine(fmt.Sprintf(`send %s "..." --from %s`, short(f.Master), short(sid))))})
 		}
 		return nil
@@ -792,6 +829,22 @@ func shipRepos(cmd, cwd string) []string {
 
 // othersIn is who else has uncommitted work in the repository at root,
 // and in which files, sorted.
+// mastersIn is the sessions other than sid that master a file with
+// uncommitted changes under root.
+func (t *tx) mastersIn(root, sid string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for p, f := range t.d.Files {
+		if f.Master == sid || seen[f.Master] || !strings.HasPrefix(p, root+string(filepath.Separator)) || gitState(p) != fileDirty {
+			continue
+		}
+		seen[f.Master] = true
+		out = append(out, f.Master)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (t *tx) othersIn(root, sid string) (who, files []string) {
 	seen := map[string]bool{}
 	add := func(o string) {
@@ -850,13 +903,17 @@ func (c *Coordinator) preBash(h hookInput, out io.Writer) error {
 					continue
 				}
 				t.Log("refuse %s by %s in %s: uncommitted work of %s", script, short(sid), root, strings.Join(who, ", "))
+				// Ask for the commits straight away, rather than leaving the
+				// deploying session to ask: it carries on, they commit first.
+				for _, m := range t.mastersIn(root, sid) {
+					t.notify(m, sid, fmt.Sprintf("PRIORITY: I need to run %s in %s and your uncommitted work there is holding it up. Commit the files you master in it now, before your next step: stage them by name, with \"WIP:\" at the start of the message if unfinished. Commit locally only.", script, root))
+				}
 				only := ""
 				if script == "deploy.sh" {
 					only = " `scripts/deploy.sh --only-committed` ships HEAD alone and is let through."
 				}
-				deny(out, fmt.Sprintf("COORDINATION: %s has uncommitted work in %s (%s). %s builds the working tree, so it would ship that work, which is in no commit; nothing was run. Ask for it to be committed first: `%s`, then run it again.%s Only if the user says to ship it as it is, run the same command prefixed with SHIP_UNCOMMITTED=1.",
-					strings.Join(who, " and "), root, strings.Join(files, ", "), script,
-					c.cmdLine(fmt.Sprintf(`send <session> "please commit your work in %s, I need to deploy" --from %s`, filepath.Base(root), short(sid))), only))
+				deny(out, fmt.Sprintf("COORDINATION: %s has uncommitted work in %s (%s). %s builds the working tree, so it would ship that work, which is in no commit; nothing was run yet. They have been asked to commit it now, ahead of their own work. Do not wait idle: carry on with anything else, and run it again once they have committed (`git status` shows those files clean).%s Only if the user says to ship it as it is, run the same command prefixed with SHIP_UNCOMMITTED=1.",
+					strings.Join(who, " and "), root, strings.Join(files, ", "), script, only))
 				return nil
 			}
 			if !gitStaging.MatchString(cmd) {
@@ -1017,6 +1074,12 @@ func (c *Coordinator) stop(h hookInput, out io.Writer) error {
 		t.settle(sid, true)
 		var dirty []string
 		for _, p := range t.masterOf(sid) {
+			// A background subagent still working on a file is left to
+			// finish: it commits the file itself, or this session does at
+			// the end of a later turn.
+			if t.agentRunning(sid, t.d.Files[p].Agent) {
+				continue
+			}
 			if gitState(p) == fileDirty {
 				dirty = append(dirty, p)
 			}
@@ -1063,6 +1126,7 @@ type SessionStatus struct {
 	ID         string   `json:"id"`
 	Label      string   `json:"label"`
 	Name       string   `json:"name,omitempty"`
+	Task       string   `json:"task,omitempty"` // the user's latest request to it
 	Cwd        string   `json:"cwd"`
 	ActiveAgoS int      `json:"active_ago_s"`
 	MasterOf   []string `json:"master_of,omitempty"`
@@ -1073,6 +1137,7 @@ type FileStatus struct {
 	Master      string `json:"master"`
 	MasterLabel string `json:"master_label"`
 	MasterName  string `json:"master_name,omitempty"`
+	MasterTask  string `json:"master_task,omitempty"`
 	SinceS      int    `json:"since_s"`
 	// IdleS is how long the master has done nothing; past Master idle,
 	// TakeOver is set and another session's edit takes the file over.
@@ -1119,6 +1184,72 @@ func sessionName(transcript, folder string) string {
 	return ai
 }
 
+// sessionTask is the user's latest request in the transcript of five
+// words or more ("now?" and "retry" say nothing about the work), else the
+// latest at all, on one line and cut to 120 characters. Sessions named
+// after their folder all look alike in the dashboard and in their window
+// titles; what they were last asked to do tells them apart.
+func sessionTask(transcript string) string {
+	f, err := os.Open(transcript)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	const tail = 1 << 20
+	if fi, err := f.Stat(); err == nil && fi.Size() > tail {
+		f.Seek(fi.Size()-tail, io.SeekStart)
+	}
+	b, _ := io.ReadAll(f)
+	lines := bytes.Split(b, []byte("\n"))
+	short := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !bytes.Contains(lines[i], []byte(`"type":"user"`)) {
+			continue
+		}
+		var e struct {
+			Type    string `json:"type"`
+			IsMeta  bool   `json:"isMeta"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(lines[i], &e) != nil || e.Type != "user" || e.IsMeta {
+			continue
+		}
+		text := ""
+		if json.Unmarshal(e.Message.Content, &text) != nil {
+			var parts []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(e.Message.Content, &parts) != nil {
+				continue
+			}
+			for _, p := range parts {
+				if p.Type == "text" && text == "" {
+					text = p.Text
+				}
+			}
+		}
+		// Tool results, slash-command echoes and hook or system notes are
+		// not something the user typed.
+		text = strings.Join(strings.Fields(text), " ")
+		if text == "" || strings.HasPrefix(text, "<") || strings.HasPrefix(text, "[Image") && len(text) < 16 {
+			continue
+		}
+		if r := []rune(text); len(r) > 120 {
+			text = string(r[:119]) + "…"
+		}
+		if len(strings.Fields(text)) >= 5 {
+			return text
+		}
+		if short == "" {
+			short = text
+		}
+	}
+	return short
+}
+
 // Status tidies the state (idle masters, dead sessions, committed files)
 // and reports it.
 func (c *Coordinator) Status() (Status, error) {
@@ -1130,19 +1261,20 @@ func (c *Coordinator) Status() (Status, error) {
 				delete(t.d.Files, p)
 			}
 		}
-		names := map[string]string{}
+		names, tasks := map[string]string{}, map[string]string{}
 		for sid, s := range t.d.Sessions {
 			if !t.alive(sid) {
 				continue
 			}
 			names[sid] = sessionName(s.Transcript, s.Label)
-			st.Sessions = append(st.Sessions, SessionStatus{ID: sid, Label: s.Label, Name: names[sid], Cwd: s.Cwd,
+			tasks[sid] = sessionTask(s.Transcript)
+			st.Sessions = append(st.Sessions, SessionStatus{ID: sid, Label: s.Label, Name: names[sid], Task: tasks[sid], Cwd: s.Cwd,
 				ActiveAgoS: int(t.now - lastActive(s)), MasterOf: t.masterOf(sid)})
 		}
 		sort.Slice(st.Sessions, func(i, j int) bool { return st.Sessions[i].ActiveAgoS < st.Sessions[j].ActiveAgoS })
 		for p, f := range t.d.Files {
 			idle, can := t.idleFor(f)
-			fs := FileStatus{Path: p, Master: f.Master, MasterLabel: t.label(f.Master), MasterName: names[f.Master], SinceS: int(t.now - f.Since),
+			fs := FileStatus{Path: p, Master: f.Master, MasterLabel: t.label(f.Master), MasterName: names[f.Master], MasterTask: tasks[f.Master], SinceS: int(t.now - f.Since),
 				IdleS: int(idle), TakeOver: can}
 			if f.Wanted != "" {
 				fs.Wanted = t.label(f.Wanted)

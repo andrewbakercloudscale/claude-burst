@@ -30,8 +30,8 @@ func TestCoordinationSwitchInstallsAndRemovesTheHooks(t *testing.T) {
 		t.Fatalf("config.json: %+v %v", cfg.SessionCoordination, err)
 	}
 	b, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
-	if strings.Count(string(b), " coord ") != 6 {
-		t.Fatalf("want the six coordination hooks:\n%s", b)
+	if strings.Count(string(b), " coord ") != 7 {
+		t.Fatalf("want the seven coordination hooks:\n%s", b)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/coordination", nil)

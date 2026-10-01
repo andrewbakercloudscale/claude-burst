@@ -86,7 +86,7 @@ func TestCoordMetricsOnThePage(t *testing.T) {
 	defs := src[i : i+j+4]
 	var got struct{ Tiles, PerDay, Today, Issues, None string }
 	runPageJS(t, []string{"coSum", "coTilesHTML", "coPerDayHTML", "coIssuesHTML"}, defs+`
-let coNames = {cccccccc: "Fix the build"};
+let coNames = {cccccccc: "Fix the build"}, coTasks = {cccccccc: "add the comment flood limits"};
 const m = {days: 7, totals: {shared: 2, refused: 1, taken: 1, errors: 1}, all_time: {shared: 9},
   per_day: [{day: "2026-09-30", counts: {}}, {day: "2026-10-01", counts: {errors: 1}}],
   issues: [{at: "2026-10-01 08:07:00", kind: "error", text: "ERROR in pre-tool: x", resolved: false},
@@ -99,7 +99,7 @@ out({Tiles: coTilesHTML(m), PerDay: coPerDayHTML(m), Today: coPerDayHTML({...m, 
 	if !strings.Contains(got.PerDay, "2026-10-01") || strings.Index(got.PerDay, "2026-10-01") > strings.Index(got.PerDay, "2026-09-30") || got.Today != "" {
 		t.Errorf("per day (newest first, none for today): %q / %q", got.PerDay, got.Today)
 	}
-	if !strings.Contains(got.Issues, "Fix the build") || !strings.Contains(got.Issues, "still uncommitted: 1") || strings.Count(got.Issues, `pill bad">open`) != 2 {
+	if !strings.Contains(got.Issues, "Fix the build") || !strings.Contains(got.Issues, "add the comment flood limits") || !strings.Contains(got.Issues, "still uncommitted: 1") || strings.Count(got.Issues, `pill bad">open`) != 2 {
 		t.Errorf("issues: %s", got.Issues)
 	}
 	if !strings.Contains(got.None, "No issues today") {

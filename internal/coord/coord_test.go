@@ -655,3 +655,65 @@ func TestScratchFilesAreNotTracked(t *testing.T) {
 		t.Fatalf("scratch file tracked: %+v", st.Files)
 	}
 }
+
+// A background subagent's hooks carry its session's id. Its files must not
+// hold the session's turn while the agent is still working on them (the
+// cyber-devtools session, 2026-10-01 17:30, was told to commit a running
+// agent's files). Once the agent stops, they are the session's again.
+func TestARunningSubagentsFilesDoNotHoldItsSession(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	p := filepath.Join(r.repo, "a.go")
+	in := map[string]any{"agent_id": "ag1", "tool_name": "Edit", "tool_input": map[string]any{"file_path": p, "old_string": "package x", "new_string": "package x // agent"}}
+	r.hook("pre-tool", "A", in)
+	os.WriteFile(p, []byte("package x // agent\n"), 0o644)
+	r.hook("post-tool", "A", in)
+	r.edit("A", "b.go", "package x", "package x // A")
+
+	out := r.hook("stop", "A", nil)
+	if !held(out) || strings.Contains(out, "a.go") || !strings.Contains(out, "b.go") {
+		t.Fatalf("A is held for its own b.go, not the running agent's a.go:\n%s", out)
+	}
+	r.hook("subagent-stop", "A", map[string]any{"agent_id": "ag1"})
+	if out := r.hook("stop", "A", nil); !held(out) || !strings.Contains(out, "a.go") {
+		t.Fatalf("the agent has finished: its a.go is A's to commit:\n%s", out)
+	}
+	// An agent that never reports stopping counts as finished after a while.
+	r.edit("A", "b.go", "// A", "// A again")
+	r.hook("pre-tool", "A", map[string]any{"agent_id": "ag2", "tool_name": "Edit", "tool_input": map[string]any{"file_path": p, "old_string": "x", "new_string": "y"}})
+	if out := r.hook("stop", "A", nil); strings.Contains(out, "a.go") {
+		t.Fatalf("ag2 is running:\n%s", out)
+	}
+	r.advance(3 * time.Hour)
+	if out := r.hook("stop", "A", nil); !strings.Contains(out, "a.go") {
+		t.Fatalf("ag2 silent for 3 hours counts as finished:\n%s", out)
+	}
+}
+
+// Commits are accelerated: a master is asked to commit another session's
+// change at its next tool call, not at the end of its work, and a refused
+// deploy asks the masters itself, so the deploying session never has to
+// wait on them.
+func TestMastersAreAskedToCommitOthersWorkFirst(t *testing.T) {
+	r := newRig(t)
+	r.start("A")
+	r.start("B")
+	r.edit("A", "a.go", "package x", "package x // A")
+	_, bOut := r.edit("B", "a.go", "// A", "// A B")
+	if !strings.Contains(bOut, "asked to commit the file now") {
+		t.Fatalf("B is told the master commits now:\n%s", bOut)
+	}
+	_, aOut := r.bash("A", "true")
+	if !strings.Contains(aOut, "PRIORITY") || !strings.Contains(aOut, "Commit it now") {
+		t.Fatalf("A's next tool call asks for the commit first:\n%s", aOut)
+	}
+
+	r.edit("A", "b.go", "package x", "package x // A")
+	out := r.hook("pre-tool", "B", map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "bash deploy-wordpress.sh"}})
+	if !denied(out) || !strings.Contains(out, "have been asked to commit") || !strings.Contains(out, "Do not wait idle") {
+		t.Fatalf("B's deploy says the masters were asked:\n%s", out)
+	}
+	if _, aOut := r.bash("A", "true"); !strings.Contains(aOut, "deploy-wordpress.sh") || !strings.Contains(aOut, "PRIORITY") {
+		t.Fatalf("A is asked to commit for B's deploy:\n%s", aOut)
+	}
+}
