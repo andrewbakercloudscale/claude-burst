@@ -132,6 +132,13 @@ type savedCompaction struct {
 	NextP0      int       `json:"next_p0,omitempty"`
 	NextHash    string    `json:"next_hash,omitempty"`
 	Seen        time.Time `json:"seen"`
+	// The prompt notice's unshown lines and the context before the latest
+	// swap. Memory only until 2026-10-01, when a deploy landed between a
+	// swap and the next prompt (gateway restarts are routine: six in that
+	// hour) and the user saw no notice for it at all.
+	Notices     []string `json:"notices,omitempty"`
+	SwappedFrom int64    `json:"swapped_from,omitempty"`
+	SwappedMsgs int      `json:"swapped_msgs,omitempty"`
 }
 
 // savedTTL drops sessions not seen for this long when state is saved.
@@ -155,7 +162,8 @@ func (c *compactor) load() {
 	for k, v := range saved {
 		st := &compactState{lastContext: v.LastContext, warnedAt: v.WarnedAt, startedAt: v.StartedAt,
 			summary: v.Summary, p0: v.P0, hash: v.Hash, swapAt: v.SwapAt,
-			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, seen: v.Seen}
+			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, seen: v.Seen,
+			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs}
 		// Saved before summaries waited as next: an unapplied summary.
 		if st.summary != "" && st.swapAt == 0 && st.next == "" {
 			st.next, st.nextP0, st.nextHash = st.summary, st.p0, st.hash
@@ -172,7 +180,8 @@ func (c *compactor) load() {
 }
 
 // save writes every live session to disk. Called with c.mu held, only on
-// transitions (start, ready, failed, applied, dropped), never per request.
+// transitions (start, ready, failed, applied, dropped, the first answer
+// after a swap, notices shown), never per request.
 func (c *compactor) save() {
 	if c.path == "" {
 		return
@@ -186,7 +195,8 @@ func (c *compactor) save() {
 		}
 		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
 			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt,
-			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, Seen: st.seen}
+			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, Seen: st.seen,
+			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs}
 	}
 	b, err := json.Marshal(out)
 	if err == nil {
@@ -309,6 +319,11 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		}
 		st.notice("done. Context down %d%%, %dk \u2192 %dk: %d earlier messages now go as a summary", cut, st.swappedFrom/1000, ctxTokens/1000, st.swappedMsgs)
 		st.swappedFrom, st.swappedMsgs = 0, 0
+		// Saved, with the new context: the swap itself saved the context
+		// from BEFORE it, and a restart that reloaded that figure started a
+		// second summary of an already compacted session on the next prompt
+		// (2026-10-01: 433k on disk, 82k real, 579 messages re-summarised).
+		s.compaction.save()
 	}
 	s.compaction.mu.Unlock()
 }
@@ -339,6 +354,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// conversation being cleared, dropping its summary twice in two minutes.
 	// The first message tells them apart.
 	key := sid + "|" + requestModel(body) + "|" + conversationID(msgs[0])
+	if isSideRequest(msgs) {
+		return s.applySideRequest(in, top, body, msgs, key)
+	}
 	ci := compactInfo{key: key}
 	now := time.Now()
 	window := time.Duration(cfg.WindowMinutes) * time.Minute
@@ -472,6 +490,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		}
 		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary%s", rid, key, st.p0, where)
 		st.swappedFrom, st.swappedMsgs, st.readyShown, st.waitShown = st.lastContext, st.p0, false, false
+		// The pre-swap context no longer describes anything this session
+		// sends. Unknown until the response reports it, so nothing (a restart
+		// reloading it included) can start a summary on a stale 433k.
+		st.lastContext = 0
 		dirty = true
 	}
 	if st.midTurnUnproven {
@@ -500,6 +522,58 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		return body, in
 	}
 	ci.applied, ci.removedMsgs, ci.removedBytes = true, len(msgs)-len(out), int64(len(body)-len(newBody))
+	return newBody, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
+}
+
+// sideRequestMarkers identify requests Claude Code makes on its own, beside
+// the conversation, with the conversation's history: the away recap is sent
+// minutes after a turn ends, when nobody is there. Taken as a plain prompt,
+// on 2026-10-01 it swapped a summary in with no hook to show it (the notice
+// waited 80 minutes and a restart lost it), and later dropped a waiting
+// summary because it alters the last message.
+var sideRequestMarkers = [][]byte{
+	[]byte("The user stepped away and is coming back. Recap in"),
+}
+
+// isSideRequest reports whether the last message is one of Claude Code's
+// own side requests rather than a prompt the user sent.
+func isSideRequest(msgs []json.RawMessage) bool {
+	last := msgs[len(msgs)-1]
+	for _, m := range sideRequestMarkers {
+		if bytes.Contains(last, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// applySideRequest sends a side request with the summary already in force,
+// when it still fits, and changes nothing: no swap, no drop, no start, and
+// no context noted (its compactInfo has no key), because the conversation
+// did not move.
+func (s *Server) applySideRequest(in *http.Request, top map[string]json.RawMessage, body []byte, msgs []json.RawMessage, key string) ([]byte, *http.Request) {
+	s.compaction.mu.Lock()
+	st := s.compaction.sessions[key]
+	var summary string
+	var p0, swapAt int
+	if st != nil && st.summary != "" && st.swapAt > 0 && len(msgs) > st.p0 && prefixHash(msgs, st.p0) == st.hash {
+		summary, p0, swapAt = st.summary, st.p0, st.swapAt
+	}
+	s.compaction.mu.Unlock()
+	if summary == "" {
+		return body, in
+	}
+	out := rewriteWithSummary(msgs, summary, p0, swapAt)
+	nb, err := json.Marshal(out)
+	if err != nil {
+		return body, in
+	}
+	top["messages"] = nb
+	newBody, err := json.Marshal(top)
+	if err != nil {
+		return body, in
+	}
+	ci := compactInfo{applied: true, removedMsgs: len(msgs) - len(out), removedBytes: int64(len(body) - len(newBody))}
 	return newBody, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 }
 
@@ -742,8 +816,17 @@ func (s *Server) PromptNotices(sid string, midTurn bool) []string {
 	}
 	sort.Strings(keys)
 	out := s.takeFailoverNotices()
+	shown := false
+	defer func() {
+		// Notices are saved now, so a shown one must be saved as shown or a
+		// restart would show it again.
+		if shown {
+			s.compaction.save()
+		}
+	}()
 	for _, k := range keys {
 		st := s.compaction.sessions[k]
+		shown = shown || len(st.notices) > 0
 		out = append(out, st.notices...)
 		st.notices = nil
 		if st.next != "" && midTurn && !(cfg.MidTurn && !s.compaction.midTurnOff) {

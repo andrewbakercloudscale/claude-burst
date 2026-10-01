@@ -926,3 +926,104 @@ func TestMidTurnSwapRejectedIsUndoneAndResent(t *testing.T) {
 		t.Fatal("saving the settings must re-arm mid-turn swaps")
 	}
 }
+
+// awayRecap is Claude Code's away recap as it arrives: the conversation's
+// history with a recap request appended, sent minutes after a turn ended.
+func awayRecap(t *testing.T, history []json.RawMessage) []json.RawMessage {
+	t.Helper()
+	recap := msgs(t, `[{"role":"user","content":[{"type":"text","text":"The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences, no markdown."}]}]`)
+	return append(append([]json.RawMessage(nil), history...), recap...)
+}
+
+// On 2026-10-01 the away recap was taken for a plain prompt: it swapped the
+// summary in while nobody was there, so the notice saying so waited 80
+// minutes for a prompt and was lost to a restart first.
+func TestAwayRecapDoesNotSwapOrDrop(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	s.PromptNotices("S", false)
+
+	send(t, s, "S", awayRecap(t, all[:8]))
+	if st := stateFor(s, "S"); st.next == "" || st.summary != "" {
+		t.Fatalf("the recap must leave the summary waiting, not swap it: next=%q summary=%q", st.next, st.summary)
+	}
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the recap must go as Claude Code sent it while nothing is swapped in")
+	}
+	// It also alters the conversation's own messages; that must not drop
+	// the waiting summary either.
+	altered := awayRecap(t, all[:8])
+	altered[3] = json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"trimmed"}]}`)
+	send(t, s, "S", altered)
+	if st := stateFor(s, "S"); st.next == "" {
+		t.Fatal("an altered recap dropped the waiting summary")
+	}
+	if got := s.PromptNotices("S", false); len(got) != 0 && strings.Contains(strings.Join(got, ""), "done") {
+		t.Fatalf("no swap happened, so no result line: %q", got)
+	}
+
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the next real prompt swaps it in")
+	}
+	// After the swap a recap carries the summary in force, unchanged.
+	send(t, s, "S", awayRecap(t, all[:9]))
+	if !strings.Contains(f.last(), "THE GIST") || !strings.Contains(f.last(), "stepped away") {
+		t.Fatal("a recap after the swap must carry the summary in force")
+	}
+}
+
+// A restart between the swap and the next prompt lost the notice, and
+// reloaded the context from BEFORE the swap, so the next prompt started a
+// second summary of an already compacted session (433k saved, 82k real).
+func TestSwapNoticeAndContextSurviveARestart(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	up := httptest.NewServer(http.HandlerFunc(f.handler))
+	t.Cleanup(up.Close)
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = up.URL
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60}
+	dir := t.TempDir()
+	start := func() *Server {
+		s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(testLogWriter{t}, "", 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(s.compaction.running.Wait)
+		return s
+	}
+	all := msgs(t, session)
+	s := start()
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	s.PromptNotices("S", false)
+	f.mu.Lock()
+	f.context = 60_000
+	f.mu.Unlock()
+	send(t, s, "S", all[:9])
+
+	s2 := start()
+	if got := strings.Join(s2.PromptNotices("S", false), "\n"); !strings.Contains(got, "done. Context down 87%") {
+		t.Fatalf("the swap's result line must survive a restart, got:\n%s", got)
+	}
+	if again := start().PromptNotices("S", false); len(again) != 0 {
+		t.Fatalf("a shown line is saved as shown, got %q after another restart", again)
+	}
+	st := stateFor(s2, "S")
+	if st.lastContext < 60_000 || st.lastContext > 61_000 {
+		t.Fatalf("the saved context must be the one after the swap, got %d", st.lastContext)
+	}
+	st.startedAt = time.Now().Add(-2 * time.Hour) // the window has passed, as on the day
+	n := f.summaryCount()
+	more := append(append([]json.RawMessage(nil), all...), msgs(t, `[{"role":"assistant","content":[{"type":"text","text":"done with third"}]},{"role":"user","content":[{"type":"text","text":"fourth task"}]}]`)...)
+	send(t, s2, "S", more)
+	time.Sleep(100 * time.Millisecond)
+	if f.summaryCount() != n {
+		t.Fatal("a compacted session at 60k must not start another summary")
+	}
+}
