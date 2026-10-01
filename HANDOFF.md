@@ -1,12 +1,14 @@
-# Handover, 2026-10-01 20:43: coordination metrics and issues, masters commit others' work first, subagents, lock starvation fix
+# Handover, 2026-10-01 21:06: coordination metrics, issues and subagents; lock starvation fix; README rewrite
 <!-- session: 0125e44d-d7bf-4778-8143-1c51dcab7da4 -->
 
 ## State right now
 
-- Written at 20:43. Verify before acting.
-- `main` at `774da37`, pushed, working tree clean (git status at 20:43). Every commit below deployed with `scripts/deploy.sh`; gateway running under launchd (pid 43873).
+- Written at session close. Verify before acting.
+- `main` at `7ec71de`, equal to origin/main, working tree clean (git status at close).
+- Deployed with `scripts/deploy.sh`: every code commit up to `cea2b45` (binary installed 21:03; the gateway answered `/api/coordination` with 200). `7ec71de` is README only, so nothing newer needs deploying.
+- The GitHub repo description was being changed with `gh repo edit` when the session closed; whether it applied is unverified (see Open 1).
 - Session coordination is ON with seven hooks in `~/.claude/settings.json` (SubagentStop added today).
-- Every repo under `~/Desktop/github` was in step with GitHub at about 19:00 (fetched, 0 ahead / 0 behind), except files other sessions have left uncommitted (listed under Open 4).
+- Every repo under `~/Desktop/github` was in step with GitHub at about 19:00 (fetched, 0 ahead / 0 behind), except files other sessions have left uncommitted (listed under Open 5).
 - Dashboard Issues: 12 lock errors from 18:18-18:19 cleared with the new Clear button; 0 open at 20:40.
 
 ## What was done
@@ -20,24 +22,27 @@
   - Each session shows the latest typed request of 5+ words (`sessionTask`), because folder-named sessions share a window title. `ab37b02` skips `[Image ...]` placeholders and reads up to 16 MB back.
 - `fa39692` Lock starvation: every hook held the state lock while running one git process per tracked file in series; with many agents firing hooks, others waited out the 3s lockWait (12 errors at 18:18-18:19). Now `prewarm` asks git about all tracked files in parallel before the lock (`tx.git` uses the answers); holds over 1s log "slow: held the state lock". `TestBusyHooksDoNotStarveTheLock` fails on the old code.
 - `e657906` Clear hook errors button (logs a marker line; earlier errors leave Issues, stay counted). `774da37` stopped-uncommitted issues ask git whether pending files are still dirty (a merged worktree left one open forever); Status() now logs the files it frees.
-- `715f541` README coordination section rewritten: design rule, subagents, metrics, Issues, three Mermaid diagrams.
+- `715f541`, `cea2b45` README coordination section: design rule, subagents, a full "Is it working? Metrics and Issues" section with `docs/screenshots/coordination-issues.png`, five Mermaid diagrams (hook path, shared edit, deploy, end of turn, issue lifecycle), all rendered with mermaid-cli 11 but not looked at on github.com. `cea2b45` also makes an error issue show resolved after 24 hours.
+- `7ec71de` README opens with the product (a local gateway that keeps Claude Code working) and groups features by purpose, instead of leading with pauseless compaction (user: "Thats a feature, not the product").
 - Outside this repo: pushed cyber-devtools (32 commits), CloudScale-Wp-Proxy (3), cloudscale-wp-shared (1), cloudscale-submission-validator (1), iphone-image-manager (5); deploy-record ignores (`archive/*.manifest.txt`, `*.uncommitted.patch`, `*.untracked.tgz`) added to all five plugins' `.gitignore`; cleanup and crash-recovery SVN-mirror clones reset to GitHub (they were 114 and 44 behind, their one commit would have deleted newer work; backups deleted on the user's word); `claude-traffic-light` fast-forwarded 824 commits.
 - A blog brief on how coordination works (with three Mermaid diagrams) was put on the clipboard for the CloudScale-Wp-Proxy session to write up.
 
 ## Open
 
-1. **Offered, user not yet answered:** an `--only-committed` mode for each plugin's `deploy-wordpress.sh` (build from a throwaway worktree of HEAD, like `scripts/deploy.sh --only-committed`), which removes the last case where a deploy waits on another session. Gitignored script, five repos.
-2. Unverified live: that Claude Code fires SubagentStop for background agents (unit tests only). Check: after a session's background agent finishes, `~/.config/claude-burst/coord/state.json` has no entry for it under that session's `agents`.
-3. `scripts/coord-live-test.sh` not rerun since these changes; the dashboard section not checked in a browser (Chrome extension was not connected); the API and served page were checked, and the page JS parses.
-4. Uncommitted work left by others, not touched: `CloudScaleWpPluginHelpDocs/plugins/cyber-devtools/generate.js`; `deploy-wordpress.sh` in `cloudscale-test-accounts` and `cloudscale-sql-runner`; `raspberry-pis` submodule changes and untracked `andrew-baker-cobalt/`; `.omc/`, `.codex/`, `.playwright-mcp/` clutter; `linkedin-chrome-plugin/HANDOVER.md`.
-5. From the 17:25 handover, still open unless done since: screen-off with lid shut (`scripts/lid-awake-root.sh`), P0 list in memory `claude_burst_next_priorities.md`, restart-warning decision.
+1. Confirm the GitHub description change: `gh repo view --json description -q .description` should start "A local gateway that keeps Claude Code working". If not, rerun `gh repo edit --description` with the product-first wording (it still led with pauseless compaction before).
+2. **Offered, user not yet answered:** an `--only-committed` mode for each plugin's `deploy-wordpress.sh` (build from a throwaway worktree of HEAD, like `scripts/deploy.sh --only-committed`), which removes the last case where a deploy waits on another session. Gitignored script, five repos.
+3. Unverified live: that Claude Code fires SubagentStop for background agents (unit tests only). Check: after a session's background agent finishes, `~/.config/claude-burst/coord/state.json` has no entry for it under that session's `agents`.
+4. `scripts/coord-live-test.sh` not rerun since these changes; the dashboard section not checked in a browser (Chrome extension was not connected); the API and served page were checked, and the page JS parses.
+5. Uncommitted work left by others, not touched: `CloudScaleWpPluginHelpDocs/plugins/cyber-devtools/generate.js`; `deploy-wordpress.sh` in `cloudscale-test-accounts` and `cloudscale-sql-runner`; `raspberry-pis` submodule changes and untracked `andrew-baker-cobalt/`; `.omc/`, `.codex/`, `.playwright-mcp/` clutter; `linkedin-chrome-plugin/HANDOVER.md`.
+6. From the 17:25 handover, still open unless done since: P0 list in memory `claude_burst_next_priorities.md`, restart-warning decision.
 
 ## Things that will bite you
 
 - Running sessions only see briefing rule 7 when they next start; PRIORITY messages reach them now.
 - `prewarm` reads `state.json` without the lock (safe: written by rename) and its answers are milliseconds old under the lock. A file not tracked before the hook is asked live.
 - Test repos are temp dirs, which coordination now ignores: any new test that runs hooks needs `CLAUDE_BURST_COORD_TRACK_TMP=1` (set in coord's TestMain; set per test in admin).
-- Error issues stay open 24h unless cleared; the Clear marker is the literal line `hook errors cleared from the dashboard` in coord.log.
+- The quoted request beside a session in Issues and the session tables is its latest request now, not at the time of the event.
+- Error issues stay open 24h (then show resolved) unless cleared; the Clear marker is the literal line `hook errors cleared from the dashboard` in coord.log.
 - This session ran `git stash -- internal/coord/coord.go` once in the shared claude-burst tree (popped at once, own file only). Do not: rule 4.
 - No em or en dashes; no Claude co-author trailers in commits.
 
