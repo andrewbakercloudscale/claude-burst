@@ -625,3 +625,33 @@ func TestSessionName(t *testing.T) {
 		t.Fatalf("no transcript, no name, got %q", got)
 	}
 }
+
+// Every test repository is a temporary directory, which coordination
+// otherwise leaves untracked as scratch.
+func TestMain(m *testing.M) {
+	os.Setenv("CLAUDE_BURST_COORD_TRACK_TMP", "1")
+	os.Exit(m.Run())
+}
+
+func TestScratchFilesAreNotTracked(t *testing.T) {
+	r := newRig(t)
+	t.Setenv("CLAUDE_BURST_COORD_TRACK_TMP", "")
+	for _, p := range []string{"/private/tmp/claude-501/x/scratchpad/run.sh", "/tmp/a.sh", "/private/var/folders/ab/T/b.go"} {
+		if !scratchPath(p) {
+			t.Errorf("%s: want scratch", p)
+		}
+	}
+	if scratchPath("/Users/me/code/a.go") {
+		t.Error("a repository file must not be scratch")
+	}
+	// A scratch edit leaves no master behind.
+	var out bytes.Buffer
+	in, _ := json.Marshal(map[string]any{"session_id": "s1", "cwd": "/tmp", "tool_name": "Write", "tool_input": map[string]any{"file_path": "/tmp/scratch.sh"}})
+	if err := r.c.Hook("pre-tool", bytes.NewReader(in), &out); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := r.c.Status()
+	if len(st.Files) != 0 {
+		t.Fatalf("scratch file tracked: %+v", st.Files)
+	}
+}

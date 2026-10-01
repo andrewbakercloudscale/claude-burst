@@ -286,6 +286,7 @@
   .pill.edge { --edge: #c0267f; color: var(--edge); font-weight: 700; border-color: color-mix(in srgb, var(--edge) 45%, transparent);
                background: color-mix(in srgb, var(--edge) 12%, transparent); }
   @media (prefers-color-scheme: dark) { .pill.edge { --edge: #f472b6; } }
+  .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, transparent); background: var(--bad-bg); }
   .pill.t { white-space: nowrap; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
   .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); } .st-wait { color: var(--muted); }
 
@@ -1193,6 +1194,15 @@
       <div class="hint" style="margin-top:4px">Once a file's master has done nothing for this long, the next session to edit the file becomes its master and commits it; the old master is told. Until another session needs the file, it stays with its master. If a master closes, the file goes to the session that asked for it, or else the one that most recently changed it too, or is released if there is none. The reminder tells a master that changes from other sessions have been waiting this long for it to commit them.</div>
       <div class="row" style="margin-top:10px"><button class="primary" id="coSave">&#x2713; Save</button></div>
       <div id="coNote"></div>
+      <h3 style="margin:18px 0 6px;font-size:13px;display:flex;align-items:center;gap:10px">Is it working?
+        <select id="coDays" style="width:auto;font-weight:normal" aria-label="Metrics window"><option value="1">Today</option><option value="7">7 days</option><option value="14">14 days</option></select>
+        <span class="hint" style="font-weight:400" id="coSince"></span></h3>
+      <div class="hint" style="margin-bottom:6px">Counted from coordination's log. <b>Coordinated</b> is every time two sessions met over the same file or repository and coordination stepped in: a shared edit, a blocked action, a file taken over or handed on, or a session asking for a file. If it stays at 0, no two sessions have touched the same work yet, so there has been nothing to coordinate.</div>
+      <div class="tiles" id="coTiles"></div>
+      <div class="scroll" id="coPerDay" style="margin-top:10px"></div>
+      <h3 style="margin:18px 0 6px;font-size:13px">Issues <span class="hint" style="font-weight:400" id="coIssueSummary"></span></h3>
+      <div class="hint" style="margin-bottom:6px">Things that went wrong in the window above. <b>Hook error</b>: coordination failed on one tool call, and that call went ahead uncoordinated (counts as open for 24 hours). <b>Stopped with uncommitted work</b>: a session ended its turn with files it masters still uncommitted; it is resolved once each file is committed or handed to another session.</div>
+      <div id="coIssues"></div>
       <h3 style="margin:18px 0 6px;font-size:13px">Who is editing what <span class="hint" style="font-weight:400" id="coSummary"></span></h3>
       <div class="scroll" id="coFiles"></div>
       <h3 style="margin:18px 0 6px;font-size:13px">Sessions taking part</h3>
@@ -4308,19 +4318,73 @@ function coPath(p, cwds) {
   for (const c of cwds) if (c && p.startsWith(c + "/")) return `<span class="hint">${esc(c.split("/").pop())}/</span>${esc(p.slice(c.length + 1))}`;
   return esc(p.replace(/^\/Users\/[^/]+/, "~"));
 }
+// The metrics tiles: each a sum of logged event kinds, with its all-time
+// count underneath.
+const coTileDefs = [
+  {k: "Coordinated", keys: ["shared", "refused", "taken", "passed", "asked"], h: "two sessions met over the same work"},
+  {k: "Shared edits", keys: ["shared"], h: "edited a file another session masters"},
+  {k: "Blocked", keys: ["refused"], h: "whole-file Write, git add -A, or a deploy over others' work"},
+  {k: "Taken over or handed on", keys: ["taken", "passed"], h: "a file moved to another master"},
+  {k: "Asked to commit", keys: ["held"], h: "a turn ended with mastered files uncommitted"},
+  {k: "Stopped uncommitted", keys: ["stopped"], h: "ended anyway after being asked", warn: true},
+  {k: "Hook errors", keys: ["errors"], h: "a tool call went ahead uncoordinated", bad: true},
+  {k: "Released after commit", keys: ["released"], h: "files freed once committed"},
+];
+function coSum(counts, keys) { return keys.reduce((n, k) => n + ((counts || {})[k] || 0), 0); }
+function coTilesHTML(m) {
+  const win = m.days === 1 ? "today" : `${m.days} days`;
+  return coTileDefs.map(t => {
+    const n = coSum(m.totals, t.keys);
+    const cls = n && t.bad ? "bad" : n && t.warn ? "warn" : "";
+    return `<div class="tile"><div class="k">${esc(t.k)}</div><div class="v"${cls ? ` style="color:var(--${cls})"` : ""}>${n}</div><div class="h">${esc(t.h)}; ${coSum(m.all_time, t.keys)} all time</div></div>`;
+  }).join("");
+}
+function coPerDayHTML(m) {
+  if (!m.per_day || m.days === 1) return "";
+  const cols = coTileDefs.filter(t => t.k !== "Released after commit");
+  return `<table><thead><tr><th>Day</th>${cols.map(t => `<th class="num">${esc(t.k)}</th>`).join("")}</tr></thead><tbody>${
+    m.per_day.slice().reverse().map(d => `<tr><td class="mono">${esc(d.day)}</td>${cols.map(t => { const n = coSum(d.counts, t.keys); return `<td class="num"${n && t.bad ? ' style="color:var(--bad)"' : ""}>${n || '<span class="hint">-</span>'}</td>`; }).join("")}</tr>`).join("")
+  }</tbody></table>`;
+}
+function coIssuesHTML(m) {
+  const is = m.issues || [];
+  if (!is.length) return `<div class="empty">No issues ${m.days === 1 ? "today" : `in the last ${m.days} days`}.</div>`;
+  return `<table><thead><tr><th>When</th><th>What</th><th>Detail</th><th>State</th></tr></thead><tbody>${
+    is.map(x => {
+      const what = x.kind === "error" ? "Hook error" : "Stopped with uncommitted work";
+      const detail = x.kind === "error" ? esc(x.text)
+        : `${esc(coNames[x.session] || x.session)}: ${(x.files || []).map(f => `<span class="mono">${esc(f.replace(/^\/Users\/[^/]+/, "~"))}</span>`).join("<br>")}${!x.resolved && (x.pending || []).length < (x.files || []).length ? `<br><span class="hint">still uncommitted: ${(x.pending || []).length}</span>` : ""}`;
+      return `<tr><td class="mono">${esc(x.at)}</td><td>${what}</td><td>${detail}</td><td>${x.resolved ? '<span class="pill p">resolved</span>' : '<span class="pill bad">open</span>'}</td></tr>`;
+    }).join("")
+  }</tbody></table>`;
+}
+let coDays = "1";
+try { if (["1", "7", "14"].includes(localStorage.getItem("coDays"))) coDays = localStorage.getItem("coDays"); } catch (e) {}
+$("coDays").value = coDays;
+$("coDays").onchange = () => {
+  coDays = $("coDays").value;
+  try { localStorage.setItem("coDays", coDays); } catch (e) {}
+  loadCoord();
+};
 async function loadCoord() {
   let d;
-  try { d = await (await fetch("/api/coordination", {headers: H})).json(); } catch { return; }
+  try { d = await (await fetch("/api/coordination?days=" + coDays, {headers: H})).json(); } catch { return; }
   const on = !!d.config.enabled;
   if (!document.activeElement || !document.activeElement.closest("#sec-coord .row")) {
     $("coOn").checked = on;
     $("coIdle").value = d.resolved.master_idle_minutes;
     $("coNudge").value = d.resolved.nudge_minutes;
   }
-  setDot("nd-coord", on ? (d.installed ? "ok" : "warn") : "");
+  const m = d.metrics || {days: 1, totals: {}, all_time: {}};
+  setDot("nd-coord", on ? (m.unresolved ? "bad" : d.installed ? "ok" : "warn") : "");
   const st = d.status || {}, files = st.files || [], sess = st.sessions || [];
   coNames = {};
   for (const x of sess) coNames[x.id.slice(0, 8)] = x.name || `${x.label} ${x.id.slice(0, 8)}`;
+  $("coSince").textContent = m.since ? `log starts ${m.since}` : "nothing logged yet";
+  $("coTiles").innerHTML = coTilesHTML(m);
+  $("coPerDay").innerHTML = coPerDayHTML(m);
+  $("coIssues").innerHTML = coIssuesHTML(m);
+  $("coIssueSummary").textContent = m.unresolved ? `${m.unresolved} open` : (m.issues || []).length ? "all resolved" : "";
   $("coActivity").innerHTML = (d.activity || []).length ? d.activity.map(coActivityLine).join("") : '<div class="empty">Nothing yet.</div>';
   // A refresh must not throw away a message being typed.
   const typing = document.activeElement && document.activeElement.closest("#coSessions tr[id^=coMsg-]");

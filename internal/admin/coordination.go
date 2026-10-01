@@ -94,15 +94,29 @@ func (s *Server) handleCoordination(w http.ResponseWriter, r *http.Request) {
 		Installed bool                      `json:"installed"`
 		Status    coord.Status              `json:"status"`
 		Activity  []string                  `json:"activity"`
+		Metrics   coordMetrics              `json:"metrics"`
 		Error     string                    `json:"error,omitempty"`
 	}{Config: cfg.SessionCoordination, Resolved: cfg.SessionCoordination.Resolved(), Installed: coord.Installed(),
-		Activity: logTail(filepath.Join(c.Dir, "coord.log"), 40)}
+		Activity: logTail(filepath.Join(c.Dir, "coord.log"), 40),
+		Metrics:  coordStats(filepath.Join(c.Dir, "coord.log"), coordWindow(r.URL.Query().Get("days")), time.Now())}
 	if st, err := c.Status(); err != nil {
 		resp.Error = err.Error()
 	} else {
 		resp.Status = st
 	}
 	writeJSON(w, resp)
+}
+
+// coordWindow is the metrics window the dashboard asked for: today, 7 or
+// 14 days.
+func coordWindow(q string) int {
+	switch q {
+	case "7":
+		return 7
+	case "14":
+		return 14
+	}
+	return 1
 }
 
 // logTail is the last n lines of path, newest first.

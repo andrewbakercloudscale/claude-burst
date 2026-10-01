@@ -454,6 +454,27 @@ func targetPath(h hookInput) string {
 	return realPath(p)
 }
 
+// scratchPath is a file in a temporary directory: a session's scratchpad
+// or a throwaway script. Only the session that made it ever edits it, so
+// tracking it is noise in the dashboard and the log.
+// CLAUDE_BURST_COORD_TRACK_TMP tracks them anyway, for the tests, whose
+// repositories are all temporary directories.
+func scratchPath(p string) bool {
+	if os.Getenv("CLAUDE_BURST_COORD_TRACK_TMP") != "" {
+		return false
+	}
+	dirs := []string{"/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"}
+	if td := os.TempDir(); td != "" {
+		dirs = append(dirs, strings.TrimSuffix(realPath(td), "/")+"/")
+	}
+	for _, d := range dirs {
+		if strings.HasPrefix(p, d) {
+			return true
+		}
+	}
+	return false
+}
+
 // realPath resolves symlinks in the longest existing prefix, so a file
 // being created (which does not exist yet) still gets a canonical name.
 func realPath(p string) string {
@@ -650,7 +671,7 @@ func (c *Coordinator) preTool(h hookInput, out io.Writer) error {
 		return nil
 	}
 	path := targetPath(h)
-	if path == "" {
+	if path == "" || scratchPath(path) {
 		return nil
 	}
 	return c.with(func(t *tx) error {
