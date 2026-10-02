@@ -1309,18 +1309,23 @@
       <div id="kaNote"></div>
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
-      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it soon after this Mac goes offline and keeps trying for a while, as set under <b>Timing</b> (defaults: about 10 seconds after Wi-Fi is lost, then every minute for 30 minutes), and starts again after the next time it is back online. Opening the lid with no network tries at once and keeps trying, even when <b>When</b> is set to lid shut. The password is required: without it macOS refuses a join made in the background. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
+      <div class="hint">With the lid shut, macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. This is the other half of keeping a session alive with the lid shut: <b>Keep working with the lid closed</b> above stops the Mac sleeping so Claude Code keeps working, and this keeps it online. Pick the hotspot here and Burst joins it for you when this Mac goes offline, so the session carries on in your bag and you can follow it from your phone through Remote Control. Opening the lid with no network also tries straight away and keeps trying, whatever <b>When</b> says.</div>
+      <div class="note warn" style="margin-top:8px"><b>Your phone must be visible to the Mac, or every join fails with "Could not find network".</b> An iPhone only broadcasts its hotspot while something is connected to it or while <b>Settings &gt; Personal Hotspot</b> is open on the screen. Before you close the lid and leave:
+        <ul style="margin:6px 0 0 18px;padding:0">
+          <li>turn on <b>Allow Others to Join</b> and <b>Maximise Compatibility</b> in Personal Hotspot;</li>
+          <li>open the Personal Hotspot screen on the phone (or keep the Mac joined to it) until Burst has joined; once one device is connected, the phone keeps broadcasting.</li>
+        </ul></div>
       <div class="set-grid" style="margin-top:10px">
-        <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select></label>
-        <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select></label>
-        <label><span>Password <span class="hint" style="font-weight:400">(required)</span></span><span style="display:flex;gap:6px"><input id="hsPw" type="text" class="masked" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="the hotspot's password" style="flex:1"><button id="hsShow" type="button">Show</button></span></label>
+        <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select><span class="dflt">The hotspot to join. It must be one this Mac has joined before.</span></label>
+        <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select><span class="dflt">Lid shut: leaves an open laptop's Wi-Fi to you.</span></label>
+        <label><span>Password <span class="hint" style="font-weight:400">(required)</span></span><span style="display:flex;gap:6px"><input id="hsPw" type="text" class="masked" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="the hotspot's password" style="flex:1"><button id="hsShow" type="button">Show</button></span><span class="dflt">Without it macOS refuses a join made in the background.</span></label>
       </div>
       <h4 style="margin:12px 0 4px">Timing</h4>
       <div class="set-grid">
-        <label>Check the internet every (seconds)<input id="hsCheck" type="number" min="2" max="120" step="1" style="width:110px"></label>
-        <label>Failed checks before joining<input id="hsOffline" type="number" min="1" max="10" step="1" style="width:110px"></label>
-        <label>Gap between tries (seconds)<input id="hsRetry" type="number" min="15" max="1800" step="5" style="width:110px"></label>
-        <label>Keep trying for (minutes)<input id="hsGiveUp" type="number" min="1" max="1440" step="5" style="width:110px"></label>
+        <label>Check the internet every (seconds)<input id="hsCheck" type="number" min="2" max="120" step="1" style="width:110px"><span class="dflt">How often Burst tests whether this Mac can reach the internet. Default 5.</span></label>
+        <label>Failed checks before joining<input id="hsOffline" type="number" min="1" max="10" step="1" style="width:110px"><span class="dflt">How many of those tests must fail in a row before it joins, so a brief blip does not switch networks. Default 2 (about 10 seconds offline).</span></label>
+        <label>Gap between tries (seconds)<input id="hsRetry" type="number" min="15" max="1800" step="5" style="width:110px"><span class="dflt">After a failed join, how long to wait before the next one. Default 60.</span></label>
+        <label>Keep trying for (minutes)<input id="hsGiveUp" type="number" min="1" max="1440" step="5" style="width:110px"><span class="dflt">How long to keep trying after going offline before giving up. It starts again the next time the Mac has been back online. Default 30.</span></label>
       </div>
       <div class="hint" id="hsTiming" style="margin-top:4px"></div>
       <div class="row" style="margin-top:8px">
@@ -1353,11 +1358,11 @@
   <section id="sec-notify" style="scroll-margin-top:70px">
     <h2>Notifications <span class="applies" data-where="config.json" data-when="now"></span></h2>
     <div class="body">
-      <div class="hint">macOS notifications from the gateway, for things worth knowing while you are looking at something else.</div>
+      <div class="hint">Pop-up notifications on this Mac, for things worth knowing while you are looking at something else. They appear top right and stay in <b>Notification Centre</b> (click the clock in the menu bar). macOS shows them as coming from <b>Script Editor</b>, because Burst sends them with AppleScript: if nothing appears, open <b>System Settings &gt; Notifications &gt; Script Editor</b> and turn on Allow notifications. Nothing is sent off this Mac.</div>
       <div class="mac-toggles">
         <label><input type="checkbox" data-notify="failover"> <b>Requests move to the secondary</b><span>when Anthropic refuses a model (a usage limit or an outage) and requests start going to the paid secondary, and again when they come back</span></label>
         <label><input type="checkbox" data-notify="compaction"> <b>A session was compacted</b><span>when Pauseless Compaction swaps a session onto its summary</span></label>
-        <label><input type="checkbox" data-notify="guards"> <b>A guard acted</b><span>when the pf guard or the gateway watchdog repaired something, or removed the redirect so Claude Code could reach Anthropic directly</span></label>
+        <label><input type="checkbox" data-notify="guards"> <b>A guard acted</b><span>when the pf guard (it keeps the macOS firewall rule that sends Claude Code's traffic through Burst in place) or the gateway watchdog (it restarts Burst if it has stopped) repaired something, or removed the redirect so Claude Code could reach Anthropic directly</span></label>
       </div>
 <div class="row" style="margin-top:10px"><button class="primary" id="ntSave" disabled>&#x2713; Save</button></div>
       <div id="ntNote"></div>
@@ -1400,7 +1405,7 @@
       </div>
 
       <div class="hint" style="margin-top:12px">
-        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks that the gateway program is really running (macOS can report a background job as loaded after its program has died) and restarts it if not. The <b>pf guard</b> checks that requests to <code>api.anthropic.com</code> really arrive at this gateway, and repairs the redirect if they do not. Neither does anything after you have reverted to normal Claude, so a revert stays reverted. If the guard cannot repair the redirect after four tries, it removes it, so Claude Code talks to Anthropic directly: working without Burst is better than not working at all.
+        Both run every 2 minutes and write nothing while things are fine. The <b>watchdog</b> checks that the gateway program is really running (macOS can report a background job as loaded after its program has died) and restarts it if not. The <b>pf guard</b> looks after the redirect. pf is the packet filter, the firewall built into macOS; Burst adds one pf rule that sends Claude Code's traffic for <code>api.anthropic.com</code> to this gateway instead of straight to Anthropic, and other software (VPNs, security tools, a network change) can remove it. The guard checks that requests to <code>api.anthropic.com</code> really arrive at this gateway, and repairs the redirect if they do not. Neither does anything after you have reverted to normal Claude, so a revert stays reverted. If the guard cannot repair the redirect after four tries, it removes it, so Claude Code talks to Anthropic directly: working without Burst is better than not working at all.
       </div>
       <div id="pfHealNote"></div>
     </div>
