@@ -204,8 +204,18 @@ func serve(args []string) {
 			msg := fmt.Sprintf("WARNING: the local CA is not present in %s -- Claude Code will reject this gateway's certificate. Run: claude-burst enable", cfg.Intercept.CABundle)
 			fmt.Fprintln(os.Stderr, msg)
 			logger.Print(msg)
+		} else if !strings.Contains(string(b), strings.TrimSpace(string(caPEM))) {
+			// The CA was regenerated (expiry, or the 2026-10-02 move to a
+			// name-constrained CA): Claude Code sessions started from now on
+			// need the new one in the bundle. Sessions already running keep
+			// the bundle they read at startup and are served a bridge
+			// certificate instead (see tlsca).
+			if err := tlsca.EnsureInBundle(cfg.Intercept.CABundle, caPEM); err != nil {
+				logger.Printf("WARNING: the CA was renewed but %s could not be updated: %v. Run: claude-burst enable", cfg.Intercept.CABundle, err)
+			} else {
+				logger.Printf("CA renewed: updated the Claude Burst block in %s; the System keychain still needs: sudo scripts/trust-ca-systemwide.sh", cfg.Intercept.CABundle)
+			}
 		}
-		_ = caPEM
 	}
 
 	// net.Listen is split out from Serve (below) rather than calling the

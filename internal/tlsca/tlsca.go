@@ -7,9 +7,19 @@
 // for the intercepted host. The CA is added to the NODE_EXTRA_CA_CERTS bundle
 // that Claude Code already reads (see EnsureInBundle).
 //
-// Scope of the private key: it can impersonate exactly the hosts it issues
-// leaves for, to processes that trust the bundle. It is written 0600 in a 0700
-// directory and never leaves the machine.
+// Scope of the private key: the CA carries a critical X.509 name constraint
+// permitting only the intercepted host (api.anthropic.com and names under
+// it), so even someone who reads the key cannot mint a certificate that a
+// verifier will accept for any other site. Until 2026-10-02 it had no
+// constraint: the dashboard install trusts the CA system-wide, so a copy of
+// that key could have impersonated any website to every app on the Mac. The
+// key is written 0600 in a 0700 directory and never leaves the machine.
+//
+// Migrating an unconstrained CA (see migrateLegacy) keeps running Claude
+// Code sessions working: Node reads its CA bundle once at startup, so a
+// session started before the change still trusts only the old CA. For a
+// short transition the gateway also presents a bridge certificate, the new
+// CA's public key signed by the old CA, after which the old key is deleted.
 package tlsca
 
 import (
@@ -31,6 +41,9 @@ import (
 const (
 	caValidity   = 10 * 365 * 24 * time.Hour
 	leafValidity = 397 * 24 * time.Hour
+	// bridgeValidity is how long sessions started before a migration keep
+	// working without a restart.
+	bridgeValidity = 30 * 24 * time.Hour
 
 	// Reissue a leaf before it actually expires. Without this the gateway
 	// would keep serving a valid-looking cert until the moment it went stale,
@@ -41,6 +54,13 @@ const (
 	beginMarker = "# BEGIN claude-burst CA -- managed by claude-burst, do not edit inside this block"
 	endMarker   = "# END claude-burst CA"
 )
+
+// Migration files: the bridge certificate presented during a transition, and
+// the old CA's certificate, kept (without its key) so the system-wide trust
+// can be found and removed.
+func migrationFiles(dir string) (bridgeCert, legacyCert string) {
+	return filepath.Join(dir, "bridge-cert.pem"), filepath.Join(dir, "ca-legacy-cert.pem")
+}
 
 // Files returns the on-disk locations under dir.
 func Files(dir string) (caCert, caKey, leafCert, leafKey string) {
@@ -67,14 +87,26 @@ func LoadOrCreate(dir, host string) (*tls.Certificate, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if caCert != nil && !constrainedTo(caCert, host) {
+		old, oldKey := caCert, caKey
+		caCert, caKey, caPEM, err = createCA(caCertPath, caKeyPath, host)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(old.PermittedDNSDomains) == 0 {
+			if err := migrateLegacy(dir, old, oldKey, caCert, caKey); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
 	if caCert == nil {
-		caCert, caKey, caPEM, err = createCA(caCertPath, caKeyPath)
+		caCert, caKey, caPEM, err = createCA(caCertPath, caKeyPath, host)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 
-	leaf, err := loadLeaf(leafCertPath, leafKeyPath, host)
+	leaf, err := loadLeaf(leafCertPath, leafKeyPath, host, caCert)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -84,7 +116,73 @@ func LoadOrCreate(dir, host string) (*tls.Certificate, []byte, error) {
 			return nil, nil, err
 		}
 	}
+	if bridge := loadBridge(dir, caCert); bridge != nil {
+		chained := *leaf
+		chained.Certificate = append(append([][]byte{}, leaf.Certificate...), bridge.Raw)
+		leaf = &chained
+	}
 	return leaf, caPEM, nil
+}
+
+// constrainedTo says whether the CA may only sign for host: a critical name
+// constraint that permits exactly host.
+func constrainedTo(ca *x509.Certificate, host string) bool {
+	return ca.PermittedDNSDomainsCritical && len(ca.PermittedDNSDomains) == 1 &&
+		strings.EqualFold(ca.PermittedDNSDomains[0], host) &&
+		len(ca.ExcludedDNSDomains) == 0
+}
+
+// migrateLegacy signs the new CA's public key with the old, unconstrained
+// CA (the bridge), keeps the old certificate for trust removal, and deletes
+// the old key. A session started before the migration still trusts only the
+// old CA; served as leaf + bridge, its chain still reaches that CA.
+func migrateLegacy(dir string, old *x509.Certificate, oldKey *ecdsa.PrivateKey, ca *x509.Certificate, caKey *ecdsa.PrivateKey) error {
+	bridgePath, legacyPath := migrationFiles(dir)
+	notAfter := time.Now().Add(bridgeValidity)
+	if old.NotAfter.Before(notAfter) {
+		notAfter = old.NotAfter
+	}
+	tmpl := *ca
+	tmpl.NotAfter = notAfter
+	serial, err := randomSerial()
+	if err != nil {
+		return err
+	}
+	tmpl.SerialNumber = serial
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, old, &caKey.PublicKey, oldKey)
+	if err != nil {
+		return fmt.Errorf("tlsca: create bridge cert: %w", err)
+	}
+	if err := writeFile(bridgePath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0644); err != nil {
+		return err
+	}
+	if err := writeFile(legacyPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: old.Raw}), 0644); err != nil {
+		return err
+	}
+	// The old key itself is gone already: createCA wrote the new key over it.
+	return nil
+}
+
+// loadBridge returns the bridge certificate while it is still valid and
+// still certifies the current CA's key; otherwise nil.
+func loadBridge(dir string, ca *x509.Certificate) *x509.Certificate {
+	bridgePath, _ := migrationFiles(dir)
+	b, err := os.ReadFile(bridgePath)
+	if err != nil {
+		return nil
+	}
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return nil
+	}
+	c, err := x509.ParseCertificate(block.Bytes)
+	if err != nil || time.Now().After(c.NotAfter) {
+		return nil
+	}
+	if pk, ok := c.PublicKey.(*ecdsa.PublicKey); !ok || !pk.Equal(ca.PublicKey) {
+		return nil
+	}
+	return c
 }
 
 func loadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
@@ -121,10 +219,15 @@ func loadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, []b
 	if time.Now().After(cert.NotAfter.Add(-renewBefore)) {
 		return nil, nil, nil, nil
 	}
+	// A key that does not belong to the certificate (a crash between the
+	// two writes) is treated as absent too.
+	if pk, ok := cert.PublicKey.(*ecdsa.PublicKey); !ok || !pk.Equal(&key.PublicKey) {
+		return nil, nil, nil, nil
+	}
 	return cert, key, certPEM, nil
 }
 
-func createCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
+func createCA(certPath, keyPath, host string) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("tlsca: generate CA key: %w", err)
@@ -147,21 +250,27 @@ func createCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, [
 		IsCA:                  true,
 		MaxPathLen:            0,
 		MaxPathLenZero:        true,
+		// Only host and names under it: see the package comment.
+		PermittedDNSDomainsCritical: true,
+		PermittedDNSDomains:         []string{host},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("tlsca: create CA cert: %w", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	if err := writeFile(certPath, certPEM, 0644); err != nil {
-		return nil, nil, nil, err
-	}
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("tlsca: marshal CA key: %w", err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	// Key first: a crash between the two writes then leaves a key with the
+	// old certificate, which loadCA rejects as a mismatch and regenerates,
+	// never a new certificate beside a key that cannot sign for it.
 	if err := writeFile(keyPath, keyPEM, 0600); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := writeFile(certPath, certPEM, 0644); err != nil {
 		return nil, nil, nil, err
 	}
 	cert, err := x509.ParseCertificate(der)
@@ -171,7 +280,7 @@ func createCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, [
 	return cert, key, certPEM, nil
 }
 
-func loadLeaf(certPath, keyPath, host string) (*tls.Certificate, error) {
+func loadLeaf(certPath, keyPath, host string, ca *x509.Certificate) (*tls.Certificate, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -200,6 +309,11 @@ func loadLeaf(certPath, keyPath, host string) (*tls.Certificate, error) {
 		return nil, nil
 	}
 	if leaf.VerifyHostname(host) != nil {
+		return nil, nil
+	}
+	// Signed by a different CA (the CA was just regenerated): reissue, or
+	// the gateway would serve a chain no current trust store accepts.
+	if leaf.CheckSignatureFrom(ca) != nil {
 		return nil, nil
 	}
 	pair.Leaf = leaf
