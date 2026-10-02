@@ -280,6 +280,25 @@ func TestTraceMissingHostsRedirect(t *testing.T) {
 	}
 }
 
+// The live shape on 2026-10-02: the hosts entry is IPv4 only and Go's
+// lookup (getaddrinfo with AI_ALL) adds Anthropic's real AAAA from DNS. An
+// ordinary lookup, Claude Code's, returns 127.0.0.1 alone, so this is green
+// and the trace dials the loopback answer even when it is listed second.
+func TestTraceHostsRedirectWithRealAAAA(t *testing.T) {
+	rig := newTraceRig(t, rigOpts{})
+	rig.s.trace.lookupHost = func(ctx context.Context, host string) ([]string, error) {
+		return []string{"2607:6bc0::10", "127.0.0.1"}, nil
+	}
+	r := rig.s.runTrace(context.Background(), rig.cfg)
+	h := hopByKey(t, r, "dns")
+	if h.State != hopOK || strings.Contains(h.Summary, "2607") || !strings.Contains(h.Detail, "2607:6bc0::10") {
+		t.Fatalf("dns: %+v", h)
+	}
+	if pf := hopByKey(t, r, "pf"); pf.State != hopOK {
+		t.Fatalf("pf must be reached through 127.0.0.1: %+v", pf)
+	}
+}
+
 // A primary error with no secondary: the failover hop is grey, optional.
 func TestTracePrimaryErrorWithoutSecondary(t *testing.T) {
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")

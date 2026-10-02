@@ -259,10 +259,18 @@ func (s *Server) runTrace(ctx context.Context, cfg config.Config) traceResult {
 		case err != nil:
 			dns.State, dns.Summary = hopBad, fmt.Sprintf("%s did not resolve: %v", host, err)
 			reachable = false
-		case transparent && allLoopback(addrs):
+		case transparent && anyLoopback(addrs):
+			// The hosts entry is IPv4 only, and Go asks getaddrinfo with
+			// AI_ALL, under which macOS adds Anthropic's real AAAA from DNS.
+			// Claude Code asks the ordinary way (no flags), which returns the
+			// hosts entry alone, so only the loopback answers are its path.
+			loop, other := splitLoopback(addrs)
 			dns.State = hopOK
-			dns.Summary = fmt.Sprintf("%s resolves to %s: the /etc/hosts redirect sends Claude Code to this Mac", host, strings.Join(addrs, ", "))
-			dialAddr = net.JoinHostPort(addrs[0], port)
+			dns.Summary = fmt.Sprintf("%s resolves to %s: the /etc/hosts redirect sends Claude Code to this Mac", host, strings.Join(loop, ", "))
+			if len(other) > 0 {
+				dns.Detail = fmt.Sprintf("DNS also has %s, which a lookup asking for every family returns; an ordinary lookup, the kind Claude Code makes, returns the /etc/hosts entry alone.", strings.Join(other, ", "))
+			}
+			dialAddr = net.JoinHostPort(loop[0], port)
 		case transparent:
 			dns.State = hopBad
 			dns.Summary = fmt.Sprintf("%s resolves to %s, Anthropic's real address: the /etc/hosts redirect is missing, so Claude Code goes straight to Anthropic and bypasses Burst", host, strings.Join(addrs, ", "))
@@ -372,17 +380,20 @@ func (s *Server) runTrace(ctx context.Context, cfg config.Config) traceResult {
 	return res
 }
 
-func allLoopback(addrs []string) bool {
-	if len(addrs) == 0 {
-		return false
-	}
+func anyLoopback(addrs []string) bool {
+	loop, _ := splitLoopback(addrs)
+	return len(loop) > 0
+}
+
+func splitLoopback(addrs []string) (loop, other []string) {
 	for _, a := range addrs {
-		ip := net.ParseIP(a)
-		if ip == nil || !ip.IsLoopback() {
-			return false
+		if ip := net.ParseIP(a); ip != nil && ip.IsLoopback() {
+			loop = append(loop, a)
+		} else {
+			other = append(other, a)
 		}
 	}
-	return true
+	return loop, other
 }
 
 // isOurGateway asks /healthz at addr under the intercepted name. Trust is
