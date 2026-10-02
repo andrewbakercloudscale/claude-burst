@@ -287,7 +287,6 @@
                background: color-mix(in srgb, var(--edge) 12%, transparent); }
   @media (prefers-color-scheme: dark) { .pill.edge { --edge: #f472b6; } }
   .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, transparent); background: var(--bad-bg); }
-  .pill.t { white-space: nowrap; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
   .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); } .st-wait { color: var(--muted); }
 
   details.resp { border-bottom: 1px solid var(--border); }
@@ -2086,24 +2085,6 @@ function renderRequests(rows) {
       <th>Time</th><th>Slot</th><th>Destination</th><th>Model</th><th>Status</th>
       <th class="num">ms</th><th class="num">In</th><th class="num">Out</th><th class="num">Cost</th><th>Note</th>
     </tr></thead><tbody>${rows.map(e => {
-      // A worker call, not gateway traffic: labelled as such, with the WORKER's
-      // model (what actually answered) and its own outcome instead of an HTTP
-      // status it never had.
-      if (e.slot === "shunt") {
-        const ok = e.shunt_ok !== false;
-        return `<tr>
-        <td class="mono">${esc(stamp(e.time))}</td>
-        <td><span class="pill t">Token Shunt</span></td>
-        <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
-        <td class="mono">${esc(e.model || "-")}<div style="font-size:10.5px;color:var(--muted)">${esc(e.shunt || "")}</div></td>
-        <td class="mono ${ok ? "st-2" : "st-5"}">${ok ? "ok" : "failed"}</td>
-        <td class="num">${num(e.duration_ms)}</td>
-        <td class="num">${num(e.input_tokens)}</td>
-        <td class="num">${num(e.output_tokens)}</td>
-        <td class="num">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? smallUSD(e.api_equivalent_usd) : "-"}</td>
-        <td>${esc(e.note || "")}${e.session_id ? ` <span style="color:var(--muted)" title="${esc(e.session_id)}">\u00b7 session ${esc(e.session_id.slice(0, 8))}</span>` : ""}</td>
-      </tr>`;
-      }
       const slot = e.slot || (e.route === "anthropic" ? "primary" : "secondary");
       return `<tr>
         <td class="mono">${esc(stamp(e.time))}</td>

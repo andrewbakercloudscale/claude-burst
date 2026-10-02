@@ -27,7 +27,6 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
-	"github.com/andrewbakercloudscale/claude-burst/internal/shunt"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
@@ -104,7 +103,7 @@ Commands:
   reset             Clear overflow state immediately (back to primary)
   force-secondary   Route inference to the secondary for a while (testing)
   stats             Summarize local routing/token metrics
-  shunt             Token shunting: off and not recommended (DECISION-token-shunting-off.md); shunt disable removes it
+  shunt disable     Remove the hook and skill of token shunting (removed), if an earlier install left them
   coord             Session coordination: status, send, release (see: coord help)
   version           Print version
 
@@ -584,8 +583,8 @@ func status() {
 	fmt.Printf("gateway: %s://%s\nprimary: %s (%s)\nsecondary: %s (%s)\n",
 		scheme, cfg.Listen, cfg.Primary.Provider, cfg.Primary.BaseURL, cfg.Secondary.Provider, cfg.Secondary.BaseURL)
 	reportIntercept(cfg)
-	if cfg.Shunt.Enabled() {
-		fmt.Print(shuntStatusText(cfg))
+	if legacyShuntHookInstalled() {
+		fmt.Println("shunt: a token-shunting hook from an earlier install is still in settings.json (the feature was removed). Run: claude-burst shunt disable")
 	}
 	reportKeepAwake(cfg)
 }
@@ -799,11 +798,6 @@ func stats(args []string) {
 		fatal(err)
 	}
 	fmt.Println(s.String())
-	if lp, err := config.ShuntLogPath(); err == nil {
-		if ss, err := shunt.SummarizeLog(lp, since); err == nil && (ss.Reads+ss.Writes+ss.Denials+ss.Failures) > 0 {
-			fmt.Println("shunt: " + ss.String())
-		}
-	}
 }
 
 func enable(args []string) {
@@ -879,6 +873,13 @@ func disable(args []string) {
 	p, err := claudesettings.Path()
 	if err != nil {
 		fatal(err)
+	}
+	// A token-shunting hook left by an earlier install runs this binary on
+	// every Read and Bash call; disabling Claude Burst takes it out too.
+	if removed, err := removeLegacyShunt(); err != nil {
+		fatal(err)
+	} else if removed {
+		fmt.Println("removed the token-shunting hook and skill left by an earlier install")
 	}
 	if _, err := os.Stat(p); os.IsNotExist(err) && !cfg.Intercept.Transparent() {
 		fmt.Println("already disabled")

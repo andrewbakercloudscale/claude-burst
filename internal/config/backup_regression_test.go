@@ -9,28 +9,28 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/backup"
 )
 
-// Reproduces 2026-09-21: an OLD backup sits in latest.bak (from a deploy,
-// shunt enabled), then Save writes a NEW config (shunt disabled) directly --
-// the way `claude-burst shunt disable` does, with no call to
+// Reproduces 2026-09-21: an OLD backup sits in latest.bak (from a deploy),
+// then Save writes a NEW config directly, with no call to
 // scripts/backup-config.sh anywhere in that path. Before this package
 // existed, nothing updated latest.bak in between, so
 // `cp backups/config.json.latest.bak config.json` -- exactly what
-// scripts/rollback.sh does -- would restore the stale, shunt-enabled config
-// and silently undo the disable. This asserts latest.bak now holds what
-// Save actually wrote, so a later unrelated rollback cannot resurrect the
-// old value.
+// scripts/rollback.sh does -- would restore the stale config and silently
+// undo the change (that day it re-enabled token shunting, since removed).
+// Secondary pruning stands in for the switch here. This asserts latest.bak
+// now holds what Save actually wrote, so a later unrelated rollback cannot
+// resurrect the old value.
 func TestSaveUpdatesTheBackupRollbackWouldRestore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_BURST_BACKUP_DIR", "")
 
-	stale := []byte(`{"shunt":{"read":true,"write":true}}`)
+	stale := []byte(`{"secondary_pruning":{}}`)
 	if err := backup.SetLatest(filepath.Join(home, ".config", "claude-burst", "config.json"), stale); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := Default()
-	cfg.Shunt = ShuntConfig{Read: false, Write: false}
+	cfg.SecondaryPruning.Disabled = true
 	if err := Save(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -41,14 +41,14 @@ func TestSaveUpdatesTheBackupRollbackWouldRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(b) == string(stale) {
-		t.Fatal("latest.bak still holds the pre-disable, shunt-enabled config: a rollback right now would silently re-enable shunting, same as 2026-09-21")
+		t.Fatal("latest.bak still holds the pre-change config: a rollback right now would silently undo the change, same as 2026-09-21")
 	}
 	var got Config
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Shunt.Enabled() {
-		t.Fatalf("latest.bak must reflect the disabled state Save just wrote: %+v", got.Shunt)
+	if !got.SecondaryPruning.Disabled {
+		t.Fatalf("latest.bak must reflect the state Save just wrote: %+v", got.SecondaryPruning)
 	}
 }
 
@@ -60,7 +60,7 @@ func TestBackupSurvivesARollbackCopy(t *testing.T) {
 	t.Setenv("CLAUDE_BURST_BACKUP_DIR", "")
 
 	cfg := Default()
-	cfg.Shunt = ShuntConfig{Read: false, Write: false}
+	cfg.SecondaryPruning.Disabled = true
 	if err := Save(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestBackupSurvivesARollbackCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Shunt.Enabled() {
-		t.Fatalf("a rollback right after this Save must not undo it: %+v", restored.Shunt)
+	if !restored.SecondaryPruning.Disabled {
+		t.Fatalf("a rollback right after this Save must not undo it: %+v", restored.SecondaryPruning)
 	}
 }
