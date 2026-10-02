@@ -57,6 +57,12 @@ if [[ "$commit" != 1 ]]; then
   say "wrote  $root (not committed: auto-commit is off)"
   notify "Handover updated in $(basename "$root")"; exit 0
 fi
+# A gitignored HANDOFF.md is local notes by choice (a public repo should not
+# publish them), so there is nothing to commit.
+if git -C "$root" check-ignore -q HANDOFF.md 2>/dev/null; then
+  say "wrote  $root (local only: HANDOFF.md is gitignored)"
+  notify "Handover updated in $(basename "$root")"; exit 0
+fi
 if [[ -n "$dirty_before" ]]; then
   say "wrote  $root (not committed: HANDOFF.md already had uncommitted edits)"
   notify "Handover updated in $(basename "$root"), left uncommitted"; exit 0
