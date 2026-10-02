@@ -65,7 +65,7 @@ func TestTraceRecordsRouteAndHopsAndNeverForwardsTheHeader(t *testing.T) {
 	req = claudeCodeShaped("api.anthropic.com")
 	req.Header.Set(TraceHeader, "not-registered")
 	req.Header.Set("Authorization", "Bearer from-claude-code")
-	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	req.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07")
 	s2.ServeHTTP(httptest.NewRecorder(), req)
 	if leaked.Load() != 0 {
 		t.Fatal("an unregistered TraceHeader reached the provider")
@@ -73,6 +73,9 @@ func TestTraceRecordsRouteAndHopsAndNeverForwardsTheHeader(t *testing.T) {
 	h, at := s2.ClientCredential()
 	if h.Get("Authorization") != "Bearer from-claude-code" || h.Get("Anthropic-Beta") != "oauth-2025-04-20" || at.IsZero() {
 		t.Fatalf("Claude Code's credential headers must be kept for the test message: %v", h)
+	}
+	if v := h.Values("Anthropic-Beta"); len(v) != 1 {
+		t.Fatalf("only the oauth beta is kept, not Claude Code's feature betas: %v", v)
 	}
 	if h.Get("User-Agent") != "" {
 		t.Fatal("only credential headers are kept")
