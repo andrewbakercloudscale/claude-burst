@@ -1034,11 +1034,13 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			req = retry
 			resp, err = s.clientFor(in.URL.Path).Do(req)
 			staleWriteRetried = true
-			// Counted once here, after the immediate retry also failed: the
-			// ladder below must not count it again per step.
-			if err != nil && isStaleWriteFailure(err) && allowFailover && slot == "primary" && !isLocalConnectivityFailure(err) && !isClientCancellation(err) {
-				_ = fd.OnError(err)
-			}
+			// Not counted here. If the retry also failed, the single
+			// fd.OnError after the ladder below counts this request, once.
+			// It used to be counted here AND there, so one request whose
+			// fresh-connection retry also failed was "2 failures within
+			// 60s" on its own (req=33a2ad7292388370, 2026-10-02 12:04, a
+			// broken pipe on a phone hotspot): any transport threshold of 2
+			// was met by a single request.
 		}
 	}
 	if resp != nil {
