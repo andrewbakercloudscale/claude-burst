@@ -4585,7 +4585,7 @@ function renderSettings() {
     for (const b of document.querySelectorAll("[data-prdel]")) b.onclick = () => savePrices({[b.dataset.prdel]: null});
   }
   const unpriced = (st.pricing || []).filter(p => !p.price && p.unpriced).length;
-  setDot("nd-failover", unpriced ? "warn" : "");
+  setDot("nd-failover", unpriced ? "warn" : "ok"); // every model priced: as healthy as any other entry, not a grey "no state"
 
   if (!formDirty.nt) for (const cb of document.querySelectorAll("[data-notify]")) cb.checked = !!(st.notify || {})[cb.dataset.notify];
   setDot("nd-notify", Object.values(st.notify || {}).some(Boolean) ? "ok" : "");
