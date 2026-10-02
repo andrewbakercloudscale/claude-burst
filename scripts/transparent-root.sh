@@ -45,6 +45,13 @@ PF_CONF="${CLAUDE_BURST_PF_CONF:-/etc/pf.conf}"
 PF_ANCHOR_FILE="${CLAUDE_BURST_PF_ANCHOR:-/etc/pf.anchors/claude-burst}"
 STATE_DIR="${CLAUDE_BURST_ROOT_STATE_DIR:-/etc/claude-burst}"
 STATE_FILE="$STATE_DIR/transparent.state"
+# Test seams, defaulting to the real thing. Tests point PFCTL at a stub that
+# logs its argv, and set the effective uid to 0 so the root-only paths run
+# against temp files. Neither grants anything: a non-root caller that claims
+# uid 0 still cannot write a real /etc file.
+PFCTL="${CLAUDE_BURST_PFCTL:-pfctl}"
+ROOT_EUID="${CLAUDE_BURST_TEST_EUID:-$EUID}"
+pfctl() { command "$PFCTL" "$@"; }
 
 ANCHOR_NAME="claude-burst"
 BEGIN="# BEGIN claude-burst"
@@ -58,7 +65,7 @@ TAG_RDR="pf-rdr"
 TAG_LOAD="pf-load"
 
 die() { echo "error: $*" >&2; exit 1; }
-need_root() { [[ $EUID -eq 0 ]] || die "must run as root: sudo $SELF $*"; }
+need_root() { [[ $ROOT_EUID -eq 0 ]] || die "must run as root: sudo $SELF $*"; }
 
 # --- text-editing helper -----------------------------------------------------
 #
