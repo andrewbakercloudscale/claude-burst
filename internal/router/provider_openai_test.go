@@ -411,7 +411,7 @@ func TestOpenAICompatibleProviderPreparePropertiesNoInboundAuthLeak(t *testing.T
 	p := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", nil, "claude-burst-together-test-noleak", "TOGETHER_API_KEY")
 
 	body := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`)
-	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	in := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 	in.Header.Set("Authorization", "Bearer oauth-should-not-leak")
 	in.Header.Set("x-api-key", "sk-ant-should-not-leak")
 	in.Header.Set("anthropic-beta", "claude-code-20250219")
@@ -454,7 +454,7 @@ func TestOpenAICompatibleProviderConsistentFailoverUsesModelMap(t *testing.T) {
 	p := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", modelMap, "claude-burst-together-test-map", "TOGETHER_API_KEY")
 
 	body := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hi"}]}`)
-	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	in := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 
 	req, _, err := p.Prepare(in.Context(), in, body)
 	if err != nil {
@@ -479,7 +479,7 @@ func TestOpenAICompatibleProviderConsistentFailoverFallsBackForUnmappedModel(t *
 	p := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", modelMap, "claude-burst-together-test-map-fallback", "TOGETHER_API_KEY")
 
 	body := []byte(`{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"hi"}]}`)
-	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	in := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 
 	req, _, err := p.Prepare(in.Context(), in, body)
 	if err != nil {

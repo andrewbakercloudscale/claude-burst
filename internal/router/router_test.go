@@ -125,7 +125,7 @@ func TestFailoverReplaysRequestToBedrock(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages?beta=true", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages?beta=true", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer oauth-token")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20,claude-code-20250219")
 	s.ServeHTTP(rr, req)
@@ -149,7 +149,7 @@ func TestEveryRequestIsLoggedStartAndDone(t *testing.T) {
 	s, logBuf := newTestServer(t, "", "")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://local/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/healthz", nil)
 	s.ServeHTTP(rr, req)
 
 	logs := logBuf.String()
@@ -188,7 +188,7 @@ func TestBodyTooLargeIsLoggedAndRejected(t *testing.T) {
 
 	oversized := strings.Repeat("a", 2*1024*1024)
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(oversized))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(oversized))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusRequestEntityTooLarge {
@@ -220,7 +220,7 @@ func TestKeychainMissingKeyPassesTheLimitThrough(t *testing.T) {
 	s, logBuf := newTestServer(t, primary.URL, "http://127.0.0.1:0")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusTooManyRequests || !strings.Contains(rr.Body.String(), `"message":"limit"`) {
@@ -248,7 +248,7 @@ func TestBedrockModelMappingFailureLogsAndReturns502(t *testing.T) {
 	s.activateOverflow("some-unmapped-model", time.Now().Add(time.Hour).Unix(), "five_hour", "test setup")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"some-unmapped-model","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"some-unmapped-model","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadGateway {
@@ -273,7 +273,7 @@ func TestUpstreamErrorNoFailoverIsLogged(t *testing.T) {
 	s, logBuf := newTestServer(t, primary.URL, "")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusInternalServerError {
@@ -300,7 +300,7 @@ func TestTransportErrorLogsNetworkSnapshot(t *testing.T) {
 	s, logBuf := newTestServer(t, "http://127.0.0.1:1", "")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadGateway {
@@ -341,7 +341,7 @@ func TestMetricsWriteFailureDoesNotBreakRequest(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -368,7 +368,7 @@ func TestPanicRecoveryReturns500AndLogsStack(t *testing.T) {
 	s, logBuf := newTestServer(t, "", "")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 	req.Body = panicReader{}
 
 	func() {
@@ -421,13 +421,13 @@ func TestBuildForwardRequestRejectsPathTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages/../../../secret-admin-api", nil)
+	in := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages/../../../secret-admin-api", nil)
 	if _, err := buildForwardRequest(context.Background(), base, in, nil, true); err == nil {
 		t.Fatal("expected a path-traversal request to be rejected, got nil error")
 	}
 
 	// A normal, non-escaping path must still work.
-	in = httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	in = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 	req, err := buildForwardRequest(context.Background(), base, in, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error for a normal path: %v", err)
@@ -459,7 +459,7 @@ func TestNoSecondaryConfigured_NeverFailsOver(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusTooManyRequests {
@@ -508,7 +508,7 @@ func TestForcedOverflowWithNilSecondaryServesFromPrimary(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
 	// With nowhere else to go the request goes to the primary: a stale or
@@ -566,7 +566,7 @@ func TestAnthropicAPIKeyProviderForwardsHeadersUnchanged(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	req.Header.Set("x-api-key", "sk-ant-test-key")
 	req.Header.Set("anthropic-beta", "claude-code-20250219")
 	s.ServeHTTP(rr, req)
@@ -621,7 +621,7 @@ func TestMeteredFailoverReplaysAfterSustainedFailures(t *testing.T) {
 	body := `{"model":"claude-sonnet-5","messages":[]}`
 	for i := 0; i < 2; i++ {
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(body))
 		req.Header.Set("x-api-key", "test-anthropic-key")
 		s.ServeHTTP(rr, req)
 		if rr.Code != http.StatusTooManyRequests {
@@ -636,7 +636,7 @@ func TestMeteredFailoverReplaysAfterSustainedFailures(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(body))
 	req.Header.Set("x-api-key", "test-anthropic-key")
 	s.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -707,7 +707,7 @@ func TestOpenAICompatibleFailoverTranslatesResponse(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Authorization", "Bearer oauth-token")
 	s.ServeHTTP(rr, req)
 
@@ -782,7 +782,7 @@ func TestCountTokensNeverRoutesToSecondaryDuringOverflow(t *testing.T) {
 	s.ForceOverflow(time.Hour, "test: simulating an active overflow window")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages/count_tokens",
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages/count_tokens",
 		strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Authorization", "Bearer oauth-token")
 	s.ServeHTTP(rr, req)
@@ -876,7 +876,7 @@ func TestOpenAICompatibleSecondaryOpenRouter(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Authorization", "Bearer oauth-token")
 	s.ServeHTTP(rr, req)
 
@@ -923,7 +923,7 @@ func TestResponseHeaderTimeoutBoundsFullyHungConnection(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 
 	done := make(chan struct{})
 	go func() {
@@ -970,7 +970,7 @@ func TestSlowTrickleStreamStillSucceeds(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -1036,7 +1036,7 @@ func TestWriteMetricFlagsUnpricedModel(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 			s.writeMetric(req, "secondary", "together", tc.model, tc.model, 200, time.Now(), tc.tok, "", 0, "", "")
 
 			ev := readEvents(t, metricsPath)
@@ -1064,7 +1064,7 @@ func TestWriteMetricWarnsOncePerModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 	for i := 0; i < 5; i++ {
 		s.writeMetric(req, "secondary", "together", "vendor/some-model", "vendor/some-model", 200, time.Now(), tokenUsage{input: 1000}, "", 0, "", "")
 	}
@@ -1122,7 +1122,7 @@ func TestControlPlaneNeverFailsOverToSecondary(t *testing.T) {
 		"/v1/code/sessions/cse_test/worker/heartbeat",
 	} {
 		rr := httptest.NewRecorder()
-		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://local"+path, nil))
+		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1"+path, nil))
 		if rr.Code != http.StatusTooManyRequests {
 			t.Fatalf("%s: expected the primary's own 429 passed through, got %d", path, rr.Code)
 		}
@@ -1181,7 +1181,7 @@ func TestControlPlaneFailuresDoNotArmOverflowForInference(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		rr := httptest.NewRecorder()
-		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://local/v1/code/sessions/cse_test/worker/heartbeat", nil))
+		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1/code/sessions/cse_test/worker/heartbeat", nil))
 		if rr.Code != http.StatusInternalServerError {
 			t.Fatalf("attempt %d: expected the primary's 500 passed through, got %d", i, rr.Code)
 		}
@@ -1191,7 +1191,7 @@ func TestControlPlaneFailuresDoNotArmOverflowForInference(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
 	s.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("inference should still be served by the primary, got %d: %s", rr.Code, rr.Body.String())
@@ -1250,19 +1250,19 @@ func TestControlPlaneSuccessDoesNotResetInferenceFailures(t *testing.T) {
 	// them. If that success reset the window, the third would not fail over.
 	for i := 0; i < 2; i++ {
 		rr := httptest.NewRecorder()
-		s.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(body)))
+		s.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(body)))
 		if rr.Code != http.StatusInternalServerError {
 			t.Fatalf("inference attempt %d: got %d", i, rr.Code)
 		}
 		rr = httptest.NewRecorder()
-		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://local/v1/code/sessions/cse_test/worker/events/stream", nil))
+		s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1/code/sessions/cse_test/worker/events/stream", nil))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("control-plane long-poll should have succeeded, got %d", rr.Code)
 		}
 	}
 
 	rr := httptest.NewRecorder()
-	s.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(body)))
+	s.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(body)))
 	if !secondaryCalled {
 		t.Fatalf("3rd inference failure should have failed over despite the successful long-polls; got %d", rr.Code)
 	}
@@ -1311,7 +1311,7 @@ func TestNonStreamingResponseRecordsUsage(t *testing.T) {
 				t.Fatal(err)
 			}
 			rr := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "http://local"+tc.path,
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+tc.path,
 				strings.NewReader(`{"model":"claude-sonnet-5","stream":false,"messages":[]}`))
 			s.ServeHTTP(rr, req)
 
@@ -1375,7 +1375,7 @@ func TestInFlightCountsStreamingInferenceOnly(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","stream":true,"messages":[]}`))
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","stream":true,"messages":[]}`))
 		s.ServeHTTP(httptest.NewRecorder(), req)
 		close(done)
 	}()
@@ -1383,7 +1383,7 @@ func TestInFlightCountsStreamingInferenceOnly(t *testing.T) {
 	if n := s.InFlight(); n != 1 {
 		t.Fatalf("mid-stream InFlight = %d, want 1", n)
 	}
-	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://local/healthz", nil))
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://127.0.0.1/healthz", nil))
 	if n := s.InFlight(); n != 1 {
 		t.Fatalf("a health check must not be counted: InFlight = %d", n)
 	}
@@ -1415,7 +1415,7 @@ func TestUpstreamErrorBodyIsLoggedAndRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "http://local/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`)))
+	s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`)))
 
 	if !strings.Contains(logBuf.String(), "Input validation error: messages too long") {
 		t.Fatalf("log must carry the upstream's reason:\n%s", logBuf.String())
