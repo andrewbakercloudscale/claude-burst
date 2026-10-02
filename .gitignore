@@ -20,3 +20,8 @@ metrics.jsonl
 
 # Playwright MCP scratch output
 .playwright-mcp/
+
+# Session handover notes: local only, never published (they name private
+# repos and devices, and the handover hooks would inject them into a
+# contributor's sessions).
+HANDOFF.md

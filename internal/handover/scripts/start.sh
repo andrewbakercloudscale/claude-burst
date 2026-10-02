@@ -37,6 +37,15 @@ file="$root/HANDOFF.md"
     echo "===== Commits since HANDOFF.md was last committed ($(git -C "$root" log -1 --date=format-local:'%Y-%m-%d %H:%M' --format=%ad "$last") local) ====="
     git -C "$root" log --date=format-local:'%m-%d %H:%M' --format='%h %ad %s' "$last"..HEAD | head -n 40
     echo
+  elif git -C "$root" check-ignore -q HANDOFF.md 2>/dev/null; then
+    # Local-only notes have no commit to measure from: use when the file
+    # was last written.
+    since=$(stat -f %m "$file" 2>/dev/null)
+    if [[ -n "$since" ]]; then
+      echo "===== Commits since HANDOFF.md was last written ($(date -r "$since" '+%Y-%m-%d %H:%M') local) ====="
+      git -C "$root" log --since="@$since" --date=format-local:'%m-%d %H:%M' --format='%h %ad %s' | head -n 40
+      echo
+    fi
   fi
   echo "===== Working tree ====="
   git -C "$root" status --short --branch | head -n 30
