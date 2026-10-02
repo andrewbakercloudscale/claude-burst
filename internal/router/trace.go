@@ -167,6 +167,19 @@ type clientAuth struct {
 // authentication to Anthropic.
 var credentialHeaders = []string{"Authorization", "X-Api-Key", "Anthropic-Beta", "Anthropic-Version"}
 
+// authBetas keeps the betas that belong to the credential (oauth-*).
+func authBetas(values []string) []string {
+	var out []string
+	for _, v := range values {
+		for _, b := range strings.Split(v, ",") {
+			if b = strings.TrimSpace(b); strings.HasPrefix(b, "oauth-") {
+				out = append(out, b)
+			}
+		}
+	}
+	return out
+}
+
 func (s *Server) noteClientAuth(h http.Header) {
 	if h.Get("Authorization") == "" && h.Get("X-Api-Key") == "" {
 		return
@@ -176,6 +189,15 @@ func (s *Server) noteClientAuth(h http.Header) {
 		if v := h.Values(k); len(v) > 0 {
 			c[k] = append([]string(nil), v...)
 		}
+	}
+	// Anthropic-Beta carries the oauth beta the token needs, beside betas
+	// for the request in hand. Those belong to Claude Code's model, not the
+	// test message's: context-1m from an Opus [1m] session sent with Haiku
+	// came back 400 "long context beta is not yet available".
+	if betas := authBetas(c.Values("Anthropic-Beta")); len(betas) > 0 {
+		c.Set("Anthropic-Beta", strings.Join(betas, ","))
+	} else {
+		c.Del("Anthropic-Beta")
 	}
 	s.authMu.Lock()
 	s.authHdr, s.authAt = c, time.Now()
