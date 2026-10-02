@@ -1271,6 +1271,7 @@
         <label><input type="checkbox" data-popt="remote_control"> <b>Start with Remote Control</b><span>every interactive <code>claude</code> starts with <code>--remote-control</code>, so you can pick it up on claude.ai or your phone</span></label>
         <label><input type="checkbox" data-popt="session_title"> <b>Name the session after its folder</b><span>new sessions are titled with the repo's folder name instead of "Claude Code", so windows and Remote Control sessions are told apart. Resumed sessions keep their name</span></label>
         <label><input type="checkbox" data-popt="caffeinate"> <b>Keep the Mac awake while a session runs</b><span><code>caffeinate -i</code> for as long as the panel runs: stops idle sleep, not lid-close sleep (that is the setting above)</span></label>
+        <label><input type="checkbox" id="macStatusLine"> <b>Show cost and model under the prompt</b><span>Claude Code's status line runs <a href="https://github.com/ryoppippi/ccusage" target="_blank" rel="noopener noreferrer">ccusage</a> to show the model, this session's cost, today's spend and the burn rate under the prompt. Uses ccusage if installed, else fetches it with npx. A status line of your own is left alone<span id="macStatusLineNote"></span></span></label>
         <label><input type="checkbox" id="macHandover"> <b>Write a handover when a session closes</b><span>updates HANDOFF.md in repos that have one; details and the texts used are in <a href="#" id="macHoLink">Session handover</a></span></label>
       </div>
 <div class="row" style="margin-top:10px"><button class="primary" id="poSave" disabled>&#x2713; Save</button></div>
@@ -4024,6 +4025,18 @@ let macState = null, panelPoll = null;
 async function loadMac() {
   try { macState = await (await fetch("/api/mac")).json(); } catch { return; }
   renderMac();
+  loadStatusLine();
+}
+async function loadStatusLine() {
+  let sl;
+  try {
+    const r = await fetch("/api/statusline");
+    if (!r.ok) throw new Error(await r.text());
+    sl = await r.json();
+  } catch (e) { $("macStatusLineNote").textContent = ". Could not read settings.json: " + e.message; return; }
+  if (!formDirty.po) $("macStatusLine").checked = !!sl.on;
+  $("macStatusLine").disabled = !sl.on && !!sl.other;
+  $("macStatusLineNote").textContent = sl.other ? `. You already have one (${sl.other}), so this is off.` : "";
 }
 function renderMac() {
   const m = macState; if (!m) return;
@@ -4134,7 +4147,7 @@ const formDirty = {po: false, pn: false, nt: false};
 const formSave = {po: "poSave", pn: "pnSave", nt: "ntSave"};
 function markForm(f) { formDirty[f] = true; $(formSave[f]).disabled = false; }
 function cleanForm(f) { formDirty[f] = false; $(formSave[f]).disabled = true; }
-for (const el of document.querySelectorAll("#sec-sessions [data-popt], #macHandover")) el.addEventListener("change", () => markForm("po"));
+for (const el of document.querySelectorAll("#sec-sessions [data-popt], #macHandover, #macStatusLine")) el.addEventListener("change", () => markForm("po"));
 for (const el of document.querySelectorAll("#sec-panel [data-popt], [data-pnum]")) el.addEventListener("input", () => markForm("pn"));
 for (const el of document.querySelectorAll("[data-notify]")) el.addEventListener("change", () => markForm("nt"));
 const poptValues = scope => Object.fromEntries([...document.querySelectorAll(scope + " [data-popt]")].map(c => [c.dataset.popt, c.checked]));
@@ -4146,6 +4159,11 @@ $("poSave").onclick = async () => {
     if (!document.querySelector("#sec-sessions [data-popt]").disabled) {
       await post("/api/panel-options", poptValues("#sec-sessions"));
       done.push("session options");
+    }
+    const sl = await (await fetch("/api/statusline")).json();
+    if (!!sl.on !== $("macStatusLine").checked) {
+      await post("/api/statusline", {on: $("macStatusLine").checked});
+      done.push("status line " + ($("macStatusLine").checked ? "on" : "off"));
     }
     const on = $("macHandover").checked;
     const st = await (await fetch("/api/state")).json(), h = st.handover || {};
