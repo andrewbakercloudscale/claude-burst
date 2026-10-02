@@ -325,6 +325,7 @@
   .note.ok  { background: var(--ok-bg);   color: var(--ok); }
   .note.warn{ background: var(--warn-bg); color: var(--warn); }
   .note.bad { background: var(--bad-bg);  color: var(--bad); }
+  .note.info { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
   .note code { font-family: var(--mono); font-size: 12px; }
   .empty { padding: 26px 16px; text-align: center; color: var(--faint); font-size: 13px; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12.5px; }
@@ -698,7 +699,7 @@
 
   <div class="navgroup">Routing</div>
   <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Routing</span></a>
-  <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
+  <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary (optional)</span></a>
   <a class="navlink" data-target="sec-failover"><span class="nd" id="nd-failover"></span><span class="label">Failover &amp; pricing</span></a>
 
   <div class="navgroup">Sessions</div>
@@ -826,9 +827,9 @@
       <div class="hint">Run these after installing, or whenever something seems off. Each one checks a real path end to end, not just the settings.</div>
       <div class="row" style="margin-top:8px">
         <button class="success" id="setupTestConn">&#x21CC; Test connection</button>
-        <button class="success" id="setupTestSecondary">&#x21CC; Test secondary</button>
+        <button class="success" id="setupTestSecondary">&#x21CC; Test secondary (optional)</button>
       </div>
-      <div class="hint" style="margin-top:6px"><b>Test connection</b>: sends a probe the way Claude Code does and checks it really arrives at this gateway, not straight at Anthropic. <b>Test secondary</b>: sends one small request to the paid secondary (a few tokens, billed by the secondary) and shows who answered and how fast. The hotspot has its own test under <a href="#" data-target="sec-mac">Lid &amp; hotspot</a>, because it switches your Wi-Fi.</div>
+      <div class="hint" style="margin-top:6px"><b>Test connection</b>: sends a probe the way Claude Code does and checks it really arrives at this gateway, not straight at Anthropic. <b>Test secondary (optional)</b>: only if you set one up. Sends one small request to the paid secondary (a few tokens, billed by the secondary) and shows who answered and how fast. The hotspot has its own test under <a href="#" data-target="sec-mac">Lid &amp; hotspot</a>, because it switches your Wi-Fi.</div>
       <div id="setupTestNote"></div>
     </div>
   </section>
@@ -1067,7 +1068,7 @@
   <!-- Starts closed in the MARKUP for the same reason Guards does: set in
        script it would render open for a frame and then jump shut. -->
   <section id="secondarySection" class="collapsible collapsed" style="scroll-margin-top:70px">
-    <h2 id="secondaryHead">Secondary provider <span class="applies" data-where="config.json + Keychain" data-when="restart"></span> <span class="hint">where inference goes when the primary is out: endpoint, model and API key</span>
+    <h2 id="secondaryHead">Secondary provider (optional) <span class="applies" data-where="config.json + Keychain" data-when="restart"></span> <span class="hint">where inference goes when the primary is out: endpoint, model and API key</span>
       <span class="spacer"></span>
       <span id="secSummary" class="hint"></span>
       <button class="h2btn primary" id="secondaryToggle" aria-expanded="false" aria-controls="secondaryBody">Show</button>
@@ -1625,7 +1626,6 @@ function setHeadState(headId, state) {
   if (state) h.classList.add("h-" + state);
 }
 
-let secWasBad = false;
 function setSecondaryOpen(open) {
   const sec = $("secondarySection");
   sec.classList.toggle("collapsed", !open);
@@ -1640,31 +1640,26 @@ function renderSecondary(s) {
   const el = $("secStatus");
   const none = sec.provider === "none" || !sec.provider;
   const missingKey = !none && sec.key_env_var && !sec.key_present;
+  // A secondary is optional: having none, or one with no key, is a working
+  // single-plan setup, so it is stated as information, never as a fault.
   if (none) {
-    note(el, "warn", "No secondary provider is configured. When the primary runs out, requests just fail: there is nowhere to fail over to.");
+    note(el, "info", "Optional, not in use: no secondary provider is configured. Anthropic's own limits reach Claude Code unchanged. Add one here if you want requests to overflow to it.");
   } else if (missingKey) {
-    note(el, "bad", `Secondary is ${sec.provider} (${sec.base_url}) but NO API KEY was found: nothing in the Keychain under "${sec.keychain_service}", and $${sec.key_env_var} is unset. It will fail the first time it is used.`);
+    note(el, "info", `Optional, not in use: ${sec.provider} (${sec.base_url}) is configured, but no API key was found (nothing in the Keychain under "${sec.keychain_service}", and $${sec.key_env_var} is unset), so nothing fails over to it. Add a key below if you want overflow.`);
   } else {
     note(el, "ok", `Secondary is ${sec.provider} (${sec.base_url})${sec.model ? " → " + sec.model : ""}.${keySentence(sec)}`);
   }
 
   // Collapsed, the header is the only thing reporting on the secondary, so
-  // it carries the verdict rather than a label -- same rule as Guards.
-  $("secondarySection").classList.toggle("alert", none || missingKey);
-  // none is amber, not red: having no secondary is a deliberate choice as
-  // often as it is a mistake. A configured secondary with no key IS red --
-  // that one is always broken, it just has not failed yet.
-  setHeadState("secondaryHead", missingKey ? "bad" : none ? "warn" : "ok");
-  $("secSummary").textContent = none ? "none configured"
-    : missingKey ? "no API key: will fail when used"
+  // it carries the verdict rather than a label, same rule as Guards. Not in
+  // use is neutral, not amber or red: the secondary is optional.
+  $("secondarySection").classList.remove("alert");
+  setHeadState("secondaryHead", none || missingKey ? "" : "ok");
+  $("secSummary").textContent = none ? "optional, not in use"
+    : missingKey ? "optional, not in use: no API key"
     : `${sec.model || sec.provider}, key ok`;
-
-  // Opens itself on the TRANSITION into a bad state, never on every render:
-  // re-opening each refresh would take the panel away from someone who read
-  // it and closed it again while the condition persists.
-  const bad = none || missingKey;
-  if (bad && !secWasBad) setSecondaryOpen(true);
-  secWasBad = bad;
+  // Never opens itself: an optional panel that sprang open on every page
+  // load of a single-plan Mac read as something to fix.
   // A revealed key belongs to the secondary that was on screen when it was
   // fetched. Leaving it visible across a change of provider would show one
   // provider's credential under another's name.
@@ -3129,28 +3124,34 @@ function primaryHealthCheck(ph, now) {
   };
 }
 
-// secondaryCheck: a secondary is optional. Someone on one plan (Claude
-// Enterprise, or any single subscription) has none, and that is a working
-// setup, not a fault: Anthropic's own limits reach Claude Code unchanged,
-// and compaction, handover and the rest work as before. A config with no
-// secondary resolves to a Bedrock one with no key, so that reads the same.
-// Only a secondary someone chose, whose key is missing, is a warning.
-// Pure, for page_script_test.go.
+// secondaryCheck: a secondary is OPTIONAL, and reads as optional whatever
+// the reason there is no usable one. Someone on one plan (Claude Enterprise,
+// or any single subscription) has none, and that is a working setup, not a
+// fault: Anthropic's own limits reach Claude Code unchanged, and compaction,
+// handover and the rest work as before. A secondary configured in
+// config.json with no key (the corporate Mac whose Keychain never got one)
+// is the same setup, so it passes too, with the reason as information. It
+// never warns and never turns the meter amber. Pure, for page_script_test.go.
 function secondaryCheck(sec) {
   sec = sec || {};
   const none = sec.provider === "none" || !sec.provider;
   const keyMissing = !!(sec.key_env_var && !sec.key_present);
-  if (none || (keyMissing && sec.provider === "bedrock")) {
+  const label = "Secondary (optional)";
+  if (none) {
     return {
-      key: "secondary", label: "Single plan", target: "secondarySection", ok: true, critical: false,
-      detail: "no secondary: Anthropic's own limits reach Claude Code unchanged. Add one under Secondary to keep working past them",
+      key: "secondary", label, target: "secondarySection", ok: true, critical: false,
+      detail: "not in use: no secondary, so Anthropic's own limits reach Claude Code unchanged. Add one under Secondary if you want overflow",
+    };
+  }
+  if (keyMissing) {
+    return {
+      key: "secondary", label, target: "secondarySection", ok: true, critical: false,
+      detail: `not in use: ${sec.provider} configured, no API key found, so nothing fails over. Add a key under Secondary if you want overflow`,
     };
   }
   return {
-    key: "secondary", label: "Secondary ready", target: "secondarySection",
-    ok: !keyMissing, critical: false,
-    detail: keyMissing ? "configured, but no API key was found, so nothing fails over to it"
-      : `${sec.model || sec.provider}, key ok`,
+    key: "secondary", label, target: "secondarySection", ok: true, critical: false,
+    detail: `in use: ${sec.model || sec.provider}, key ok`,
   };
 }
 
@@ -3364,7 +3365,8 @@ function renderNav(s, counts) {
   const checks = readinessChecks(s, liveVerdict);
   setOverview(checks ? checksState(checks) : "");
   setDot("nd-install", s.intercept.active ? "ok" : "bad");
-  setDot("nd-secondary", missingKey ? "bad" : noSecondary ? "warn" : "ok");
+  // Optional: none, or no key, is a neutral dot, never amber or red.
+  setDot("nd-secondary", noSecondary || missingKey ? "" : "ok");
   // Routing has a state like every other entry: blue on the subscription,
   // amber while anything is going to the paid secondary.
   setDot("nd-config", s.overflow || secondaryModels(s, Date.now()).length ? "warn" : "ok");
