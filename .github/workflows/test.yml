@@ -17,4 +17,25 @@ jobs:
         with:
           go-version: "stable"
       - run: go vet ./...
-      - run: go test ./... -race
+      - name: go test (race, coverage)
+        run: go test ./... -race -coverprofile=coverage.out
+      - name: coverage summary
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            go tool cover -func=coverage.out | tail -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # 22 of the scripts are zsh, which shellcheck cannot parse, so they get
+      # zsh's own parser; the bash ones get bash -n.
+      - name: shell syntax
+        run: |
+          for f in install.sh scripts/*.sh scripts/ci/*.sh; do
+            case "$(head -1 "$f")" in
+              *zsh*) zsh -n "$f" ;;
+              *bash*) bash -n "$f" ;;
+            esac
+          done
+      - name: dashboard JavaScript parses
+        run: zsh scripts/ci/check-admin-js.sh
