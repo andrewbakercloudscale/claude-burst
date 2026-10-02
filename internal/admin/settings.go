@@ -354,7 +354,10 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 	switch u.HotspotPassword {
 	case "":
 	case "-":
-		_ = keychain.Delete(hotspot.KeychainService)
+		if err := keychain.Delete(hotspot.KeychainService); err != nil {
+			http.Error(w, "removing the password: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 		changed = append(changed, "hotspot password removed")
 	default:
 		if err := keychain.Store(hotspot.KeychainService, u.HotspotPassword); err != nil {

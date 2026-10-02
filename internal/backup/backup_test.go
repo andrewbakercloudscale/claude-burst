@@ -1,8 +1,10 @@
 package backup
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -125,5 +127,36 @@ func TestDirDefaultsUnderHomeDotConfig(t *testing.T) {
 	want := filepath.Join(home, ".config", "claude-burst", "backups")
 	if dir != want {
 		t.Fatalf("Dir() = %q, want %q", dir, want)
+	}
+}
+
+func TestPruneKeepsTheNewestAndTheRestorePoint(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 1; i <= 5; i++ {
+		write(fmt.Sprintf("config.json.20261001-12000%d.bak", i))
+	}
+	write("config.json.latest.bak")
+	write("config.json.notastamp.bak")
+	write("hosts.20260101-000000.bak")
+
+	if err := Prune(dir, "config.json", 2); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := filepath.Glob(filepath.Join(dir, "*"))
+	var names []string
+	for _, l := range left {
+		names = append(names, filepath.Base(l))
+	}
+	want := []string{
+		"config.json.20261001-120004.bak", "config.json.20261001-120005.bak",
+		"config.json.latest.bak", "config.json.notastamp.bak", "hosts.20260101-000000.bak",
+	}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("left %v, want %v", names, want)
 	}
 }

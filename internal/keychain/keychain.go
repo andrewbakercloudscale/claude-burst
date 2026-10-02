@@ -55,10 +55,19 @@ func Load(service, envVar string) (string, error) {
 	return v, nil
 }
 
+// Delete removes the stored secret. Nothing stored is success: the goal is
+// "no secret in the Keychain", and it already holds. Any other failure is
+// returned, so a caller never reports a password removed that is still there.
 func Delete(service string) error {
-	cmd := exec.Command("/usr/bin/security", "delete-generic-password", "-a", account(), "-s", service)
-	_ = cmd.Run()
-	return nil
+	out, err := exec.Command("/usr/bin/security", "delete-generic-password", "-a", account(), "-s", service).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// security exits 44 (errSecItemNotFound) when there is nothing to delete.
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 44 {
+		return nil
+	}
+	return fmt.Errorf("deleting %q from the Keychain: %v: %s", service, err, strings.TrimSpace(string(out)))
 }
 
 // Info describes a stored secret without revealing it.

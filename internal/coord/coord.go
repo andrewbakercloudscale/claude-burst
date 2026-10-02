@@ -237,7 +237,13 @@ func (c *Coordinator) with(fn func(t *tx) error) error {
 	d := &state{}
 	path := filepath.Join(c.Dir, "state.json")
 	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, d) // a corrupt file starts over, never blocks
+		// A corrupt file starts over, never blocks; but it drops every
+		// master and inbox, so say so and keep the bad copy to look at.
+		if err := json.Unmarshal(b, d); err != nil {
+			c.Log("state.json did not parse (%v): starting over; the bad copy is state.json.corrupt", err)
+			_ = os.WriteFile(path+".corrupt", b, 0600)
+			d = &state{}
+		}
 	}
 	if d.Sessions == nil {
 		d.Sessions = map[string]*session{}

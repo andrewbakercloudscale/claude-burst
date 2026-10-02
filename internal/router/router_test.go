@@ -1451,3 +1451,18 @@ func TestMessageSkeletonHasShapeNotContent(t *testing.T) {
 		t.Fatal("the skeleton must never carry content")
 	}
 }
+
+// Status must hand back maps the caller owns: /healthz encodes them after
+// the lock is released, and a shared map written concurrently is a fatal
+// runtime error that no recover() catches. Run with -race.
+func TestStatusReturnsMapsTheCallerOwns(t *testing.T) {
+	s := &Server{}
+	s.state.ModelOverflow = map[string]int64{"m": 1}
+	s.state.ModelClaim = map[string]string{"m": "c"}
+	st := s.Status()
+	st.ModelOverflow["m"] = 2
+	st.ModelClaim["m"] = "changed"
+	if s.state.ModelOverflow["m"] != 1 || s.state.ModelClaim["m"] != "c" {
+		t.Fatal("Status returned the server's own maps")
+	}
+}

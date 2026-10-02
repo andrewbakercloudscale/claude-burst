@@ -36,3 +36,13 @@ if [[ -f /etc/hosts ]]; then
   cp /etc/hosts "$BACKUP_DIR/hosts.latest.bak"
   echo "backed up /etc/hosts -> $BACKUP_DIR/hosts.$TS.bak (restore needs root: transparent-root.sh remove)"
 fi
+
+# Keep the newest 30 timestamped copies of each file; the history had no cap
+# and reached 2.4GB by 2026-10-02. *.latest.bak, the restore point, is kept.
+# Plain sh on purpose: deploy.sh runs this file with bash, other callers with
+# zsh. Names hold a sortable timestamp, so reverse name order is newest first.
+for base in config.json settings.json node-extra-ca-certs.pem hosts ninja.andrewbaker.claude-burst.plist; do
+  # grep finding no copies of a file is not a failure (pipefail is on).
+  ls -1 "$BACKUP_DIR" | { grep -E "^${base//./\\.}\.[0-9]{8}-[0-9]{6}\.bak$" || true; } | sort -r | tail -n +31 |
+    while IFS= read -r old; do rm -f -- "$BACKUP_DIR/$old"; done
+done

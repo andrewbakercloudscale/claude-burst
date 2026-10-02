@@ -1036,3 +1036,20 @@ func TestHistoryIsReadOnly(t *testing.T) {
 		t.Errorf("cross-origin Host gave %d, want 403", rr.Code)
 	}
 }
+
+// The UI must refuse to be framed: a transparent iframe passes the Host
+// check and its page can add the mutation header, so without these a click
+// on another site could press Restart or Force.
+func TestDashboardRefusesToBeFramed(t *testing.T) {
+	h := newTestServer(t).Handler()
+	req := httptest.NewRequest(http.MethodGet, "http://x/", nil)
+	req.Host = "127.0.0.1"
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := rr.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+		t.Errorf("Content-Security-Policy = %q", got)
+	}
+}

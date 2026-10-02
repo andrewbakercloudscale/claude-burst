@@ -121,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/handover-reveal", s.mutating(s.handleHandoverReveal))
 	mux.HandleFunc("/api/mac", s.readOnly(s.handleMac))
 	mux.HandleFunc("/api/settings", s.readOnly(s.handleSettingsGet))
+	mux.HandleFunc("/api/notify-test", s.mutating(s.handleNotifyTest))
 	mux.HandleFunc("/api/settings-save", s.mutating(s.handleSettingsPost))
 	mux.HandleFunc("/api/hotspot-join", s.mutating(s.handleHotspotJoin))
 	mux.HandleFunc("/api/hotspot-password", s.mutating(s.handleHotspotPassword))
@@ -166,6 +167,12 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		// read a response even if it manages to send the request.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		// A transparent iframe would pass the Host check above while the
+		// page's own JS supplies the mutation header, so the UI can be
+		// clickjacked into Restart, Force or Upgrade. Browsers honour these;
+		// a plain curl or Claude Code fetch sends no Origin and is unaffected.
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -190,6 +197,8 @@ func (s *Server) mutating(h http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "missing "+mutationHeader+" header", http.StatusForbidden)
 			return
 		}
+		// Every dashboard form is a few KB; nothing legitimate comes close.
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
 		h(w, r)
 	}
 }

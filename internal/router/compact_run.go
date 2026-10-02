@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -614,6 +615,15 @@ func compactionBoundary(view []json.RawMessage, bounds []int, offset int) (p, cu
 // session's own auth, model, system prompt and tools, and stores the
 // summary for key when it succeeds.
 func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int, key string, p0 int, hash string) {
+	// Runs on its own goroutine, outside net/http's per-connection recover,
+	// and parses model output: a panic here would otherwise exit the gateway
+	// and drop every session's in-flight request. Registered first, so it
+	// runs after the deferred unlock and Done below.
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.logger.Printf("compaction PANIC session=%s err=%v\n%s", key, rec, debug.Stack())
+		}
+	}()
 	defer s.compaction.running.Done()
 	summary, err := s.requestSummary(in, top, history, cut)
 	s.compaction.mu.Lock()
