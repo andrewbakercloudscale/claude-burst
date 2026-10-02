@@ -3,17 +3,18 @@
 #
 # Usage:
 #   ./install.sh              install (or reinstall/update) claude-burst
-#   ./install.sh uninstall    remove the routing, the token-shunting hook and
-#                             skill, the LaunchAgent and the binary
+#   ./install.sh uninstall    remove everything Burst installed: the transparent
+#                             mode redirect and root daemons (asks for sudo only
+#                             when they are there), the self-heal watchdog,
+#                             every Claude Code hook, the LaunchAgent and the
+#                             binary, then check and exit 1 if anything is left
+#   ./install.sh uninstall --purge
+#                             the same, and delete ~/.config/claude-burst too
 #
-# Uninstall intentionally keeps ~/.config/claude-burst (config, state,
-# metrics) and the macOS Keychain secret, since those are not things you
-# want wiped by an accidental rerun. See the printed message at the end
-# of uninstall for how to purge them too.
-#
-# Note that shunting is switched OFF in config.json as part of uninstall (that is
-# how its hook and skill are removed), so a later reinstall needs
-# `claude-burst shunt enable` to turn it back on.
+# Uninstall without --purge keeps ~/.config/claude-burst (config, state,
+# metrics, backups), and it always keeps the macOS Keychain secret: neither is
+# something you want wiped by an accidental rerun. config.json is left as it
+# was, so a reinstall comes back with the same features on.
 
 # This is a zsh script (${0:A:h}, read "var?prompt"). `bash install.sh` dies at
 # the first zsh-only expansion with "A: unbound variable", so hand it to zsh.
@@ -51,30 +52,196 @@ apply_keep_awake() {
   fi
 }
 
+# --- uninstall ----------------------------------------------------------------
+#
+# The machine-wide pieces first. In transparent mode /etc/hosts sends
+# api.anthropic.com to 127.0.0.1, so deleting the gateway before the redirect
+# leaves the whole Mac unable to reach Anthropic. Then everything that would
+# bring the gateway back (the self-heal watchdog reloads its LaunchAgent, and a
+# gateway that starts reinstalls its hooks), then the hooks while the binary
+# that removes them still exists, then the binary. Then it checks, and says
+# success only when the checks pass.
+#
+# Overridable only so tests can point the detection and the checks at temp
+# files. The root scripts honour the same names, but sudo resets the
+# environment, so a real uninstall always acts on the real files.
+HOSTS_FILE="${CLAUDE_BURST_HOSTS_FILE:-/etc/hosts}"
+PF_CONF="${CLAUDE_BURST_PF_CONF:-/etc/pf.conf}"
+PF_ANCHOR_FILE="${CLAUDE_BURST_PF_ANCHOR:-/etc/pf.anchors/claude-burst}"
+ROOT_STATE_DIR="${CLAUDE_BURST_ROOT_STATE_DIR:-/etc/claude-burst}"
+DAEMONS_DIR="${CLAUDE_BURST_LAUNCHDAEMONS:-/Library/LaunchDaemons}"
+PFHEAL_PLIST="${CLAUDE_BURST_PFHEAL_PLIST:-$DAEMONS_DIR/ninja.andrewbaker.claude-burst-pfheal.plist}"
+PFHEAL_LIBEXEC="${CLAUDE_BURST_PFHEAL_LIBEXEC:-/usr/local/libexec/claude-burst}"
+LIDAWAKE_PLIST="$DAEMONS_DIR/ninja.andrewbaker.claude-burst-lidawake.plist"
+CA_CN="claude-burst local CA"
+CONFIG_DIR="$HOME/.config/claude-burst"
+SETTINGS="$HOME/.claude/settings.json"
+
+# The markers transparent-root.sh writes; see BEGIN and TAG_* there.
+hosts_block() { grep -q "^# BEGIN claude-burst $1\$" "$HOSTS_FILE" 2>/dev/null; }
+pf_conf_ref() { grep -qE '^# BEGIN claude-burst (pf-rdr|pf-load)$' "$PF_CONF" 2>/dev/null; }
+pfheal_installed() { [[ -f "$PFHEAL_PLIST" || -d "$PFHEAL_LIBEXEC" ]]; }
+lidawake_applied() { [[ -f "$ROOT_STATE_DIR/lid-awake.state" || -f "$LIDAWAKE_PLIST" ]]; }
+# Reading the System keychain needs no root.
+ca_trusted() { security find-certificate -c "$CA_CN" /Library/Keychains/System.keychain >/dev/null 2>&1; }
+config_mode() {
+  python3 -c "import json;print((json.load(open('$CONFIG_DIR/config.json')).get('intercept') or {}).get('mode',''))" 2>/dev/null || true
+}
+transparent_detected() {
+  hosts_block hosts || pf_conf_ref || [[ -f "$PF_ANCHOR_FILE" || -f "$ROOT_STATE_DIR/transparent.state" ]] ||
+    [[ "$(config_mode)" == transparent ]]
+}
+# The live anchor needs root to read. sudo -n never prompts: it answers only
+# when the root steps above left a cached credential, and otherwise this
+# reports that it could not look rather than pretending the anchor is empty.
+anchor_rules() {
+  local out
+  out="$(sudo -n pfctl -a claude-burst -s nat 2>/dev/null)" || return 2
+  print -r -- "$out" | grep -q rdr
+}
+
 uninstall() {
-  if [[ -x "$TARGET" ]]; then
-    # Token shunting puts a hook in ~/.claude/settings.json that runs this binary
-    # before every Read and Bash call, and a skill telling Claude to run it. Both
-    # have to come out while the binary still exists to remove them: left behind,
-    # the hook points at nothing and the skill instructs Claude to run a command
-    # that is gone. A no-op when shunting was never enabled.
-    "$TARGET" shunt disable >/dev/null 2>&1 || true
-    "$TARGET" disable || true
+  local purge=0 a
+  for a in "$@"; do
+    case "$a" in
+      --purge) purge=1 ;;
+      *) echo "Usage: $ROOT/install.sh uninstall [--purge]" >&2; exit 2 ;;
+    esac
+  done
+
+  # 1. Root. Each step is the existing undo script, run only when its piece is
+  #    actually there, so a base-url install asks for no password at all.
+  #    Script and argument are kept apart so a checkout path with a space
+  #    still runs.
+  local -a root_script root_arg root_why
+  root_step() { root_script+=("$ROOT/scripts/$1"); root_arg+=("$2"); root_why+=("$3"); }
+  if pfheal_installed; then
+    # Before the redirect goes: the daemon repairs a missing pf rule.
+    root_step install-pf-heal.sh uninstall "the pf self-heal LaunchDaemon (ninja.andrewbaker.claude-burst-pfheal)"
   fi
+  if transparent_detected; then
+    root_step transparent-root.sh remove "transparent mode's api.anthropic.com redirect in /etc/hosts, and its pf rule and anchor"
+  fi
+  if hosts_block admin-host; then
+    root_step transparent-root.sh admin-host-remove "the admin hostname entry in /etc/hosts"
+  fi
+  if ca_trusted; then
+    root_step untrust-ca-systemwide.sh "" "\"$CA_CN\" from the System keychain"
+  fi
+  if lidawake_applied; then
+    # An uninstall that kept a Mac that never sleeps would be a trap.
+    root_step lid-awake-root.sh remove "the lid-closed keep-awake LaunchDaemon, restoring SleepDisabled"
+  fi
+  local i
+  if (( ${#root_script} )); then
+    echo "These are machine-wide and need root, so sudo will ask for your password:"
+    for a in "${root_why[@]}"; do echo "  - $a"; done
+    for i in {1..${#root_script}}; do
+      echo "\$ sudo ${root_script[i]}${root_arg[i]:+ ${root_arg[i]}}"
+      if ! sudo "${root_script[i]}" ${root_arg[i]:+"${root_arg[i]}"}; then
+        echo "WARNING: failed: sudo ${root_script[i]}${root_arg[i]:+ ${root_arg[i]}}" >&2
+      fi
+    done
+  fi
+  # Stopping the gateway while the redirect still points at it is the one
+  # step here that breaks the Mac, so a redirect that did not come out stops
+  # the uninstall with the gateway still serving.
+  if hosts_block hosts; then
+    echo >&2
+    echo "UNINSTALL STOPPED: $HOSTS_FILE still redirects api.anthropic.com to this Mac." >&2
+    echo "Nothing else was removed, and the gateway is still running so Anthropic stays reachable." >&2
+    echo "Fix it with:  sudo $ROOT/scripts/transparent-root.sh remove" >&2
+    echo "then rerun:   $ROOT/install.sh uninstall" >&2
+    exit 1
+  fi
+
+  # 2. Whatever would restart the gateway. bootout before the hooks come out:
+  #    a gateway that starts (KeepAlive, or the watchdog) puts them back.
+  "$ROOT/scripts/install-selfheal-watchdog.sh" uninstall || echo "WARNING: failed: $ROOT/scripts/install-selfheal-watchdog.sh uninstall" >&2
   launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
-  rm -f "$PLIST" "$TARGET"
-  # keep_awake_lid_closed leaves a root LaunchDaemon and pmset SleepDisabled
-  # behind; an uninstall that kept a Mac that never sleeps would be a trap.
-  # Only asks for sudo when something was actually applied.
-  if [[ -f /etc/claude-burst/lid-awake.state || -f /Library/LaunchDaemons/ninja.andrewbaker.claude-burst-lidawake.plist ]]; then
-    echo "Removing the lid-closed keep-awake setting (needs sudo)..."
-    sudo "$ROOT/scripts/lid-awake-root.sh" remove || echo "WARNING: run: sudo $ROOT/scripts/lid-awake-root.sh remove" >&2
+
+  # 3. Claude Code's settings, while the binary that removes them exists.
+  #    uninstall-hooks leaves config.json as it is, so a reinstall comes back
+  #    with the same features on. disable's own transparent-mode note about
+  #    the redirect is dropped: step 1 has dealt with it, and the check below
+  #    says so if not.
+  if [[ -x "$TARGET" ]]; then
+    "$TARGET" uninstall-hooks || echo "WARNING: claude-burst uninstall-hooks failed" >&2
+    "$TARGET" disable >/dev/null || echo "WARNING: claude-burst disable failed" >&2
+  else
+    echo "WARNING: $TARGET is already gone, so Claude Code's hooks could not be removed by it" >&2
   fi
+
+  # 4. The LaunchAgent and the binary.
+  rm -f "$PLIST" "$TARGET"
   defaults delete com.mitchellh.ghostty NSAppSleepDisabled >/dev/null 2>&1 || true
-  echo "Removed Claude Burst routing, the token-shunting hook and skill, and the LaunchAgent."
-  echo "Kept ~/.config/claude-burst (config, state, metrics) and the macOS Keychain secret intentionally."
-  echo "To purge those too: rm -rf ~/.config/claude-burst"
-  echo "  and delete whichever secondary key you stored:"
+  if (( purge )); then
+    rm -rf "$CONFIG_DIR"
+  fi
+
+  # 5. Check. Each failure names what is left and the command that fixes it.
+  #    Plain ifs throughout: under set -e a failed `cond && x` as a
+  #    function's last statement becomes the function's failure.
+  local -a left
+  if hosts_block hosts; then
+    left+=("$HOSTS_FILE still redirects api.anthropic.com (Anthropic is unreachable from this Mac)
+    fix: sudo $ROOT/scripts/transparent-root.sh remove")
+  fi
+  if hosts_block admin-host; then
+    left+=("$HOSTS_FILE still has the admin hostname entry
+    fix: sudo $ROOT/scripts/transparent-root.sh admin-host-remove")
+  fi
+  if pf_conf_ref || [[ -f "$PF_ANCHOR_FILE" ]]; then
+    left+=("$PF_CONF or $PF_ANCHOR_FILE still references the claude-burst pf anchor
+    fix: sudo $ROOT/scripts/transparent-root.sh remove")
+  fi
+  local rc=0
+  anchor_rules || rc=$?
+  if (( rc == 0 )); then
+    left+=("the claude-burst pf anchor is still loaded with a redirect rule
+    fix: sudo $ROOT/scripts/transparent-root.sh remove")
+  fi
+  if pfheal_installed; then
+    left+=("the pf self-heal LaunchDaemon is still installed ($PFHEAL_PLIST)
+    fix: sudo $ROOT/scripts/install-pf-heal.sh uninstall")
+  fi
+  if ca_trusted; then
+    left+=("\"$CA_CN\" is still trusted in the System keychain
+    fix: sudo $ROOT/scripts/untrust-ca-systemwide.sh")
+  fi
+  if grep -q claude-burst "$SETTINGS" 2>/dev/null; then
+    left+=("$SETTINGS still mentions claude-burst:
+$(grep -n claude-burst "$SETTINGS" | sed 's/^/      /')
+    fix: delete those entries by hand; any Burst installed is also removed by reinstalling ($ROOT/install.sh) and rerunning $ROOT/install.sh uninstall")
+  fi
+  if [[ -e "$TARGET" || -e "$PLIST" ]]; then
+    left+=("$TARGET or $PLIST is still there
+    fix: launchctl bootout gui/$UID/$LABEL; rm -f $TARGET $PLIST")
+  fi
+
+  if (( ${#left} )); then
+    echo >&2
+    echo "UNINSTALL INCOMPLETE. Still in place:" >&2
+    for a in "${left[@]}"; do echo "  - $a" >&2; done
+    exit 1
+  fi
+
+  echo
+  echo "Uninstalled Claude Burst. Checked: no /etc/hosts redirect, no pf anchor reference,"
+  echo "no pf self-heal daemon, no CA in the System keychain, and nothing in $SETTINGS names claude-burst."
+  if (( rc == 2 )); then
+    echo "(The live pf anchor was not read: that needs root, and sudo had no cached password."
+    echo " Check it with: sudo pfctl -a claude-burst -s nat   which should print nothing.)"
+  fi
+  echo "Removed: the redirect and root daemons (if any), the self-heal watchdog, the token-shunting,"
+  echo "coordination, handover and prompt-notice hooks, /compact-async, the LaunchAgent and the binary."
+  if (( purge )); then
+    echo "Purged $CONFIG_DIR."
+  else
+    echo "Kept $CONFIG_DIR (config, state, metrics, backups) for a reinstall."
+    echo "To remove it too: $ROOT/install.sh uninstall --purge"
+  fi
+  echo "Kept the macOS Keychain secret. To delete whichever secondary key you stored:"
   echo "    security delete-generic-password -s claude-burst-together     # Together AI"
   echo "    security delete-generic-password -s claude-burst-openrouter   # OpenRouter"
   echo "    security delete-generic-password -s claude-burst-bedrock      # Amazon Bedrock"
@@ -245,6 +412,6 @@ offer_panel() {
 
 case "${1:-install}" in
   install) install ;;
-  uninstall) uninstall ;;
-  *) echo "Usage: $0 [install|uninstall]" >&2; exit 2 ;;
+  uninstall) shift; uninstall "$@" ;;
+  *) echo "Usage: $0 [install|uninstall [--purge]]" >&2; exit 2 ;;
 esac
