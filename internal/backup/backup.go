@@ -56,6 +56,27 @@ func Dir() (string, error) {
 	return filepath.Join(home, ".config", "claude-burst", "backups"), nil
 }
 
+// underHome says whether path is inside the current user's home directory.
+// Backups are kept only for files there. On 2026-10-02 a test that wrote a
+// throwaway settings.json in a temp directory, with HOME left real, put that
+// file's content in the REAL settings.json.latest.bak on every test run
+// (deploy.sh runs the suite). A rollback minutes later restored it over the
+// user's 7KB settings.json, deleting their hooks, status line and display
+// settings, and every running session went blank. The restore point names a
+// file by its base name only, so a file outside home cannot own one.
+func underHome(path string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(home, abs)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // Snapshot archives path's CURRENT on-disk content, if any, as a timestamped
 // file -- a historical record only. It does not touch latest.bak; see
 // SetLatest for that. Call this BEFORE overwriting path, so the version about
@@ -70,6 +91,9 @@ func Dir() (string, error) {
 // directory is briefly unwritable would be worse than the gap this package
 // closes.
 func Snapshot(path string) error {
+	if !underHome(path) {
+		return nil
+	}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
@@ -133,6 +157,9 @@ func Prune(dir, base string, keep int) error {
 // for a reason unrelated to this write) then restores the current state
 // rather than clobbering it with whatever the last snapshot happened to be.
 func SetLatest(path string, content []byte) error {
+	if !underHome(path) {
+		return nil
+	}
 	dir, err := Dir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not update the restore point for %s: %v\n", path, err)
