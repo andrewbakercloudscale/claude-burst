@@ -7,7 +7,7 @@
 # any other app -- has never heard of this CA and rejects it whenever
 # transparent mode's machine-wide redirect catches its traffic.
 #
-# Root-caused 2026-09-03 (see INVESTIGATION-TLS-STORM.md): Claude
+# Root-caused 2026-09-03 (see docs/history/investigation-tls-storm.md): Claude
 # Desktop's own auto-updater checks api.anthropic.com roughly hourly and
 # got caught by the redirect, producing the TLS handshake-error storm --
 # and interfered with Claude Desktop's Cowork/MCP-filesystem startup at

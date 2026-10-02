@@ -39,3 +39,5 @@ jobs:
           done
       - name: dashboard JavaScript parses
         run: zsh scripts/ci/check-admin-js.sh
+      - name: documentation links resolve
+        run: python3 scripts/ci/check-doc-links.py

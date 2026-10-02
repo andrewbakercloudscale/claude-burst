@@ -1,4 +1,14 @@
-# Open investigation: TLS handshake storm + port-7777 timeout
+# Investigation (closed): TLS handshake storm + port-7777 timeout
+
+**Status: CLOSED 2026-09-30.** The handshake storm faded out rather than being fixed by one
+change: errors per day fell from 750-1,400 (2026-08-31 to 09-03) to 8 (2026-09-22) and 3
+(2026-09-30), with no overnight pattern left. Tracked and closed as
+[issue #3](https://github.com/andrewbakercloudscale/claude-burst/issues/3). If it returns,
+name the client with `scripts/peer-log.sh` rather than guessing from timing. The issue #1
+characterisation below (the pf rdr rule makes its own target port unreachable for direct
+connections) still stands. Everything below is kept as it was written.
+
+Original status, as written during the investigation:
 
 Status: TLS handshake storm **ROOT-CAUSED 2026-09-03**, and the fix held for three days -
 but certificate rejections **came back on 2026-09-07**, at about a tenth of the old rate and

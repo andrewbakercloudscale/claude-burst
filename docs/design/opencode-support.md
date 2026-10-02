@@ -1,6 +1,6 @@
-# Plan: OpenCode support
+# Proposal: OpenCode support
 
-Status: todo and plan, 2026-10-01. Nothing here is built yet.
+**Status: proposal, 2026-10-01.** A plan, not a feature: nothing here is built yet.
 
 ## Where things stand
 
@@ -91,7 +91,7 @@ on the paid provider.
 - [ ] Map OpenCode's tool names (edit, write, bash, patch) onto the
       coordinator's Edit/Write/Bash handling, including patch tools that
       touch several files at once.
-- [ ] Commit-before-idle (DESIGN-orphaned-work.md, rule 1) for OpenCode,
+- [ ] Commit-before-idle ([orphaned-work.md](orphaned-work.md), rule 1) for OpenCode,
       through its idle event, if a plugin can keep the session going;
       otherwise a notice plus layer 2's orphan record.
 - [ ] Show OpenCode sessions in the dashboard's "Sessions taking part",

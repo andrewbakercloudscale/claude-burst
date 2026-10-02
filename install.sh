@@ -296,12 +296,23 @@ install() {
   REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
   "$TARGET" configure --region "$REGION"
 
+  # Which secondary config.json names, if any. Read rather than assumed: a
+  # reinstall keeps a Together or OpenRouter secondary chosen earlier, and
+  # telling that user they have none would be wrong.
+  local cfgjson="$HOME/.config/claude-burst/config.json" secondary
+  secondary="$(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('provider') or '')" 2>/dev/null || true)"
+
   if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
     "$TARGET" keychain-set
+  elif [[ "$secondary" == openai-compatible ]]; then
+    echo "Secondary: kept the OpenAI-compatible secondary already in config.json."
+  elif [[ "$secondary" == bedrock ]] && security find-generic-password -s claude-burst-bedrock >/dev/null 2>&1; then
+    echo "Secondary: kept Amazon Bedrock, with the key already in the Keychain."
   else
-    echo "NOTE: no secondary key stored, so Claude Burst runs on your single plan (Claude Enterprise, Pro or Max)."
+    echo "NOTE: no secondary chosen, so Claude Burst runs on your single plan (Claude Enterprise, Pro or Max)."
     echo "Everything but overflow works, and Anthropic's own limits reach Claude Code unchanged."
-    echo "To overflow to Bedrock later: export AWS_BEARER_TOKEN_BEDROCK='...' && claude-burst keychain-set"
+    echo "To overflow to Together AI, OpenRouter or Amazon Bedrock later, pick one on the dashboard"
+    echo "(Routing, Secondary) or see docs/providers.md."
   fi
 
   "$TARGET" enable
@@ -343,24 +354,47 @@ PLIST
   # 7777 (see internal/config's Default), and a summary naming a port nothing
   # is listening on is exactly the kind of confidently-wrong instruction this
   # project keeps getting bitten by.
-  local gw
-  gw="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('listen','127.0.0.1:7777'))" 2>/dev/null || echo '127.0.0.1:7777')"
+  local gw dash mode sec_line health
+  dash="$(python3 -c "import json;print(json.load(open('$cfgjson')).get('admin_listen') or '127.0.0.1:7788')" 2>/dev/null || echo '127.0.0.1:7788')"
+  gw="$(python3 -c "import json;print(json.load(open('$cfgjson')).get('listen','127.0.0.1:7777'))" 2>/dev/null || echo '127.0.0.1:7777')"
+  mode="$(python3 -c "import json;print((json.load(open('$cfgjson')).get('intercept') or {}).get('mode') or 'base-url')" 2>/dev/null || echo base-url)"
+  secondary="$(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('provider') or '')" 2>/dev/null || true)"
+  case "$secondary" in
+    openai-compatible) sec_line="Secondary: $(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('model') or '')" 2>/dev/null) at $(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('base_url') or '')" 2>/dev/null)" ;;
+    bedrock)
+      if security find-generic-password -s claude-burst-bedrock >/dev/null 2>&1; then
+        sec_line="Secondary: Amazon Bedrock ($REGION)"
+      else
+        sec_line="Secondary: none (single plan)"
+      fi ;;
+    *) sec_line="Secondary: none (single plan)" ;;
+  esac
+  # In transparent mode the pf redirect makes the gateway's own port all but
+  # unreachable to direct connections (issue #1), so a curl of it times out
+  # on a healthy gateway. Probe the real path instead, as the guards do.
+  if [[ "$mode" == transparent ]]; then
+    health="  curl -sk https://api.anthropic.com/healthz   # a body containing \"overflow\" came from the gateway
+  (do not curl http://$gw directly in transparent mode: it times out by design)"
+  else
+    health="  curl -s http://$gw/healthz"
+  fi
 
   cat <<OUT
 
 Installed claude-burst $($TARGET version)
-Gateway: http://$gw
+Gateway: http://$gw (intercept mode: $mode)
+Dashboard: http://$dash
 Claude Code settings: enabled
 LaunchAgent: $LABEL
-AWS region: $REGION
+$sec_line
 
 Now restart Claude Code and run:
   claude-burst status
 
-To test the local gateway itself:
-  curl -s http://$gw/healthz
+To test the gateway:
+$health
 
-Lid-closed keep-awake (off by default; see README):
+Lid-closed keep-awake (off by default; see docs/lid-and-hotspot.md):
   claude-burst configure --keep-awake-lid-closed true [--keep-awake-power ac|always]
 
 To remove everything later:

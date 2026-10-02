@@ -64,7 +64,7 @@ if [[ -x "$ROOT_HELPER" ]]; then
 fi
 
 # STEP 1b: undo the System keychain CA trust added by
-# trust-ca-systemwide.sh (see INVESTIGATION-TLS-STORM.md for why that
+# trust-ca-systemwide.sh (see docs/history/investigation-tls-storm.md for why that
 # exists -- without it, the redirect above breaks TLS for every OTHER app
 # on this Mac that happens to reach api.anthropic.com, not just Claude
 # Code CLI). Same sudo-or-print pattern as the block above, and only nags

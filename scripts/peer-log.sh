@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Arms or disarms the gateway's TLS peer attribution -- the diagnostic that
 # names the process behind the open TLS handshake-error storm
-# (INVESTIGATION-TLS-STORM.md).
+# (docs/history/investigation-tls-storm.md).
 #
 # WHAT IT TURNS ON. cmd/claude-burst/peerlog.go wraps the listener and, for
 # every accepted connection, runs `lsof` scoped to that exact ephemeral port
