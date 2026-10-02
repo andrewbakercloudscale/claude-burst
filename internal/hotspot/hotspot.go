@@ -363,6 +363,16 @@ func decide(cfg config.HotspotConfig, lidClosed bool, offlineChecks int, sinceFi
 	return offlineChecks >= cfg.OfflineAfter() && sinceLastTry >= cfg.RetryEvery()
 }
 
+// The watcher's view of the world, variables so tests can script it with a
+// fake clock and never read the real lid, config or Wi-Fi.
+var (
+	lidClosed  = LidClosed
+	loadConfig = config.Load
+	now        = time.Now
+	after      = time.After
+	watchJoin  = Join
+)
+
 // Watch runs until ctx ends. Config is re-read every check, so the dashboard's
 // changes apply without a restart.
 func Watch(ctx context.Context) {
@@ -375,15 +385,15 @@ func Watch(ctx context.Context) {
 	// it failed at 09:19 because the phone was not broadcasting yet, and with
 	// the lid open and When set to lid-closed nothing tried again.
 	openedOffline := false
-	wasShut := LidClosed()
+	wasShut := lidClosed()
 	wait := config.HotspotConfig{}.CheckEvery()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(wait):
+		case <-after(wait):
 		}
-		cfg, err := config.Load()
+		cfg, err := loadConfig()
 		if err == nil {
 			wait = cfg.Hotspot.CheckEvery() // a change applies from the next check
 		}
@@ -399,14 +409,14 @@ func Watch(ctx context.Context) {
 			continue
 		}
 		offline++
-		lid := LidClosed()
+		lid := lidClosed()
 		opened := lidJustOpened(cfg.Hotspot, wasShut, lid, offline)
 		wasShut = lid
 		if opened {
 			logEvent("lid opened with no network: trying %q now, and until back online", cfg.Hotspot.SSID)
-			_, _ = Join(cfg.Hotspot.SSID, false)
+			_, _ = watchJoin(cfg.Hotspot.SSID, false)
 			// A fresh spell: an earlier give-up no longer applies.
-			firstTry, lastTry, gaveUp, openedOffline = time.Now(), time.Now(), false, true
+			firstTry, lastTry, gaveUp, openedOffline = now(), now(), false, true
 			continue
 		}
 		if offline == cfg.Hotspot.OfflineAfter() {
@@ -425,10 +435,10 @@ func Watch(ctx context.Context) {
 		}
 		var sinceFirst time.Duration
 		if !firstTry.IsZero() {
-			sinceFirst = time.Since(firstTry)
+			sinceFirst = now().Sub(firstTry)
 		}
 		giveUp := cfg.Hotspot.GiveUp()
-		if !decide(cfg.Hotspot, lid || openedOffline, offline, sinceFirst, time.Since(lastTry)) {
+		if !decide(cfg.Hotspot, lid || openedOffline, offline, sinceFirst, now().Sub(lastTry)) {
 			if !firstTry.IsZero() && sinceFirst >= giveUp && !gaveUp {
 				gaveUp = true
 				logEvent("gave up after %s; trying again after the Mac has been back online", giveUp)
@@ -436,14 +446,14 @@ func Watch(ctx context.Context) {
 			continue
 		}
 		if firstTry.IsZero() {
-			firstTry = time.Now()
+			firstTry = now()
 		}
 		// The last attempt that fits in the give-up time also turns Wi-Fi
 		// off and on, in case the Mac is stuck with no network at all.
-		last := time.Since(firstTry)+cfg.Hotspot.RetryEvery()+attemptTimeout >= giveUp
-		logEvent("joining %q (%s of %s tried)", cfg.Hotspot.SSID, time.Since(firstTry).Round(time.Minute), giveUp)
-		_, _ = Join(cfg.Hotspot.SSID, last)
+		last := now().Sub(firstTry)+cfg.Hotspot.RetryEvery()+attemptTimeout >= giveUp
+		logEvent("joining %q (%s of %s tried)", cfg.Hotspot.SSID, now().Sub(firstTry).Round(time.Minute), giveUp)
+		_, _ = watchJoin(cfg.Hotspot.SSID, last)
 		// The gap runs from the end of the attempt, not its start.
-		lastTry = time.Now()
+		lastTry = now()
 	}
 }
