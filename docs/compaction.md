@@ -1,0 +1,98 @@
+# Pauseless compaction
+
+[Back to the README](../README.md)
+
+**Claude Code's `/compact` stops the session while it summarises. Burst's compaction never does.**
+
+**What is pauseless compaction?** Claude Code has no pauseless compaction mode of its own: its `/compact`, and the auto-compact near the end of its context window, stop the session while the conversation is summarised. Pauseless compaction is Claude Burst's alternative. A local gateway between Claude Code and Anthropic writes the summary in a background request while you keep working, then swaps it in on your next prompt. Claude Code is unchanged, your place in the conversation is kept, and there is nothing to type: it fires by itself, or on demand with [`/compact-async`](#compact-now-compact-async). Turn it on in the dashboard under **Pauseless Compaction**.
+
+**You see it in Claude Code itself.** A line appears under the prompt you send, for example `⚡ Claude Burst, pauseless compaction: done. Context down 88%, 666k → 78k: 1074 earlier messages now go as a summary`. There are lines for when a summary starts, when it is ready, when it has cut the context, and when it fails or no longer fits. They come from a hook the dashboard installs (on by default, with a switch): under each prompt (`UserPromptSubmit`), and after each tool call inside a long turn (`PostToolUse`). A summary that is ready mid-turn waits for your next prompt, and the hook says so once, so a long turn never looks like compaction has not fired. Claude does not see these lines, so they cost no context.
+
+
+On the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window. With pauseless compaction on:
+
+- When a session's context passes **Compact at** (default 400k), Burst sends one background request, on your subscription with the session's own login, asking the same model to summarise everything before your latest prompt. It takes about 40 seconds and you keep working.
+- The summary request resends the history exactly as Claude Code last sent it, so it reads from cache rather than paying for the whole context again.
+- From your next prompt, Burst sends the summary in place of those messages. Claude Code keeps its full local history and sees no difference. CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.
+- `/clear`, `/compact` or a rewind make the summary stop fitting, and requests then go through untouched.
+- A session is compacted at most once per window (default 60 minutes), a warning is logged at **Warn at** (default 300k), and state survives a gateway restart. A summary that fails is retried after 5 minutes, and a summary that stops fitting reopens the window at once, so a session is never left on its full history for the rest of the hour.
+- **Limit:** Claude Code never learns that Burst shortened the history, so its own copy keeps growing. If Burst's summary stops fitting after that copy has passed the 1M window, the full history is too big to send: Anthropic refuses it and Claude Code compacts in its own way, with the pause. The gateway log says which message changed, so the cause can be found.
+
+**What it did in its first day** (one long Opus 5.5 session, 2026-09-29 to 30): three summaries, the biggest drop 611k tokens to 49k with recall intact. The first two summaries cost $2.10 and $2.96 API-equivalent because they did not read the session from cache; the fix brought the third down to **$0.21**. What that is worth over a day is in [Savings per day](#savings-per-day-and-what-it-means-on-a-subscription) below.
+
+**Where the summary is kept.** A summary is part of your conversation, so it is stored like one: in `~/.config/claude-burst/compaction-state.json`, written with mode 0600 (readable by you only), and removed once its session has gone 48 hours without a request. That is the one place Burst writes conversation content to disk; the logs never hold any (see [What is logged](logging.md)).
+
+## Compact now: `/compact-async`
+
+**`/compact-async` is `/compact` without the pause.** Type it in Claude Code whenever you want the context cut, instead of waiting for **Compact at**.
+
+| | `/compact` (Claude Code) | `/compact-async` (Burst) |
+|---|---|---|
+| While the summary is written | session stops, you wait | you keep working |
+| When it takes effect | when it finishes | at your next prompt after it is ready (about 40s) |
+| Context size needed | any | any; ignores **Compact at** and the 60 minute window |
+| What Claude Code keeps | the summary only | its full local history; only what is sent is shortened |
+
+What happens:
+
+1. You type `/compact-async`. Burst sees the command's marker in the prompt and starts the background summary of everything before it.
+2. Claude replies with one line, `Pauseless compaction started: it swaps in with your next prompt, keep working.`, and uses no tools.
+3. Keep working. Under your next prompt, the Burst line says what happened, for example `/compact-async: 812 earlier messages (context 214k) are being summarised in the background`.
+4. The first prompt after the summary is ready carries it, and its line reports the drop, for example `Context down 80%, 214k → 43k`.
+
+Good to know:
+
+- **Installed for you.** The dashboard writes `~/.claude/commands/compact-async.md` while Pauseless Compaction is on and deletes it when it is off. It shows in Claude Code's `/` menu beside `/compact`. A `compact-async.md` of your own is never overwritten or removed.
+- **One at a time.** Asking again while a summary is being written, or is ready and waiting, starts nothing new; the prompt line says which.
+- **Needs something to summarise.** At the very start of a session there is too little before the prompt, and the prompt line says so instead.
+- **Only your prompt triggers it.** The marker inside a file Claude reads, or any other tool output, is ignored.
+- **Cost:** one summary request on your subscription, read from cache, typically about $0.20 API-equivalent (see [the savings](#how-the-savings-are-calculated)).
+
+## How the savings are calculated
+
+A compacted request does not record what it would have sent without Burst, so the dashboard works it out by replaying each session from `metrics.jsonl`, request by request, beside a **"without Burst" twin**:
+
+- **The twin grows as the session grows.** On every request the twin's context changes by exactly as much as the real one, except that it never takes Burst's drops.
+- **Claude Code compacts the twin.** Without Burst the session would not grow past the 1M window: Claude Code compacts on its own near the end of it. When the twin reaches **950k** (95% of the window; Claude Code does not publish its exact threshold), it is compacted back down to the size of one of Burst's summaries. So fifteen compactions never claim fifteen windows of saving, and just after the twin has been compacted it can be smaller than the real session; those requests count **against** Burst.
+- **Saving per request** = twin context minus real context, priced at the model's cache-read rate (in a long session every resent token is a cache read).
+- **Net saving** = the sum of those, less every summary call, less the extra cost of writing each shortened history to cache on the request after a swap (where the twin would only have read). The twin's own compactions by Claude Code are not credited back, so the net figure errs low.
+- All figures are API-equivalent: on a subscription the real effect is using your limits more slowly, not a smaller bill.
+
+The dashboard shows the net figure in the Pauseless Compaction section (per session, with the parts on hover), in the **Saved, net** tile under Analytics, and per day in the Saved chart's tooltip. The same explanation is on the page under *How the savings are calculated*.
+
+![The Pauseless Compaction section: headline results, settings, and each session's context before and after, with the saving per turn](screenshots/pauseless-compaction.png)
+
+![The Saved view of Daily activity: tokens removed by compaction and by pruning, per day. Illustration: an example month built from real data](screenshots/saved-chart.png)
+
+The Saved view above is also an illustration, not a measured month: the real daily average so far (2026-09-29 to 10-01, about 195M tokens of context compacted per active day) spread over 30 days, weekdays varying by a fixed pattern and weekends at 35%.
+
+## Savings per day, and what it means on a subscription
+
+The Pauseless Compaction section charts each day: **savings** (context compacted, priced at what resending it would have cost) above the line, **cost** (the summaries and the cache rewrites after each swap) below it, on one scale. The header totals the net for the window, hovering a day shows the breakdown, and *Show as a table* lists every day.
+
+![Savings per day: savings from Pauseless Compaction above the line, its cost below, with the net total for the window. Illustration: an example month built from two real days](screenshots/savings-per-day.png)
+
+**The chart above is an illustration, not a measured month.** It is the first two real days of Pauseless Compaction (2026-09-29 and 30, one person, long Opus 5.5 sessions in Claude Code) repeated over 30 days, each weekday varied by a fixed pattern around the real daily average and weekends at 35%. The measured figures are these:
+
+| Measured, per active day (2 days, one user) | API-equivalent |
+|---|---:|
+| Savings: context compacted | $30.19 |
+| Cost: summaries | -$3.42 |
+| Cost: cache rewrites | -$0.87 |
+| **Net** | **$25.90** |
+| Compactions | 6 |
+
+What that figure is, and is not:
+
+- **It is API-equivalent value**: what the context Burst did not resend would have cost at public API prices. It is not money you get back.
+- **On a Pro, Max or Enterprise subscription your bill does not change.** The effect is that your usage limits last longer, because each turn re-reads a shorter context.
+- On a metered API key primary the saving is real money, at roughly the same rate.
+- Cost comes to about 14% of the savings, so roughly 86 cents in every dollar of context compacted is kept.
+- Your figure depends on how long your sessions run. A session that never passes **Compact at** (default 400k) is never compacted and saves nothing; the savings come from long sessions, and grow with them.
+- Two days is a small sample. The dashboard shows your own numbers over the last 7 days as soon as a session has been compacted.
+
+**Where to see it:**
+
+- **Dashboard, Pauseless Compaction** (its own entry in the menu): the on/off switch and thresholds, headline figures for the last 7 days, and a table of sessions with context **before** and **after** the latest summary, the **saving per turn**, and the **net saving** after summaries and cache rewrites.
+- **Dashboard, Daily activity, Saved:** the tokens compaction removed (context compacted), stacked with what overflow pruning removed, per day. The tooltip shows what each saved and what the summaries cost.
+- **[Usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel):** Started and Finished rows in the turn table, a green negative context delta on the turn where the summary landed, and the summary's cost in the session total.

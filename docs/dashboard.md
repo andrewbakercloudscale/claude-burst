@@ -1,0 +1,117 @@
+# The dashboard
+
+[Back to the README](../README.md)
+
+This page covers the dashboard's layout, the Sessions and Failover & pricing sections, and how the admin UI is protected.
+
+Claude Burst runs a local dashboard beside the gateway, on port **7788**:
+
+```bash
+open http://127.0.0.1:7788
+```
+
+It binds loopback only and needs no login (see [the admin UI](#the-local-admin-ui) for how it is protected). Change the address with `claude-burst configure --admin-listen 127.0.0.1:PORT`, turn it off with `--admin-listen off`, or give it a friendlier name with [a friendlier admin URL](#a-friendlier-admin-url).
+
+![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](screenshots/overview.png)
+
+The menu down the left follows you as you scroll, grouped by job:
+
+- **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, and **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in).
+- **Context**: [Pauseless Compaction](compaction.md), Context & cache.
+- **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
+- **Sessions**: [Session handover](handover.md), [Session coordination](coordination.md), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
+- **This Mac**: [lid closed and hotspot](lid-and-hotspot.md), [Notifications](lid-and-hotspot.md#notifications).
+- **Health**: Guards, Actions, Advanced (timeouts and limits).
+- **Requests**: Responses and Requests, the audit trail of recent traffic.
+- **Setup**: Install (shown when Burst is not in use, or from **Reinstall**).
+
+The page follows the same order, most used first, and the menu marks the section you are reading.
+
+Every control section says where it is saved and when it applies, as a chip beside its title: **applies at once**, **applies to the next session**, or **applies after a restart**. Settings the gateway only reads at startup (pricing, fallback models, failover thresholds and strategy, intercept mode, the secondary, timeouts and limits) are compared with the running gateway, and a banner at the top lists any that are saved but not yet in use, with a **Restart the gateway now** button.
+
+A **Needs attention** list above the overview collects everything not doing what it is set to do, each linking to its section: a guard not running, handover hooks half installed, the lid setting not applied as set, another program keeping the Mac awake, a failed usage panel install or removal, and models served without a price.
+
+![Analytics: latency, errors, spend by model and spend by repository, each in its own panel](screenshots/analytics.png)
+
+Screenshots are of a real dashboard with session ids, repository names and dollar figures replaced.
+
+## Session options and the usage panel
+
+![Session options and the usage panel: Remote Control on start, session names, caffeinate, the handover writer, and installing or removing the panel with its settings](screenshots/sessions-and-panel.png)
+
+**Session options** (Sessions menu) apply to the next session you start. The first three are carried out by the [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel)'s hooks and launcher, so they need it installed, and are saved in `~/.config/claude-panel/options`:
+
+- **Start with Remote Control**: every interactive `claude` starts with `--remote-control`.
+- **Name the session after its folder**: new sessions are titled with the repo's folder name instead of "Claude Code". Resumed sessions keep their name.
+- **Keep the Mac awake while a session runs**: `caffeinate -i` while the panel runs. Stops idle sleep, not lid-close sleep.
+- **Write a handover when a session closes**: the same switch as in [Session handover](handover.md).
+
+**Usage panel** (Sessions menu): a live panel in a Ghostty split beside Claude Code, showing the session's cost and burn rate, context used, a row per turn with its context, cache hit rate and cost, and where Burst compacted. The section explains what it installs and shows a masked screenshot.
+
+- **Install** runs the panel's `claude-panel-setup.sh` from a checkout beside this repo, cloning it first if there is none. It adds scripts to `~/.local/bin`, a block to `~/.zshrc`, and two hooks to `~/.claude/settings.json`.
+- **Remove** (click twice to confirm) runs the panel's `claude-panel-uninstall.sh`, which takes all of that out and keeps backups of the files it edits. Removing it also turns off the three session options above.
+- One install or removal at a time; its output is shown on the page.
+- **Panel settings**: cost alerts in the chat (on or off), the minimum dollar amount before a session alert fires, and the context size that shows a red restart warning (0 turns it off).
+
+## Failover & pricing
+
+![Failover & pricing: failure thresholds, fallback models, and the price editor with unpriced models first](screenshots/failover-pricing.png)
+
+Routing menu, saved in `config.json`, applies after a restart (the banner offers it):
+
+- **When Anthropic is failing**: the `metered_failover` window, error responses and connection failures, each marked when changed from its default, with **Reset to defaults**.
+- **Fallback models**: `fallback_chain`, one line per model (`requested model: fallback, next fallback`), tried on your subscription before the paid secondary.
+- **Prices**: every model with a price, plus every model served in the last 30 days, **unpriced models first**, with requests and spend per model. Add, edit or remove a price (a built-in price can only be reset to its built-in value, since built-ins are merged into every load; an empty cache price is derived from the input price); past requests recorded as unpriced are repriced from their stored tokens once saved.
+
+**Advanced** (Setup menu, collapsed): `reset_grace_seconds`, `unknown_reset_seconds`, `response_header_timeout_seconds` and `max_request_mb`, each marked when changed from its default. The gateway and dashboard addresses and TLS peer logging are shown read only: they change what Claude Code connects to, so they are set with `claude-burst configure` and a reinstall.
+
+## The local admin UI
+
+A local control panel runs alongside the gateway on `127.0.0.1:7788` (disable with
+`claude-burst configure --admin-listen off`). It shows routing state, usage, the last 50
+requests, and the last 20 upstream responses **with their headers**, the
+`anthropic-ratelimit-*` ones are what actually decide failover, so overflow behaviour
+becomes debuggable rather than mysterious. It also says whether burst is in the path at
+all, and **Test connection** proves it live rather than reading config off disk, which is
+not the same question.
+
+What the buttons do: force or clear overflow; change the secondary model, failover strategy
+and intercept mode; edit failover thresholds, fallback models, prices and timeouts; set the
+lid-closed mode, the hotspot and notifications; install or remove the usage panel and set
+its options; restart the gateway (routing config is only read at startup); install either
+mode; arm either guard and read its log; read the gateway's own log. Anything needing root
+or affecting the whole machine is **not** done in-process, the button writes a script and
+opens it in Terminal, where you answer the sudo prompt and watch every command. That
+includes **Revert**, which runs `scripts/rollback.sh`: it undoes the machine-wide redirect
+too, not just Claude Code's endpoint, because a revert button that cannot undo the widest
+change it is offered for is not a revert button.
+
+It binds loopback and has no login, which is not by itself safe: a malicious page can point
+a hostname it controls at `127.0.0.1` and drive the UI from your own browser. Two defences
+apply to every request, the `Host` header must name loopback, and mutating requests must
+carry a custom header, which forces a CORS preflight the server never answers. Response
+headers are held in memory only and filtered through an allowlist; request rows are
+metadata only, never prompt or response content.
+
+## A friendlier admin URL
+
+```bash
+sudo scripts/transparent-root.sh admin-host cloudscale-claudeburst.test
+claude-burst configure --admin-hostname cloudscale-claudeburst.test
+launchctl kickstart -k gui/$UID/ninja.andrewbaker.claude-burst
+```
+
+Then the panel is at <http://cloudscale-claudeburst.test:7788>. Use a **dotted** name -
+browsers treat a single-label name as a search term, and `.test` is reserved by RFC 6761 so
+it can never collide with a real domain. Undo with
+`sudo scripts/transparent-root.sh admin-host-remove` and
+`claude-burst configure --admin-hostname off`.
+
+This is a separate `/etc/hosts` block from transparent mode's, so removing one never
+disturbs the other.
+
+Be aware of the trade. The `Host` header check is a DNS-rebinding defence, and a hostname a
+hostile page can guess and navigate to weakens it. What still holds: mutating requests
+require a custom header, so a cross-origin page needs a preflight this server never answers,
+and no CORS headers are ever returned, so responses cannot be read cross-origin. A hostile
+page could therefore fire read-only requests but not see the answers.
