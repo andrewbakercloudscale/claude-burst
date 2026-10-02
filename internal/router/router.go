@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,6 +29,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
 type ctxKey int
@@ -176,7 +179,15 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		).withFallbacks(resolverCachePath(statePath))
 	}
 	newTransport := func(responseHeaderTimeout time.Duration) *http.Transport {
-		t := &http.Transport{ResponseHeaderTimeout: responseHeaderTimeout}
+		// Cloned from the default, not a bare Transport: a bare one ignores
+		// HTTPS_PROXY, and on a corporate network the egress proxy is often
+		// the only way out. RootCAs adds the corporate CAs Claude Code
+		// trusts through NODE_EXTRA_CA_CERTS (an internal Portkey gateway is
+		// signed by one), which Go would otherwise never read.
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.Proxy = upstreamProxy
+		t.ResponseHeaderTimeout = responseHeaderTimeout
+		t.TLSClientConfig = &tls.Config{RootCAs: upstreamRoots(cfg.Intercept.CABundle, logger)}
 		if resolver != nil {
 			// /etc/hosts now points the upstream hostname at this process, so
 			// the standard resolver would make the gateway call itself. See
@@ -1691,4 +1702,50 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 		// take the gateway down. Log it loudly so it's diagnosable, and move on.
 		s.logger.Printf("req=%s error stage=write_metric err=%v", rid, err)
 	}
+}
+
+// upstreamProxy is http.ProxyFromEnvironment, except that a proxy on this
+// Mac's loopback is ignored: that is Claude Burst's own address in older
+// installs, and using it would send the gateway's requests back to itself.
+func upstreamProxy(req *http.Request) (*url.URL, error) {
+	u, err := http.ProxyFromEnvironment(req)
+	if err != nil {
+		return nil, err
+	}
+	return withoutLoopback(u), nil
+}
+
+// withoutLoopback returns nil for a proxy on this Mac's loopback, else u.
+func withoutLoopback(u *url.URL) *url.URL {
+	if u == nil {
+		return nil
+	}
+	if ip := net.ParseIP(u.Hostname()); (ip != nil && ip.IsLoopback()) || strings.EqualFold(u.Hostname(), "localhost") {
+		return nil
+	}
+	return u
+}
+
+// upstreamRoots is the system trust store plus the certificates in the
+// NODE_EXTRA_CA_CERTS bundle, without Claude Burst's own block (its CA
+// signs the gateway's leaf and has no business vouching for an upstream).
+// Any failure falls back to the system store alone, which is what the
+// gateway used before.
+func upstreamRoots(bundle string, logger *log.Logger) *x509.CertPool {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if bundle == "" {
+		return pool
+	}
+	b, err := os.ReadFile(bundle)
+	if err != nil {
+		return pool
+	}
+	rest, _ := tlsca.StripBlock(string(b))
+	if strings.Contains(rest, "BEGIN CERTIFICATE") && !pool.AppendCertsFromPEM([]byte(rest)) && logger != nil {
+		logger.Printf("WARNING: %s has certificates the gateway could not parse; upstreams signed by them will fail TLS", bundle)
+	}
+	return pool
 }
