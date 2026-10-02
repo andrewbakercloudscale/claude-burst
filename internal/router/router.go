@@ -361,10 +361,29 @@ func (s *Server) saveStateLocked() {
 	}
 }
 
+// Logf writes one line to the gateway log, for other components (the
+// dashboard's notifier) whose events belong beside the request log.
+func (s *Server) Logf(format string, a ...any) { s.logger.Printf(format, a...) }
+
 func (s *Server) Status() State {
+	// Deep copy under the lock. A plain return copies only the map headers
+	// for ModelOverflow and ModelClaim; callers JSON-encode the result after
+	// the RLock is released, and a concurrent write then triggers Go's fatal
+	// "concurrent map iteration and map write", which no recover() catches.
+	// pf-heal probes /healthz on every network change, exactly when windows
+	// are armed, so the overlap is correlated rather than rare.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.state
+	st := s.state
+	st.ModelOverflow = make(map[string]int64, len(s.state.ModelOverflow))
+	for k, v := range s.state.ModelOverflow {
+		st.ModelOverflow[k] = v
+	}
+	st.ModelClaim = make(map[string]string, len(s.state.ModelClaim))
+	for k, v := range s.state.ModelClaim {
+		st.ModelClaim[k] = v
+	}
+	return st
 }
 
 // HasSecondary reports whether THIS running gateway process actually has a

@@ -50,7 +50,14 @@ if [[ "$healthy" -eq 1 ]]; then
   osascript -e 'display notification "Gateway healthy after check. Staying enabled." with title "claude-burst"' >/dev/null 2>&1 || true
 else
   dump_health_diagnostics "watchdog, ${DELAY}s after enable" >> "$LOG" 2>&1
-  "$DIR/rollback.sh" >> "$LOG" 2>&1
-  echo "$(date '+%Y-%m-%d %H:%M:%S') ROLLED BACK: config restored, gateway stopped" >> "$LOG"
-  osascript -e 'display notification "Gateway unhealthy -- auto rolled back. Restart Claude Code." with title "claude-burst"' >/dev/null 2>&1 || true
+  # Say rolled back only if the rollback says so: reporting success after a
+  # failed rollback would leave someone believing they are safe.
+  if "$DIR/rollback.sh" >> "$LOG" 2>&1; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') ROLLED BACK: config restored, gateway stopped" >> "$LOG"
+    osascript -e 'display notification "Gateway unhealthy, rolled back automatically. Restart Claude Code." with title "claude-burst"' >/dev/null 2>&1 || true
+  else
+    rc=$?
+    echo "$(date '+%Y-%m-%d %H:%M:%S') ROLLBACK FAILED (rollback.sh exit $rc): run scripts/rollback.sh by hand, see the lines above" >> "$LOG"
+    osascript -e 'display notification "Gateway unhealthy and the automatic rollback FAILED. Run scripts/rollback.sh by hand." with title "claude-burst"' >/dev/null 2>&1 || true
+  fi
 fi

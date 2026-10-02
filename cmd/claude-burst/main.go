@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -103,7 +104,7 @@ Commands:
   reset             Clear overflow state immediately (back to primary)
   force-secondary   Route inference to the secondary for a while (testing)
   stats             Summarize local routing/token metrics
-  shunt             Keep bulk file reads and boilerplate out of Claude's context (see: shunt help)
+  shunt             Token shunting: off and not recommended (DECISION-token-shunting-off.md); shunt disable removes it
   coord             Session coordination: status, send, release (see: coord help)
   version           Print version
 
@@ -136,7 +137,6 @@ Setup with a Claude Max/Pro subscription (default), Together AI overflow:
   TOGETHER_API_KEY='...' claude-burst keychain-set --provider together
   claude-burst enable
   claude-burst serve
-  claude-burst shunt enable        # optional: keep bulk reads out of Claude's context
 
 Setup with no subscription (metered Anthropic API key primary), Together AI overflow:
   claude-burst configure --primary anthropic-api-key --secondary openai-compatible \
@@ -148,7 +148,7 @@ Setup with no subscription (metered Anthropic API key primary), Together AI over
   # forwards whatever auth header Claude Code already sent.
   claude-burst serve
 
-Amazon Bedrock is also supported as an overflow secondary (not as a shunt worker):
+Amazon Bedrock is also supported as an overflow secondary:
   export AWS_BEARER_TOKEN_BEDROCK='...' && claude-burst keychain-set
   claude-burst configure --secondary bedrock --region us-east-1
 `)
@@ -265,8 +265,11 @@ func serve(args []string) {
 	// open with nothing on it; a server-side deadline would sever exactly that
 	// and present as Remote Control dropping repeatedly for no visible reason.
 	// Joins the chosen hotspot when offline; idle unless one is chosen.
-	go hotspot.Watch(context.Background())
-	server := &http.Server{Addr: cfg.Listen, Handler: srv, TLSConfig: tlsConfig}
+	go superviseHotspot(logger)
+	// ReadHeaderTimeout bounds only the request headers, never a long
+	// streaming reply, so it cannot cut a slow model off; it stops a client
+	// that opens a connection and never finishes its headers from holding it.
+	server := &http.Server{Addr: cfg.Listen, Handler: srv, TLSConfig: tlsConfig, ReadHeaderTimeout: 30 * time.Second}
 	go exitWhenIdleOnSignal(srv.InFlight, logger)
 	if tlsConfig != nil {
 		err = server.ServeTLS(ln, "", "") // certificates come from TLSConfig; ln is already bound above
@@ -957,3 +960,20 @@ func rejectArgs(cmd string, args []string) {
 }
 
 func fatal(err error) { fmt.Fprintln(os.Stderr, "error:", err); os.Exit(1) }
+
+// superviseHotspot runs the hotspot watcher, restarting it a minute after a
+// panic rather than letting one bad check take the whole gateway down: a
+// goroutine's panic is not recovered by anything else in the process.
+func superviseHotspot(logger *log.Logger) {
+	for {
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					logger.Printf("hotspot watcher PANIC err=%v (restarting in 1m)\n%s", rec, debug.Stack())
+				}
+			}()
+			hotspot.Watch(context.Background())
+		}()
+		time.Sleep(time.Minute)
+	}
+}

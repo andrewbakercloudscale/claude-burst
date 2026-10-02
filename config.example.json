@@ -17,11 +17,6 @@
     "model": "zai-org/GLM-5.3",
     "keychain_service": "claude-burst-together"
   },
-  "shunt": {
-    "read": true,
-    "write": true,
-    "min_lines": 350
-  },
   "metered_failover": {
     "window_seconds": 60,
     "min_failures": 3

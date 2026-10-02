@@ -194,7 +194,7 @@ dump_health_diagnostics() {
   local svc_label="${LABEL:-ninja.andrewbaker.claude-burst}"
   mkdir -p "$(dirname "$out")"
   {
-    echo "===== $(date -u '+%Y-%m-%dT%H:%M:%SZ') health check failed: $label ====="
+    echo "===== $(date '+%Y-%m-%d %H:%M:%S') health check failed: $label ====="
     local gport; gport="$(gateway_port)"
     echo "-- direct 127.0.0.1:$gport, https then http (verbose, what actually happened) --"
     curl -v -k -m 3 "https://127.0.0.1:$gport/healthz" 2>&1 | tail -15

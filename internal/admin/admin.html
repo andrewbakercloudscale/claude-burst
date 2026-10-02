@@ -1408,7 +1408,8 @@
         <label><input type="checkbox" data-notify="compaction"> <b>A session was compacted</b><span>when Pauseless Compaction swaps a session onto its summary</span></label>
         <label><input type="checkbox" data-notify="guards"> <b>A guard acted</b><span>when the pf guard (it keeps the macOS firewall rule that sends Claude Code's traffic through Burst in place) or the gateway watchdog (it restarts Burst if it has stopped) repaired something, or removed the redirect so Claude Code could reach Anthropic directly</span></label>
       </div>
-<div class="row" style="margin-top:10px"><button class="primary" id="ntSave" disabled>&#x2713; Save</button></div>
+<div class="row" style="margin-top:10px"><button class="primary" id="ntSave" disabled>&#x2713; Save</button><button id="ntTest">Send a test notification</button></div>
+      <div class="hint" style="margin-top:6px">Send a test to check that macOS shows them. If nothing appears within a few seconds, turn on <b>System Settings &gt; Notifications &gt; Script Editor</b> and try again. Every notification Burst sends is also written to the gateway log.</div>
       <div id="ntNote"></div>
     </div>
   </section>
@@ -4677,6 +4678,14 @@ $("prAdd").onclick = () => {
   const m = $("prNew").value.trim(); if (!m) return;
   settings.pricing.unshift({model: m, price: null, requests: 0});
   setDirty.pr = false; renderSettings(); setDirty.pr = true; $("prNew").value = "";
+};
+$("ntTest").onclick = async () => {
+  $("ntTest").disabled = true;
+  try {
+    await post("/api/notify-test");
+    note($("ntNote"), "ok", "Sent. If no notification appeared top right, allow notifications for Script Editor in System Settings > Notifications.");
+  } catch (e) { note($("ntNote"), "bad", "Could not send: " + e.message); }
+  finally { $("ntTest").disabled = false; }
 };
 $("ntSave").onclick = async () => {
   const n = Object.fromEntries([...document.querySelectorAll("[data-notify]")].map(c => [c.dataset.notify, c.checked]));

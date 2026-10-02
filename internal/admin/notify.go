@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"strings"
 	"time"
@@ -21,6 +22,29 @@ import (
 var notifyFunc = func(title, body string) error {
 	script := fmt.Sprintf("display notification %s with title %s", appleQuote(body), appleQuote(title))
 	return exec.Command("osascript", "-e", script).Run()
+}
+
+// notify delivers one notification and logs it. osascript exits 0 even
+// when macOS drops the notification (Script Editor not allowed to notify),
+// so a logged "sent" proves Burst tried, not that it appeared; the
+// dashboard's test button is how to find out.
+func (s *Server) notify(title, body string) {
+	if err := notifyFunc(title, body); err != nil {
+		s.gateway.Logf("notify FAILED title=%q err=%v", title, err)
+		return
+	}
+	s.gateway.Logf("notify sent title=%q", title)
+}
+
+// handleNotifyTest sends one notification on demand, so someone can tell
+// whether macOS shows them at all before relying on them.
+func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
+	if err := notifyFunc("Claude Burst: test notification", "If you can see this, notifications from Burst reach you."); err != nil {
+		http.Error(w, "osascript could not send it: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.gateway.Logf("notify sent title=%q (test from the dashboard)", "Claude Burst: test notification")
+	writeJSON(w, map[string]string{"ok": "sent"})
 }
 
 // appleQuote makes an AppleScript string literal.
@@ -95,10 +119,10 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 				}
 			}
 			if len(moved) > 0 {
-				notifyFunc("Claude Burst: on the secondary", strings.Join(moved, ", ")+" now go to "+cfg.Secondary.Provider+" (paid). "+st.LastReason)
+				s.notify("Claude Burst: on the secondary", strings.Join(moved, ", ")+" now go to "+cfg.Secondary.Provider+" (paid). "+st.LastReason)
 			}
 			if len(back) > 0 && len(over) == 0 {
-				notifyFunc("Claude Burst: back on your subscription", "Requests go to Anthropic again.")
+				s.notify("Claude Burst: back on your subscription", "Requests go to Anthropic again.")
 			}
 		}
 		if nc.Compaction {
@@ -108,16 +132,16 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 					if len(short) > 8 {
 						short = short[:8]
 					}
-					notifyFunc("Claude Burst: compacted a session", "Session "+short+" now runs on a summary of its older history.")
+					s.notify("Claude Burst: compacted a session", "Session "+short+" now runs on a summary of its older history.")
 				}
 			}
 		}
 		if nc.Guards {
 			if pf > n.pfEvents {
-				notifyFunc("Claude Burst: pf guard acted", "The redirect was repaired or removed. Details under Guards.")
+				s.notify("Claude Burst: pf guard acted", "The redirect was repaired or removed. Details under Guards.")
 			}
 			if self > n.selfEvents {
-				notifyFunc("Claude Burst: gateway watchdog acted", "The gateway was restarted or the redirect removed. Details under Guards.")
+				s.notify("Claude Burst: gateway watchdog acted", "The gateway was restarted or the redirect removed. Details under Guards.")
 			}
 		}
 	}

@@ -188,6 +188,11 @@ if [[ -x "$TARGET" ]]; then
   cp "$TARGET" "$BACKUP_DIR/claude-burst-bin.$TS.bak"
   cp "$TARGET" "$BACKUP_DIR/claude-burst-bin.latest.bak"
   log "backed up current binary -> $BACKUP_DIR/claude-burst-bin.$TS.bak"
+  # Keep the newest 5 dated binaries (14MB each); there was no cap and 196
+  # had piled up by 2026-10-02. latest.bak, the rollback target, is kept.
+  # Plain sh: this file is run with bash as often as zsh.
+  ls -1 "$BACKUP_DIR" | { grep -E '^claude-burst-bin\.[0-9]{8}-[0-9]{6}\.bak$' || true; } | sort -r | tail -n +6 |
+    while IFS= read -r old; do rm -f -- "$BACKUP_DIR/$old"; done
 else
   log "no existing binary at $TARGET -- nothing to back up (first install?)"
 fi

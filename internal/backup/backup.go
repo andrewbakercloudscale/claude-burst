@@ -26,8 +26,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
+
+// Keep is how many timestamped backups of each file Snapshot keeps. The
+// history had no cap: by 2026-10-02 the dashboard's frequent saves and
+// every deploy had left 1099 files (2.4GB) in the backups directory. The
+// restore point (*.latest.bak) is never pruned.
+const Keep = 30
 
 // Dir resolves the backups directory the same way scripts/backup-config.sh
 // does: $CLAUDE_BURST_BACKUP_DIR if set, else $HOME/.config/claude-burst/backups.
@@ -82,7 +90,38 @@ func Snapshot(path string) error {
 		fmt.Fprintf(os.Stderr, "warning: could not write backup %s: %v\n", dated, err)
 		return err
 	}
+	if err := Prune(dir, filepath.Base(path), Keep); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not prune old backups of %s: %v\n", path, err)
+	}
 	return nil
+}
+
+// Prune deletes all but the newest keep timestamped backups of base in dir
+// (files named <base>.<YYYYMMDD-HHMMSS>.bak). The timestamp sorts as text,
+// so name order is age order. latest.bak and other files are left alone.
+func Prune(dir, base string, keep int) error {
+	matches, err := filepath.Glob(filepath.Join(dir, base+".*.bak"))
+	if err != nil {
+		return err
+	}
+	var dated []string
+	for _, m := range matches {
+		stamp := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), base+"."), ".bak")
+		if _, err := time.Parse("20060102-150405", stamp); err == nil {
+			dated = append(dated, m)
+		}
+	}
+	if len(dated) <= keep {
+		return nil
+	}
+	sort.Strings(dated)
+	var firstErr error
+	for _, m := range dated[:len(dated)-keep] {
+		if err := os.Remove(m); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // SetLatest writes content to <base(path)>.latest.bak -- the ONE file
