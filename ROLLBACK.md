@@ -13,7 +13,7 @@ line below was verified against the machine, not inferred from config.
 - Gateway binary `0.2.0` at `~/.local/bin/claude-burst`, running under LaunchAgent
   `ninja.andrewbaker.claude-burst`, serving **HTTPS** on `127.0.0.1:17777`. Note the port:
   this machine was moved off 7777 on 2026-09-08 chasing issue #1, the move did not fix it
-  (see INVESTIGATION-TLS-STORM.md update (b)), and the shipped default went back to 7777
+  (see docs/history/investigation-tls-storm.md update (b)), and the shipped default went back to 7777
   while this machine stayed on 17777. `config.json` names it explicitly, so nothing infers it.
 - **Do not health-check the gateway by connecting to its port directly.** While the pf
   redirect is installed, the rdr rule makes its own target port very nearly unreachable, a
@@ -39,7 +39,7 @@ line below was verified against the machine, not inferred from config.
   `~/.claude/certs/node-extra-ca-certs.pem` (13 certificates, 12 of them the
   corporate ones, see *The CA bundle* below), and as a trusted root in the **System
   keychain** (`scripts/trust-ca-systemwide.sh`, added because Claude Desktop's updater
-  has no idea about `NODE_EXTRA_CA_CERTS` - see INVESTIGATION-TLS-STORM.md).
+  has no idea about `NODE_EXTRA_CA_CERTS` - see docs/history/investigation-tls-storm.md).
 - `~/.claude/settings.json` has **no** `ANTHROPIC_BASE_URL`, which is the whole point:
   Remote Control keeps working. Do not set it while this mode is installed.
 - Live path confirmed, not just configured: the dashboard's **Test connection** reports

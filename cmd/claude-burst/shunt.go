@@ -1,6 +1,6 @@
 package main
 
-// Token shunting was removed on 2026-10-02 (DECISION-token-shunting-off.md).
+// Token shunting was removed on 2026-10-02 (docs/decisions/token-shunting-off.md).
 // What is left is the way out for a machine that enabled it before then: a
 // PreToolUse hook in ~/.claude/settings.json that runs `claude-burst shunt
 // guard` on every Read and Bash call, and a skill telling Claude to run
@@ -56,7 +56,7 @@ func shuntCmd(args []string) {
 			fmt.Println("token shunting is not installed; nothing to remove")
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "token shunting has been removed (DECISION-token-shunting-off.md).")
+		fmt.Fprintln(os.Stderr, "token shunting has been removed (docs/decisions/token-shunting-off.md).")
 		fmt.Fprintln(os.Stderr, "claude-burst shunt disable removes a hook or skill left by an earlier install.")
 		os.Exit(2)
 	}
