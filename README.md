@@ -1141,10 +1141,26 @@ bash scripts/coord-live-test.sh    # KEEP=1 keeps the temp directory to look at
 ## Uninstall
 
 ```bash
-./install.sh uninstall
+./install.sh uninstall           # keeps ~/.config/claude-burst
+./install.sh uninstall --purge   # also deletes ~/.config/claude-burst
 ```
 
-This removes the LaunchAgent and the binary. If `keep_awake_lid_closed` was applied it also removes the root power-source LaunchDaemon and restores `SleepDisabled` to its prior value (one sudo prompt), so an uninstall never leaves a Mac that will not sleep. It intentionally keeps metrics, configuration and the Keychain secret so a rerun of the installer does not silently wipe them.
+It runs in this order, and each step is the same undo script you could run by hand:
+
+1. **Root steps, only for what is actually installed.** It lists them first, then sudo asks for your password once. A base-url install with nothing machine-wide asks for no password.
+   - the pf self-heal LaunchDaemon: `sudo scripts/install-pf-heal.sh uninstall`
+   - transparent mode's `/etc/hosts` redirect, pf rule and anchor: `sudo scripts/transparent-root.sh remove` (run whenever the hosts block, the pf.conf reference, the anchor file or `intercept.mode: transparent` is found)
+   - the admin hostname entry in `/etc/hosts`: `sudo scripts/transparent-root.sh admin-host-remove`
+   - the local CA in the System keychain: `sudo scripts/untrust-ca-systemwide.sh`
+   - the lid-closed keep-awake LaunchDaemon, restoring `SleepDisabled` to its prior value: `sudo scripts/lid-awake-root.sh remove`
+
+   If `/etc/hosts` still redirects api.anthropic.com after this, the uninstall stops here with the gateway still running, because removing the gateway then would cut the whole Mac off from Anthropic.
+2. **The self-heal watchdog LaunchAgent** (`scripts/install-selfheal-watchdog.sh uninstall`), then the gateway is stopped. Both come before the hooks: the watchdog restarts the gateway, and a gateway that starts reinstalls its hooks.
+3. **Claude Code settings, while the binary still exists:** `claude-burst uninstall-hooks` removes the token-shunting hook and skill, the session coordination hooks, the handover hooks, the prompt notice hooks and `~/.claude/commands/compact-async.md`, touching nothing else in `settings.json`; then `claude-burst disable` removes `ANTHROPIC_BASE_URL` (base-url mode) or the CA from Claude Code's CA bundle (transparent mode).
+4. **The gateway LaunchAgent and the binary** (`~/.local/bin/claude-burst`), and Ghostty's App Nap override. With `--purge`, `~/.config/claude-burst` too.
+5. **A check.** It exits non-zero, naming each leftover and the command that removes it, if `/etc/hosts` still has a claude-burst block, the pf anchor is still referenced or loaded, the pf self-heal daemon or the System-keychain CA is still there, or `~/.claude/settings.json` still mentions claude-burst. Success is printed only when every check passes. The loaded pf anchor can only be read as root, so it is checked only when sudo has a cached password from step 1.
+
+Kept: `~/.config/claude-burst` (config, state, metrics, logs, backups; unless `--purge`), with `config.json` unchanged so a reinstall comes back with the same features on; the secondary key in the macOS Keychain (the uninstall prints the `security delete-generic-password` command for it); `/var/log/claude-burst-pf.log`; the PATH line in `~/.zprofile`; and the usage panel, which has its own uninstaller.
 
 ## Terms and design notes
 
