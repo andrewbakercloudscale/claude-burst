@@ -369,6 +369,12 @@ func Watch(ctx context.Context) {
 	offline := 0
 	var firstTry, lastTry time.Time
 	gaveUp := false
+	// openedOffline: the lid was opened during this offline spell. Someone is
+	// at the Mac and waiting, so the spell keeps trying as if the lid were
+	// still shut. Before 2026-10-02 the lid-open attempt was the only one:
+	// it failed at 09:19 because the phone was not broadcasting yet, and with
+	// the lid open and When set to lid-closed nothing tried again.
+	openedOffline := false
 	wasShut := LidClosed()
 	wait := config.HotspotConfig{}.CheckEvery()
 	for {
@@ -382,14 +388,14 @@ func Watch(ctx context.Context) {
 			wait = cfg.Hotspot.CheckEvery() // a change applies from the next check
 		}
 		if err != nil || cfg.Hotspot.SSID == "" {
-			offline, firstTry, gaveUp = 0, time.Time{}, false
+			offline, firstTry, gaveUp, openedOffline = 0, time.Time{}, false, false
 			continue
 		}
 		if Online() {
 			if offline >= cfg.Hotspot.OfflineAfter() {
 				logEvent("back online")
 			}
-			offline, firstTry, gaveUp = 0, time.Time{}, false
+			offline, firstTry, gaveUp, openedOffline = 0, time.Time{}, false, false
 			continue
 		}
 		offline++
@@ -397,10 +403,10 @@ func Watch(ctx context.Context) {
 		opened := lidJustOpened(cfg.Hotspot, wasShut, lid, offline)
 		wasShut = lid
 		if opened {
-			logEvent("lid opened with no network: trying %q now", cfg.Hotspot.SSID)
+			logEvent("lid opened with no network: trying %q now, and until back online", cfg.Hotspot.SSID)
 			_, _ = Join(cfg.Hotspot.SSID, false)
 			// A fresh spell: an earlier give-up no longer applies.
-			firstTry, lastTry, gaveUp = time.Now(), time.Now(), false
+			firstTry, lastTry, gaveUp, openedOffline = time.Now(), time.Now(), false, true
 			continue
 		}
 		if offline == cfg.Hotspot.OfflineAfter() {
@@ -422,7 +428,7 @@ func Watch(ctx context.Context) {
 			sinceFirst = time.Since(firstTry)
 		}
 		giveUp := cfg.Hotspot.GiveUp()
-		if !decide(cfg.Hotspot, lid, offline, sinceFirst, time.Since(lastTry)) {
+		if !decide(cfg.Hotspot, lid || openedOffline, offline, sinceFirst, time.Since(lastTry)) {
 			if !firstTry.IsZero() && sinceFirst >= giveUp && !gaveUp {
 				gaveUp = true
 				logEvent("gave up after %s; trying again after the Mac has been back online", giveUp)
