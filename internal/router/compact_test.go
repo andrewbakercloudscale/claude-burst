@@ -229,6 +229,10 @@ func send(t *testing.T, s *Server, sid string, history []json.RawMessage) {
 	s.ServeHTTP(httptest.NewRecorder(), req)
 }
 
+// waitFor polls for something a turn starts. To check that a turn started
+// nothing, call compaction.running.Wait() instead: a summary is counted there
+// on the request path, before send returns, so Wait has seen every summary
+// that turn started.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
@@ -269,7 +273,7 @@ func TestCompactionEndToEnd(t *testing.T) {
 	}
 	// Still over the threshold, but inside the window: no second summary.
 	send(t, s, "S", all[:9])
-	time.Sleep(100 * time.Millisecond)
+	s.compaction.running.Wait()
 	if n := f.summaryCount(); n != 1 {
 		t.Fatalf("one compaction per window, got %d summaries", n)
 	}
@@ -289,7 +293,7 @@ func TestCompactionIsOffByDefault(t *testing.T) {
 	all := msgs(t, session)
 	send(t, s, "S", all[:5])
 	send(t, s, "S", all[:7])
-	time.Sleep(100 * time.Millisecond)
+	s.compaction.running.Wait()
 	if f.summaryCount() != 0 {
 		t.Fatal("no summary requests while disabled")
 	}
@@ -387,7 +391,7 @@ func TestCompactionSkipDoesNotConsumeTheWindow(t *testing.T) {
  {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"`+strings.Repeat("x", 5000)+`"}]}]`)
 	send(t, s, "S", one[:1])
 	send(t, s, "S", one) // over threshold, no boundary: skipped
-	time.Sleep(50 * time.Millisecond)
+	s.compaction.running.Wait()
 	if f.summaryCount() != 0 {
 		t.Fatal("nothing to summarise yet")
 	}
@@ -539,7 +543,7 @@ func TestCompactionStateSurvivesARestart(t *testing.T) {
 	if !strings.Contains(f.last(), "THE GIST OF THE FIRST TASK") {
 		t.Fatalf("the restarted gateway must apply the saved summary:\n%s", f.last())
 	}
-	time.Sleep(100 * time.Millisecond)
+	s2.compaction.running.Wait()
 	if n := f.summaryCount(); n != 1 {
 		t.Fatalf("the window must survive a restart too; got %d summaries", n)
 	}
@@ -806,7 +810,7 @@ func TestCompactAsyncMarkerInAToolResultIsIgnored(t *testing.T) {
 	h := append(append([]json.RawMessage(nil), all[:6]...),
 		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"grep hit: `+CompactAsyncMarker+`"}]}`))
 	send(t, s, "S", h)
-	time.Sleep(100 * time.Millisecond)
+	s.compaction.running.Wait()
 	if f.summaryCount() != 0 {
 		t.Fatal("a tool result mentioning the marker must not start a summary")
 	}
@@ -1022,7 +1026,7 @@ func TestSwapNoticeAndContextSurviveARestart(t *testing.T) {
 	n := f.summaryCount()
 	more := append(append([]json.RawMessage(nil), all...), msgs(t, `[{"role":"assistant","content":[{"type":"text","text":"done with third"}]},{"role":"user","content":[{"type":"text","text":"fourth task"}]}]`)...)
 	send(t, s2, "S", more)
-	time.Sleep(100 * time.Millisecond)
+	s2.compaction.running.Wait()
 	if f.summaryCount() != n {
 		t.Fatal("a compacted session at 60k must not start another summary")
 	}

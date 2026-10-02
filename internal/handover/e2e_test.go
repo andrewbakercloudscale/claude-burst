@@ -140,6 +140,10 @@ func (r *rig) log() string {
 }
 
 // waitFor polls the log: write.sh is detached from end.sh on purpose.
+//
+// The opposite check needs no wait. end.sh writes its "queue" line before it
+// detaches write.sh, and r.run returns only once end.sh has exited, so a log
+// without that line means no writer was started and none can appear later.
 func (r *rig) waitFor(substr string) string {
 	r.t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
@@ -205,8 +209,7 @@ func TestHandoverSkipsShortSessions(t *testing.T) {
 	if log := r.log(); !strings.Contains(log, "skip   "+r.root+": 1 typed prompt(s), fewer than 2") {
 		t.Fatalf("want a skip line:\n%s", log)
 	}
-	time.Sleep(300 * time.Millisecond)
-	if r.calls_() != "" {
+	if strings.Contains(r.log(), "queue") || r.calls_() != "" {
 		t.Fatal("the writer must not run for a short session")
 	}
 }
@@ -216,7 +219,6 @@ func TestHandoverIgnoresReposWithoutHandoff(t *testing.T) {
 	r.git("rm", "-q", "HANDOFF.md")
 	r.git("commit", "-q", "-m", "opt out")
 	r.end(3)
-	time.Sleep(300 * time.Millisecond)
 	if r.log() != "" || r.calls_() != "" {
 		t.Fatalf("a repo without HANDOFF.md is not opted in:\nlog %q\ncalls %q", r.log(), r.calls_())
 	}
@@ -246,7 +248,6 @@ func TestHandoverReportsAWriterThatChangesNothing(t *testing.T) {
 func TestHandoverNeverRunsFromTheWritersOwnSession(t *testing.T) {
 	r := newRig(t)
 	r.end(5, "CLAUDE_HANDOVER_WRITER=1")
-	time.Sleep(300 * time.Millisecond)
 	if r.log() != "" {
 		t.Fatalf("the writer's session ending must not queue another writer:\n%s", r.log())
 	}
@@ -327,7 +328,6 @@ func TestAuditListsReadsAndDeletesWhatTheWriterWrote(t *testing.T) {
 	// Deleting it opts the repository out: the next session end does nothing.
 	before := r.log()
 	r.end(3)
-	time.Sleep(300 * time.Millisecond)
 	if r.log() != before {
 		t.Fatal("a repository without HANDOFF.md must be left alone")
 	}
