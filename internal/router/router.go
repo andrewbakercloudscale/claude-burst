@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
@@ -358,7 +359,7 @@ func (s *Server) saveStateLocked() {
 		s.logger.Printf("error stage=save_state action=marshal err=%v", err)
 		return
 	}
-	if err := os.WriteFile(s.statePath, append(b, '\n'), 0600); err != nil {
+	if err := atomicfile.Write(s.statePath, append(b, '\n'), 0600); err != nil {
 		s.logger.Printf("error stage=save_state action=write path=%s err=%v", s.statePath, err)
 	}
 }

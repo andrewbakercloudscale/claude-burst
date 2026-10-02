@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 	"github.com/andrewbakercloudscale/claude-burst/internal/backup"
 )
 
@@ -59,7 +60,7 @@ func Write(p string, root map[string]any) error {
 		return err
 	}
 	full := append(b, '\n')
-	if err := os.WriteFile(p, full, 0600); err != nil {
+	if err := atomicfile.Write(p, full, 0600); err != nil {
 		return err
 	}
 	_ = backup.SetLatest(p, full)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 	"github.com/andrewbakercloudscale/claude-burst/internal/backup"
 )
 
@@ -814,7 +815,7 @@ func Save(cfg Config) error {
 		return err
 	}
 	full := append(b, '\n')
-	if err := os.WriteFile(p, full, 0600); err != nil {
+	if err := atomicfile.Write(p, full, 0600); err != nil {
 		return err
 	}
 	_ = backup.SetLatest(p, full)
