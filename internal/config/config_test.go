@@ -304,3 +304,24 @@ func TestLoadIgnoresALegacyShuntBlock(t *testing.T) {
 		t.Errorf("Save should drop the legacy shunt block:\n%s", b)
 	}
 }
+
+// The warning follows Compact at as a percentage, and a warn_at_tokens left
+// in an older config.json no longer decides it.
+func TestCompactionWarnIsAPercentOfCompactAt(t *testing.T) {
+	var c CompactionConfig
+	if err := json.Unmarshal([]byte(`{"enabled":true,"warn_at_tokens":300000,"compact_at_tokens":500000}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	r := c.Resolved()
+	if r.WarnAtPercent != 80 || r.WarnAtTokens != 400_000 || r.WindowMinutes != 30 {
+		t.Fatalf("defaults: %+v", r)
+	}
+	c.WarnAtPercent = 50
+	if r := c.Resolved(); r.WarnAtTokens != 250_000 {
+		t.Fatalf("50%% of 500k: %+v", r)
+	}
+	out, _ := json.Marshal(c.Resolved())
+	if strings.Contains(string(out), "warn_at_tokens") {
+		t.Fatalf("the derived token count must not be stored: %s", out)
+	}
+}

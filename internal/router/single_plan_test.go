@@ -375,7 +375,7 @@ func TestSinglePlanCompactionWorks(t *testing.T) {
 	cfg := config.Default()
 	cfg.AnthropicBaseURL = up.URL
 	cfg.Secondary = config.RouteConfig{Provider: config.ProviderNone}
-	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60}
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60}
 	dir := t.TempDir()
 	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(testLogWriter{t}, "", 0))
 	if err != nil {

@@ -960,20 +960,20 @@
       </div>
       <div class="row" style="align-items:flex-end">
         <div>
-          <label for="compactWarn">Warn at (k tokens)</label>
-          <input type="number" id="compactWarn" min="10" max="890" step="10" style="width:110px">
-        </div>
-        <div>
           <label for="compactAt">Compact at (k tokens)</label>
           <input type="number" id="compactAt" min="50" max="900" step="10" style="width:110px">
         </div>
         <div>
-          <label for="compactWindow">At most once per (minutes)</label>
+          <label for="compactWarn">Warn when at (%)</label>
+          <input type="number" id="compactWarn" min="1" max="99" step="5" style="width:110px">
+        </div>
+        <div>
+          <label for="compactWindow">Delay between compactions (minutes)</label>
           <input type="number" id="compactWindow" min="1" max="1440" step="5" style="width:110px">
         </div>
         <button class="primary" id="compactSave">&#x2713; Save</button>
       </div>
-      <div class="hint" style="margin-top:6px"><strong>Warn at</strong>: a line in the gateway log and a flag in the table below (default 300k). <strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>At most once per</strong>: the least time between two compactions of the same session (default 60 minutes), so a session that grows fast is not summarised over and over.</div>
+      <div class="hint" style="margin-top:6px"><strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 320k at the default threshold). <strong>Delay between compactions</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
       <div class="hint" style="margin-top:6px"><strong>Before</strong>: the context the session would have had at its latest summary without Burst. <strong>After</strong>: what it actually sent. <strong>Saved per turn</strong>: the difference. <strong>Net saved</strong>: what Burst saved on the session after paying for its summaries and cache rewrites (hover for the parts). How these are worked out, including what happens when a session would have outgrown the 1M window: see <em>How the savings are calculated</em> below.</div>
       <div id="compactNote"></div>
       <div class="row" style="align-items:center;gap:16px;margin-top:10px;flex-wrap:wrap">
@@ -2556,9 +2556,9 @@ function renderCompaction(s) {
     $("compactMidTurn").disabled = !k.enabled;
     const typing = [$("compactWarn"), $("compactAt"), $("compactWindow")].includes(document.activeElement);
     if (!typing) {
-      $("compactWarn").value = Math.round((k.warn_at_tokens || 300000) / 1000);
+      $("compactWarn").value = k.warn_at_percent || 80;
       $("compactAt").value = Math.round((k.compact_at_tokens || 400000) / 1000);
-      $("compactWindow").value = k.window_minutes || 60;
+      $("compactWindow").value = k.window_minutes || 30;
     }
   }
   setPill("compactState", k.enabled ? "on" : "off", k.enabled ? "ok" : "");
@@ -2581,7 +2581,7 @@ function renderCompaction(s) {
   // The chart's own day count (its window includes today), so both headers agree.
   renderSavingsByRepo(c.savings_by_repo || [], (cs.daily || []).length || days);
   setDot("nd-compaction", k.enabled ? "ok" : "");
-  const warnAt = k.warn_at_tokens || 300000, at = k.compact_at_tokens || 400000;
+  const at = k.compact_at_tokens || 400000, warnAt = at * (k.warn_at_percent || 80) / 100;
   const sorted = [...allRows].sort((a, b) => (b.context || 0) - (a.context || 0));
   const over = sorted.filter(r => (r.context || 0) >= at);
   const pool = csOverOnly ? over : sorted;
@@ -2630,8 +2630,8 @@ async function saveCompaction() {
     enabled: $("compactOn").checked,
     no_prompt_notice: !$("compactNotice").checked,
     mid_turn: $("compactMidTurn").checked,
-    warn_at_tokens: (parseInt($("compactWarn").value, 10) || 0) * 1000,
     compact_at_tokens: (parseInt($("compactAt").value, 10) || 0) * 1000,
+    warn_at_percent: parseInt($("compactWarn").value, 10) || 0,
     window_minutes: parseInt($("compactWindow").value, 10) || 0,
   };
   compactBusy = true;
