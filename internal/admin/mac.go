@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
 )
@@ -321,9 +322,68 @@ func setPanelValue(path, key, value string) error {
 	return os.Rename(tmp, path)
 }
 
+// bypassOption is the one session option that is not only a panel key.
+// Its truth is permissions.defaultMode in ~/.claude/settings.json, which
+// Claude Code honours however it is started (a typed claude, the Finder
+// launcher, an IDE). CLAUDE_PANEL_BYPASS_PERMISSIONS is written beside it
+// for the Finder launcher, which passes --dangerously-skip-permissions
+// unless that key says false.
+const (
+	bypassOption   = "bypass_permissions"
+	bypassPanelKey = "CLAUDE_PANEL_BYPASS_PERMISSIONS"
+	bypassMode     = "bypassPermissions"
+)
+
+func readBypass() bool {
+	p, err := claudesettings.Path()
+	if err != nil {
+		return false
+	}
+	root, err := claudesettings.Read(p)
+	if err != nil {
+		return false
+	}
+	perms, _ := root["permissions"].(map[string]any)
+	mode, _ := perms["defaultMode"].(string)
+	return mode == bypassMode
+}
+
+// setBypass sets or clears permissions.defaultMode, touching nothing else.
+// Turning it off removes the key only when it is bypassPermissions, so a
+// mode the user chose themselves (plan, acceptEdits) is left alone.
+func setBypass(on bool) error {
+	p, err := claudesettings.Path()
+	if err != nil {
+		return err
+	}
+	root, err := claudesettings.Read(p)
+	if err != nil {
+		return err
+	}
+	perms, _ := root["permissions"].(map[string]any)
+	if perms == nil {
+		if !on {
+			return nil
+		}
+		perms = map[string]any{}
+		root["permissions"] = perms
+	}
+	mode, _ := perms["defaultMode"].(string)
+	switch {
+	case on && mode != bypassMode:
+		perms["defaultMode"] = bypassMode
+	case !on && mode == bypassMode:
+		delete(perms, "defaultMode")
+	default:
+		return nil
+	}
+	return claudesettings.Write(p, root)
+}
+
 func (s *Server) readPanel() panelView {
 	_, err := os.Stat(filepath.Join(homeDir(), ".local", "bin", "ccusage-panel.sh"))
 	v := panelView{Installed: err == nil, RepoDir: s.panelRepoDir(), Options: readPanelOptions(panelOptionsPath()), Numbers: readPanelNumbers(panelOptionsPath())}
+	v.Options[bypassOption] = readBypass()
 	panelMu.Lock()
 	if panelLast != nil {
 		c := *panelLast
@@ -340,7 +400,21 @@ func (s *Server) handlePanelOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writes := map[string]string{}
+	bypass := -1
 	for name, v := range req {
+		if name == bypassOption {
+			b, isBool := v.(bool)
+			if !isBool {
+				http.Error(w, name+" must be true or false", http.StatusBadRequest)
+				return
+			}
+			bypass = 0
+			if b {
+				bypass = 1
+			}
+			writes[bypassPanelKey] = strconv.FormatBool(b)
+			continue
+		}
 		if key, ok := panelOptions[name]; ok {
 			b, isBool := v.(bool)
 			if !isBool {
@@ -361,6 +435,12 @@ func (s *Server) handlePanelOptions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writes[n.Key] = strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	if bypass >= 0 {
+		if err := setBypass(bypass == 1); err != nil {
+			http.Error(w, "saving permissions.defaultMode in settings.json: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	for key, val := range writes {
 		if err := setPanelValue(panelOptionsPath(), key, val); err != nil {

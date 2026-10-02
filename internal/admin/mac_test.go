@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -211,5 +212,69 @@ func TestStaleLidDaemonIsAProblem(t *testing.T) {
 	os.WriteFile(installed, []byte("new"), 0o755)
 	if p := s.staleLidDaemon(); p != "" {
 		t.Fatalf("current copy: %q", p)
+	}
+}
+
+// Bypass is settings.json's permissions.defaultMode, so it reaches every way
+// Claude Code starts. Saving it edits that one key, keeps the rest of the
+// file, writes the launcher's panel key beside it, and turning it off leaves
+// a mode the user chose themselves alone.
+func TestBypassPermissionsOptionEditsOnlyDefaultMode(t *testing.T) {
+	s := newTestServer(t)
+	sp, _ := claudesettings.Path()
+	if err := os.MkdirAll(filepath.Dir(sp), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sp, []byte(`{"permissions":{"allow":["Bash(ls)"]},"statusLine":{"type":"command","command":"x"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-options", strings.NewReader(body))
+		req.Header.Set("X-Claude-Burst-Admin", "1")
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	read := func() map[string]any {
+		root, err := claudesettings.Read(sp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	post(`{"bypass_permissions":true}`)
+	root := read()
+	perms := root["permissions"].(map[string]any)
+	if perms["defaultMode"] != "bypassPermissions" || perms["allow"] == nil || root["statusLine"] == nil {
+		t.Fatalf("on: %v", root)
+	}
+	if !s.readPanel().Options["bypass_permissions"] {
+		t.Fatal("the dashboard must read it back from settings.json")
+	}
+	if b, _ := os.ReadFile(panelOptionsPath()); !strings.Contains(string(b), "CLAUDE_PANEL_BYPASS_PERMISSIONS=true") {
+		t.Fatalf("launcher key: %s", b)
+	}
+
+	post(`{"bypass_permissions":false}`)
+	perms = read()["permissions"].(map[string]any)
+	if _, ok := perms["defaultMode"]; ok || perms["allow"] == nil {
+		t.Fatalf("off: %v", perms)
+	}
+	if b, _ := os.ReadFile(panelOptionsPath()); !strings.Contains(string(b), "CLAUDE_PANEL_BYPASS_PERMISSIONS=false") {
+		t.Fatalf("launcher key: %s", b)
+	}
+
+	root = read()
+	root["permissions"].(map[string]any)["defaultMode"] = "plan"
+	if err := claudesettings.Write(sp, root); err != nil {
+		t.Fatal(err)
+	}
+	post(`{"bypass_permissions":false}`)
+	if read()["permissions"].(map[string]any)["defaultMode"] != "plan" {
+		t.Fatal("off must not remove a mode the user chose")
 	}
 }
