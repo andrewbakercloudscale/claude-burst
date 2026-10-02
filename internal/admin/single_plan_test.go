@@ -24,7 +24,7 @@ func TestSecondaryCheckTreatsASinglePlanAsHealthy(t *testing.T) {
 		Label    string `json:"label"`
 		Detail   string `json:"detail"`
 	}
-	var got map[string]check
+	var got map[string]*check
 	runPageJS(t, []string{"secondaryCheck"}, `
 out({
   missing: secondaryCheck(undefined),
@@ -34,8 +34,16 @@ out({
   ready: secondaryCheck({provider: "openai-compatible", model: "GLM", key_env_var: "TOGETHER_API_KEY", key_present: true}),
 });`, &got)
 
-	for _, k := range []string{"missing", "none", "keylessBedrock", "keylessTogether"} {
+	for _, k := range []string{"missing", "none"} {
+		if got[k] != nil {
+			t.Errorf("%s: no secondary configured, so no check at all, got %+v", k, got[k])
+		}
+	}
+	for _, k := range []string{"keylessBedrock", "keylessTogether"} {
 		c := got[k]
+		if c == nil {
+			t.Fatalf("%s: a configured secondary keeps its check", k)
+		}
 		if !c.OK || c.Critical || c.Label != "Secondary (optional)" || !strings.HasPrefix(c.Detail, "not in use") {
 			t.Errorf("%s: want a passing, informational Secondary (optional) check, got %+v", k, c)
 		}
