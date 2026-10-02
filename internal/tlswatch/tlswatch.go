@@ -74,6 +74,15 @@ const Window = 5 * time.Minute
 // Code is working it completes handshakes of its own.
 const RejectThreshold = 30
 
+// HangupThreshold is the lower bar for hang-ups alone, with no condition on
+// successes. A hang-up mid-handshake is how Node, and so Claude Code,
+// refuses a certificate it does not trust. At 13:23 on 2026-10-02, after a
+// redeploy, every open session refused the gateway: 27 hang-ups and one
+// reset in two minutes, under RejectThreshold, and the page said 7/7. The
+// noisy client RejectThreshold was set against sent certificate alerts, not
+// hang-ups, and quiet days see under 15 failures of any kind a DAY.
+const HangupThreshold = 10
+
 // maxEvents bounds memory if something hammers the port. The worst storm on
 // record was about 70 a minute; this is two orders of magnitude above it.
 const maxEvents = 50000
@@ -229,7 +238,8 @@ func (w *Watcher) Snapshot() Snapshot {
 			s.Failures++
 		}
 	}
-	s.Rejecting = s.Failures >= RejectThreshold && s.Failures > s.Successes
+	s.Rejecting = (s.Failures >= RejectThreshold && s.Failures > s.Successes) ||
+		s.ByClass[string(Hangup)] >= HangupThreshold
 	if !w.lastFail.IsZero() {
 		s.LastFailure = w.lastFail.Format(time.RFC3339)
 		s.LastError, s.LastClass = w.lastError, string(w.lastClass)
