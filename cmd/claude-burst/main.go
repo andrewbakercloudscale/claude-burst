@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -836,7 +837,13 @@ func stats(args []string) {
 }
 
 func enable(args []string) {
-	rejectArgs("enable", args)
+	force := false
+	for _, a := range args {
+		if a != "--force" {
+			fatal(fmt.Errorf("enable: unknown argument %q (only --force)", a))
+		}
+		force = true
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		fatal(err)
@@ -872,6 +879,14 @@ func enable(args []string) {
 		_, caPEM, err := tlsca.LoadOrCreate(cfg.Intercept.CADir, cfg.Intercept.Host)
 		if err != nil {
 			fatal(err)
+		}
+		// Checked before the bundle is touched, which would move the date.
+		if stale := sessionsNotTrusting(cfg.Intercept.CABundle, caPEM); len(stale) > 0 && !force {
+			fatal(fmt.Errorf("%d Claude Code session(s) running (pid %s) started before this gateway's CA was in %s. "+
+				"Node reads that file once, at startup, so once traffic is redirected every one of them fails each request "+
+				"(UNABLE_TO_VERIFY_LEAF_SIGNATURE or SELF_SIGNED_CERT_IN_CHAIN) until restarted. "+
+				"Close them all and run this again from a plain terminal, or pass --force and restart them yourself",
+				len(stale), strings.Join(stale, ", "), cfg.Intercept.CABundle))
 		}
 		if err := tlsca.EnsureInBundle(cfg.Intercept.CABundle, caPEM); err != nil {
 			fatal(err)
@@ -1119,4 +1134,66 @@ func refuseManagedBaseURL() error {
 		return fmt.Errorf("%s (managed by your organisation) sets ANTHROPIC_BASE_URL=%s, which overrides ~/.claude/settings.json, so Claude Burst cannot sit in front of it. Ask whoever manages it, or leave Claude Burst disabled", managedSettingsPath, u)
 	}
 	return nil
+}
+
+// runningClaude lists Claude Code processes as pid and start time. A
+// variable so tests never see this Mac's real sessions.
+var runningClaude = func() map[string]time.Time {
+	out, err := exec.Command("ps", "-axo", "pid=,etime=,comm=").Output()
+	if err != nil {
+		return nil
+	}
+	now := time.Now()
+	procs := map[string]time.Time{}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || filepath.Base(strings.Join(f[2:], " ")) != "claude" {
+			continue
+		}
+		if age, ok := parseEtime(f[1]); ok {
+			procs[f[0]] = now.Add(-age)
+		}
+	}
+	return procs
+}
+
+// parseEtime reads ps's elapsed time, [[dd-]hh:]mm:ss.
+func parseEtime(s string) (time.Duration, bool) {
+	days := 0
+	if i := strings.Index(s, "-"); i >= 0 {
+		d, err := strconv.Atoi(s[:i])
+		if err != nil {
+			return 0, false
+		}
+		days, s = d, s[i+1:]
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return 0, false
+	}
+	total := 0
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return 0, false
+		}
+		total = total*60 + n
+	}
+	return time.Duration(days)*24*time.Hour + time.Duration(total)*time.Second, true
+}
+
+// sessionsNotTrusting returns the pids of running Claude Code sessions that
+// would refuse the gateway's certificate: every one when the bundle does not
+// hold caPEM, else those started before it did. On 2026-10-02 13:22 a
+// re-enable with sessions open from before the CA changed failed all of them.
+func sessionsNotTrusting(bundle string, caPEM []byte) []string {
+	since, ok := tlsca.TrustedSince(bundle, caPEM)
+	var pids []string
+	for pid, started := range runningClaude() {
+		if !ok || started.Before(since) {
+			pids = append(pids, pid)
+		}
+	}
+	sort.Strings(pids)
+	return pids
 }

@@ -416,7 +416,43 @@ func EnsureInBundle(path string, caPEM []byte) error {
 	if stripped != "" && !strings.HasSuffix(stripped, "\n") {
 		stripped += "\n"
 	}
-	return writeFile(path, []byte(stripped+BundleBlock(caPEM)), 0600)
+	next := stripped + BundleBlock(caPEM)
+	if next == string(existing) {
+		return nil
+	}
+	if err := writeFile(path, []byte(next), 0600); err != nil {
+		return err
+	}
+	// The CA in the bundle changed (or arrived): only Claude Code sessions
+	// started from now on trust it. See TrustedSince.
+	return writeFile(sinceFile(path), []byte(time.Now().Format(time.RFC3339)+"\n"), 0600)
+}
+
+// sinceFile records when the bundle's claude-burst block last changed.
+func sinceFile(bundle string) string { return bundle + ".claude-burst-since" }
+
+// TrustedSince reports from when Claude Code sessions trust caPEM through
+// the bundle: Node reads the bundle once, at startup, so a session started
+// earlier does not, and fails every request against the gateway until it is
+// restarted. ok is false when the bundle does not hold caPEM at all, so no
+// running session trusts it.
+func TrustedSince(bundle string, caPEM []byte) (since time.Time, ok bool) {
+	b, err := os.ReadFile(bundle)
+	if err != nil || !strings.Contains(string(b), strings.TrimSpace(string(caPEM))) {
+		return time.Time{}, false
+	}
+	if raw, err := os.ReadFile(sinceFile(bundle)); err == nil {
+		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(raw))); err == nil {
+			return t, true
+		}
+	}
+	// Installed before the record existed: the bundle's own time is the
+	// best bound left, and errs towards warning.
+	st, err := os.Stat(bundle)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return st.ModTime(), true
 }
 
 // RemoveFromBundle removes the claude-burst block, leaving everything else.
@@ -432,5 +468,6 @@ func RemoveFromBundle(path string) error {
 	if !changed {
 		return nil
 	}
+	_ = os.Remove(sinceFile(path))
 	return writeFile(path, []byte(stripped), 0600)
 }

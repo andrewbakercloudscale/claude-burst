@@ -126,7 +126,15 @@ echo "gateway healthy"
 
 echo
 echo "== 3. claude-burst enable (CA trust + settings.json) =="
-"$BIN" enable
+# Its failure stops the install: this script has no set -e, and carrying on
+# would install the redirect anyway. enable refuses, for one, while Claude
+# Code sessions run that do not trust the gateway's CA yet; the redirect
+# would fail every one of them (2026-10-02 13:22).
+# CLAUDE_BURST_FORCE=1 passes --force, for when you will restart them.
+if ! "$BIN" enable ${CLAUDE_BURST_FORCE:+--force}; then
+  echo "not installing the machine-wide redirect: enable refused (see above)" >&2
+  exit 1
+fi
 
 echo
 # Fallback matches internal/config.Default. It was 7777, which is now the one
