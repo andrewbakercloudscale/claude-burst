@@ -25,3 +25,4 @@ metrics.jsonl
 # repos and devices, and the handover hooks would inject them into a
 # contributor's sessions).
 HANDOFF.md
+.claude/worktrees/
