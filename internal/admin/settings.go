@@ -273,10 +273,17 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				between("window", int64(mf.WindowSeconds), 10, 3600),
 				between("failures", int64(mf.MinFailures), 1, 100),
 				between("connection failures", int64(mf.TransportErrorMinFailures), 1, 100),
+				between("phone hotspot multiplier", int64(mf.HotspotTransportMultiplier), 0, 10),
 			} {
 				if e != nil {
 					return badRequest(e)
 				}
+			}
+			// The page has no control for the hotspot multiplier, so its
+			// saves (and Reset) send none: keep what config.json says rather
+			// than quietly resetting a hand-set value to the default.
+			if mf.HotspotTransportMultiplier == 0 {
+				mf.HotspotTransportMultiplier = c.MeteredFailover.HotspotTransportMultiplier
 			}
 			c.MeteredFailover = *mf
 			changed = append(changed, "failover thresholds")

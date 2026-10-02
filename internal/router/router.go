@@ -146,7 +146,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	if err != nil {
 		return nil, fmt.Errorf("primary provider: %w", err)
 	}
-	primaryDetector, err := buildDetector(cfg.Primary.FailoverStrategy, cfg.MeteredFailover)
+	primaryDetector, err := buildDetector(cfg.Primary.FailoverStrategy, cfg.MeteredFailover, logger.Printf)
 	if err != nil {
 		return nil, fmt.Errorf("primary failover strategy: %w", err)
 	}
@@ -310,15 +310,19 @@ func validateBaseURL(provider, raw string) (*url.URL, error) {
 }
 
 // buildDetector constructs the FailoverDetector for a route slot's
-// configured strategy.
-func buildDetector(strategy string, mf config.MeteredFailoverConfig) (FailoverDetector, error) {
+// configured strategy. logf receives the detector's own lines (a failure held
+// back on a phone hotspot).
+func buildDetector(strategy string, mf config.MeteredFailoverConfig, logf func(string, ...any)) (FailoverDetector, error) {
 	switch strategy {
 	case "", "subscription-limit":
 		return subscriptionLimitDetector{}, nil
 	case "metered-failures":
-		return newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures, mf.TransportErrorMinFailures), nil
+		return newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures, mf.TransportErrorMinFailures).
+			withHotspot(mf.HotspotMultiplier(), logf), nil
 	case "subscription-limit+metered-failures":
-		return newCombinedDetector(mf), nil
+		d := newCombinedDetector(mf)
+		d.metered.withHotspot(mf.HotspotMultiplier(), logf)
+		return d, nil
 	case "none":
 		return noFailoverDetector{}, nil
 	default:

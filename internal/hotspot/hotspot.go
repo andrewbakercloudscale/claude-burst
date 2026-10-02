@@ -123,6 +123,25 @@ func onHotspotAddr(ip net.IP) bool {
 	return ip != nil && hs.Contains(ip)
 }
 
+// IsHotspotAddr is onHotspotAddr for other packages: the router asks it of
+// the local address a failed upstream connection used.
+func IsHotspotAddr(ip net.IP) bool { return onHotspotAddr(ip.To4()) }
+
+// RouteOnHotspot reports whether the kernel would send internet traffic out
+// through a phone hotspot address right now, wired, Wi-Fi or USB alike.
+// Unlike OnHotspot it runs nothing: connecting a UDP socket only asks the
+// routing table for a source address and sends no packet, so it is cheap
+// enough to call on every upstream failure.
+func RouteOnHotspot() bool {
+	c, err := net.Dial("udp4", "1.1.1.1:443")
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+	ua, ok := c.LocalAddr().(*net.UDPAddr)
+	return ok && IsHotspotAddr(ua.IP)
+}
+
 // OnHotspot reports whether the Wi-Fi interface holds an iPhone hotspot
 // address. A variable for tests.
 var OnHotspot = func() bool {
