@@ -372,3 +372,31 @@ func TestLadderRecoveryServesTheResponse(t *testing.T) {
 		t.Fatalf("health after a failed request = %+v", h)
 	}
 }
+
+// One request whose fresh-connection retry also fails is ONE failure. It was
+// counted twice (once after the immediate retry, again after the ladder), so
+// on 2026-10-02 12:04 a single broken pipe on a phone hotspot logged "2
+// failures within 60s" and met any transport threshold of 2 by itself.
+func TestStaleWriteThatFailsTwiceCountsOnce(t *testing.T) {
+	up := newRecordingUpstream(t)
+	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
+	s.probe = func() netProbe { return netProbe{dnsOK: true} }
+	d := newMeteredFailureDetector(60, 3, 2)
+	s.primaryDetector = d
+	ft := &flakyTransport{neverRecover: true, err: writeEPIPE(), next: s.client.Transport}
+	s.client.Transport = ft
+
+	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
+	if n := ft.primaryAttempts("127.0.0.1:1"); n != 2 {
+		t.Fatalf("a stale write: original plus one immediate retry, got %d", n)
+	}
+	d.mu.Lock()
+	counted := len(d.transportFailures)
+	d.mu.Unlock()
+	if counted != 1 {
+		t.Fatalf("one request counted as %d transport failures, want 1", counted)
+	}
+	if ft.primaryAttempts("") != 2 {
+		t.Fatal("one failed request armed a window with transport_error_min_failures 2")
+	}
+}
