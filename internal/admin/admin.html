@@ -3154,6 +3154,36 @@ function secondaryCheck(sec) {
   };
 }
 
+// clientTLSCheck is "Claude Code accepts the gateway's certificate", from the
+// listener's own handshake counts (/api/state client_tls). Every other check
+// is the gateway looking at itself, and the gateway trusts its own CA: on
+// 2026-10-02 a deploy rotated that CA, every running Claude Code session
+// refused the new certificate, and this page said 6/6. Failing needs a rate,
+// not mere presence: some failed handshakes are always in the log. Null in
+// base-url mode, where there is no TLS to refuse. Pure, for page_script_test.go.
+function clientTLSCheck(ct) {
+  if (!ct) return null;
+  const mins = Math.round((ct.window_seconds || 300) / 60);
+  const by = ct.by_class || {};
+  const kinds = [
+    by.hangup ? `${by.hangup} hung up mid-handshake` : "",
+    by.distrust ? `${by.distrust} sent a certificate alert` : "",
+    by.other ? `${by.other} other` : "",
+  ].filter(Boolean).join(", ");
+  return {
+    key: "clienttls", label: "Claude Code accepts the gateway's certificate", target: "installSection",
+    ok: !ct.rejecting, critical: true,
+    detail: ct.rejecting
+      ? `${ct.failures} TLS handshakes failed in the last ${mins} minutes against ${ct.successes} that completed (${kinds}). ` +
+        `Clients are refusing this gateway's certificate, so their requests never arrive. ` +
+        `A hang-up is how Node, and so Claude Code, refuses a certificate it does not trust; ` +
+        `it usually means the local CA changed after those sessions started` +
+        (ct.last_error ? `. Last error: ${ct.last_error}` : "")
+      : `${ct.successes} handshake${ct.successes === 1 ? "" : "s"} completed in the last ${mins} minutes` +
+        (ct.failures ? `, ${ct.failures} failed (under the ${ct.threshold} that signals a rejection, or outnumbered by successes)` : ", none failed"),
+  };
+}
+
 function readinessChecks(s, verdict) {
   if (verdict === undefined) return null;
   const out = [];
@@ -3165,6 +3195,12 @@ function readinessChecks(s, verdict) {
     detail: verdict.ok ? "the live probe reached this gateway"
       : (verdict.detail || "the connection test failed"),
   });
+
+  // Critical, and separate from "path": the live probe above uses the
+  // gateway's own trust, so it passes while every Claude Code session is
+  // refusing the certificate.
+  const clientTLS = clientTLSCheck(s.client_tls);
+  if (clientTLS) out.push(clientTLS);
 
   const sh = s.intercept.self_heal;
   out.push({
@@ -3225,6 +3261,7 @@ function setOverview(state) {
 // What to do when a readiness check fails, by check key.
 const CHECK_FIX = {
   path: "Claude Code's requests are not passing through Burst. Press Test connection under Setup; if it still fails, run the install again and restart Claude Code.",
+  clienttls: "restart the Claude Code sessions that were started before the CA changed: each one reads NODE_EXTRA_CA_CERTS once, at startup, and keeps the old trust until it exits. If newly started sessions fail too, check that NODE_EXTRA_CA_CERTS points at the bundle holding the Claude Burst CA (run claude-burst enable to put it back).",
   watchdog: "arm the gateway watchdog under Guards, so the gateway is restarted if it stops.",
   pfguard: "arm the pf redirect guard under Guards (it asks for your password once).",
   secondary: "add the secondary's API key under Secondary, then press Test secondary.",

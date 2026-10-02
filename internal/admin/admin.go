@@ -38,6 +38,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
+	"github.com/andrewbakercloudscale/claude-burst/internal/tlswatch"
 	"github.com/andrewbakercloudscale/claude-burst/internal/touchid"
 )
 
@@ -79,7 +80,15 @@ type Server struct {
 	// so tests can drive both answers: a gate that is only ever exercised
 	// in its allow direction is not a gate.
 	authenticate func(reason string) error
+
+	// handshakes counts the gateway listener's TLS handshakes; nil in
+	// base-url mode, where the listener speaks plain HTTP.
+	handshakes *tlswatch.Watcher
 }
+
+// SetHandshakes attaches the gateway listener's handshake counter, so
+// /api/state can report whether clients are accepting its certificate.
+func (s *Server) SetHandshakes(w *tlswatch.Watcher) { s.handshakes = w }
 
 func New(gateway *router.Server, metricsPath, version, extraHost, rootHelper string) *Server {
 	return &Server{gateway: gateway, metricsPath: metricsPath, version: version, repos: newRepoResolver(),
@@ -268,6 +277,13 @@ type stateResponse struct {
 	// SecondaryReady is whether the RUNNING gateway has a secondary it can
 	// fail over to: built, with its credential. False on a single plan.
 	SecondaryReady bool `json:"secondary_ready"`
+
+	// ClientTLS is the client side of the gateway's TLS handshakes over the
+	// last five minutes: how many completed, how many failed and why. Absent
+	// in base-url mode. It is the only field here that can see Claude Code
+	// refusing the gateway's certificate; every other check is the gateway
+	// looking at itself.
+	ClientTLS *tlswatch.Snapshot `json:"client_tls,omitempty"`
 }
 
 type downgradeInfo struct {
@@ -463,6 +479,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	resp.Handover = handover.GetStatus()
 	resp.PrimaryHealth = s.gateway.Health()
 	resp.SecondaryReady = s.gateway.HasSecondary()
+	if s.handshakes != nil {
+		snap := s.handshakes.Snapshot()
+		resp.ClientTLS = &snap
+	}
 	writeJSON(w, resp)
 }
 
