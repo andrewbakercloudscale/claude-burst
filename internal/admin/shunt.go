@@ -138,32 +138,27 @@ func (s *Server) handleShunt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		http.Error(w, "config.json does not parse, fix it before changing this: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
 	if req.MinLines != 0 && (req.MinLines < minShuntLines || req.MinLines > maxShuntLines) {
 		http.Error(w, fmt.Sprintf("threshold must be between %d and %d lines", minShuntLines, maxShuntLines), http.StatusBadRequest)
 		return
 	}
 
-	// Turning something ON needs a worker to send it to. Turning it off never
-	// does: a broken secondary must not be able to trap the guard on.
-	turningOn := (req.Read && !cfg.Shunt.Read) || (req.Write && !cfg.Shunt.Write)
-	if turningOn {
-		if err := shunt.Readiness(cfg, s.keyInfo); err != nil {
-			http.Error(w, "cannot enable: "+err.Error(), http.StatusBadRequest)
-			return
+	cfg, ok := updateConfig(w, func(c *config.Config) error {
+		// Turning something ON needs a worker to send it to. Turning it off never
+		// does: a broken secondary must not be able to trap the guard on.
+		turningOn := (req.Read && !c.Shunt.Read) || (req.Write && !c.Shunt.Write)
+		if turningOn {
+			if err := shunt.Readiness(*c, s.keyInfo); err != nil {
+				return badRequest(fmt.Errorf("cannot enable: %w", err))
+			}
 		}
-	}
-
-	cfg.Shunt.Read, cfg.Shunt.Write = req.Read, req.Write
-	if req.MinLines != 0 {
-		cfg.Shunt.MinLines = req.MinLines
-	}
-	if err := config.Save(cfg); err != nil {
-		http.Error(w, "saving config.json: "+err.Error(), http.StatusInternalServerError)
+		c.Shunt.Read, c.Shunt.Write = req.Read, req.Write
+		if req.MinLines != 0 {
+			c.Shunt.MinLines = req.MinLines
+		}
+		return nil
+	})
+	if !ok {
 		return
 	}
 	if err := shunt.Apply(cfg, s.shuntBin); err != nil {

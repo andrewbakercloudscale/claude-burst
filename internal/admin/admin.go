@@ -19,6 +19,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -846,45 +847,37 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	var changed []string
-	if req.SecondaryModel != "" && req.SecondaryModel != cfg.Secondary.Model {
-		if cfg.Secondary.Provider != "openai-compatible" {
-			http.Error(w, "secondary model only applies to an openai-compatible secondary", http.StatusBadRequest)
-			return
+	if _, ok := updateConfig(w, func(cfg *config.Config) error {
+		if req.SecondaryModel != "" && req.SecondaryModel != cfg.Secondary.Model {
+			if cfg.Secondary.Provider != "openai-compatible" {
+				return badRequest(errors.New("secondary model only applies to an openai-compatible secondary"))
+			}
+			cfg.Secondary.Model = req.SecondaryModel
+			changed = append(changed, "secondary model")
 		}
-		cfg.Secondary.Model = req.SecondaryModel
-		changed = append(changed, "secondary model")
-	}
-	if req.FailoverStrategy != "" && req.FailoverStrategy != cfg.Primary.FailoverStrategy {
-		switch req.FailoverStrategy {
-		case "subscription-limit", "metered-failures", "subscription-limit+metered-failures", "none":
-			cfg.Primary.FailoverStrategy = req.FailoverStrategy
-			changed = append(changed, "failover strategy")
-		default:
-			http.Error(w, "unknown failover strategy", http.StatusBadRequest)
-			return
+		if req.FailoverStrategy != "" && req.FailoverStrategy != cfg.Primary.FailoverStrategy {
+			switch req.FailoverStrategy {
+			case "subscription-limit", "metered-failures", "subscription-limit+metered-failures", "none":
+				cfg.Primary.FailoverStrategy = req.FailoverStrategy
+				changed = append(changed, "failover strategy")
+			default:
+				return badRequest(errors.New("unknown failover strategy"))
+			}
 		}
-	}
-	if req.InterceptMode != "" && req.InterceptMode != cfg.Intercept.Mode {
-		cfg.Intercept.Mode = req.InterceptMode
-		if err := cfg.ValidateIntercept(); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		if req.InterceptMode != "" && req.InterceptMode != cfg.Intercept.Mode {
+			cfg.Intercept.Mode = req.InterceptMode
+			if err := cfg.ValidateIntercept(); err != nil {
+				return badRequest(err)
+			}
+			cfg.ResolveRoutes()
+			changed = append(changed, "intercept mode")
 		}
-		cfg.ResolveRoutes()
-		changed = append(changed, "intercept mode")
-	}
-	if len(changed) == 0 {
-		writeJSON(w, map[string]string{"ok": "nothing to change"})
-		return
-	}
-	if err := config.Save(cfg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if len(changed) == 0 {
+			return errNothingToChange
+		}
+		return nil
+	}); !ok {
 		return
 	}
 	writeJSON(w, map[string]string{
@@ -1014,50 +1007,48 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	rc, service, envVar, err := secondaryRoute(cfg, req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Store the key BEFORE saving config, and abort the save if it fails.
-	// The two orderings fail very differently: a Keychain entry with no
-	// config pointing at it is inert, while a config naming a provider
-	// whose key was never stored is a secondary that looks configured on
-	// this page and produces an auth error the first time the primary runs
-	// out -- i.e. it defers the failure to the one moment it cannot be
-	// tolerated. Same reasoning as the enable-ordering fix in the install
-	// path: do the step that can fail harmlessly first.
-	if key := strings.TrimSpace(req.APIKey); key != "" {
-		if service == "" {
-			http.Error(w, "provider "+rc.Provider+" takes no API key", http.StatusBadRequest)
-			return
+	var (
+		rc              config.RouteConfig
+		service, envVar string
+	)
+	if _, ok := updateConfig(w, func(cfg *config.Config) error {
+		var err error
+		rc, service, envVar, err = secondaryRoute(*cfg, req)
+		if err != nil {
+			return badRequest(err)
 		}
-		if err := s.storeKey(service, key); err != nil {
-			http.Error(w, "could not store the API key in the Keychain, so nothing was saved: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
 
-	cfg.Secondary = rc
-	if rc.Provider == config.ProviderNone {
-		// ResolveRoutes rebuilds a bedrock secondary from this legacy flat
-		// field whenever the slot is empty, so leaving it set makes "none"
-		// silently undo itself on the next load -- the same trap
-		// `configure --secondary none` had to clear.
-		cfg.BedrockBaseURL = ""
-	}
-	if rc.Provider == "bedrock" {
-		cfg.BedrockBaseURL = rc.BaseURL
-	}
-	cfg.ResolveRoutes()
-	if err := config.Save(cfg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Store the key BEFORE saving config, and abort the save if it fails.
+		// The two orderings fail very differently: a Keychain entry with no
+		// config pointing at it is inert, while a config naming a provider
+		// whose key was never stored is a secondary that looks configured on
+		// this page and produces an auth error the first time the primary runs
+		// out -- i.e. it defers the failure to the one moment it cannot be
+		// tolerated. Same reasoning as the enable-ordering fix in the install
+		// path: do the step that can fail harmlessly first.
+		if key := strings.TrimSpace(req.APIKey); key != "" {
+			if service == "" {
+				return badRequest(errors.New("provider " + rc.Provider + " takes no API key"))
+			}
+			if err := s.storeKey(service, key); err != nil {
+				return serverError("could not store the API key in the Keychain, so nothing was saved: " + err.Error())
+			}
+		}
+
+		cfg.Secondary = rc
+		if rc.Provider == config.ProviderNone {
+			// ResolveRoutes rebuilds a bedrock secondary from this legacy flat
+			// field whenever the slot is empty, so leaving it set makes "none"
+			// silently undo itself on the next load -- the same trap
+			// `configure --secondary none` had to clear.
+			cfg.BedrockBaseURL = ""
+		}
+		if rc.Provider == "bedrock" {
+			cfg.BedrockBaseURL = rc.BaseURL
+		}
+		cfg.ResolveRoutes()
+		return nil
+	}); !ok {
 		return
 	}
 
