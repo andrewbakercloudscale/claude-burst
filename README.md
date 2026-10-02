@@ -1,10 +1,6 @@
-# Claude Burst: a local gateway that keeps Claude Code working
+# Claude Burst: the missing control plane for Claude Code
 
-**Claude Burst sits between Claude Code and Anthropic on your Mac. It keeps your Claude subscription as the engine, keeps you working when a limit is hit, keeps long sessions from pausing, keeps several sessions in one repository from wrecking each other's work, and shows you all of it on one dashboard.**
-
-**Who it is for:** people who use Claude Code heavily on a Mac, on a Pro, Max or Enterprise plan (or a metered API key), and want to keep working through limits, long sessions and closed lids. Claude Code talks to it exactly as it talks to Anthropic: nothing in your workflow changes, and **Revert to normal Claude** on the dashboard takes it out of the path in one click.
-
-This is an experimental MVP, macOS only. Try it on a non-critical development account first.
+The ops layer for running Claude Code all day on a Mac: subscription-first routing with overflow to GLM/OpenRouter/Bedrock, pauseless compaction, session coordination and handover across parallel sessions, lid-shut keep-awake with automatic hotspot join for Remote Control, and a dashboard for cost, health and guards.
 
 > **What it changes on your Mac**
 >
@@ -16,7 +12,9 @@ This is an experimental MVP, macOS only. Try it on a non-critical development ac
 > | `pmset disablesleep` and a root LaunchDaemon | lid keep-awake only, off by default | [Lid shut and hotspot](ROLLBACK.md#lid-shut-and-hotspot) |
 > | Root LaunchDaemon and user LaunchAgent guards | when you arm them | [Guards](ROLLBACK.md#guards) |
 >
-> `./install.sh uninstall` removes all of it and checks that it is gone. What this means for your security: [Trust and risk](#trust-and-risk).
+> `./install.sh uninstall` removes all of it and checks that it is gone ([Uninstall](#uninstall)). What this means for your security: [Trust and risk](#trust-and-risk).
+
+Claude Burst is a local gateway that sits between Claude Code and Anthropic. **It is for** people who use Claude Code heavily on a Mac, on a Pro, Max or Enterprise plan (or a metered API key), and want to keep working through limits, long sessions and closed lids. Claude Code talks to it exactly as it talks to Anthropic: nothing in your workflow changes, and **Revert to normal Claude** on the dashboard takes it out of the path in one click. It is young (macOS only, experimental): try it on a non-critical development account first.
 
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
 
@@ -25,7 +23,7 @@ This is an experimental MVP, macOS only. Try it on a non-critical development ac
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone a release tag (the latest is on the Releases page)
+# 1. Clone the newest release tag from the Releases page (v0.3.0 at the time of writing)
 git clone --branch v0.3.0 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
@@ -57,7 +55,7 @@ OpenRouter, Bedrock and a metered API key are in [Providers](docs/providers.md).
 
 **Several sessions, one working tree** (Leading Edge, off by default). Several Claude Code sessions, and their background subagents, can edit the same repository without overwriting, sweeping up or shipping each other's uncommitted work, and nobody waits: the first editor of a file commits it, and is asked to commit other sessions' changes first. See [Session coordination](docs/coordination.md).
 
-**Session handover.** In a repository that opts in, each session reads `HANDOFF.md` when it starts and writes it when it closes, so the next one picks up where the last left off. See [Session handover](docs/handover.md).
+**Session handover.** In a repository that opts in, each session reads `HANDOFF.md` when it starts and writes it when it closes, so the next one picks up where the last left off. Gitignore it to keep the notes local. See [Session handover](docs/handover.md).
 
 **Lid shut, offline.** Close the lid and Claude Code keeps running, still reachable from your phone through Remote Control, and when the internet drops Burst joins the phone hotspot you picked. See [Lid shut, hotspot and notifications](docs/lid-and-hotspot.md).
 
@@ -83,7 +81,7 @@ Claude Burst is a man-in-the-middle for your Claude traffic by design. This is w
 
 **What is stored.** The logs (`claude-burst.log`, `metrics.jsonl`) are metadata only: no prompts, code, tool inputs or model output. Compaction summaries are conversation content, stored in `~/.config/claude-burst/compaction-state.json` at mode 0600 and removed once a session has gone 48 hours without a request. Handover writes into `HANDOFF.md` only in repositories that opt in. API keys are in the macOS login Keychain. See [What is logged](docs/logging.md).
 
-**Removing it.** `./install.sh uninstall` removes every part and verifies it, keeping `~/.config/claude-burst` unless you pass `--purge`. [ROLLBACK.md](ROLLBACK.md) lists each change and its own undo, so you can remove one part and keep the rest. To report a vulnerability, see [SECURITY.md](SECURITY.md).
+**Removing it.** `./install.sh uninstall` removes every part and verifies it, keeping `~/.config/claude-burst` unless you pass `--purge` (see [Uninstall](#uninstall)). [ROLLBACK.md](ROLLBACK.md) lists each change and its own undo, so you can remove one part and keep the rest. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Requirements
 
@@ -116,6 +114,7 @@ claude-burst coord status                    # session coordination: who masters
 claude-burst coord send <session> "message"  # message another session (id prefix)
 claude-burst coord take <path> --session <id>      # become a file's master, or ask its master for it
 claude-burst coord release <path> [--session <id>] # hand a file on, as if its master had ended
+claude-burst uninstall-hooks                 # remove every Claude Code hook Burst added (./install.sh uninstall runs it)
 claude-burst version
 
 claude-burst configure --keep-awake-lid-closed true|false   # lid shut: keep Claude Code + Remote Control running

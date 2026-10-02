@@ -1,7 +1,7 @@
 # Decision: token shunting is switched off (2026-09-21)
 
-**Status:** decided 2026-09-21: off. Token shunting has since been removed from Claude Burst
-altogether; this record is kept for the evidence and the lessons. Where it says the code is
+**Status:** decided 2026-09-21: off. Token shunting was removed from Claude Burst altogether
+on 2026-10-02 (`claude-burst shunt disable` remains, to clear an earlier install); this record is kept for the evidence and the lessons. Where it says the code is
 still in the tree, that was true when it was written.
 
 ## What it was for
