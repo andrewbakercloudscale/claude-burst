@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// securityPath is the Keychain CLI; a variable so tests run a stub instead
+// of reading or writing the real login Keychain.
+var securityPath = "/usr/bin/security"
+
 func account() string {
 	if u, err := user.Current(); err == nil && u.Username != "" {
 		return u.Username
@@ -25,7 +29,7 @@ func Store(service, value string) error {
 	if value == "" {
 		return fmt.Errorf("empty key")
 	}
-	cmd := exec.Command("/usr/bin/security", "add-generic-password", "-U", "-a", account(), "-s", service, "-w", value)
+	cmd := exec.Command(securityPath, "add-generic-password", "-U", "-a", account(), "-s", service, "-w", value)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("security add-generic-password: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -43,7 +47,7 @@ func Load(service, envVar string) (string, error) {
 	if v := os.Getenv(envVar); v != "" {
 		return v, nil
 	}
-	cmd := exec.Command("/usr/bin/security", "find-generic-password", "-a", account(), "-s", service, "-w")
+	cmd := exec.Command(securityPath, "find-generic-password", "-a", account(), "-s", service, "-w")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("key not found in %s or macOS Keychain (service %q)", envVar, service)
@@ -59,7 +63,7 @@ func Load(service, envVar string) (string, error) {
 // "no secret in the Keychain", and it already holds. Any other failure is
 // returned, so a caller never reports a password removed that is still there.
 func Delete(service string) error {
-	out, err := exec.Command("/usr/bin/security", "delete-generic-password", "-a", account(), "-s", service).CombinedOutput()
+	out, err := exec.Command(securityPath, "delete-generic-password", "-a", account(), "-s", service).CombinedOutput()
 	if err == nil {
 		return nil
 	}
@@ -105,7 +109,7 @@ func Describe(service, envVar string) Info {
 	if os.Getenv(envVar) != "" {
 		return Info{Present: true, Source: "environment"}
 	}
-	out, err := exec.Command("/usr/bin/security", "find-generic-password", "-a", account(), "-s", service).CombinedOutput()
+	out, err := exec.Command(securityPath, "find-generic-password", "-a", account(), "-s", service).CombinedOutput()
 	if err != nil {
 		return Info{}
 	}
