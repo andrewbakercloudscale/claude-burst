@@ -11,9 +11,12 @@ import (
 // Single plan (Claude Enterprise, or any one subscription, and no second
 // provider) on the dashboard: a working setup, not a fault.
 
-// The Secondary check. No secondary, and the keyless Bedrock that a config
-// with no secondary block resolves to, both read as a green "Single plan";
-// only a secondary someone chose, whose key is missing, warns.
+// The Secondary check. A secondary is optional, so every way of not having a
+// usable one (none, the keyless Bedrock a config with no secondary block
+// resolves to, a chosen secondary whose key is missing on this Mac) passes
+// as "Secondary (optional)", with the reason as information. It never
+// warns: a warning on a single-plan Mac turned the meter amber for a setup
+// that works.
 func TestSecondaryCheckTreatsASinglePlanAsHealthy(t *testing.T) {
 	type check struct {
 		OK       bool   `json:"ok"`
@@ -31,17 +34,35 @@ out({
   ready: secondaryCheck({provider: "openai-compatible", model: "GLM", key_env_var: "TOGETHER_API_KEY", key_present: true}),
 });`, &got)
 
-	for _, k := range []string{"missing", "none", "keylessBedrock"} {
+	for _, k := range []string{"missing", "none", "keylessBedrock", "keylessTogether"} {
 		c := got[k]
-		if !c.OK || c.Critical || c.Label != "Single plan" || !strings.Contains(c.Detail, "unchanged") {
-			t.Errorf("%s: want a green Single plan check, got %+v", k, c)
+		if !c.OK || c.Critical || c.Label != "Secondary (optional)" || !strings.HasPrefix(c.Detail, "not in use") {
+			t.Errorf("%s: want a passing, informational Secondary (optional) check, got %+v", k, c)
 		}
 	}
-	if c := got["keylessTogether"]; c.OK || c.Critical || !strings.Contains(c.Detail, "no API key") {
-		t.Errorf("a chosen secondary with no key must warn (not critical): %+v", c)
+	if c := got["keylessTogether"]; !strings.Contains(c.Detail, "openai-compatible configured, no API key found, so nothing fails over") ||
+		!strings.Contains(c.Detail, "if you want overflow") {
+		t.Errorf("a configured but keyless secondary must say why it is not in use: %+v", c)
 	}
-	if c := got["ready"]; !c.OK || c.Label != "Secondary ready" {
+	if c := got["ready"]; !c.OK || c.Label != "Secondary (optional)" || !strings.Contains(c.Detail, "GLM, key ok") {
 		t.Errorf("ready: %+v", c)
+	}
+}
+
+// Nothing else on the page may call a missing secondary a fault: the rail dot
+// is neutral, and the section and its setup test are labelled optional.
+func TestSecondaryIsLabelledOptional(t *testing.T) {
+	page := string(indexHTML)
+	for _, want := range []string{
+		`<span class="label">Secondary (optional)</span>`,
+		`Secondary provider (optional) <span`,
+		`Test secondary (optional)</button>`,
+		`setDot("nd-secondary", noSecondary || missingKey ? "" : "ok");`,
+		`setHeadState("secondaryHead", none || missingKey ? "" : "ok");`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("admin.html is missing %q", want)
+		}
 	}
 }
 

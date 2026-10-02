@@ -325,6 +325,27 @@
   .note.ok  { background: var(--ok-bg);   color: var(--ok); }
   .note.warn{ background: var(--warn-bg); color: var(--warn); }
   .note.bad { background: var(--bad-bg);  color: var(--bad); }
+  .note.info { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+  /* Send test message: a vertical trace, one dot per hop. Healthy is --ok
+     like everything else on the page; skip is grey. */
+  .trace { margin-top: 13px; }
+  .tr-verdict { padding: 11px 13px; border-radius: 8px; font-size: 14px; font-weight: 600; }
+  .tr-verdict.ok { background: var(--ok-bg); color: var(--ok); }
+  .tr-verdict.warn { background: var(--warn-bg); color: var(--warn); }
+  .tr-verdict.bad { background: var(--bad-bg); color: var(--bad); }
+  .tr-verdict.skip { background: var(--panel-2); color: var(--muted); }
+  .tr-hops { list-style: none; margin: 12px 0 0; padding: 0 0 0 6px; }
+  .tr-hop { position: relative; padding: 0 0 14px 22px; border-left: 2px solid var(--border); overflow-wrap: anywhere; }
+  .tr-hop:last-child { border-left-color: transparent; }
+  .tr-dot { position: absolute; left: -7px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--border); box-shadow: 0 0 0 3px var(--panel); }
+  .tr-hop.ok .tr-dot { background: var(--ok); } .tr-hop.warn .tr-dot { background: var(--warn); }
+  .tr-hop.bad .tr-dot { background: var(--bad); }
+  .tr-hop.skip { color: var(--muted); }
+  .tr-ms, .tr-tag { font-size: 12px; color: var(--muted); font-weight: 500; }
+  .tr-leg { margin-top: 8px; font-size: 13px; }
+  .tr-mtr { border-collapse: collapse; margin-top: 4px; font-family: var(--mono); font-size: 12px; }
+  .tr-mtr th, .tr-mtr td { text-align: left; padding: 2px 12px 2px 0; }
+  .tr-mtr th { color: var(--muted); font-weight: 600; }
   .note code { font-family: var(--mono); font-size: 12px; }
   .empty { padding: 26px 16px; text-align: center; color: var(--faint); font-size: 13px; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12.5px; }
@@ -698,7 +719,7 @@
 
   <div class="navgroup">Routing</div>
   <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Routing</span></a>
-  <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary</span></a>
+  <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary (optional)</span></a>
   <a class="navlink" data-target="sec-failover"><span class="nd" id="nd-failover"></span><span class="label">Failover &amp; pricing</span></a>
 
   <div class="navgroup">Sessions</div>
@@ -826,10 +847,12 @@
       <div class="hint">Run these after installing, or whenever something seems off. Each one checks a real path end to end, not just the settings.</div>
       <div class="row" style="margin-top:8px">
         <button class="success" id="setupTestConn">&#x21CC; Test connection</button>
-        <button class="success" id="setupTestSecondary">&#x21CC; Test secondary</button>
+        <button class="success" id="setupTestSecondary">&#x21CC; Test secondary (optional)</button>
+        <button class="success" id="setupTrace">&#x21CC; Send test message</button>
       </div>
-      <div class="hint" style="margin-top:6px"><b>Test connection</b>: sends a probe the way Claude Code does and checks it really arrives at this gateway, not straight at Anthropic. <b>Test secondary</b>: sends one small request to the paid secondary (a few tokens, billed by the secondary) and shows who answered and how fast. The hotspot has its own test under <a href="#" data-target="sec-mac">Lid &amp; hotspot</a>, because it switches your Wi-Fi.</div>
+      <div class="hint" style="margin-top:6px"><b>Test connection</b>: sends a probe the way Claude Code does and checks it really arrives at this gateway, not straight at Anthropic. <b>Test secondary (optional)</b>: only if you set one up. Sends one small request to the paid secondary (a few tokens, billed by the secondary) and shows who answered and how fast. The hotspot has its own test under <a href="#" data-target="sec-mac">Lid &amp; hotspot</a>, because it switches your Wi-Fi. <b>Send test message</b>: a trace route for Claude Code. One tiny real message (a few tokens on the cheapest model, with Claude Code's own credential) goes down exactly the path Claude Code uses, and each hop shows what it saw: DNS, the pf redirect, TLS as Node checks it, the routing decision, the answer, the network path to Anthropic and any failover.</div>
       <div id="setupTestNote"></div>
+      <div id="setupTraceOut"></div>
     </div>
   </section>
 
@@ -1067,7 +1090,7 @@
   <!-- Starts closed in the MARKUP for the same reason Guards does: set in
        script it would render open for a frame and then jump shut. -->
   <section id="secondarySection" class="collapsible collapsed" style="scroll-margin-top:70px">
-    <h2 id="secondaryHead">Secondary provider <span class="applies" data-where="config.json + Keychain" data-when="restart"></span> <span class="hint">where inference goes when the primary is out: endpoint, model and API key</span>
+    <h2 id="secondaryHead">Secondary provider (optional) <span class="applies" data-where="config.json + Keychain" data-when="restart"></span> <span class="hint">where inference goes when the primary is out: endpoint, model and API key</span>
       <span class="spacer"></span>
       <span id="secSummary" class="hint"></span>
       <button class="h2btn primary" id="secondaryToggle" aria-expanded="false" aria-controls="secondaryBody">Show</button>
@@ -1625,7 +1648,6 @@ function setHeadState(headId, state) {
   if (state) h.classList.add("h-" + state);
 }
 
-let secWasBad = false;
 function setSecondaryOpen(open) {
   const sec = $("secondarySection");
   sec.classList.toggle("collapsed", !open);
@@ -1640,31 +1662,26 @@ function renderSecondary(s) {
   const el = $("secStatus");
   const none = sec.provider === "none" || !sec.provider;
   const missingKey = !none && sec.key_env_var && !sec.key_present;
+  // A secondary is optional: having none, or one with no key, is a working
+  // single-plan setup, so it is stated as information, never as a fault.
   if (none) {
-    note(el, "warn", "No secondary provider is configured. When the primary runs out, requests just fail: there is nowhere to fail over to.");
+    note(el, "info", "Optional, not in use: no secondary provider is configured. Anthropic's own limits reach Claude Code unchanged. Add one here if you want requests to overflow to it.");
   } else if (missingKey) {
-    note(el, "bad", `Secondary is ${sec.provider} (${sec.base_url}) but NO API KEY was found: nothing in the Keychain under "${sec.keychain_service}", and $${sec.key_env_var} is unset. It will fail the first time it is used.`);
+    note(el, "info", `Optional, not in use: ${sec.provider} (${sec.base_url}) is configured, but no API key was found (nothing in the Keychain under "${sec.keychain_service}", and $${sec.key_env_var} is unset), so nothing fails over to it. Add a key below if you want overflow.`);
   } else {
     note(el, "ok", `Secondary is ${sec.provider} (${sec.base_url})${sec.model ? " → " + sec.model : ""}.${keySentence(sec)}`);
   }
 
   // Collapsed, the header is the only thing reporting on the secondary, so
-  // it carries the verdict rather than a label -- same rule as Guards.
-  $("secondarySection").classList.toggle("alert", none || missingKey);
-  // none is amber, not red: having no secondary is a deliberate choice as
-  // often as it is a mistake. A configured secondary with no key IS red --
-  // that one is always broken, it just has not failed yet.
-  setHeadState("secondaryHead", missingKey ? "bad" : none ? "warn" : "ok");
-  $("secSummary").textContent = none ? "none configured"
-    : missingKey ? "no API key: will fail when used"
+  // it carries the verdict rather than a label, same rule as Guards. Not in
+  // use is neutral, not amber or red: the secondary is optional.
+  $("secondarySection").classList.remove("alert");
+  setHeadState("secondaryHead", none || missingKey ? "" : "ok");
+  $("secSummary").textContent = none ? "optional, not in use"
+    : missingKey ? "optional, not in use: no API key"
     : `${sec.model || sec.provider}, key ok`;
-
-  // Opens itself on the TRANSITION into a bad state, never on every render:
-  // re-opening each refresh would take the panel away from someone who read
-  // it and closed it again while the condition persists.
-  const bad = none || missingKey;
-  if (bad && !secWasBad) setSecondaryOpen(true);
-  secWasBad = bad;
+  // Never opens itself: an optional panel that sprang open on every page
+  // load of a single-plan Mac read as something to fix.
   // A revealed key belongs to the secondary that was on screen when it was
   // fetched. Leaving it visible across a change of provider would show one
   // provider's credential under another's name.
@@ -3031,6 +3048,43 @@ $("testConn").onclick = () => runTestConnection($("testConn"), $("actNote"));
 $("setupTestConn").onclick = () => runTestConnection($("setupTestConn"), $("setupTestNote"));
 $("setupTestSecondary").onclick = () => runTestSecondary($("setupTestSecondary"), $("setupTestNote"));
 
+// traceHTML draws a Send test message trace: the plain-English verdict
+// first, then one row per hop down a vertical line, each with its dot and,
+// under the upstream hop, the network path as mtr saw it. The state is also
+// written out in text, so the dot's colour is never the only signal. Pure,
+// for page_script_test.go.
+function traceHTML(r) {
+  const st = s => s === "ok" || s === "warn" || s === "bad" ? s : "skip";
+  const word = {ok: "ok", warn: "check", bad: "failed", skip: "skipped"};
+  const n = v => Number(v || 0).toFixed(1);
+  const legs = h => (h.legs || []).map(l =>
+    `<div class="tr-leg"><b>${esc(l.name)}</b>${l.note ? ` <span class="tr-tag">${esc(l.note)}</span>` : ""}` +
+    (l.hops && l.hops.length
+      ? `<table class="tr-mtr"><thead><tr><th>host</th><th>loss</th><th>avg</th><th>worst</th></tr></thead><tbody>` +
+        l.hops.map(x => `<tr><td>${esc(x.host)}</td><td>${n(x.loss_pct)}%</td><td>${n(x.avg_ms)} ms</td><td>${n(x.worst_ms)} ms</td></tr>`).join("") +
+        `</tbody></table>`
+      : "") + `</div>`).join("");
+  return `<div class="trace"><div class="tr-verdict ${st(r.state)}">${esc(r.verdict)}</div>` +
+    `<ol class="tr-hops">` + (r.hops || []).map(h =>
+      `<li class="tr-hop ${st(h.state)}"><span class="tr-dot"></span>` +
+      `<div><b>${esc(h.name)}</b> <span class="tr-tag">${word[st(h.state)]}${h.duration_ms ? ", " + h.duration_ms + " ms" : ""}</span></div>` +
+      `<div>${esc(h.summary)}</div>` +
+      (h.detail ? `<div class="hint">${esc(h.detail)}</div>` : "") + legs(h) + `</li>`).join("") +
+    `</ol><div class="hint">${esc(r.mode)} mode, sent to ${esc(r.target)}</div></div>`;
+}
+
+async function runTrace(btn, out) {
+  btn.disabled = true;
+  out.innerHTML = `<div class="note warn">Sending one tiny message along Claude Code's path. With the network path to Anthropic this takes up to about 20 seconds...</div>`;
+  try {
+    out.innerHTML = traceHTML(await post("/api/trace"));
+    // A real request: it lands in Recent responses and the totals.
+    refresh();
+  } catch (e) { note(out, "bad", e.message); }
+  finally { btn.disabled = false; }
+}
+$("setupTrace").onclick = () => runTrace($("setupTrace"), $("setupTraceOut"));
+
 $("viewLog").onclick = () => window.open("/api/log", "_blank");
 $("viewPfLog").onclick = () => window.open("/api/pf-heal-log", "_blank");
 $("viewSelfHealLog").onclick = () => window.open("/api/self-heal-log", "_blank");
@@ -3129,28 +3183,64 @@ function primaryHealthCheck(ph, now) {
   };
 }
 
-// secondaryCheck: a secondary is optional. Someone on one plan (Claude
-// Enterprise, or any single subscription) has none, and that is a working
-// setup, not a fault: Anthropic's own limits reach Claude Code unchanged,
-// and compaction, handover and the rest work as before. A config with no
-// secondary resolves to a Bedrock one with no key, so that reads the same.
-// Only a secondary someone chose, whose key is missing, is a warning.
-// Pure, for page_script_test.go.
+// secondaryCheck: a secondary is OPTIONAL, and reads as optional whatever
+// the reason there is no usable one. Someone on one plan (Claude Enterprise,
+// or any single subscription) has none, and that is a working setup, not a
+// fault: Anthropic's own limits reach Claude Code unchanged, and compaction,
+// handover and the rest work as before. A secondary configured in
+// config.json with no key (the corporate Mac whose Keychain never got one)
+// is the same setup, so it passes too, with the reason as information. It
+// never warns and never turns the meter amber. Pure, for page_script_test.go.
 function secondaryCheck(sec) {
   sec = sec || {};
   const none = sec.provider === "none" || !sec.provider;
   const keyMissing = !!(sec.key_env_var && !sec.key_present);
-  if (none || (keyMissing && sec.provider === "bedrock")) {
+  const label = "Secondary (optional)";
+  if (none) {
     return {
-      key: "secondary", label: "Single plan", target: "secondarySection", ok: true, critical: false,
-      detail: "no secondary: Anthropic's own limits reach Claude Code unchanged. Add one under Secondary to keep working past them",
+      key: "secondary", label, target: "secondarySection", ok: true, critical: false,
+      detail: "not in use: no secondary, so Anthropic's own limits reach Claude Code unchanged. Add one under Secondary if you want overflow",
+    };
+  }
+  if (keyMissing) {
+    return {
+      key: "secondary", label, target: "secondarySection", ok: true, critical: false,
+      detail: `not in use: ${sec.provider} configured, no API key found, so nothing fails over. Add a key under Secondary if you want overflow`,
     };
   }
   return {
-    key: "secondary", label: "Secondary ready", target: "secondarySection",
-    ok: !keyMissing, critical: false,
-    detail: keyMissing ? "configured, but no API key was found, so nothing fails over to it"
-      : `${sec.model || sec.provider}, key ok`,
+    key: "secondary", label, target: "secondarySection", ok: true, critical: false,
+    detail: `in use: ${sec.model || sec.provider}, key ok`,
+  };
+}
+
+// clientTLSCheck is "Claude Code accepts the gateway's certificate", from the
+// listener's own handshake counts (/api/state client_tls). Every other check
+// is the gateway looking at itself, and the gateway trusts its own CA: on
+// 2026-10-02 a deploy rotated that CA, every running Claude Code session
+// refused the new certificate, and this page said 6/6. Failing needs a rate,
+// not mere presence: some failed handshakes are always in the log. Null in
+// base-url mode, where there is no TLS to refuse. Pure, for page_script_test.go.
+function clientTLSCheck(ct) {
+  if (!ct) return null;
+  const mins = Math.round((ct.window_seconds || 300) / 60);
+  const by = ct.by_class || {};
+  const kinds = [
+    by.hangup ? `${by.hangup} hung up mid-handshake` : "",
+    by.distrust ? `${by.distrust} sent a certificate alert` : "",
+    by.other ? `${by.other} other` : "",
+  ].filter(Boolean).join(", ");
+  return {
+    key: "clienttls", label: "Claude Code accepts the gateway's certificate", target: "installSection",
+    ok: !ct.rejecting, critical: true,
+    detail: ct.rejecting
+      ? `${ct.failures} TLS handshakes failed in the last ${mins} minutes against ${ct.successes} that completed (${kinds}). ` +
+        `Clients are refusing this gateway's certificate, so their requests never arrive. ` +
+        `A hang-up is how Node, and so Claude Code, refuses a certificate it does not trust; ` +
+        `it usually means the local CA changed after those sessions started` +
+        (ct.last_error ? `. Last error: ${ct.last_error}` : "")
+      : `${ct.successes} handshake${ct.successes === 1 ? "" : "s"} completed in the last ${mins} minutes` +
+        (ct.failures ? `, ${ct.failures} failed (under the ${ct.threshold} that signals a rejection, or outnumbered by successes)` : ", none failed"),
   };
 }
 
@@ -3165,6 +3255,12 @@ function readinessChecks(s, verdict) {
     detail: verdict.ok ? "the live probe reached this gateway"
       : (verdict.detail || "the connection test failed"),
   });
+
+  // Critical, and separate from "path": the live probe above uses the
+  // gateway's own trust, so it passes while every Claude Code session is
+  // refusing the certificate.
+  const clientTLS = clientTLSCheck(s.client_tls);
+  if (clientTLS) out.push(clientTLS);
 
   const sh = s.intercept.self_heal;
   out.push({
@@ -3225,6 +3321,7 @@ function setOverview(state) {
 // What to do when a readiness check fails, by check key.
 const CHECK_FIX = {
   path: "Claude Code's requests are not passing through Burst. Press Test connection under Setup; if it still fails, run the install again and restart Claude Code.",
+  clienttls: "restart the Claude Code sessions that were started before the CA changed: each one reads NODE_EXTRA_CA_CERTS once, at startup, and keeps the old trust until it exits. If newly started sessions fail too, check that NODE_EXTRA_CA_CERTS points at the bundle holding the Claude Burst CA (run claude-burst enable to put it back), then press Send test message under Setup to see Node's own verdict.",
   watchdog: "arm the gateway watchdog under Guards, so the gateway is restarted if it stops.",
   pfguard: "arm the pf redirect guard under Guards (it asks for your password once).",
   secondary: "add the secondary's API key under Secondary, then press Test secondary.",
@@ -3327,7 +3424,8 @@ function renderNav(s, counts) {
   const checks = readinessChecks(s, liveVerdict);
   setOverview(checks ? checksState(checks) : "");
   setDot("nd-install", s.intercept.active ? "ok" : "bad");
-  setDot("nd-secondary", missingKey ? "bad" : noSecondary ? "warn" : "ok");
+  // Optional: none, or no key, is a neutral dot, never amber or red.
+  setDot("nd-secondary", noSecondary || missingKey ? "" : "ok");
   // Routing has a state like every other entry: blue on the subscription,
   // amber while anything is going to the paid secondary.
   setDot("nd-config", s.overflow || secondaryModels(s, Date.now()).length ? "warn" : "ok");
