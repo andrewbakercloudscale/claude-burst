@@ -231,6 +231,8 @@ log "build OK, smoke test passed"
 if [[ -x "$TARGET" ]] && cmp -s "$TMPBIN" "$TARGET"; then
   rm -f "$TMPBIN"
   log "new build is byte-identical to the installed binary -- nothing to deploy"
+  # The panel is a separate repo with its own changes: update it either way.
+  zsh "$ROOT/scripts/update-panel.sh"
   exit 0
 fi
 
@@ -313,6 +315,8 @@ if wait_healthy; then
     log "re-enabled proxy -- restart any Claude Code session for the change to take effect"
   fi
   log "deploy complete"
+  # Only after a healthy deploy; never fails it (see update-panel.sh).
+  zsh "$ROOT/scripts/update-panel.sh"
   exit 0
 fi
 
