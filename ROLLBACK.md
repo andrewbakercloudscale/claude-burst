@@ -43,8 +43,11 @@ scripts/rollback.sh          # asks for sudo; undoes every part, verifies the re
 ```
 
 `rollback.sh` removes the `/etc/hosts` redirect and pf rule first (widest blast radius
-first), then the System-keychain CA trust, then restores `settings.json`, `config.json`
-and the CA bundle from the latest backup, stops the gateway, and **verifies
+first), then the System-keychain CA trust, then removes only Claude Burst's own entries
+from `settings.json` (a loopback `ANTHROPIC_BASE_URL` or proxy) and the CA bundle (its
+marked block), keeping everything else, such as your hooks, a Portkey or corporate gateway
+and your employer's CAs. A copy of each is kept first. It restores Burst's own `config.json`
+from the latest backup, stops the gateway, and **verifies
 `api.anthropic.com` resolves off-box before it claims success**. It is idempotent: safe
 when nothing was installed, when half an install succeeded, and twice in a row. It is also
 what the dashboard's **Revert to normal Claude** button runs.

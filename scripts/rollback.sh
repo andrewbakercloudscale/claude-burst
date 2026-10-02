@@ -1,7 +1,8 @@
 #!/bin/zsh
-# Instant manual rollback: restores ~/.claude/settings.json and
-# ~/.config/claude-burst/config.json from the most recent backup-config.sh
-# snapshot, and stops the gateway LaunchAgent. Safe to run any time, more
+# Instant manual rollback: removes Claude Burst's own entries from
+# ~/.claude/settings.json and the CA bundle (everything else in them is kept),
+# restores ~/.config/claude-burst/config.json from the most recent snapshot,
+# and stops the gateway LaunchAgent. Safe to run any time, more
 # than once, or when the gateway was never enabled.
 set -uo pipefail
 
@@ -84,11 +85,21 @@ if [[ -x "$UNTRUST_HELPER" ]]; then
   fi
 fi
 
+# settings.json and the CA bundle are NOT restored from a backup copy. Both
+# hold far more than Claude Burst's own entries: settings.json carries the
+# user's hooks, status line, permissions, display settings and possibly a
+# corporate gateway (Portkey and similar: ANTHROPIC_BASE_URL plus headers);
+# the CA bundle may hold an employer's CAs. Copying an old snapshot over
+# them loses everything changed since, and on 2026-10-02 the snapshot was a
+# test's throwaway file: the restore cut a 7KB settings.json to 71 bytes and
+# every running session went blank. Instead, each file is copied aside and
+# only Burst's own entries are removed from it (STEP 2 below for settings,
+# here for the bundle). config.json is Burst's own file, so it is restored.
 restored=0
-if [[ -f "$BACKUP_DIR/settings.json.latest.bak" ]]; then
-  cp "$BACKUP_DIR/settings.json.latest.bak" "$SETTINGS"
-  echo "restored $SETTINGS"
-  restored=1
+TS="$(date +%Y%m%d-%H%M%S)"
+if [[ -f "$SETTINGS" ]]; then
+  mkdir -p "$BACKUP_DIR" && cp "$SETTINGS" "$BACKUP_DIR/settings.json.before-rollback-$TS.bak" &&
+    echo "kept a copy of $SETTINGS as $BACKUP_DIR/settings.json.before-rollback-$TS.bak"
 fi
 if [[ -f "$BACKUP_DIR/config.json.latest.bak" ]]; then
   cp "$BACKUP_DIR/config.json.latest.bak" "$CONFIG"
@@ -96,9 +107,26 @@ if [[ -f "$BACKUP_DIR/config.json.latest.bak" ]]; then
   restored=1
 fi
 CA_BUNDLE="${NODE_EXTRA_CA_CERTS:-$HOME/.claude/certs/node-extra-ca-certs.pem}"
-if [[ -f "$BACKUP_DIR/$(basename "$CA_BUNDLE").latest.bak" ]]; then
-  cp "$BACKUP_DIR/$(basename "$CA_BUNDLE").latest.bak" "$CA_BUNDLE"
-  echo "restored $CA_BUNDLE"
+if [[ -f "$CA_BUNDLE" ]] && grep -q '^# BEGIN claude-burst CA' "$CA_BUNDLE"; then
+  cp "$CA_BUNDLE" "$BACKUP_DIR/$(basename "$CA_BUNDLE").before-rollback-$TS.bak"
+  # Same rule as tlsca.StripBlock: remove only a complete marked block.
+  python3 - "$CA_BUNDLE" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+s = p.read_text()
+b = s.find("# BEGIN claude-burst CA")
+e = s.find("# END claude-burst CA", b)
+if b >= 0 and e >= 0:
+    e += len("# END claude-burst CA")
+    if s[e:e+1] == "\n":
+        e += 1
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(s[:b] + s[e:])
+    tmp.chmod(0o600)
+    tmp.replace(p)
+    print(f"removed claude-burst's CA from {p}, everything else in it kept")
+PY
   restored=1
 fi
 
@@ -141,23 +169,43 @@ except Exception as e:
     raise SystemExit(0)
 
 env = data.get("env")
-remove = {
+# Only values that point at this Mac are Burst's. A Portkey or corporate
+# gateway URL, or a real corporate proxy, is the user's and stays.
+def ours(v):
+    v = str(v).lower()
+    for pre in ("http://", "https://", ""):
+        for host in ("127.0.0.1", "localhost", "[::1]"):
+            if v.startswith(pre + host):
+                return True
+    return False
+keys = {
     "ANTHROPIC_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "all_proxy",
 }
-removed = [k for k in list(env or {}) if k in remove]
+removed = [k for k in list(env or {}) if k in keys and ours(env[k])]
+kept = [f"{k}={env[k]}" for k in list(env or {}) if k in keys and not ours(env[k])]
+for k in kept:
+    print(f"left as it is (not ours): {k}")
 if removed:
     for k in removed:
         env.pop(k, None)
     if not env:
         data.pop("env", None)
-    p.write_text(json.dumps(data, indent=2) + "\n")
-    print("removed leftover routing overrides from settings.json: " + ", ".join(removed))
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(p)
+    print("removed Claude Burst's routing from settings.json: " + ", ".join(removed))
 PY
 fi
 
+# Same rule for launchd's environment: only values pointing at this Mac.
 for VAR in ANTHROPIC_BASE_URL HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
-  launchctl unsetenv "$VAR" >/dev/null 2>&1 || true
+  VAL="$(launchctl getenv "$VAR" 2>/dev/null || true)"
+  case "$VAL" in
+    http://127.0.0.1*|https://127.0.0.1*|http://localhost*|https://localhost*|127.0.0.1*|localhost*)
+      launchctl unsetenv "$VAR" >/dev/null 2>&1 || true
+      echo "removed launchd $VAR=$VAL" ;;
+  esac
 done
 
 # A macOS-level HTTP(S) proxy pointed at this Mac is the other way traffic
