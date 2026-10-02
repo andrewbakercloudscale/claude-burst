@@ -14,9 +14,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
 // A settings.json with things that are not ours, which must survive both.
@@ -35,6 +37,10 @@ func tempHome(t *testing.T, configJSON string) (settingsPath string) {
 	saved := managedSettingsPath
 	managedSettingsPath = filepath.Join(home, "managed-settings.json")
 	t.Cleanup(func() { managedSettingsPath = saved })
+	// Nor this Mac's real Claude Code sessions.
+	savedProcs := runningClaude
+	runningClaude = func() map[string]time.Time { return nil }
+	t.Cleanup(func() { runningClaude = savedProcs })
 	if configJSON != "" {
 		d := filepath.Join(home, ".config", "claude-burst")
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -204,5 +210,49 @@ func TestTransparentEnableRefusesAnEnterpriseGateway(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "base-url mode") {
 		t.Fatalf("transparent enable did not refuse an enterprise gateway: err=%v\n%s", err, out)
+	}
+}
+
+func TestParseEtime(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"36:12":      36*time.Minute + 12*time.Second,
+		"03:29:49":   3*time.Hour + 29*time.Minute + 49*time.Second,
+		"2-01:00:05": 49*time.Hour + 5*time.Second,
+	} {
+		if got, ok := parseEtime(in); !ok || got != want {
+			t.Errorf("parseEtime(%q) = %v %v, want %v", in, got, ok, want)
+		}
+	}
+	if _, ok := parseEtime("x"); ok {
+		t.Error("garbage parsed")
+	}
+}
+
+// 2026-10-02 13:22: re-enabling with sessions open that started before the
+// CA was in the bundle failed every one. Those sessions are named; ones
+// started after are not; with no CA in the bundle, every running one is.
+func TestSessionsNotTrusting(t *testing.T) {
+	tempHome(t, "")
+	bundle := filepath.Join(t.TempDir(), "bundle.pem")
+	caPEM := []byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+	now := time.Now()
+	runningClaude = func() map[string]time.Time {
+		return map[string]time.Time{"100": now.Add(-time.Hour), "200": now.Add(time.Minute)}
+	}
+	if got := sessionsNotTrusting(bundle, caPEM); strings.Join(got, ",") != "100,200" {
+		t.Fatalf("no CA in the bundle: every session refuses, got %v", got)
+	}
+	if err := tlsca.EnsureInBundle(bundle, caPEM); err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionsNotTrusting(bundle, caPEM); strings.Join(got, ",") != "100" {
+		t.Fatalf("only the session started before the CA arrived, got %v", got)
+	}
+	// Re-running enable rewrites nothing, so the date does not move and
+	// sessions that already trust the CA are not flagged afterwards.
+	runningClaude = func() map[string]time.Time { return map[string]time.Time{"300": now.Add(time.Second)} }
+	tlsca.EnsureInBundle(bundle, caPEM)
+	if got := sessionsNotTrusting(bundle, caPEM); len(got) != 0 {
+		t.Fatalf("a session that trusts the CA was flagged: %v", got)
 	}
 }
