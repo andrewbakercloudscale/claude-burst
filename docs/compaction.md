@@ -11,7 +11,7 @@
 
 On the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window. With pauseless compaction on:
 
-- When a session's context passes **Compact at** (default 400k), Burst sends one background request, on your subscription with the session's own login, asking the same model to summarise everything before your latest prompt. It takes about 40 seconds and you keep working.
+- When a session's context passes **Compact at** (default 300k), Burst sends one background request, on your subscription with the session's own login, asking the same model to summarise everything before your latest prompt. It takes about 40 seconds and you keep working.
 - The summary request resends the history exactly as Claude Code last sent it, so it reads from cache rather than paying for the whole context again.
 - From your next prompt, Burst sends the summary in place of those messages. Claude Code keeps its full local history and sees no difference. CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.
 - `/clear`, `/compact` or a rewind make the summary stop fitting, and requests then go through untouched.
@@ -88,7 +88,7 @@ What that figure is, and is not:
 - **On a Pro, Max or Enterprise subscription your bill does not change.** The effect is that your usage limits last longer, because each turn re-reads a shorter context.
 - On a metered API key primary the saving is real money, at roughly the same rate.
 - Cost comes to about 14% of the savings, so roughly 86 cents in every dollar of context compacted is kept.
-- Your figure depends on how long your sessions run. A session that never passes **Compact at** (default 400k) is never compacted and saves nothing; the savings come from long sessions, and grow with them.
+- Your figure depends on how long your sessions run. A session that never passes **Compact at** (default 300k) is never compacted and saves nothing; the savings come from long sessions, and grow with them.
 - Two days is a small sample. The dashboard shows your own numbers over the last 7 days as soon as a session has been compacted.
 
 **Where to see it:**

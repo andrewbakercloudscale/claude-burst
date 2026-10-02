@@ -61,7 +61,7 @@ type PruneConfig struct {
 }
 
 // CompactionConfig tunes PrimaryCompaction. Zero numbers take the defaults
-// below: compact at 400k tokens of context, warn at 80% of that, and compact
+// below: compact at 300k tokens of context, warn at 80% of that, and compact
 // any one session at most once per 30 minutes.
 type CompactionConfig struct {
 	Enabled         bool  `json:"enabled,omitempty"`
@@ -87,7 +87,7 @@ type CompactionConfig struct {
 
 const (
 	DefaultCompactionWarnPercent = 80
-	DefaultCompactionCompactAt   = 400_000
+	DefaultCompactionCompactAt   = 300_000
 	DefaultCompactionWindow      = 30
 )
 
