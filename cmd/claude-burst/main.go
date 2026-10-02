@@ -67,6 +67,8 @@ func main() {
 		enable(os.Args[2:])
 	case "disable":
 		disable(os.Args[2:])
+	case "uninstall-hooks":
+		uninstallHooks(os.Args[2:])
 	case "status":
 		status()
 	case "reset":
@@ -99,6 +101,7 @@ Commands:
   keychain-set      Store a secondary's API key in macOS Keychain (--provider together|openrouter|bedrock)
   enable            Point Claude Code at the local gateway via ~/.claude/settings.json
   disable           Remove Claude Burst from Claude Code settings
+  uninstall-hooks   Remove every hook, skill and command Burst put in ~/.claude (install.sh uninstall runs it)
   status            Show routing state
   reset             Clear overflow state immediately (back to primary)
   force-secondary   Route inference to the secondary for a while (testing)
@@ -921,6 +924,33 @@ Until you run this, traffic to %s on this Mac still goes to the gateway:
 		return
 	}
 	fmt.Println("disabled Claude Burst; restart Claude Code")
+}
+
+// uninstallHooks removes everything Burst installed in ~/.claude, through
+// each feature's own remover, and leaves config.json alone. install.sh
+// uninstall runs it while the binary still exists, after stopping the
+// gateway: a gateway that starts reinstalls its hooks.
+func uninstallHooks(args []string) {
+	rejectArgs("uninstall-hooks", args)
+	_, err := removeLegacyShunt()
+	err = errors.Join(err, admin.RemoveAllHooks())
+	left, lerr := admin.HookLeftovers()
+	if lerr != nil {
+		err = errors.Join(err, lerr)
+	}
+	if len(left) > 0 {
+		fmt.Fprintln(os.Stderr, "still naming claude-burst after removal (remove these by hand):")
+		for _, l := range left {
+			fmt.Fprintln(os.Stderr, "  "+l)
+		}
+	}
+	if err != nil {
+		fatal(err)
+	}
+	if len(left) > 0 {
+		os.Exit(1)
+	}
+	fmt.Println("removed Claude Burst's hooks, skill and /compact-async from ~/.claude (config.json unchanged)")
 }
 
 // rootHelperPath locates transparent-root.sh for the instructions we print.
