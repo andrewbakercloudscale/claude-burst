@@ -174,16 +174,12 @@ func (s *Server) handlePruning(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("cap must be between %d and %d bytes", minCapBytes, maxCapBytes), http.StatusBadRequest)
 		return
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		http.Error(w, "config.json does not parse, fix it before changing this: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// stub_min_bytes has no control on the page; keep whatever config.json says.
-	req.StubMinBytes = cfg.SecondaryPruning.StubMinBytes
-	cfg.SecondaryPruning = req
-	if err := config.Save(cfg); err != nil {
-		http.Error(w, "saving config.json: "+err.Error(), http.StatusInternalServerError)
+	if _, ok := updateConfig(w, func(c *config.Config) error {
+		// stub_min_bytes has no control on the page; keep whatever config.json says.
+		req.StubMinBytes = c.SecondaryPruning.StubMinBytes
+		c.SecondaryPruning = req
+		return nil
+	}); !ok {
 		return
 	}
 	live := s.gateway.SetSecondaryPruning(req)
@@ -225,14 +221,11 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("window must be between 1 and %d minutes", maxWindow), http.StatusBadRequest)
 		return
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		http.Error(w, "config.json does not parse, fix it before changing this: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	cfg.PrimaryCompaction = req
-	if err := config.Save(cfg); err != nil {
-		http.Error(w, "saving config.json: "+err.Error(), http.StatusInternalServerError)
+	cfg, ok := updateConfig(w, func(c *config.Config) error {
+		c.PrimaryCompaction = req
+		return nil
+	})
+	if !ok {
 		return
 	}
 	s.gateway.SetCompaction(req)

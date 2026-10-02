@@ -223,155 +223,136 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		http.Error(w, "config.json does not parse, fix it before changing this: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	bad := func(err error) { http.Error(w, err.Error(), http.StatusBadRequest) }
 	var changed []string
-
-	if u.Pricing != nil {
-		if cfg.Pricing == nil {
-			cfg.Pricing = map[string]config.ModelPrice{}
-		}
-		for m, p := range u.Pricing {
-			if !validModelName(m) {
-				bad(fmt.Errorf("invalid model name %q", m))
-				return
+	cfg, ok := updateConfig(w, func(c *config.Config) error {
+		if u.Pricing != nil {
+			if c.Pricing == nil {
+				c.Pricing = map[string]config.ModelPrice{}
 			}
-			if p == nil {
-				delete(cfg.Pricing, m)
-				continue
-			}
-			if err := validatePrice(m, *p); err != nil {
-				bad(err)
-				return
-			}
-			cfg.Pricing[m] = *p
-		}
-		changed = append(changed, "pricing")
-	}
-	if u.FallbackChain != nil {
-		chain := map[string][]string{}
-		for m, rungs := range *u.FallbackChain {
-			if !validModelName(m) {
-				bad(fmt.Errorf("invalid model name %q", m))
-				return
-			}
-			var clean []string
-			for _, r := range rungs {
-				r = strings.TrimSpace(r)
-				if r == "" {
+			for m, p := range u.Pricing {
+				if !validModelName(m) {
+					return badRequest(fmt.Errorf("invalid model name %q", m))
+				}
+				if p == nil {
+					delete(c.Pricing, m)
 					continue
 				}
-				if !validModelName(r) || r == m {
-					bad(fmt.Errorf("fallback for %s: %q is not a usable model", m, r))
-					return
+				if err := validatePrice(m, *p); err != nil {
+					return badRequest(err)
 				}
-				clean = append(clean, r)
+				c.Pricing[m] = *p
 			}
-			if len(clean) > 0 {
-				chain[m] = clean
+			changed = append(changed, "pricing")
+		}
+		if u.FallbackChain != nil {
+			chain := map[string][]string{}
+			for m, rungs := range *u.FallbackChain {
+				if !validModelName(m) {
+					return badRequest(fmt.Errorf("invalid model name %q", m))
+				}
+				var clean []string
+				for _, r := range rungs {
+					r = strings.TrimSpace(r)
+					if r == "" {
+						continue
+					}
+					if !validModelName(r) || r == m {
+						return badRequest(fmt.Errorf("fallback for %s: %q is not a usable model", m, r))
+					}
+					clean = append(clean, r)
+				}
+				if len(clean) > 0 {
+					chain[m] = clean
+				}
 			}
+			c.FallbackChain = chain
+			changed = append(changed, "fallback chain")
 		}
-		cfg.FallbackChain = chain
-		changed = append(changed, "fallback chain")
-	}
-	if mf := u.MeteredFailover; mf != nil {
-		for _, e := range []error{
-			between("window", int64(mf.WindowSeconds), 10, 3600),
-			between("failures", int64(mf.MinFailures), 1, 100),
-			between("connection failures", int64(mf.TransportErrorMinFailures), 1, 100),
-		} {
-			if e != nil {
-				bad(e)
-				return
+		if mf := u.MeteredFailover; mf != nil {
+			for _, e := range []error{
+				between("window", int64(mf.WindowSeconds), 10, 3600),
+				between("failures", int64(mf.MinFailures), 1, 100),
+				between("connection failures", int64(mf.TransportErrorMinFailures), 1, 100),
+			} {
+				if e != nil {
+					return badRequest(e)
+				}
 			}
+			c.MeteredFailover = *mf
+			changed = append(changed, "failover thresholds")
 		}
-		cfg.MeteredFailover = *mf
-		changed = append(changed, "failover thresholds")
-	}
-	if a := u.Advanced; a != nil {
-		for _, e := range []error{
-			between("reset grace", int64(a.ResetGraceSeconds), 0, 600),
-			between("unknown reset", int64(a.UnknownResetSeconds), 30, 86400),
-			between("response header timeout", int64(a.ResponseHeaderTimeoutSeconds), 10, 600),
-			between("max request size", a.MaxRequestMB, 8, 1024),
-		} {
-			if e != nil {
-				bad(e)
-				return
+		if a := u.Advanced; a != nil {
+			for _, e := range []error{
+				between("reset grace", int64(a.ResetGraceSeconds), 0, 600),
+				between("unknown reset", int64(a.UnknownResetSeconds), 30, 86400),
+				between("response header timeout", int64(a.ResponseHeaderTimeoutSeconds), 10, 600),
+				between("max request size", a.MaxRequestMB, 8, 1024),
+			} {
+				if e != nil {
+					return badRequest(e)
+				}
 			}
+			c.ResetGraceSeconds, c.UnknownResetSeconds = a.ResetGraceSeconds, a.UnknownResetSeconds
+			c.ResponseHeaderTimeoutSeconds, c.MaxRequestMB = a.ResponseHeaderTimeoutSeconds, a.MaxRequestMB
+			changed = append(changed, "timeouts and limits")
 		}
-		cfg.ResetGraceSeconds, cfg.UnknownResetSeconds = a.ResetGraceSeconds, a.UnknownResetSeconds
-		cfg.ResponseHeaderTimeoutSeconds, cfg.MaxRequestMB = a.ResponseHeaderTimeoutSeconds, a.MaxRequestMB
-		changed = append(changed, "timeouts and limits")
-	}
-	if u.Notify != nil {
-		cfg.Notify = *u.Notify
-		changed = append(changed, "notifications")
-	}
-	if h := u.Hotspot; h != nil {
-		if h.When != "" && h.When != config.HotspotLidClosed && h.When != config.HotspotAlways {
-			bad(fmt.Errorf("when must be %s or %s", config.HotspotLidClosed, config.HotspotAlways))
-			return
+		if u.Notify != nil {
+			c.Notify = *u.Notify
+			changed = append(changed, "notifications")
 		}
-		if len(h.SSID) > 64 || strings.ContainsAny(h.SSID, "\n\r\x00") {
-			bad(fmt.Errorf("that is not a Wi-Fi network name"))
-			return
-		}
-		// 0 means the default; anything else must be in range.
-		for _, c := range []struct {
-			name      string
-			v, lo, hi int
-			unit      string
-		}{
-			{"check every", h.CheckSeconds, config.MinHotspotCheckSeconds, config.MaxHotspotCheckSeconds, "seconds"},
-			{"failed checks", h.OfflineChecks, 1, config.MaxHotspotOfflineChecks, ""},
-			{"gap between tries", h.RetrySeconds, config.MinHotspotRetrySeconds, config.MaxHotspotRetrySeconds, "seconds"},
-			{"keep trying for", h.GiveUpMinutes, 1, config.MaxHotspotGiveUpMinutes, "minutes"},
-		} {
-			if c.v != 0 && (c.v < c.lo || c.v > c.hi) {
-				bad(fmt.Errorf("%s must be between %d and %d %s", c.name, c.lo, c.hi, c.unit))
-				return
+		if h := u.Hotspot; h != nil {
+			if h.When != "" && h.When != config.HotspotLidClosed && h.When != config.HotspotAlways {
+				return badRequest(fmt.Errorf("when must be %s or %s", config.HotspotLidClosed, config.HotspotAlways))
 			}
+			if len(h.SSID) > 64 || strings.ContainsAny(h.SSID, "\n\r\x00") {
+				return badRequest(fmt.Errorf("that is not a Wi-Fi network name"))
+			}
+			// 0 means the default; anything else must be in range.
+			for _, c := range []struct {
+				name      string
+				v, lo, hi int
+				unit      string
+			}{
+				{"check every", h.CheckSeconds, config.MinHotspotCheckSeconds, config.MaxHotspotCheckSeconds, "seconds"},
+				{"failed checks", h.OfflineChecks, 1, config.MaxHotspotOfflineChecks, ""},
+				{"gap between tries", h.RetrySeconds, config.MinHotspotRetrySeconds, config.MaxHotspotRetrySeconds, "seconds"},
+				{"keep trying for", h.GiveUpMinutes, 1, config.MaxHotspotGiveUpMinutes, "minutes"},
+			} {
+				if c.v != 0 && (c.v < c.lo || c.v > c.hi) {
+					return badRequest(fmt.Errorf("%s must be between %d and %d %s", c.name, c.lo, c.hi, c.unit))
+				}
+			}
+			// The password is required: without it macOS refuses a join made
+			// by a background process (error -3900), every time.
+			typed := u.HotspotPassword != "" && u.HotspotPassword != "-"
+			if h.SSID != "" && !typed && (u.HotspotPassword == "-" || !hotspotPasswordStored()) {
+				return badRequest(fmt.Errorf("type the hotspot's password: without it macOS refuses the join"))
+			}
+			c.Hotspot = *h
+			changed = append(changed, "hotspot")
 		}
-		// The password is required: without it macOS refuses a join made
-		// by a background process (error -3900), every time.
-		typed := u.HotspotPassword != "" && u.HotspotPassword != "-"
-		if h.SSID != "" && !typed && (u.HotspotPassword == "-" || !hotspotPasswordStored()) {
-			bad(fmt.Errorf("type the hotspot's password: without it macOS refuses the join"))
-			return
+		if u.HotspotPassword == "-" && u.Hotspot == nil && c.Hotspot.SSID != "" {
+			return badRequest(fmt.Errorf("the password is required while a hotspot is chosen: set Network to Off first"))
 		}
-		cfg.Hotspot = *h
-		changed = append(changed, "hotspot")
-	}
-	if u.HotspotPassword == "-" && u.Hotspot == nil && cfg.Hotspot.SSID != "" {
-		bad(fmt.Errorf("the password is required while a hotspot is chosen: set Network to Off first"))
-		return
-	}
-	switch u.HotspotPassword {
-	case "":
-	case "-":
-		if err := keychain.Delete(hotspot.KeychainService); err != nil {
-			http.Error(w, "removing the password: "+err.Error(), http.StatusInternalServerError)
-			return
+		switch u.HotspotPassword {
+		case "":
+		case "-":
+			if err := keychain.Delete(hotspot.KeychainService); err != nil {
+				return serverError("removing the password: " + err.Error())
+			}
+			changed = append(changed, "hotspot password removed")
+		default:
+			if err := keychain.Store(hotspot.KeychainService, u.HotspotPassword); err != nil {
+				return serverError("storing the password in the Keychain: " + err.Error())
+			}
+			changed = append(changed, "hotspot password stored in the Keychain")
 		}
-		changed = append(changed, "hotspot password removed")
-	default:
-		if err := keychain.Store(hotspot.KeychainService, u.HotspotPassword); err != nil {
-			http.Error(w, "storing the password in the Keychain: "+err.Error(), http.StatusInternalServerError)
-			return
+		if len(changed) == 0 {
+			return errNothingToChange
 		}
-		changed = append(changed, "hotspot password stored in the Keychain")
-	}
-	if len(changed) == 0 {
-		writeJSON(w, map[string]string{"ok": "nothing to change"})
-		return
-	}
-	if err := config.Save(cfg); err != nil {
-		http.Error(w, "saving config.json: "+err.Error(), http.StatusInternalServerError)
+		return nil
+	})
+	if !ok {
 		return
 	}
 	resp := map[string]any{"ok": "saved: " + strings.Join(changed, ", ")}

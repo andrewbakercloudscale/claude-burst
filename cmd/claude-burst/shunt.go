@@ -85,31 +85,32 @@ func shuntEnable(args []string) {
 		*read, *write = true, true
 	}
 
-	cfg, err := config.Load()
+	var cfg config.Config
+	err := config.Update(func(c *config.Config) error {
+		// Refuse up front. Turning the guard on with no usable worker would block
+		// whole-file reads and offer nothing to redirect them to.
+		if *model != "" {
+			c.Shunt.Model = *model
+		}
+		if err := shunt.Readiness(*c, keychain.Describe); err != nil {
+			return fmt.Errorf("cannot enable the shunt: %w", err)
+		}
+		if *read {
+			c.Shunt.Read = true
+		}
+		if *write {
+			c.Shunt.Write = true
+		}
+		if *minLines > 0 {
+			c.Shunt.MinLines = *minLines
+		}
+		if *chunk > 0 {
+			c.Shunt.ChunkLines = *chunk
+		}
+		cfg = *c
+		return nil
+	})
 	if err != nil {
-		fatal(err)
-	}
-	// Refuse up front. Turning the guard on with no usable worker would block
-	// whole-file reads and offer nothing to redirect them to.
-	if *model != "" {
-		cfg.Shunt.Model = *model
-	}
-	if err := shunt.Readiness(cfg, keychain.Describe); err != nil {
-		fatal(fmt.Errorf("cannot enable the shunt: %w", err))
-	}
-	if *read {
-		cfg.Shunt.Read = true
-	}
-	if *write {
-		cfg.Shunt.Write = true
-	}
-	if *minLines > 0 {
-		cfg.Shunt.MinLines = *minLines
-	}
-	if *chunk > 0 {
-		cfg.Shunt.ChunkLines = *chunk
-	}
-	if err := config.Save(cfg); err != nil {
 		fatal(err)
 	}
 	applyShunt(cfg)
@@ -127,17 +128,18 @@ func shuntDisable(args []string) {
 	if !*read && !*write {
 		*read, *write = true, true
 	}
-	cfg, err := config.Load()
+	var cfg config.Config
+	err := config.Update(func(c *config.Config) error {
+		if *read {
+			c.Shunt.Read = false
+		}
+		if *write {
+			c.Shunt.Write = false
+		}
+		cfg = *c
+		return nil
+	})
 	if err != nil {
-		fatal(err)
-	}
-	if *read {
-		cfg.Shunt.Read = false
-	}
-	if *write {
-		cfg.Shunt.Write = false
-	}
-	if err := config.Save(cfg); err != nil {
 		fatal(err)
 	}
 	applyShunt(cfg)

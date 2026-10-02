@@ -51,11 +51,6 @@ func SyncCoordinationHooks(cfg config.Config) error {
 }
 
 func (s *Server) handleCoordination(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.Load()
-	if err != nil {
-		http.Error(w, "config.json does not parse, fix it before changing this: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
 	if r.Method == http.MethodPost {
 		var req config.CoordinationConfig
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -66,9 +61,11 @@ func (s *Server) handleCoordination(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("minutes must be between 1 and %d", maxCoordMinutes), http.StatusBadRequest)
 			return
 		}
-		cfg.SessionCoordination = req
-		if err := config.Save(cfg); err != nil {
-			http.Error(w, "saving config.json: "+err.Error(), http.StatusInternalServerError)
+		cfg, ok := updateConfig(w, func(c *config.Config) error {
+			c.SessionCoordination = req
+			return nil
+		})
+		if !ok {
 			return
 		}
 		msg := "session coordination off; its hooks are removed from ~/.claude/settings.json"
@@ -81,6 +78,11 @@ func (s *Server) handleCoordination(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]string{"ok": msg})
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		http.Error(w, "config.json does not parse, fix it before changing this: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	c, err := Coordinator(cfg)
