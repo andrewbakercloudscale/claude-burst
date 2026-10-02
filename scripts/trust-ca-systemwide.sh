@@ -41,8 +41,34 @@ if [[ ! -f "$CA_CERT" ]]; then
   exit 1
 fi
 
+# Refuse a CA that could vouch for any website. Since 2026-10-02 the CA is
+# name-constrained to the intercepted host; an older one is replaced the
+# next time the gateway starts. Trusting an unconstrained one system-wide
+# would let anyone holding its key impersonate any site to every app.
+if ! openssl x509 -in "$CA_CERT" -noout -text 2>/dev/null | grep -q "Name Constraints: critical"; then
+  echo "refusing: $CA_CERT has no critical name constraint, so it could sign for any website." >&2
+  echo "restart the gateway (it replaces the CA with a constrained one), then run this again." >&2
+  exit 1
+fi
+
+# Remove every earlier "claude-burst local CA" first, by fingerprint: they
+# share one name, so delete-certificate -c would be ambiguous, and an old
+# unconstrained CA left trusted is exactly what this replaces.
+old_hashes=$(security find-certificate -a -c "claude-burst local CA" -Z /Library/Keychains/System.keychain 2>/dev/null | awk '/^SHA-1 hash:/ {print $3}')
+for h in ${(f)old_hashes}; do
+  [[ -n "$h" ]] || continue
+  if security delete-certificate -Z "$h" -t /Library/Keychains/System.keychain >/dev/null 2>&1; then
+    echo "removed an earlier claude-burst local CA ($h)"
+  else
+    echo "WARNING: could not remove an earlier claude-burst local CA ($h); remove it in Keychain Access" >&2
+  fi
+done
+
 echo "importing $CA_CERT into the System keychain as a trusted root..."
-security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_CERT"
+if ! security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_CERT"; then
+  echo "import failed" >&2
+  exit 1
+fi
 
 echo
 echo "verifying..."
