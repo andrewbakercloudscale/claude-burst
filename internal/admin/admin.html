@@ -3183,11 +3183,11 @@ function primaryHealthCheck(ph, now) {
   };
 }
 
-// secondaryCheck: a secondary is OPTIONAL, and reads as optional whatever
-// the reason there is no usable one. Someone on one plan (Claude Enterprise,
-// or any single subscription) has none, and that is a working setup, not a
-// fault: Anthropic's own limits reach Claude Code unchanged, and compaction,
-// handover and the rest work as before. A secondary configured in
+// secondaryCheck: a secondary is OPTIONAL. Someone on one plan (Claude
+// Enterprise, or any single subscription) has none, and that is a working
+// setup, not a fault: Anthropic's own limits reach Claude Code unchanged.
+// With none configured there is nothing to check, so there is no check
+// (null): the meter only counts what applies to this setup. A secondary configured in
 // config.json with no key (the corporate Mac whose Keychain never got one)
 // is the same setup, so it passes too, with the reason as information. It
 // never warns and never turns the meter amber. Pure, for page_script_test.go.
@@ -3196,12 +3196,7 @@ function secondaryCheck(sec) {
   const none = sec.provider === "none" || !sec.provider;
   const keyMissing = !!(sec.key_env_var && !sec.key_present);
   const label = "Secondary (optional)";
-  if (none) {
-    return {
-      key: "secondary", label, target: "secondarySection", ok: true, critical: false,
-      detail: "not in use: no secondary, so Anthropic's own limits reach Claude Code unchanged. Add one under Secondary if you want overflow",
-    };
-  }
+  if (none) return null;
   if (keyMissing) {
     return {
       key: "secondary", label, target: "secondarySection", ok: true, critical: false,
@@ -3278,7 +3273,8 @@ function readinessChecks(s, verdict) {
     });
   }
 
-  out.push(secondaryCheck(s.secondary));
+  const secondary = secondaryCheck(s.secondary);
+  if (secondary) out.push(secondary);
 
   // Is Anthropic answering NOW. Critical, because it is the one check that
   // fails while every request is failing: the error rate below averages 14

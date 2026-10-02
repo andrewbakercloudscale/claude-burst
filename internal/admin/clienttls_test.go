@@ -122,3 +122,40 @@ func TestStateReportsClientTLS(t *testing.T) {
 		t.Fatalf("client_tls: %+v", ct)
 	}
 }
+
+// The meter counts only checks that apply to this setup: base-url mode has
+// no pf redirect to guard and no TLS for Claude Code to refuse, and a single
+// plan has no secondary. Each of those is absent, not a free pass.
+func TestReadinessChecksFollowTheMode(t *testing.T) {
+	keys := func(state map[string]any) []string {
+		js, _ := json.Marshal(state)
+		var got struct {
+			Checks []pageCheck `json:"checks"`
+		}
+		runPageJS(t, []string{"primaryHealthCheck", "secondaryCheck", "clientTLSCheck", "readinessChecks", "checksState"}, fmt.Sprintf(`
+const lastHistory = null;
+out({checks: readinessChecks(%s, {ok: true})});`, js), &got)
+		var k []string
+		for _, c := range got.Checks {
+			k = append(k, c.Key)
+		}
+		return k
+	}
+	baseURL := keys(map[string]any{
+		"intercept":      map[string]any{"mode": "base-url", "self_heal": map[string]any{"running": true}},
+		"secondary":      map[string]any{"provider": "none"},
+		"primary_health": map[string]any{"failures": 0},
+	})
+	if got, want := strings.Join(baseURL, ","), "path,watchdog,primary"; got != want {
+		t.Errorf("base-url, single plan: checks %s, want %s", got, want)
+	}
+	transparent := keys(map[string]any{
+		"intercept":      map[string]any{"mode": "transparent", "self_heal": map[string]any{"running": true}, "pf_heal": map[string]any{"running": true}},
+		"secondary":      map[string]any{"provider": "openai-compatible", "model": "GLM", "key_env_var": "TOGETHER_API_KEY", "key_present": true},
+		"primary_health": map[string]any{"failures": 0},
+		"client_tls":     map[string]any{"window_seconds": 300, "successes": 5, "threshold": 30},
+	})
+	if got, want := strings.Join(transparent, ","), "path,clienttls,watchdog,pfguard,secondary,primary"; got != want {
+		t.Errorf("transparent with a secondary: checks %s, want %s", got, want)
+	}
+}
