@@ -158,3 +158,35 @@ func TestWriteUpdatesTheBackupRollbackWouldRestore(t *testing.T) {
 		t.Fatalf("the restore point must reflect what Write just wrote, not an old hook-bearing version: %s", b)
 	}
 }
+
+// Reproduces 2026-10-02: TestReadWriteRoundTrip wrote a throwaway
+// settings.json under t.TempDir() with HOME left real, and Write put that
+// content in the real ~/.config/claude-burst/backups/settings.json.latest.bak.
+// rollback.sh then restored it over the user's settings. A file outside home
+// must never become a restore point.
+func TestWriteOutsideHomeLeavesTheRestorePointAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_BURST_BACKUP_DIR", "")
+	elsewhere := filepath.Join(t.TempDir(), "settings.json")
+	if err := Write(elsewhere, map[string]any{"model": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := backup.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		t.Errorf("a write outside HOME left %s in the backups directory", e.Name())
+	}
+
+	// The real path still gets its restore point.
+	real, _ := Path()
+	if err := Write(real, map[string]any{"model": "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "settings.json.latest.bak")); err != nil {
+		t.Errorf("the real settings.json lost its restore point: %v", err)
+	}
+}
