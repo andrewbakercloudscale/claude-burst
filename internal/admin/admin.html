@@ -463,6 +463,12 @@
   .check .g { font-size: 10px; line-height: 1; }
   .check.ok   { background: var(--ok-bg);   color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
   .check.warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+  .hero-fix { display: grid; gap: 6px; margin-top: 10px; }
+  .hero-fix .hf { font-size: 13px; line-height: 1.45; padding: 8px 10px; border-radius: 8px; border: 1px solid; }
+  .hero-fix .hf.warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+  .hero-fix .hf.bad  { background: var(--bad-bg);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+  .hero-fix .todo { color: var(--text); }
+  .hero-fix a { color: inherit; font-weight: 600; white-space: nowrap; }
   .check.bad  { background: var(--bad-bg);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
 
   /* ===================================================================== *
@@ -566,6 +572,12 @@
 .set-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; font-weight: 600; color: var(--text); }
 .set-grid input, .set-grid select { min-width: 0; width: 100%; box-sizing: border-box; }
 .set-grid input.changed { border-color: var(--accent); }
+/* Aligned: every field's label, input, default marker and help line sit on
+   shared rows, so one long label no longer pushes its input below the rest. */
+.set-grid.aligned { grid-auto-rows: auto; }
+.set-grid.aligned label { display: grid; grid-template-rows: subgrid; grid-row: span 4; gap: 4px; align-content: start; }
+.set-grid.aligned label > input, .set-grid.aligned label > select, .set-grid.aligned label > span:not(.dflt):not(.fhelp) { align-self: end; }
+.set-grid .fhelp { font-weight: 400; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .set-grid .dflt { font-weight: 400; color: var(--muted); font-size: 11.5px; }
 .price-table { border-collapse: collapse; font-size: 12.5px; min-width: 640px; width: 100%; }
 .price-table th, .price-table td { padding: 5px 6px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
@@ -670,6 +682,9 @@
     <a class="byline-link" href="https://andrewbaker.ninja" target="_blank" rel="noopener noreferrer">andrewbaker.ninja &#8599;</a>
   </div>
 
+  <div class="navgroup">Setup</div>
+  <a class="navlink" data-target="installSection"><span class="nd" id="nd-install"></span><span class="label">Install &amp; test</span></a>
+
   <div class="navgroup">Observe</div>
   <a class="navlink" data-target="cards"><span class="nd" id="nd-overview"></span><span class="label">Overview</span><span class="count" id="nc-overview"></span></a>
   <a class="navlink" data-target="sec-activity"><span class="nd" id="nd-activity"></span><span class="label">Activity</span><span class="count" id="nc-activity"></span></a>
@@ -706,9 +721,6 @@
   <div class="navgroup">Requests</div>
   <a class="navlink" data-target="sec-responses"><span class="nd" id="nd-responses"></span><span class="label">Responses</span><span class="count" id="nc-responses"></span></a>
   <a class="navlink" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
-
-  <div class="navgroup">Setup</div>
-  <a class="navlink" data-target="installSection"><span class="nd" id="nd-install"></span><span class="label">Install</span></a>
 
   <div class="sidefoot">
     <span id="gatewayAddr"></span>
@@ -776,6 +788,7 @@
       <div class="kpis" id="heroKpis"></div>
     </div>
     <div class="checks" id="heroChecks"></div>
+    <div id="heroFix"></div>
   </div>
 
   <!-- Filled in by the live probe below, so a broken intercept states itself
@@ -786,6 +799,41 @@
 
   <div id="restartBanner" class="note warn" hidden></div>
   <div id="attention" hidden></div>
+  <div class="pagegroup">Setup</div>
+  <section id="installSection" style="scroll-margin-top:70px">
+    <h2>
+      <span id="installTitle">Install</span>
+      <span class="hint" id="installHint">opens a Terminal window and runs the install there, so you can watch every command</span>
+    </h2>
+    <div class="body">
+      <div id="installBody">
+      <div id="inuse"></div>
+      <div class="row">
+        <!-- Transparent first, and the only one styled primary. It is the mode
+             this is FOR: base-url makes Claude Code disable Remote Control,
+             which is the feature transparent mode exists to preserve. Listing
+             the fallback first read as a recommendation of it. -->
+        <button class="primary" id="installTransparent">⤓ Install: transparent proxy <small style="opacity:.75">(recommended)</small></button>
+        <button id="installBaseUrl">⤓ Install: base-url <small style="opacity:.75">(fallback)</small></button>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        <b>transparent proxy, recommended.</b> Redirects at the DNS layer, so Claude Code still believes it reached Anthropic and <b>Remote Control keeps working</b>. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac, which is why it comes with the two guards below.<br>
+        <b>base-url, fallback.</b> Writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password and nothing machine-wide, so it is the right choice when you cannot or would rather not touch system files, but Claude Code <b>turns Remote Control off</b> while that variable names a non-Anthropic host.<br>
+        Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
+      </div>
+      <div id="installNote"></div>
+      </div>
+      <h3 class="mac-h">Test the setup</h3>
+      <div class="hint">Run these after installing, or whenever something seems off. Each one checks a real path end to end, not just the settings.</div>
+      <div class="row" style="margin-top:8px">
+        <button class="success" id="setupTestConn">&#x21CC; Test connection</button>
+        <button class="success" id="setupTestSecondary">&#x21CC; Test secondary</button>
+      </div>
+      <div class="hint" style="margin-top:6px"><b>Test connection</b>: sends a probe the way Claude Code does and checks it really arrives at this gateway, not straight at Anthropic. <b>Test secondary</b>: sends one small request to the paid secondary (a few tokens, billed by the secondary) and shows who answered and how fast. The hotspot has its own test under <a href="#" data-target="sec-mac">Lid &amp; hotspot</a>, because it switches your Wi-Fi.</div>
+      <div id="setupTestNote"></div>
+    </div>
+  </section>
+
   <div class="grid" id="cards" style="scroll-margin-top:70px"></div>
   <div id="bailout"></div>
 
@@ -1310,22 +1358,18 @@
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
       <div class="hint">With the lid shut, macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. This is the other half of keeping a session alive with the lid shut: <b>Keep working with the lid closed</b> above stops the Mac sleeping so Claude Code keeps working, and this keeps it online. Pick the hotspot here and Burst joins it for you when this Mac goes offline, so the session carries on in your bag and you can follow it from your phone through Remote Control. Opening the lid with no network also tries straight away and keeps trying, whatever <b>When</b> says.</div>
-      <div class="note warn" style="margin-top:8px"><b>Your phone must be visible to the Mac, or every join fails with "Could not find network".</b> An iPhone only broadcasts its hotspot while something is connected to it or while <b>Settings &gt; Personal Hotspot</b> is open on the screen. Before you close the lid and leave:
-        <ul style="margin:6px 0 0 18px;padding:0">
-          <li>turn on <b>Allow Others to Join</b> and <b>Maximise Compatibility</b> in Personal Hotspot;</li>
-          <li>open the Personal Hotspot screen on the phone (or keep the Mac joined to it) until Burst has joined; once one device is connected, the phone keeps broadcasting.</li>
-        </ul></div>
-      <div class="set-grid" style="margin-top:10px">
-        <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select><span class="dflt">The hotspot to join. It must be one this Mac has joined before.</span></label>
-        <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select><span class="dflt">Lid shut: leaves an open laptop's Wi-Fi to you.</span></label>
-        <label><span>Password <span class="hint" style="font-weight:400">(required)</span></span><span style="display:flex;gap:6px"><input id="hsPw" type="text" class="masked" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="the hotspot's password" style="flex:1"><button id="hsShow" type="button">Show</button></span><span class="dflt">Without it macOS refuses a join made in the background.</span></label>
+      <div class="note warn" style="margin-top:8px"><b>Your phone must be visible to the Mac, or every join fails with "Could not find network".</b> An iPhone only broadcasts its hotspot while something is connected to it or while <b>Settings &gt; Personal Hotspot</b> is open on the screen. Before you close the lid and leave:<ul style="margin:6px 0 0 18px;padding:0;white-space:normal"><li>turn on <b>Allow Others to Join</b> and <b>Maximise Compatibility</b> in Personal Hotspot;</li><li>open the Personal Hotspot screen on the phone (or keep the Mac joined to it) until Burst has joined; once one device is connected, the phone keeps broadcasting.</li> </ul></div>
+      <div class="set-grid aligned" style="margin-top:10px">
+        <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select><span class="fhelp">The hotspot to join. It must be one this Mac has joined before.</span></label>
+        <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select><span class="fhelp">Lid shut: leaves an open laptop's Wi-Fi to you.</span></label>
+        <label><span>Password <span class="hint" style="font-weight:400">(required)</span></span><span style="display:flex;gap:6px"><input id="hsPw" type="text" class="masked" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="the hotspot's password" style="flex:1"><button id="hsShow" type="button">Show</button></span><span class="fhelp">Without it macOS refuses a join made in the background.</span></label>
       </div>
       <h4 style="margin:12px 0 4px">Timing</h4>
-      <div class="set-grid">
-        <label>Check the internet every (seconds)<input id="hsCheck" type="number" min="2" max="120" step="1" style="width:110px"><span class="dflt">How often Burst tests whether this Mac can reach the internet. Default 5.</span></label>
-        <label>Failed checks before joining<input id="hsOffline" type="number" min="1" max="10" step="1" style="width:110px"><span class="dflt">How many of those tests must fail in a row before it joins, so a brief blip does not switch networks. Default 2 (about 10 seconds offline).</span></label>
-        <label>Gap between tries (seconds)<input id="hsRetry" type="number" min="15" max="1800" step="5" style="width:110px"><span class="dflt">After a failed join, how long to wait before the next one. Default 60.</span></label>
-        <label>Keep trying for (minutes)<input id="hsGiveUp" type="number" min="1" max="1440" step="5" style="width:110px"><span class="dflt">How long to keep trying after going offline before giving up. It starts again the next time the Mac has been back online. Default 30.</span></label>
+      <div class="set-grid aligned">
+        <label>Check the internet every (seconds)<input id="hsCheck" type="number" min="2" max="120" step="1" style="width:110px"><span class="fhelp">How often Burst tests whether this Mac can reach the internet. Default 5.</span></label>
+        <label>Failed checks before joining<input id="hsOffline" type="number" min="1" max="10" step="1" style="width:110px"><span class="fhelp">How many of those tests must fail in a row before it joins, so a brief blip does not switch networks. Default 2 (about 10 seconds offline).</span></label>
+        <label>Gap between tries (seconds)<input id="hsRetry" type="number" min="15" max="1800" step="5" style="width:110px"><span class="fhelp">After a failed join, how long to wait before the next one. Default 60.</span></label>
+        <label>Keep trying for (minutes)<input id="hsGiveUp" type="number" min="1" max="1440" step="5" style="width:110px"><span class="fhelp">How long to keep trying after going offline before giving up. It starts again the next time the Mac has been back online. Default 30.</span></label>
       </div>
       <div class="hint" id="hsTiming" style="margin-top:4px"></div>
       <div class="row" style="margin-top:8px">
@@ -1461,15 +1505,17 @@
       <span class="spacer"></span>
       <button class="h2btn primary" id="advToggle" aria-expanded="false" aria-controls="advBody">Show</button></h2>
     <div class="body" id="advBody">
-      <div class="set-grid">
-        <label>Retry after a limit resets, plus (seconds)<input type="number" min="0" max="600" data-adv="reset_grace_seconds"></label>
-        <label>Limit with no reset time lasts (seconds)<input type="number" min="30" max="86400" data-adv="unknown_reset_seconds"></label>
-        <label>Wait for Anthropic to start answering (seconds)<input type="number" min="10" max="600" data-adv="response_header_timeout_seconds"></label>
-        <label>Largest request accepted (MB)<input type="number" min="8" max="1024" data-adv="max_request_mb"></label>
+      <div class="hint">How the gateway behaves around Anthropic's usage limits and slow or very large requests. The defaults suit almost everyone: change these only to fix a specific problem. Saved values apply after <b>Restart gateway</b> (under Actions).</div>
+      <div class="set-grid aligned" style="margin-top:10px">
+        <label>Retry after a limit resets, plus (seconds)<input type="number" min="0" max="600" data-adv="reset_grace_seconds"><span class="fhelp">When Anthropic says a usage limit resets at a given time, Burst waits this much longer before sending requests back to your subscription, so it does not arrive a moment too early and get refused again.</span></label>
+        <label>Limit with no reset time lasts (seconds)<input type="number" min="30" max="86400" data-adv="unknown_reset_seconds"><span class="fhelp">When Anthropic refuses a request without saying when the limit ends, Burst assumes it lasts this long before trying your subscription again.</span></label>
+        <label>Wait for Anthropic to start answering (seconds)<input type="number" min="10" max="600" data-adv="response_header_timeout_seconds"><span class="fhelp">How long a request may wait for Anthropic's first reply before Burst treats it as failed. Raise it if very large prompts time out.</span></label>
+        <label>Largest request accepted (MB)<input type="number" min="8" max="1024" data-adv="max_request_mb"><span class="fhelp">Requests bigger than this are refused by the gateway. Claude Code requests are rarely over a few MB; images and long contexts are the large ones.</span></label>
       </div>
       <div class="row" style="margin-top:8px"><button class="primary" id="advSave">&#x2713; Save</button><button id="advReset">Reset to defaults</button></div>
       <div id="advNote"></div>
       <h3 class="mac-h">Read only here</h3>
+      <div class="hint" style="margin-bottom:4px">Where the gateway and this dashboard listen, and whether diagnostic TLS logging is on. Shown for reference.</div>
       <div id="advRO" class="hint"></div>
     </div>
   </section>
@@ -1486,30 +1532,6 @@
     <div class="scroll" id="requests"><div class="empty">No requests yet.</div></div>
   </section>
 
-  <div class="pagegroup">Setup</div>
-  <section id="installSection" style="scroll-margin-top:70px">
-    <h2>
-      <span id="installTitle">Install</span>
-      <span class="hint" id="installHint">opens a Terminal window and runs the install there, so you can watch every command</span>
-    </h2>
-    <div class="body">
-      <div id="inuse"></div>
-      <div class="row">
-        <!-- Transparent first, and the only one styled primary. It is the mode
-             this is FOR: base-url makes Claude Code disable Remote Control,
-             which is the feature transparent mode exists to preserve. Listing
-             the fallback first read as a recommendation of it. -->
-        <button class="primary" id="installTransparent">⤓ Install: transparent proxy <small style="opacity:.75">(recommended)</small></button>
-        <button id="installBaseUrl">⤓ Install: base-url <small style="opacity:.75">(fallback)</small></button>
-      </div>
-      <div class="hint" style="margin-top:8px">
-        <b>transparent proxy, recommended.</b> Redirects at the DNS layer, so Claude Code still believes it reached Anthropic and <b>Remote Control keeps working</b>. It changes <code>/etc/hosts</code>, loads a pf rule and trusts the local CA system-wide, so it <b>asks for your password</b> and affects every process on this Mac, which is why it comes with the two guards below.<br>
-        <b>base-url, fallback.</b> Writes <code>ANTHROPIC_BASE_URL</code> into <code>~/.claude/settings.json</code>. No password and nothing machine-wide, so it is the right choice when you cannot or would rather not touch system files, but Claude Code <b>turns Remote Control off</b> while that variable names a non-Anthropic host.<br>
-        Either way the script backs up your settings first, waits for the gateway to be healthy <i>before</i> repointing Claude Code, and prints what it is doing. Restart Claude Code when it finishes.
-      </div>
-      <div id="installNote"></div>
-    </div>
-  </section>
 </div>
 </main>
 </div>
@@ -1664,6 +1686,7 @@ let installRevealed = false;
 $("installRevealBtn").onclick = () => {
   installRevealed = true;
   $("installSection").hidden = false;
+  $("installBody").hidden = false;
   $("installRevealBtn").hidden = true;
   scrollToEl($("installSection"), "nearest");
 };
@@ -1773,20 +1796,22 @@ function renderCards(s) {
   const installSection = $("installSection");
   if (s.intercept.active) {
     installSection.classList.remove("alert");
-    $("installTitle").textContent = "Install";
-    $("installHint").textContent = "already in use: these re-run the install, or switch between modes";
+    $("installTitle").textContent = "Setup";
+    $("installHint").textContent = "installed and in use; Reinstall (top of the page) re-runs it or switches mode";
     $("inuse").innerHTML = "";
     $("installTop").hidden = true;
     // Nothing to install, so the panel collapses behind its reveal link --
     // unless this render is the one right after a click on that link, or on
     // an install button, in which case the note it just wrote would vanish
     // with it.
+    installSection.hidden = false;
     if (!installRevealed) {
-      installSection.hidden = true;
+      $("installBody").hidden = true;
       $("installRevealBtn").hidden = false;
     }
   } else {
     installSection.hidden = false;
+    $("installBody").hidden = false;
     $("installRevealBtn").hidden = true;
     $("installTop").hidden = false;
     installRevealed = false;
@@ -2305,10 +2330,9 @@ $("secApiKey").addEventListener("input", () => {
   if (revealed !== null && $("secApiKey").value !== revealed) revealed = null;
 });
 
-$("testSecondary").onclick = async () => {
-  const btn = $("testSecondary");
+async function runTestSecondary(btn, out) {
   btn.disabled = true;
-  note($("secTestNote"), "warn", "Sending one request to the secondary...");
+  note(out, "warn", "Sending one request to the secondary...");
   try {
     const r = await post("/api/test-secondary");
     const d = r.result || {};
@@ -2338,19 +2362,20 @@ $("testSecondary").onclick = async () => {
       // answered this?"; the model's own account of itself is not, and
       // saying so here stops a confidently wrong self-description reading
       // as evidence that the wrong model is configured.
-      note($("secTestNote"), "ok",
+      note(out, "ok",
         `The secondary answered:\n\n    ${d.reply}\n\n${where}\ntokens: ${d.input_tokens} in / ${d.output_tokens} out\n\n` +
         `(models are unreliable at naming themselves, "served by" above is the authoritative answer, taken from config and the provider's own translation.)`);
     } else {
-      note($("secTestNote"), "bad",
+      note(out, "bad",
         `${r.error}\n\n${where}${d.detail ? "\n\nupstream said:\n" + d.detail : ""}`);
     }
     // The probe is real traffic: it lands in Recent responses and in the
     // spend totals, so the rest of the page is now stale.
     refresh();
-  } catch (e) { note($("secTestNote"), "bad", e.message); }
+  } catch (e) { note(out, "bad", e.message); }
   finally { btn.disabled = false; }
-};
+}
+$("testSecondary").onclick = () => runTestSecondary($("testSecondary"), $("secTestNote"));
 
 $("saveSecondary").onclick = async () => {
   const provider = $("secProvider").value;
@@ -2998,12 +3023,12 @@ async function awaitGatewayBack() {
   $("updated").textContent = "gateway unreachable, restart did not come back";
 }
 
-$("testConn").onclick = async () => {
-  $("testConn").disabled = true;
-  note($("actNote"), "warn", "testing…");
+async function runTestConnection(btn, out) {
+  btn.disabled = true;
+  note(out, "warn", "testing…");
   try {
     const r = await fetch("/api/test-connection").then(r => r.json());
-    note($("actNote"), r.ok ? "ok" : "bad", r.detail);
+    note(out, r.ok ? "ok" : "bad", r.detail);
     // Same verdict the header badges are drawn from, so an explicit test and
     // the automatic one can never disagree on the page at the same time.
     if (lastState) {
@@ -3014,11 +3039,14 @@ $("testConn").onclick = async () => {
       renderNav(lastState, lastCounts);
     }
   } catch (e) {
-    note($("actNote"), "bad", "test failed: " + e.message);
+    note(out, "bad", "test failed: " + e.message);
   } finally {
-    $("testConn").disabled = false;
+    btn.disabled = false;
   }
-};
+}
+$("testConn").onclick = () => runTestConnection($("testConn"), $("actNote"));
+$("setupTestConn").onclick = () => runTestConnection($("setupTestConn"), $("setupTestNote"));
+$("setupTestSecondary").onclick = () => runTestSecondary($("setupTestSecondary"), $("setupTestNote"));
 
 $("viewLog").onclick = () => window.open("/api/log", "_blank");
 $("viewPfLog").onclick = () => window.open("/api/pf-heal-log", "_blank");
@@ -3211,6 +3239,16 @@ function setOverview(state) {
   if (link) link.classList.toggle("alarm", state === "bad");
 }
 
+// What to do when a readiness check fails, by check key.
+const CHECK_FIX = {
+  path: "Claude Code's requests are not passing through Burst. Press Test connection under Setup; if it still fails, run the install again and restart Claude Code.",
+  watchdog: "arm the gateway watchdog under Guards, so the gateway is restarted if it stops.",
+  pfguard: "arm the pf redirect guard under Guards (it asks for your password once).",
+  secondary: "add the secondary's API key under Secondary, then press Test secondary.",
+  primary: "Anthropic is refusing or failing requests, usually a usage limit or an outage (status.anthropic.com). With a secondary set up, requests already go there.",
+  errors: "open Activity to see which requests failed and why. A burst of limit errors is normal; a steady stream is not.",
+};
+
 function renderHero(s) {
   const checks = readinessChecks(s, liveVerdict);
   const meter = $("meter");
@@ -3221,6 +3259,7 @@ function renderHero(s) {
     $("meterOf").textContent = "checking";
     $("meterFill").setAttribute("stroke-dashoffset", C);
     $("heroChecks").innerHTML = "";
+    $("heroFix").innerHTML = "";
   } else {
     const passed = checks.filter(c => c.ok).length;
     // The ring's colour comes from the WORST failing check, never from the
@@ -3236,6 +3275,13 @@ function renderHero(s) {
       `<a class="check ${c.ok ? "ok" : c.critical ? "bad" : "warn"}" data-target="${esc(c.target)}"
           title="${esc(c.detail)}"><span class="g">${c.ok ? "&#10003;" : "&#9888;"}</span>${esc(c.label)}</a>`
     ).join("");
+    // A failing check spells out what is wrong and what to do, on the page:
+    // the chip alone only said so in a tooltip.
+    const failing = checks.filter(c => !c.ok);
+    $("heroFix").innerHTML = failing.length ? `<div class="hero-fix">` + failing.map(c =>
+      `<div class="hf ${c.critical ? "bad" : "warn"}"><b>${esc(c.label)}:</b> ${esc(c.detail)}.` +
+      (CHECK_FIX[c.key] ? ` <span class="todo">What to do: ${esc(CHECK_FIX[c.key])}</span>` : "") +
+      ` <a href="#" data-target="${esc(c.target)}">Go there &rarr;</a></div>`).join("") + `</div>` : "";
   }
 
   const modeLabel = s.intercept.mode === "transparent" ? "transparent proxy" : "base-url";
@@ -3355,7 +3401,7 @@ document.addEventListener("click", e => {
   if (el.id === "guardsSection") setGuardsOpen(true);
   if (el.id === "secondarySection") setSecondaryOpen(true);
   if (el.id === "handoverSection") setHandoverOpen(true);
-  if (el.id === "installSection" && el.hidden) $("installRevealBtn").click();
+  if (el.id === "installSection" && $("installBody").hidden) $("installRevealBtn").click();
   scrollToEl(el, "start");
   // Sections below the fold are still filling in (settings, prices, the
   // panel) and grow the page above the target after the scroll has aimed.
