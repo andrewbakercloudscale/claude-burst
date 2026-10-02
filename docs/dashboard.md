@@ -75,6 +75,23 @@ becomes debuggable rather than mysterious. It also says whether burst is in the 
 all, and **Test connection** proves it live rather than reading config off disk, which is
 not the same question.
 
+**Send test message** (Setup) is a trace route for Claude Code: one tiny real message
+(16 tokens on the cheapest model, carrying the credential Claude Code itself last sent, or
+its Keychain login) goes down the same path Claude Code's traffic takes, and each hop
+reports what it saw: what `api.anthropic.com` resolves to, whether 443 reaches the gateway,
+whether Node with `NODE_EXTRA_CA_CERTS` trusts the certificate (run with `node` when it is
+installed), the gateway's routing decision and why, the answer (status, latency, model,
+request id, first words), the network path to Anthropic's real address (`mtr`, which on
+macOS needs a setuid `mtr-packet`), and any failover. The secondary is optional, so a
+missing one is a grey skipped hop, never a failure.
+
+The readiness check **Claude Code accepts the gateway's certificate** counts the TLS
+listener's own handshakes: it fails when 30 or more failed in the last 5 minutes and they
+outnumber the ones that completed. Every other check is the gateway looking at itself, and
+the gateway trusts its own CA, so on 2026-10-02, when a deploy rotated the CA and every
+running session refused it, the page still said 6/6. Restart sessions started before the
+CA changed; each reads `NODE_EXTRA_CA_CERTS` only at startup.
+
 What the buttons do: force or clear overflow; change the secondary model, failover strategy
 and intercept mode; edit failover thresholds, fallback models, prices and timeouts; set the
 lid-closed mode, the hotspot and notifications; install or remove the usage panel and set

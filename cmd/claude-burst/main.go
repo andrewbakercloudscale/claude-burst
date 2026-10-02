@@ -29,6 +29,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
+	"github.com/andrewbakercloudscale/claude-burst/internal/tlswatch"
 )
 
 const version = "0.4.0"
@@ -250,8 +251,17 @@ func serve(args []string) {
 		fmt.Printf("intercept: transparent (serving TLS for %s)\n", cfg.Intercept.Host)
 	}
 
+	// Counts the client side of every TLS handshake. Without it a Claude
+	// Code session that distrusts the gateway's certificate is visible only
+	// as stderr lines nothing reads (the 2026-10-02 CA rotation). See tlswatch.
+	var handshakes *tlswatch.Watcher
+	if tlsConfig != nil {
+		handshakes = tlswatch.New(os.Stderr)
+	}
+
 	if cfg.AdminListen != "" {
 		a := admin.New(srv, metricsPath, version, cfg.AdminHostname, rootHelperPath())
+		a.SetHandshakes(handshakes)
 		go a.StartNotifier(context.Background())
 		if err := admin.SyncPromptNoticeHook(cfg); err != nil {
 			logger.Printf("error stage=prompt_notice_hook err=%v", err)
@@ -285,6 +295,12 @@ func serve(args []string) {
 	// streaming reply, so it cannot cut a slow model off; it stops a client
 	// that opens a connection and never finishes its headers from holding it.
 	server := &http.Server{Addr: cfg.Listen, Handler: srv, TLSConfig: tlsConfig, ReadHeaderTimeout: 30 * time.Second}
+	if handshakes != nil {
+		// Same destination and format as net/http's default (the standard
+		// logger on stderr), so launchd.err.log reads exactly as before.
+		server.ErrorLog = log.New(handshakes, "", log.LstdFlags)
+		server.ConnState = handshakes.ConnState
+	}
 	go exitWhenIdleOnSignal(srv.InFlight, logger)
 	if tlsConfig != nil {
 		err = server.ServeTLS(ln, "", "") // certificates come from TLSConfig; ln is already bound above
