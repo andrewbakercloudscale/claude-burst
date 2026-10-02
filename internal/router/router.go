@@ -134,6 +134,8 @@ type Server struct {
 	// warnedUnpriced deduplicates the "no pricing entry" warning per served
 	// model. Without it a whole overflow window logs one line per request.
 	warnedUnpriced sync.Map
+	// guardCounters rate-limit the request guard's refusal log; see guard.go.
+	guardCounters
 }
 
 func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (*Server, error) {
@@ -831,6 +833,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" {
 		w.Header().Set("content-type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "overflow": s.inOverflow(time.Now()), "state": s.Status()})
+		return
+	}
+
+	// Before the body is read: a refused request must cost nothing, and
+	// above all must never reach a provider. See guard.go.
+	if reason := s.requestRefusal(r); reason != "" {
+		s.logRefusal(rid, reason, r)
+		http.Error(w, "claude-burst: request refused: "+reason, http.StatusForbidden)
 		return
 	}
 

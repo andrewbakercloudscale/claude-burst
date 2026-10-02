@@ -223,7 +223,7 @@ func send(t *testing.T, s *Server, sid string, history []json.RawMessage) {
 	t.Helper()
 	b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "stream": true, "max_tokens": 100,
 		"system": "sys", "tools": []any{}, "messages": history})
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", bytes.NewReader(b))
 	req.Header.Set("x-claude-code-session-id", sid)
 	req.Header.Set("authorization", "Bearer oauth")
 	s.ServeHTTP(httptest.NewRecorder(), req)
@@ -817,7 +817,7 @@ func sendCode(t *testing.T, s *Server, sid string, history []json.RawMessage) in
 	t.Helper()
 	b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "stream": true, "max_tokens": 100,
 		"system": "sys", "tools": []any{}, "messages": history})
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", bytes.NewReader(b))
 	req.Header.Set("x-claude-code-session-id", sid)
 	req.Header.Set("authorization", "Bearer oauth")
 	rec := httptest.NewRecorder()
