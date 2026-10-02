@@ -157,3 +157,22 @@ func TestHotspotAddressIsRecognised(t *testing.T) {
 		t.Error("no address")
 	}
 }
+
+// IsHotspotAddr is what the router asks of a failed connection's source
+// address, which arrives in 16-byte form from a *net.TCPAddr.
+func TestIsHotspotAddrAcceptsBothForms(t *testing.T) {
+	if !IsHotspotAddr(net.ParseIP("172.20.10.2")) {
+		t.Fatal("16-byte 172.20.10.2 must count as a hotspot address")
+	}
+	if !IsHotspotAddr(net.ParseIP("172.20.10.2").To4()) {
+		t.Fatal("4-byte 172.20.10.2 must count as a hotspot address")
+	}
+	for _, ip := range []string{"172.20.10.16", "192.168.1.20", "fe80::1"} {
+		if IsHotspotAddr(net.ParseIP(ip)) {
+			t.Fatalf("%s is not a phone hotspot address", ip)
+		}
+	}
+	if IsHotspotAddr(nil) {
+		t.Fatal("nil is not a hotspot address")
+	}
+}

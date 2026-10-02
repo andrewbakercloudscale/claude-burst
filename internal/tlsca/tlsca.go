@@ -36,6 +36,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 )
 
 const (
@@ -378,7 +380,7 @@ func randomSerial() (*big.Int, error) {
 }
 
 func writeFile(path string, data []byte, perm os.FileMode) error {
-	if err := os.WriteFile(path, data, perm); err != nil {
+	if err := atomicfile.Write(path, data, perm); err != nil {
 		return fmt.Errorf("tlsca: write %s: %w", path, err)
 	}
 	// WriteFile only applies perm when creating; enforce it on rewrite too, so

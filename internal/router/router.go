@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
@@ -134,6 +135,8 @@ type Server struct {
 	// warnedUnpriced deduplicates the "no pricing entry" warning per served
 	// model. Without it a whole overflow window logs one line per request.
 	warnedUnpriced sync.Map
+	// guardCounters rate-limit the request guard's refusal log; see guard.go.
+	guardCounters
 }
 
 func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (*Server, error) {
@@ -143,7 +146,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	if err != nil {
 		return nil, fmt.Errorf("primary provider: %w", err)
 	}
-	primaryDetector, err := buildDetector(cfg.Primary.FailoverStrategy, cfg.MeteredFailover)
+	primaryDetector, err := buildDetector(cfg.Primary.FailoverStrategy, cfg.MeteredFailover, logger.Printf)
 	if err != nil {
 		return nil, fmt.Errorf("primary failover strategy: %w", err)
 	}
@@ -307,15 +310,19 @@ func validateBaseURL(provider, raw string) (*url.URL, error) {
 }
 
 // buildDetector constructs the FailoverDetector for a route slot's
-// configured strategy.
-func buildDetector(strategy string, mf config.MeteredFailoverConfig) (FailoverDetector, error) {
+// configured strategy. logf receives the detector's own lines (a failure held
+// back on a phone hotspot).
+func buildDetector(strategy string, mf config.MeteredFailoverConfig, logf func(string, ...any)) (FailoverDetector, error) {
 	switch strategy {
 	case "", "subscription-limit":
 		return subscriptionLimitDetector{}, nil
 	case "metered-failures":
-		return newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures, mf.TransportErrorMinFailures), nil
+		return newMeteredFailureDetector(mf.WindowSeconds, mf.MinFailures, mf.TransportErrorMinFailures).
+			withHotspot(mf.HotspotMultiplier(), logf), nil
 	case "subscription-limit+metered-failures":
-		return newCombinedDetector(mf), nil
+		d := newCombinedDetector(mf)
+		d.metered.withHotspot(mf.HotspotMultiplier(), logf)
+		return d, nil
 	case "none":
 		return noFailoverDetector{}, nil
 	default:
@@ -356,7 +363,7 @@ func (s *Server) saveStateLocked() {
 		s.logger.Printf("error stage=save_state action=marshal err=%v", err)
 		return
 	}
-	if err := os.WriteFile(s.statePath, append(b, '\n'), 0600); err != nil {
+	if err := atomicfile.Write(s.statePath, append(b, '\n'), 0600); err != nil {
 		s.logger.Printf("error stage=save_state action=write path=%s err=%v", s.statePath, err)
 	}
 }
@@ -834,6 +841,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before the body is read: a refused request must cost nothing, and
+	// above all must never reach a provider. See guard.go.
+	if reason := s.requestRefusal(r); reason != "" {
+		s.logRefusal(rid, reason, r)
+		http.Error(w, "claude-burst: request refused: "+reason, http.StatusForbidden)
+		return
+	}
+
 	// Read the body for every request, not just inference: Remote Control's
 	// register call (and any other control-plane POST) needs its body
 	// forwarded too, not just GETs/HEADs like the /api/hello warm-up probe.
@@ -1023,11 +1038,13 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			req = retry
 			resp, err = s.clientFor(in.URL.Path).Do(req)
 			staleWriteRetried = true
-			// Counted once here, after the immediate retry also failed: the
-			// ladder below must not count it again per step.
-			if err != nil && isStaleWriteFailure(err) && allowFailover && slot == "primary" && !isLocalConnectivityFailure(err) && !isClientCancellation(err) {
-				_ = fd.OnError(err)
-			}
+			// Not counted here. If the retry also failed, the single
+			// fd.OnError after the ladder below counts this request, once.
+			// It used to be counted here AND there, so one request whose
+			// fresh-connection retry also failed was "2 failures within
+			// 60s" on its own (req=33a2ad7292388370, 2026-10-02 12:04, a
+			// broken pipe on a phone hotspot): any transport threshold of 2
+			// was met by a single request.
 		}
 	}
 	if resp != nil {

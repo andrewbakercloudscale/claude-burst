@@ -58,7 +58,7 @@ func TestOpenAIPrepareStillReturnsRequestedModel(t *testing.T) {
 	p := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", nil, "claude-burst-serve-model-test", "TOGETHER_API_KEY")
 
 	reqBody := []byte(`{"model":"claude-opus-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)
-	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	in := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 	req, model, err := p.Prepare(in.Context(), in, reqBody)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)

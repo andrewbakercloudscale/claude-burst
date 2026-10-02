@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
@@ -198,7 +199,7 @@ func Save(c Config) error {
 		return err
 	}
 	b, _ := json.MarshalIndent(c, "", "  ")
-	if err := os.WriteFile(p, append(b, '\n'), 0600); err != nil {
+	if err := atomicfile.Write(p, append(b, '\n'), 0600); err != nil {
 		return err
 	}
 	return writeFiles(c)
@@ -231,10 +232,10 @@ func writeIfChanged(p string, b []byte, mode os.FileMode) error {
 	if old, err := os.ReadFile(p); err == nil && bytes.Equal(old, b) {
 		return nil
 	}
-	if err := os.WriteFile(p, b, mode); err != nil {
+	if err := atomicfile.Write(p, b, mode); err != nil {
 		return err
 	}
-	return os.Chmod(p, mode) // WriteFile keeps an existing file's mode
+	return os.Chmod(p, mode) // atomicfile.Write keeps an existing file's mode
 }
 
 // isStart and isEnd match our hook commands, plus the hand-installed

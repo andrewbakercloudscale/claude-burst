@@ -96,7 +96,7 @@ func TestWriteMetricRecordsCacheAndPruning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 	s.writeMetric(req, "primary", "anthropic", "claude-opus-5", "claude-opus-5", 200, time.Now(),
 		tokenUsage{input: 1_000_000, cacheRead: 1_000_000, cacheWrite: 1_000_000, prunedBytes: 9, prunedResults: 2, truncatedResults: 1,
 			repeatedCalls: 3, rerunsAfterStub: 1}, "", 0, "", "")
@@ -121,7 +121,7 @@ func TestPreparePrunesSecondaryOnly(t *testing.T) {
 	t.Setenv("TOGETHER_API_KEY", "k")
 	base, _ := url.Parse("https://api.together.xyz/v1")
 	body := conversation(t, 25, 5000)
-	in := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	in := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 
 	off := NewOpenAICompatibleProvider("together", base, "zai-org/GLM-5.3", nil, "claude-burst-prune-test", "TOGETHER_API_KEY")
 	req, _, err := off.Prepare(in.Context(), in, body)
@@ -176,7 +176,7 @@ func TestWriteMetricPricesPrunedTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "http://local/v1/messages", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
 	s.writeMetric(req, "secondary", "together", "zai-org/GLM-5.3", "claude-sonnet-5", 200, time.Now(),
 		tokenUsage{input: 1000, prunedBytes: 4_000_000}, "", 0, "", "")
 	b, _ := os.ReadFile(path)

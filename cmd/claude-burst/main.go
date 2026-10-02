@@ -295,10 +295,6 @@ func serve(args []string) {
 }
 
 func configure(args []string) {
-	cfg, err := config.Load()
-	if err != nil {
-		fatal(err)
-	}
 	fs := flag.NewFlagSet("configure", flag.ExitOnError)
 	region := fs.String("region", "", "AWS Bedrock region")
 	listen := fs.String("listen", "", "listen address")
@@ -320,143 +316,150 @@ func configure(args []string) {
 	keepAwakeIdle := fs.Int("keep-awake-idle-minutes", -1, "stay awake with the lid shut only this many minutes after Claude Code was last used or the lid was last open; 0 = as long as the power mode applies")
 	_ = fs.Parse(args)
 
-	if *region != "" {
-		u := "https://bedrock-runtime." + *region + ".amazonaws.com/anthropic"
-		cfg.BedrockBaseURL = u
-		if cfg.Secondary.Provider == "bedrock" {
-			cfg.Secondary.BaseURL = u
+	// Under config.Update's lock: `configure` racing a dashboard save would
+	// otherwise drop whichever change landed first. See config.Update.
+	var saved config.Config
+	err := config.Update(func(cfg *config.Config) error {
+		if *region != "" {
+			u := "https://bedrock-runtime." + *region + ".amazonaws.com/anthropic"
+			cfg.BedrockBaseURL = u
+			if cfg.Secondary.Provider == "bedrock" {
+				cfg.Secondary.BaseURL = u
+			}
 		}
-	}
-	if *bedrockBase != "" {
-		u := strings.TrimRight(*bedrockBase, "/")
-		cfg.BedrockBaseURL = u
-		if cfg.Secondary.Provider == "bedrock" {
-			cfg.Secondary.BaseURL = u
+		if *bedrockBase != "" {
+			u := strings.TrimRight(*bedrockBase, "/")
+			cfg.BedrockBaseURL = u
+			if cfg.Secondary.Provider == "bedrock" {
+				cfg.Secondary.BaseURL = u
+			}
 		}
-	}
-	if *listen != "" {
-		cfg.Listen = *listen
-	}
-	if *adminHostname == "off" {
-		cfg.AdminHostname = ""
-	} else if *adminHostname != "" {
-		cfg.AdminHostname = strings.ToLower(*adminHostname)
-	}
-	if *adminListen == "off" {
-		cfg.AdminListen = ""
-	} else if *adminListen != "" {
-		cfg.AdminListen = *adminListen
-	}
-	if *primary != "" {
-		baseURL, strategy, err := baseURLForProvider(cfg, *primary)
-		if err != nil {
-			fatal(fmt.Errorf("invalid --primary: %w", err))
+		if *listen != "" {
+			cfg.Listen = *listen
 		}
-		cfg.Primary = config.RouteConfig{Provider: *primary, BaseURL: baseURL, FailoverStrategy: strategy}
-	}
-	if *failoverStrategy != "" {
-		switch *failoverStrategy {
-		case "subscription-limit", "metered-failures", "subscription-limit+metered-failures", "none":
-			cfg.Primary.FailoverStrategy = *failoverStrategy
-		default:
-			fatal(fmt.Errorf("invalid --failover-strategy %q (must be subscription-limit, metered-failures, subscription-limit+metered-failures, or none)", *failoverStrategy))
+		if *adminHostname == "off" {
+			cfg.AdminHostname = ""
+		} else if *adminHostname != "" {
+			cfg.AdminHostname = strings.ToLower(*adminHostname)
 		}
-	}
-	if *secondary != "" {
-		switch *secondary {
-		case "none":
-			// Explicit marker, not the zero value: see config.ProviderNone.
-			cfg.Secondary = config.RouteConfig{Provider: config.ProviderNone}
-			cfg.BedrockBaseURL = ""
-		case "openai-compatible":
-			base := *secondaryBaseURL
-			if base == "" {
-				base = cfg.Secondary.BaseURL // allow re-running configure without repeating it
-			}
-			model := *secondaryModel
-			if model == "" {
-				model = cfg.Secondary.Model
-			}
-			if base == "" || model == "" {
-				fatal(fmt.Errorf("--secondary openai-compatible requires --secondary-base-url and --secondary-model"))
-			}
-			ks := *secondaryKeychainService
-			if ks == "" && cfg.Secondary.Provider == "openai-compatible" {
-				// Only carried forward when the slot was ALREADY
-				// openai-compatible. Inheriting it from any secondary hands
-				// this provider the previous vendor's credential name --
-				// switching from bedrock derived "claude-burst-bedrock",
-				// i.e. $BEDROCK_API_KEY -- which is the vendor collision
-				// keychainTarget's doc comment below describes, one slot
-				// further along.
-				ks = cfg.Secondary.KeychainService // allow re-running configure without repeating it
-			}
-			if ks == "" {
-				ks = "claude-burst-together" // backward-compatible default; not a hardcoded vendor requirement
-			}
-			cfg.Secondary = config.RouteConfig{
-				Provider: "openai-compatible", BaseURL: strings.TrimRight(base, "/"), Model: model,
-				KeychainService: ks,
-			}
-		default:
-			// baseURLForProvider always derives the base URL from the
-			// chosen provider's own field (cfg.AnthropicBaseURL or
-			// cfg.BedrockBaseURL) rather than reusing whatever was
-			// previously in cfg.Secondary.BaseURL -- so
-			// `configure --secondary bedrock` can never leave a slot
-			// pointed at the wrong vendor's endpoint.
-			baseURL, _, err := baseURLForProvider(cfg, *secondary)
+		if *adminListen == "off" {
+			cfg.AdminListen = ""
+		} else if *adminListen != "" {
+			cfg.AdminListen = *adminListen
+		}
+		if *primary != "" {
+			baseURL, strategy, err := baseURLForProvider(*cfg, *primary)
 			if err != nil {
-				fatal(fmt.Errorf("invalid --secondary: %w", err))
+				return fmt.Errorf("invalid --primary: %w", err)
 			}
-			cfg.Secondary = config.RouteConfig{
-				Provider: *secondary, BaseURL: baseURL,
-				KeychainService: cfg.KeychainService, ModelMap: cfg.ModelMap,
+			cfg.Primary = config.RouteConfig{Provider: *primary, BaseURL: baseURL, FailoverStrategy: strategy}
+		}
+		if *failoverStrategy != "" {
+			switch *failoverStrategy {
+			case "subscription-limit", "metered-failures", "subscription-limit+metered-failures", "none":
+				cfg.Primary.FailoverStrategy = *failoverStrategy
+			default:
+				return fmt.Errorf("invalid --failover-strategy %q (must be subscription-limit, metered-failures, subscription-limit+metered-failures, or none)", *failoverStrategy)
 			}
 		}
-	}
-	if *minFailures > 0 {
-		cfg.MeteredFailover.MinFailures = *minFailures
-	}
-	if *windowSeconds > 0 {
-		cfg.MeteredFailover.WindowSeconds = *windowSeconds
-	}
-	if *interceptMode != "" {
-		cfg.Intercept.Mode = *interceptMode
-		if err := cfg.ValidateIntercept(); err != nil {
-			fatal(fmt.Errorf("invalid --intercept-mode: %w", err))
+		if *secondary != "" {
+			switch *secondary {
+			case "none":
+				// Explicit marker, not the zero value: see config.ProviderNone.
+				cfg.Secondary = config.RouteConfig{Provider: config.ProviderNone}
+				cfg.BedrockBaseURL = ""
+			case "openai-compatible":
+				base := *secondaryBaseURL
+				if base == "" {
+					base = cfg.Secondary.BaseURL // allow re-running configure without repeating it
+				}
+				model := *secondaryModel
+				if model == "" {
+					model = cfg.Secondary.Model
+				}
+				if base == "" || model == "" {
+					return fmt.Errorf("--secondary openai-compatible requires --secondary-base-url and --secondary-model")
+				}
+				ks := *secondaryKeychainService
+				if ks == "" && cfg.Secondary.Provider == "openai-compatible" {
+					// Only carried forward when the slot was ALREADY
+					// openai-compatible. Inheriting it from any secondary hands
+					// this provider the previous vendor's credential name --
+					// switching from bedrock derived "claude-burst-bedrock",
+					// i.e. $BEDROCK_API_KEY -- which is the vendor collision
+					// keychainTarget's doc comment below describes, one slot
+					// further along.
+					ks = cfg.Secondary.KeychainService // allow re-running configure without repeating it
+				}
+				if ks == "" {
+					ks = "claude-burst-together" // backward-compatible default; not a hardcoded vendor requirement
+				}
+				cfg.Secondary = config.RouteConfig{
+					Provider: "openai-compatible", BaseURL: strings.TrimRight(base, "/"), Model: model,
+					KeychainService: ks,
+				}
+			default:
+				// baseURLForProvider always derives the base URL from the
+				// chosen provider's own field (cfg.AnthropicBaseURL or
+				// cfg.BedrockBaseURL) rather than reusing whatever was
+				// previously in cfg.Secondary.BaseURL -- so
+				// `configure --secondary bedrock` can never leave a slot
+				// pointed at the wrong vendor's endpoint.
+				baseURL, _, err := baseURLForProvider(*cfg, *secondary)
+				if err != nil {
+					return fmt.Errorf("invalid --secondary: %w", err)
+				}
+				cfg.Secondary = config.RouteConfig{
+					Provider: *secondary, BaseURL: baseURL,
+					KeychainService: cfg.KeychainService, ModelMap: cfg.ModelMap,
+				}
+			}
 		}
-	}
-	if *interceptHost != "" {
-		cfg.Intercept.Host = *interceptHost
-	}
-	if *keepAwake != "" {
-		switch *keepAwake {
-		case "true":
-			cfg.KeepAwakeLidClosed = true
-		case "false":
-			cfg.KeepAwakeLidClosed = false
-		default:
-			fatal(fmt.Errorf("invalid --keep-awake-lid-closed %q (must be true or false)", *keepAwake))
+		if *minFailures > 0 {
+			cfg.MeteredFailover.MinFailures = *minFailures
 		}
-	}
-	if *keepAwakePower != "" {
-		if err := config.ValidateKeepAwakePower(*keepAwakePower); err != nil {
-			fatal(fmt.Errorf("invalid --keep-awake-power: %w", err))
+		if *windowSeconds > 0 {
+			cfg.MeteredFailover.WindowSeconds = *windowSeconds
 		}
-		cfg.KeepAwakeLidClosedPower = *keepAwakePower
-	}
-	if *keepAwakeIdle >= 0 {
-		if *keepAwakeIdle > config.MaxKeepAwakeIdleMinutes {
-			fatal(fmt.Errorf("invalid --keep-awake-idle-minutes %d (0 to %d)", *keepAwakeIdle, config.MaxKeepAwakeIdleMinutes))
+		if *interceptMode != "" {
+			cfg.Intercept.Mode = *interceptMode
+			if err := cfg.ValidateIntercept(); err != nil {
+				return fmt.Errorf("invalid --intercept-mode: %w", err)
+			}
 		}
-		cfg.KeepAwakeIdleMinutes = *keepAwakeIdle
-	}
-	cfg.ResolveRoutes()
-
-	if err := config.Save(cfg); err != nil {
+		if *interceptHost != "" {
+			cfg.Intercept.Host = *interceptHost
+		}
+		if *keepAwake != "" {
+			switch *keepAwake {
+			case "true":
+				cfg.KeepAwakeLidClosed = true
+			case "false":
+				cfg.KeepAwakeLidClosed = false
+			default:
+				return fmt.Errorf("invalid --keep-awake-lid-closed %q (must be true or false)", *keepAwake)
+			}
+		}
+		if *keepAwakePower != "" {
+			if err := config.ValidateKeepAwakePower(*keepAwakePower); err != nil {
+				return fmt.Errorf("invalid --keep-awake-power: %w", err)
+			}
+			cfg.KeepAwakeLidClosedPower = *keepAwakePower
+		}
+		if *keepAwakeIdle >= 0 {
+			if *keepAwakeIdle > config.MaxKeepAwakeIdleMinutes {
+				return fmt.Errorf("invalid --keep-awake-idle-minutes %d (0 to %d)", *keepAwakeIdle, config.MaxKeepAwakeIdleMinutes)
+			}
+			cfg.KeepAwakeIdleMinutes = *keepAwakeIdle
+		}
+		cfg.ResolveRoutes()
+		saved = *cfg
+		return nil
+	})
+	if err != nil {
 		fatal(err)
 	}
+	cfg := saved
 	p, _ := config.ConfigPath()
 	fmt.Printf("wrote %s\n", p)
 	// A power-mode change only needs applying while the feature is on; while
