@@ -410,7 +410,8 @@ OUT
 PANEL_REPO="https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel.git"
 offer_panel() {
   if [[ -x "$HOME/.local/bin/ccusage-panel.sh" ]]; then
-    echo "\nUsage panel: already installed (it shows Burst's auto compaction in its turn table)."
+    echo "\nUsage panel: installed; bringing it up to date."
+    zsh "$ROOT/scripts/update-panel.sh"
     return 0
   fi
   if [[ "${CLAUDE_BURST_PANEL:-ask}" == "no" ]]; then
