@@ -16,6 +16,7 @@ Everything lives in `~/.config/claude-burst/config.json`. You rarely need to edi
 | `response_header_timeout_seconds` | `60` | How long to wait for a response to *start* before treating the upstream as failed. | Dashboard, Advanced |
 | `max_request_mb` | `128` | Largest request body the gateway accepts. | Dashboard, Advanced |
 | `primary` | `oauth-passthrough` to `api.anthropic.com` | The primary route, see below. | `configure --primary`, `--failover-strategy`; Dashboard, Routing |
+| `adopted_base_url` | unset | The `ANTHROPIC_BASE_URL` Claude Code had before `enable` (an enterprise gateway such as Portkey). It became `primary.base_url`; `disable`, the dashboard Revert and `rollback.sh` put it back. Written by `enable`. | Not edited by hand |
 | `secondary` | Bedrock slot with no key | The overflow route, see below and [Providers](providers.md). | `configure --secondary ...`; Dashboard, Secondary |
 | `metered_failover` | 60 s window, 3 HTTP failures, 1 transport failure | Thresholds for the metered failover strategies, see below. | `configure --metered-window-seconds`, `--metered-min-failures`; Dashboard, Failover & pricing |
 | `fallback_chain` | Fable to Opus | Other Claude models to try on your own plan before the secondary, see [Routing](routing.md#limits-are-per-model-and-are-never-inferred). | Dashboard, Failover & pricing |

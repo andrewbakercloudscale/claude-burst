@@ -157,7 +157,7 @@ echo "  marked $ROLLED_BACK_MARKER so the self-heal watchdog leaves it stopped"
 # "rollback complete" without ever checking whether traffic could actually
 # reach Anthropic again.
 if [[ -f "$SETTINGS" ]]; then
-  python3 - "$SETTINGS" <<'PY'
+  python3 - "$SETTINGS" "$CONFIG" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -186,9 +186,19 @@ removed = [k for k in list(env or {}) if k in keys and ours(env[k])]
 kept = [f"{k}={env[k]}" for k in list(env or {}) if k in keys and not ours(env[k])]
 for k in kept:
     print(f"left as it is (not ours): {k}")
+# enable may have adopted an enterprise gateway (Portkey and similar) as
+# the primary; it goes back so Claude Code is left as it was found.
+adopted = ""
+try:
+    adopted = json.loads(Path(sys.argv[2]).read_text()).get("adopted_base_url", "")
+except Exception:
+    pass
 if removed:
     for k in removed:
         env.pop(k, None)
+    if "ANTHROPIC_BASE_URL" in removed and adopted:
+        env["ANTHROPIC_BASE_URL"] = adopted
+        print(f"put ANTHROPIC_BASE_URL back to {adopted}")
     if not env:
         data.pop("env", None)
     tmp = p.with_name(p.name + ".tmp")

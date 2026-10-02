@@ -20,6 +20,29 @@ See [Together AI, OpenRouter or any OpenAI-compatible secondary](#together-ai-op
 
 The two families differ in one way worth knowing up front. Bedrock speaks Anthropic's Messages wire format natively, so its responses are relayed byte-for-byte, while Together AI and OpenRouter go through the OpenAI-compatible translator (`internal/router/provider_openai.go`) in both directions, streaming included, both paths are tested. Pick on price, model availability and who you would rather have a billing relationship with.
 
+## Enterprise: a gateway such as Portkey as the primary
+
+On a company machine Claude Code often already goes through a gateway:
+`ANTHROPIC_BASE_URL` points at it (Portkey, for example) and
+`ANTHROPIC_CUSTOM_HEADERS` carries its routing headers. Such a machine usually
+has no secondary, and needs none: the secondary is optional.
+
+- Use base-url mode (the default). `enable` adopts the gateway: its URL becomes
+  `primary.base_url`, Claude Code is pointed at Claude Burst, and every header
+  Claude Code sends, its credential and the custom headers included, is passed
+  to the gateway unchanged.
+- `disable`, the dashboard's Revert and `scripts/rollback.sh` put the original
+  URL back, so the machine is left as it was found.
+- Transparent mode refuses: Claude Code never contacts `api.anthropic.com`
+  there, so a redirect would catch nothing.
+- If the URL is set in managed settings
+  (`/Library/Application Support/ClaudeCode/managed-settings.json`), `enable`
+  refuses: those override `~/.claude/settings.json`, so Claude Burst cannot sit
+  in front.
+- Outbound, the gateway honours `HTTPS_PROXY` (unless it points at this Mac)
+  and trusts the certificates in the `NODE_EXTRA_CA_CERTS` bundle, so an
+  internal gateway signed by a company CA is reachable.
+
 ## Setting up a secondary
 
 Run `./install.sh`, then point the secondary at your provider (or leave it unset for a single plan):

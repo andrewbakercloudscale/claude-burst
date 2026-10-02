@@ -844,10 +844,11 @@ func enable(args []string) {
 			}
 			fmt.Printf("removed ANTHROPIC_BASE_URL from %s (transparent mode needs it unset)\n", p)
 		} else if cur := claudesettings.BaseURL(root); cur != "" {
-			// Left alone, but say what it means: Claude Code sends to that
-			// host, not to the intercepted one, so nothing reaches this gateway.
-			fmt.Printf("WARNING: %s sets ANTHROPIC_BASE_URL=%s (not ours, left as it is).\n"+
-				"Claude Code sends its requests there, not to %s, so transparent mode will not see them.\n", p, cur, cfg.Intercept.Host)
+			// An enterprise gateway (Portkey and similar): Claude Code sends
+			// to that host, never to the intercepted one, so a redirect would
+			// catch nothing while looking installed. Base-url mode adopts it.
+			fatal(fmt.Errorf("%s sets ANTHROPIC_BASE_URL=%s, so Claude Code never contacts %s and transparent mode would see nothing. "+
+				"Use base-url mode instead (set intercept.mode to \"base-url\" and run enable): it puts Claude Burst in front of that gateway and keeps it as the primary", p, cur, cfg.Intercept.Host))
 		} else {
 			fmt.Printf("ANTHROPIC_BASE_URL already unset in %s\n", p)
 		}
@@ -877,14 +878,21 @@ Then restart Claude Code. Verify with: claude-burst status
 		return
 	}
 
-	// Someone else's gateway (Portkey, a corporate LLM proxy, Bedrock via a
-	// broker) is configuration we do not own. Overwriting it would route
-	// their traffic around the gateway they chose, and disable would then
-	// remove the key entirely, losing their URL for good.
+	// An enterprise gateway (Portkey, a corporate LLM proxy) already set as
+	// ANTHROPIC_BASE_URL is adopted, not overwritten: it becomes the primary,
+	// so Claude Code -> Burst -> that gateway, with every header Claude Code
+	// sends (its auth and ANTHROPIC_CUSTOM_HEADERS) passed through unchanged.
+	// disable restores it.
+	if err := refuseManagedBaseURL(); err != nil {
+		fatal(err)
+	}
 	if cur := claudesettings.BaseURL(root); cur != "" && !claudesettings.OwnBaseURL(cur, cfg.Listen) {
-		fatal(fmt.Errorf("%s already sets ANTHROPIC_BASE_URL=%s, which is not this gateway. "+
-			"Refusing to overwrite it. Remove it yourself if Claude Burst should take over, "+
-			"or point Claude Burst's upstream at that gateway instead", p, cur))
+		cfg.Primary.BaseURL = strings.TrimRight(cur, "/")
+		cfg.AdoptedBaseURL = cur
+		if err := config.Save(cfg); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("adopted %s as the primary: Claude Code -> Claude Burst -> %s. disable puts it back.\n", cur, cur)
 	}
 
 	// Important: do NOT set a gateway API credential here. In
@@ -923,9 +931,12 @@ func disable(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	if claudesettings.ClearBaseURL(root, cfg.Listen) {
+	if claudesettings.Release(root, cfg.Listen, cfg.AdoptedBaseURL) {
 		if err := claudesettings.Write(p, root); err != nil {
 			fatal(err)
+		}
+		if cfg.AdoptedBaseURL != "" {
+			fmt.Printf("restored ANTHROPIC_BASE_URL=%s\n", cfg.AdoptedBaseURL)
 		}
 	}
 
@@ -1074,4 +1085,22 @@ Next:
   2. if the old CA was trusted system-wide: sudo %s
   3. start Claude Code sessions again
 `, cfg.Intercept.CADir, cfg.Intercept.Host, cfg.Intercept.CABundle, filepath.Join(filepath.Dir(rootHelperPath()), "trust-ca-systemwide.sh"))
+}
+
+// managedSettingsPath is where an organisation's managed Claude Code
+// settings live on macOS. They override ~/.claude/settings.json, so a base
+// URL set there cannot be taken over.
+var managedSettingsPath = "/Library/Application Support/ClaudeCode/managed-settings.json"
+
+// refuseManagedBaseURL fails when managed settings set ANTHROPIC_BASE_URL:
+// enable would write a URL Claude Code never uses and look as if it worked.
+func refuseManagedBaseURL() error {
+	root, err := claudesettings.Read(managedSettingsPath)
+	if err != nil {
+		return nil // unreadable or invalid: not ours to judge, and not a base URL we can see
+	}
+	if u := claudesettings.BaseURL(root); u != "" {
+		return fmt.Errorf("%s (managed by your organisation) sets ANTHROPIC_BASE_URL=%s, which overrides ~/.claude/settings.json, so Claude Burst cannot sit in front of it. Ask whoever manages it, or leave Claude Burst disabled", managedSettingsPath, u)
+	}
+	return nil
 }

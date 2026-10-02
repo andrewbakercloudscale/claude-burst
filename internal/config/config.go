@@ -319,7 +319,12 @@ type Config struct {
 	// means "no downgrade, go straight to the secondary".
 	FallbackChain map[string][]string `json:"fallback_chain"`
 
-	Primary         RouteConfig           `json:"primary,omitempty"`
+	Primary RouteConfig `json:"primary,omitempty"`
+	// AdoptedBaseURL is the ANTHROPIC_BASE_URL Claude Code had before
+	// enable pointed it at this gateway: an enterprise gateway such as
+	// Portkey, which then becomes Primary.BaseURL. disable and rollback.sh
+	// put it back, so Claude Code is left exactly as it was found.
+	AdoptedBaseURL  string                `json:"adopted_base_url,omitempty"`
 	Secondary       RouteConfig           `json:"secondary,omitempty"`
 	MeteredFailover MeteredFailoverConfig `json:"metered_failover,omitempty"`
 	Intercept       InterceptConfig       `json:"intercept,omitempty"`

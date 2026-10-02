@@ -67,6 +67,19 @@ func Write(p string, root map[string]any) error {
 	return nil
 }
 
+// Release removes this gateway's ANTHROPIC_BASE_URL and, when enable had
+// adopted an enterprise gateway's URL (adopted non-empty), puts that back,
+// so Claude Code is left as it was found. Reports whether root changed.
+func Release(root map[string]any, listen, adopted string) bool {
+	if !ClearBaseURL(root, listen) {
+		return false
+	}
+	if adopted != "" {
+		SetBaseURL(root, adopted)
+	}
+	return true
+}
+
 // OwnBaseURL says whether url points at this gateway (its listen address,
 // or any loopback http port, which is what every earlier version wrote).
 // Anything else, such as a Portkey or corporate gateway, is the user's.

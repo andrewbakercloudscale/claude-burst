@@ -154,12 +154,16 @@ func (s *Server) revertInProcess(w http.ResponseWriter, cfg config.Config) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if claudesettings.ClearBaseURL(root, cfg.Listen) {
+	if claudesettings.Release(root, cfg.Listen, cfg.AdoptedBaseURL) {
 		if err := claudesettings.Write(p, root); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		out.Steps = append(out.Steps, "removed ANTHROPIC_BASE_URL from settings.json")
+		if cfg.AdoptedBaseURL != "" {
+			out.Steps = append(out.Steps, "put ANTHROPIC_BASE_URL back to "+cfg.AdoptedBaseURL)
+		} else {
+			out.Steps = append(out.Steps, "removed ANTHROPIC_BASE_URL from settings.json")
+		}
 	} else {
 		out.Steps = append(out.Steps, "settings.json already had no gateway URL")
 	}
