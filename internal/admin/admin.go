@@ -84,6 +84,10 @@ type Server struct {
 	// handshakes counts the gateway listener's TLS handshakes; nil in
 	// base-url mode, where the listener speaks plain HTTP.
 	handshakes *tlswatch.Watcher
+
+	// trace holds the Send test message hops' outside dependencies, empty
+	// in production (traceDeps fills the defaults); see trace.go.
+	trace traceDeps
 }
 
 // SetHandshakes attaches the gateway listener's handshake counter, so
@@ -147,6 +151,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/secondary", s.mutating(s.handleSecondary))
 	mux.HandleFunc("/api/secondary-key", s.mutating(s.handleSecondaryKey))
 	mux.HandleFunc("/api/test-secondary", s.mutating(s.handleTestSecondary))
+	mux.HandleFunc("/api/trace", s.mutating(s.handleTrace))
 	mux.HandleFunc("/api/revert", s.mutating(s.handleRevert))
 	mux.HandleFunc("/api/restart", s.mutating(s.handleRestart))
 	mux.HandleFunc("/api/install", s.mutating(s.handleInstall))
