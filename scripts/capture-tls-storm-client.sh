@@ -1,6 +1,6 @@
 #!/bin/zsh
 # One-shot diagnostic for the open TLS handshake-error storm documented in
-# INVESTIGATION-TLS-STORM.md: identifies which process is actually making
+# docs/history/investigation-tls-storm.md: identifies which process is actually making
 # the connections that the gateway rejects, using the exact dtrace probe
 # the investigation already specified as the definitive next step.
 #

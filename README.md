@@ -674,7 +674,7 @@ While the pf redirect is installed, direct connections to the gateway's own port
 always fail, the rule makes its own target port unreachable, whichever port it targets.
 Measured at 0/20 and 1/15 in separate runs, so roughly one attempt in twenty does get
 through: enough that a single lucky probe can convince you the port is fine, not enough to
-build a health check on (issue #1, and `INVESTIGATION-TLS-STORM.md` for the measurements).
+build a health check on (issue #1, and [the investigation notes](docs/history/investigation-tls-storm.md) for the measurements).
 Probe the real path instead, which is what the gateway's own health checks do:
 
 ```bash
@@ -969,7 +969,7 @@ sudo scripts/diagnose-direct-port.sh          # writes a timestamped log you can
 
 On this machine it shows `state-insert` climbing by ~14 per probe while every filter and
 block counter stays at zero: pf is failing to *insert state* for these connections, not
-filtering them. See `INVESTIGATION-TLS-STORM.md`.
+filtering them. See [the investigation notes](docs/history/investigation-tls-storm.md).
 
 Watch for `live rdr rule : MISSING` while the hosts entry is present. That is the bad
 state, DNS redirects but nothing listens, and the fix is `remove`.

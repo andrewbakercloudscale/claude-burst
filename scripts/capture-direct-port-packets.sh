@@ -4,7 +4,7 @@
 # while the real path through :443 to the same socket is perfect.
 #
 # WHY THIS AND NOT ANOTHER CANDIDATE FIX. Four hypotheses have been proposed
-# on this issue and all four were wrong (see INVESTIGATION-TLS-STORM.md,
+# on this issue and all four were wrong (see docs/history/investigation-tls-storm.md,
 # updates (a), (b) and (c)): a port blocklist, a plain filter `pass`, state
 # mismatch, and a `no state` rule. Every one of them argued from how pf ought
 # to behave. The two things that ever moved the investigation were

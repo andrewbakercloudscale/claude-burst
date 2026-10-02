@@ -1,6 +1,8 @@
-# Design: uncommitted work left behind by a session that has ended
+# Proposal: uncommitted work left behind by a session that has ended
 
-Status: proposed, 2026-10-01. Nothing here is built yet.
+**Status: proposal, 2026-10-01.** A design for discussion, not a description of how Claude Burst
+works. Where a part has since shipped, its heading says so (for example Layer 1, the ship guard);
+anything else here is not built.
 
 ## The incident
 

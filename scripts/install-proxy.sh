@@ -21,7 +21,7 @@
 # to answer it.
 #
 # Why step 5 exists at all: root-caused 2026-09-03 (see
-# INVESTIGATION-TLS-STORM.md). Step 3's CA trust only covers Claude Code
+# docs/history/investigation-tls-storm.md). Step 3's CA trust only covers Claude Code
 # CLI (via NODE_EXTRA_CA_CERTS) -- Claude Desktop and everything else on
 # this Mac has never heard of this CA, so step 4's redirect makes THEM
 # fail TLS handshakes against a certificate they don't trust the moment
@@ -130,7 +130,7 @@ echo "== 3. claude-burst enable (CA trust + settings.json) =="
 
 echo
 # Fallback matches internal/config.Default. It was 7777, which is now the one
-# port the gateway must NOT use (see INVESTIGATION-TLS-STORM.md) -- a fallback
+# port the gateway must NOT use (see docs/history/investigation-tls-storm.md) -- a fallback
 # that silently builds a redirect to a dropped port is the worst shape this
 # could fail in: pf loads cleanly and nothing reaches the gateway.
 gateway_port="$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json'))['listen'].split(':')[-1])" 2>/dev/null || echo 7777)"
@@ -167,7 +167,7 @@ echo "  /Library/Keychains/System.keychain as a trusted root (CN: claude-burst l
 echo "why: step 4's redirect now catches traffic from every app on this Mac, not just"
 echo "  Claude Code CLI -- without this, anything else that happens to reach"
 echo "  api.anthropic.com (Claude Desktop's auto-updater, for one) fails its TLS"
-echo "  handshake against a certificate it doesn't trust. See INVESTIGATION-TLS-STORM.md."
+echo "  handshake against a certificate it doesn't trust. See docs/history/investigation-tls-storm.md."
 if [[ $EUID -eq 0 ]]; then
   "$TRUST_HELPER"
 else
