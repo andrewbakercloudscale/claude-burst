@@ -29,6 +29,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 )
 
 // Keep is how many timestamped backups of each file Snapshot keeps. The
@@ -86,7 +88,7 @@ func Snapshot(path string) error {
 		return err
 	}
 	dated := filepath.Join(dir, filepath.Base(path)+"."+time.Now().Format("20060102-150405")+".bak")
-	if err := os.WriteFile(dated, b, 0600); err != nil {
+	if err := atomicfile.Write(dated, b, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write backup %s: %v\n", dated, err)
 		return err
 	}
@@ -141,7 +143,7 @@ func SetLatest(path string, content []byte) error {
 		return err
 	}
 	latest := filepath.Join(dir, filepath.Base(path)+".latest.bak")
-	if err := os.WriteFile(latest, content, 0600); err != nil {
+	if err := atomicfile.Write(latest, content, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", latest, err)
 		return err
 	}

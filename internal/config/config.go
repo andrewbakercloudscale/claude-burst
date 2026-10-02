@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 	"github.com/andrewbakercloudscale/claude-burst/internal/backup"
 )
 
@@ -205,6 +206,32 @@ type MeteredFailoverConfig struct {
 	// failures (DNS failure, no route to host) never reach this counter at
 	// all; see isLocalConnectivityFailure.
 	TransportErrorMinFailures int `json:"transport_error_min_failures,omitempty"`
+
+	// HotspotTransportMultiplier multiplies TransportErrorMinFailures while
+	// the Mac reaches the internet through an iPhone Personal Hotspot
+	// (172.20.10.0/28). On a phone the mobile uplink is by far the likeliest
+	// thing to have failed, and the secondary sits behind that same uplink.
+	// 2026-10-02 12:04: a 258k-token request on the hotspot died with "write:
+	// broken pipe", its fresh-connection retry did too, and the window that
+	// armed sent six turns to the paid secondary for a dropped mobile link.
+	// Only transport failures are scaled: a 429 or 5xx is Anthropic
+	// answering, which a phone cannot fake, so MinFailures is unchanged.
+	// 0 means the default, DefaultHotspotTransportMultiplier; 1 turns the
+	// extra tolerance off.
+	HotspotTransportMultiplier int `json:"hotspot_transport_multiplier,omitempty"`
+}
+
+// DefaultHotspotTransportMultiplier doubles the transport-failure threshold
+// on a phone hotspot: with the default threshold of 1, two failed requests
+// inside the window, not one.
+const DefaultHotspotTransportMultiplier = 2
+
+// HotspotMultiplier is HotspotTransportMultiplier with the default applied.
+func (m MeteredFailoverConfig) HotspotMultiplier() int {
+	if m.HotspotTransportMultiplier <= 0 {
+		return DefaultHotspotTransportMultiplier
+	}
+	return m.HotspotTransportMultiplier
 }
 
 // Intercept modes -- how Claude Code is persuaded to send its traffic here.
@@ -748,7 +775,7 @@ func Save(cfg Config) error {
 		return err
 	}
 	full := append(b, '\n')
-	if err := os.WriteFile(p, full, 0600); err != nil {
+	if err := atomicfile.Write(p, full, 0600); err != nil {
 		return err
 	}
 	_ = backup.SetLatest(p, full)

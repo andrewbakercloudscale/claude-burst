@@ -104,19 +104,15 @@ func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not locate the claude-burst repo's scripts/ directory", http.StatusBadRequest)
 		return
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		http.Error(w, "config.json does not parse, fix it before changing this: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
 	on := req.Mode != "off"
-	cfg.KeepAwakeLidClosed = on
-	if on {
-		cfg.KeepAwakeLidClosedPower = req.Mode
-		cfg.KeepAwakeIdleMinutes = req.Idle
-	}
-	if err := config.Save(cfg); err != nil {
-		http.Error(w, "saving config.json: "+err.Error(), http.StatusInternalServerError)
+	if _, ok := updateConfig(w, func(c *config.Config) error {
+		c.KeepAwakeLidClosed = on
+		if on {
+			c.KeepAwakeLidClosedPower = req.Mode
+			c.KeepAwakeIdleMinutes = req.Idle
+		}
+		return nil
+	}); !ok {
 		return
 	}
 	// The user half needs no root.
