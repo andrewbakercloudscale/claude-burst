@@ -61,13 +61,18 @@ type PruneConfig struct {
 }
 
 // CompactionConfig tunes PrimaryCompaction. Zero numbers take the defaults
-// below: warn at 300k tokens of context, compact at 400k, and compact any
-// one session at most once per 60 minutes.
+// below: compact at 400k tokens of context, warn at 80% of that, and compact
+// any one session at most once per 30 minutes.
 type CompactionConfig struct {
 	Enabled         bool  `json:"enabled,omitempty"`
-	WarnAtTokens    int64 `json:"warn_at_tokens,omitempty"`
 	CompactAtTokens int64 `json:"compact_at_tokens,omitempty"`
-	WindowMinutes   int   `json:"window_minutes,omitempty"`
+	// WarnAtPercent is the warning as a percentage of CompactAtTokens, so
+	// moving the threshold moves the warning with it.
+	WarnAtPercent int `json:"warn_at_percent,omitempty"`
+	// WarnAtTokens is derived by Resolved from the two above and is never
+	// stored: a warn_at_tokens left in an older config.json is ignored.
+	WarnAtTokens  int64 `json:"-"`
+	WindowMinutes int   `json:"window_minutes,omitempty"`
 	// NoPromptNotice turns off the lines Claude Code shows under a prompt
 	// when a compaction starts, is ready, swaps in or fails. On by default.
 	NoPromptNotice bool `json:"no_prompt_notice,omitempty"`
@@ -81,19 +86,20 @@ type CompactionConfig struct {
 }
 
 const (
-	DefaultCompactionWarnAt    = 300_000
-	DefaultCompactionCompactAt = 400_000
-	DefaultCompactionWindow    = 60
+	DefaultCompactionWarnPercent = 80
+	DefaultCompactionCompactAt   = 400_000
+	DefaultCompactionWindow      = 30
 )
 
 // Resolved returns c with its zero numbers replaced by the defaults.
 func (c CompactionConfig) Resolved() CompactionConfig {
-	if c.WarnAtTokens <= 0 {
-		c.WarnAtTokens = DefaultCompactionWarnAt
-	}
 	if c.CompactAtTokens <= 0 {
 		c.CompactAtTokens = DefaultCompactionCompactAt
 	}
+	if c.WarnAtPercent <= 0 {
+		c.WarnAtPercent = DefaultCompactionWarnPercent
+	}
+	c.WarnAtTokens = c.CompactAtTokens * int64(c.WarnAtPercent) / 100
 	if c.WindowMinutes <= 0 {
 		c.WindowMinutes = DefaultCompactionWindow
 	}

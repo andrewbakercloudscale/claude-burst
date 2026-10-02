@@ -245,7 +245,7 @@ func waitFor(t *testing.T, cond func() bool) {
 
 func TestCompactionEndToEnd(t *testing.T) {
 	f := &fakeAnthropic{context: 450_000}
-	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
 	all := msgs(t, session)
 
 	// Turn 1 (history up to the "second task" prompt): the response reports
@@ -441,7 +441,7 @@ func (f *fakeAnthropic) summaryBody() string {
 // that is already in cache: live runs cost $2.10 and $2.96 that way.
 func TestCompactionSummaryReusesTheCachedHistory(t *testing.T) {
 	f := &fakeAnthropic{context: 450_000}
-	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
 	all := msgs(t, session)
 	send(t, s, "S", all[:5])
 	send(t, s, "S", all[:7])
@@ -519,7 +519,7 @@ func TestCompactionStateSurvivesARestart(t *testing.T) {
 	t.Cleanup(up.Close)
 	cfg := config.Default()
 	cfg.AnthropicBaseURL = up.URL
-	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60}
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60}
 	dir := t.TempDir()
 	start := func() *Server {
 		s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(testLogWriter{t}, "", 0))
@@ -568,7 +568,7 @@ func TestCompactionPendingAtRestartReopensTheWindow(t *testing.T) {
 // tokens a turn, starting with a 907k cache write.
 func TestSecondSummaryWaitsWithoutDroppingTheFirst(t *testing.T) {
 	f := &fakeAnthropic{context: 450_000}
-	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
 	all := msgs(t, strings.TrimSuffix(session, "]")+`,
  {"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Read","input":{}}]},
  {"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":"third output"}]},
@@ -629,7 +629,7 @@ func TestSecondSummaryWaitsWithoutDroppingTheFirst(t *testing.T) {
 func TestDroppedSummaryNamesTheChangeAndReopensTheWindow(t *testing.T) {
 	f := &fakeAnthropic{context: 450_000}
 	var logBuf strings.Builder
-	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
 	s.logger.SetOutput(io.MultiWriter(testLogWriter{t}, &logBuf))
 	all := msgs(t, session)
 	send(t, s, "S", all[:5])
@@ -765,7 +765,7 @@ func TestSubagentDoesNotDropTheParentsSummary(t *testing.T) {
 // next plain prompt.
 func TestCompactAsyncStartsASummaryNow(t *testing.T) {
 	f := &fakeAnthropic{context: 50_000}
-	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
 	all := msgs(t, session)
 	send(t, s, "S", all[:5])
 	send(t, s, "S", all[:7])
@@ -804,7 +804,7 @@ func TestCompactAsyncStartsASummaryNow(t *testing.T) {
 // contain it (a file that mentions the command) starts nothing.
 func TestCompactAsyncMarkerInAToolResultIsIgnored(t *testing.T) {
 	f := &fakeAnthropic{context: 50_000}
-	s := compactServer(t, f, config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60})
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
 	all := msgs(t, session)
 	send(t, s, "S", all[:5])
 	h := append(append([]json.RawMessage(nil), all[:6]...),
@@ -990,7 +990,7 @@ func TestSwapNoticeAndContextSurviveARestart(t *testing.T) {
 	t.Cleanup(up.Close)
 	cfg := config.Default()
 	cfg.AnthropicBaseURL = up.URL
-	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, WarnAtTokens: 300_000, CompactAtTokens: 400_000, WindowMinutes: 60}
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60}
 	dir := t.TempDir()
 	start := func() *Server {
 		s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(testLogWriter{t}, "", 0))

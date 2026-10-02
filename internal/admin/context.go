@@ -214,8 +214,8 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 	case res.CompactAtTokens < minCompactAt || res.CompactAtTokens > maxCompactAt:
 		http.Error(w, fmt.Sprintf("compact threshold must be between %dk and %dk tokens", minCompactAt/1000, maxCompactAt/1000), http.StatusBadRequest)
 		return
-	case res.WarnAtTokens >= res.CompactAtTokens:
-		http.Error(w, "the warning must come before the compaction threshold", http.StatusBadRequest)
+	case req.WarnAtPercent < 0 || res.WarnAtPercent > 99:
+		http.Error(w, "warn at must be between 1% and 99% of Compact at", http.StatusBadRequest)
 		return
 	case req.WindowMinutes < 0 || res.WindowMinutes > maxWindow:
 		http.Error(w, fmt.Sprintf("window must be between 1 and %d minutes", maxWindow), http.StatusBadRequest)
@@ -231,7 +231,7 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 	s.gateway.SetCompaction(req)
 	state := "compaction off"
 	if req.Enabled {
-		state = fmt.Sprintf("compaction on: warn at %dk, compact at %dk, at most once per %d minutes per session", res.WarnAtTokens/1000, res.CompactAtTokens/1000, res.WindowMinutes)
+		state = fmt.Sprintf("compaction on: compact at %dk, warn at %d%% (%dk), at least %d minutes between compactions of a session", res.CompactAtTokens/1000, res.WarnAtPercent, res.WarnAtTokens/1000, res.WindowMinutes)
 		if !req.NoPromptNotice {
 			state += ", shown under your prompt"
 		}

@@ -124,7 +124,7 @@ func TestCompactionToggleSavesAppliesLiveAndValidates(t *testing.T) {
 	if stateOf(t, s).Context.Compaction.Enabled {
 		t.Fatal("experimental: off by default")
 	}
-	rr := mutate(t, s, "/api/compaction", `{"enabled":true,"warn_at_tokens":200000,"compact_at_tokens":350000,"window_minutes":30}`)
+	rr := mutate(t, s, "/api/compaction", `{"enabled":true,"compact_at_tokens":350000,"warn_at_percent":60,"window_minutes":30}`)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "compaction on") {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -132,7 +132,7 @@ func TestCompactionToggleSavesAppliesLiveAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config.CompactionConfig{Enabled: true, WarnAtTokens: 200000, CompactAtTokens: 350000, WindowMinutes: 30}
+	want := config.CompactionConfig{Enabled: true, CompactAtTokens: 350000, WarnAtPercent: 60, WindowMinutes: 30}
 	if cfg.PrimaryCompaction != want {
 		t.Fatalf("config.json has %+v", cfg.PrimaryCompaction)
 	}
@@ -140,8 +140,8 @@ func TestCompactionToggleSavesAppliesLiveAndValidates(t *testing.T) {
 		t.Fatalf("state reports %+v", got)
 	}
 	for _, body := range []string{
-		`{"enabled":true,"warn_at_tokens":400000,"compact_at_tokens":300000}`, // warn above compact
-		`{"enabled":true,"compact_at_tokens":10}`,                             // absurdly low
+		`{"enabled":true,"warn_at_percent":100}`,  // warn at or above compact
+		`{"enabled":true,"compact_at_tokens":10}`, // absurdly low
 		`{"enabled":true,"window_minutes":-5}`,
 		`not json`,
 	} {
