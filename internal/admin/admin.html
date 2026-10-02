@@ -326,6 +326,26 @@
   .note.warn{ background: var(--warn-bg); color: var(--warn); }
   .note.bad { background: var(--bad-bg);  color: var(--bad); }
   .note.info { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+  /* Send test message: a vertical trace, one dot per hop. Healthy is --ok
+     like everything else on the page; skip is grey. */
+  .trace { margin-top: 13px; }
+  .tr-verdict { padding: 11px 13px; border-radius: 8px; font-size: 14px; font-weight: 600; }
+  .tr-verdict.ok { background: var(--ok-bg); color: var(--ok); }
+  .tr-verdict.warn { background: var(--warn-bg); color: var(--warn); }
+  .tr-verdict.bad { background: var(--bad-bg); color: var(--bad); }
+  .tr-verdict.skip { background: var(--panel-2); color: var(--muted); }
+  .tr-hops { list-style: none; margin: 12px 0 0; padding: 0 0 0 6px; }
+  .tr-hop { position: relative; padding: 0 0 14px 22px; border-left: 2px solid var(--border); overflow-wrap: anywhere; }
+  .tr-hop:last-child { border-left-color: transparent; }
+  .tr-dot { position: absolute; left: -7px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--border); box-shadow: 0 0 0 3px var(--panel); }
+  .tr-hop.ok .tr-dot { background: var(--ok); } .tr-hop.warn .tr-dot { background: var(--warn); }
+  .tr-hop.bad .tr-dot { background: var(--bad); }
+  .tr-hop.skip { color: var(--muted); }
+  .tr-ms, .tr-tag { font-size: 12px; color: var(--muted); font-weight: 500; }
+  .tr-leg { margin-top: 8px; font-size: 13px; }
+  .tr-mtr { border-collapse: collapse; margin-top: 4px; font-family: var(--mono); font-size: 12px; }
+  .tr-mtr th, .tr-mtr td { text-align: left; padding: 2px 12px 2px 0; }
+  .tr-mtr th { color: var(--muted); font-weight: 600; }
   .note code { font-family: var(--mono); font-size: 12px; }
   .empty { padding: 26px 16px; text-align: center; color: var(--faint); font-size: 13px; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12.5px; }
@@ -828,9 +848,11 @@
       <div class="row" style="margin-top:8px">
         <button class="success" id="setupTestConn">&#x21CC; Test connection</button>
         <button class="success" id="setupTestSecondary">&#x21CC; Test secondary (optional)</button>
+        <button class="success" id="setupTrace">&#x21CC; Send test message</button>
       </div>
-      <div class="hint" style="margin-top:6px"><b>Test connection</b>: sends a probe the way Claude Code does and checks it really arrives at this gateway, not straight at Anthropic. <b>Test secondary (optional)</b>: only if you set one up. Sends one small request to the paid secondary (a few tokens, billed by the secondary) and shows who answered and how fast. The hotspot has its own test under <a href="#" data-target="sec-mac">Lid &amp; hotspot</a>, because it switches your Wi-Fi.</div>
+      <div class="hint" style="margin-top:6px"><b>Test connection</b>: sends a probe the way Claude Code does and checks it really arrives at this gateway, not straight at Anthropic. <b>Test secondary (optional)</b>: only if you set one up. Sends one small request to the paid secondary (a few tokens, billed by the secondary) and shows who answered and how fast. The hotspot has its own test under <a href="#" data-target="sec-mac">Lid &amp; hotspot</a>, because it switches your Wi-Fi. <b>Send test message</b>: a trace route for Claude Code. One tiny real message (a few tokens on the cheapest model, with Claude Code's own credential) goes down exactly the path Claude Code uses, and each hop shows what it saw: DNS, the pf redirect, TLS as Node checks it, the routing decision, the answer, the network path to Anthropic and any failover.</div>
       <div id="setupTestNote"></div>
+      <div id="setupTraceOut"></div>
     </div>
   </section>
 
@@ -3026,6 +3048,43 @@ $("testConn").onclick = () => runTestConnection($("testConn"), $("actNote"));
 $("setupTestConn").onclick = () => runTestConnection($("setupTestConn"), $("setupTestNote"));
 $("setupTestSecondary").onclick = () => runTestSecondary($("setupTestSecondary"), $("setupTestNote"));
 
+// traceHTML draws a Send test message trace: the plain-English verdict
+// first, then one row per hop down a vertical line, each with its dot and,
+// under the upstream hop, the network path as mtr saw it. The state is also
+// written out in text, so the dot's colour is never the only signal. Pure,
+// for page_script_test.go.
+function traceHTML(r) {
+  const st = s => s === "ok" || s === "warn" || s === "bad" ? s : "skip";
+  const word = {ok: "ok", warn: "check", bad: "failed", skip: "skipped"};
+  const n = v => Number(v || 0).toFixed(1);
+  const legs = h => (h.legs || []).map(l =>
+    `<div class="tr-leg"><b>${esc(l.name)}</b>${l.note ? ` <span class="tr-tag">${esc(l.note)}</span>` : ""}` +
+    (l.hops && l.hops.length
+      ? `<table class="tr-mtr"><thead><tr><th>host</th><th>loss</th><th>avg</th><th>worst</th></tr></thead><tbody>` +
+        l.hops.map(x => `<tr><td>${esc(x.host)}</td><td>${n(x.loss_pct)}%</td><td>${n(x.avg_ms)} ms</td><td>${n(x.worst_ms)} ms</td></tr>`).join("") +
+        `</tbody></table>`
+      : "") + `</div>`).join("");
+  return `<div class="trace"><div class="tr-verdict ${st(r.state)}">${esc(r.verdict)}</div>` +
+    `<ol class="tr-hops">` + (r.hops || []).map(h =>
+      `<li class="tr-hop ${st(h.state)}"><span class="tr-dot"></span>` +
+      `<div><b>${esc(h.name)}</b> <span class="tr-tag">${word[st(h.state)]}${h.duration_ms ? ", " + h.duration_ms + " ms" : ""}</span></div>` +
+      `<div>${esc(h.summary)}</div>` +
+      (h.detail ? `<div class="hint">${esc(h.detail)}</div>` : "") + legs(h) + `</li>`).join("") +
+    `</ol><div class="hint">${esc(r.mode)} mode, sent to ${esc(r.target)}</div></div>`;
+}
+
+async function runTrace(btn, out) {
+  btn.disabled = true;
+  out.innerHTML = `<div class="note warn">Sending one tiny message along Claude Code's path. With the network path to Anthropic this takes up to about 20 seconds...</div>`;
+  try {
+    out.innerHTML = traceHTML(await post("/api/trace"));
+    // A real request: it lands in Recent responses and the totals.
+    refresh();
+  } catch (e) { note(out, "bad", e.message); }
+  finally { btn.disabled = false; }
+}
+$("setupTrace").onclick = () => runTrace($("setupTrace"), $("setupTraceOut"));
+
 $("viewLog").onclick = () => window.open("/api/log", "_blank");
 $("viewPfLog").onclick = () => window.open("/api/pf-heal-log", "_blank");
 $("viewSelfHealLog").onclick = () => window.open("/api/self-heal-log", "_blank");
@@ -3262,7 +3321,7 @@ function setOverview(state) {
 // What to do when a readiness check fails, by check key.
 const CHECK_FIX = {
   path: "Claude Code's requests are not passing through Burst. Press Test connection under Setup; if it still fails, run the install again and restart Claude Code.",
-  clienttls: "restart the Claude Code sessions that were started before the CA changed: each one reads NODE_EXTRA_CA_CERTS once, at startup, and keeps the old trust until it exits. If newly started sessions fail too, check that NODE_EXTRA_CA_CERTS points at the bundle holding the Claude Burst CA (run claude-burst enable to put it back).",
+  clienttls: "restart the Claude Code sessions that were started before the CA changed: each one reads NODE_EXTRA_CA_CERTS once, at startup, and keeps the old trust until it exits. If newly started sessions fail too, check that NODE_EXTRA_CA_CERTS points at the bundle holding the Claude Burst CA (run claude-burst enable to put it back), then press Send test message under Setup to see Node's own verdict.",
   watchdog: "arm the gateway watchdog under Guards, so the gateway is restarted if it stops.",
   pfguard: "arm the pf redirect guard under Guards (it asks for your password once).",
   secondary: "add the secondary's API key under Secondary, then press Test secondary.",

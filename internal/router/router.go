@@ -137,6 +137,13 @@ type Server struct {
 	warnedUnpriced sync.Map
 	// guardCounters rate-limit the request guard's refusal log; see guard.go.
 	guardCounters
+	// traceRegistry and clientAuth back the dashboard's test message; see
+	// trace.go.
+	traceRegistry
+	clientAuth
+	// resolver resolves the intercepted host bypassing /etc/hosts; nil
+	// outside transparent mode.
+	resolver *interceptResolver
 }
 
 func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (*Server, error) {
@@ -206,6 +213,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		metrics:           metrics.New(metricsPath),
 		statePath:         statePath,
 		logger:            logger,
+		resolver:          resolver,
 	}
 	s.loadState()
 	return s, nil
@@ -848,6 +856,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "claude-burst: request refused: "+reason, http.StatusForbidden)
 		return
 	}
+	// Removes TraceHeader whatever it holds, so it is never forwarded.
+	r = s.withTrace(r, rid)
 
 	// Read the body for every request, not just inference: Remote Control's
 	// register call (and any other control-plane POST) needs its body
@@ -913,6 +923,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	// A real turn: the keep-awake idle window counts from here.
 	keepawake.Touch()
+	if traceFrom(r.Context()) == nil {
+		s.noteClientAuth(r.Header)
+	}
 
 	now := time.Now()
 	// Before routing, so a compacted history goes wherever the request
@@ -929,6 +942,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		downgraded, err := withModel(body, rung)
 		if err == nil {
 			s.logger.Printf("req=%s downgrade model=%q -> %q reason=%q (its rejection window is still open)", rid, reqModel, rung, "window open")
+			traceRoute(r.Context(), "primary", "downgraded to "+rung+": the rejection window for "+reqModel+" is still open")
 			s.forward(w, r, downgraded, "primary", s.primary, s.primaryDetector, s.secondaryReady() || len(rest) > 0, "downgraded from "+reqModel, rest)
 			return
 		}
@@ -937,9 +951,18 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	if s.forcedOverflow(now) || s.modelInOverflow(reqModel, now) {
 		if s.secondaryReady() {
+			why := "an overflow window for " + reqModel + " is open"
+			if s.forcedOverflow(now) {
+				why = "an overflow window is open for every model"
+				if st := s.Status(); st.LastReason != "" {
+					why += " (" + st.LastReason + ")"
+				}
+			}
+			traceRoute(r.Context(), "secondary", why)
 			s.forward(w, r, body, "secondary", s.secondary, nil, false, "overflow window active", nil)
 			return
 		}
+		traceRoute(r.Context(), "primary", "an overflow window is open, but there is no usable secondary, so Anthropic is asked anyway")
 		// A window is open (forced from the admin UI, or left in state.json
 		// by a secondary since removed) but there is nowhere to send the
 		// request. It used to get a 502 for the rest of the window; asking
@@ -951,6 +974,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// rung on the chain. Before the chain existed this was `s.secondary !=
 	// nil`, which meant a user with no secondary configured got no downgrade
 	// either, though it costs nothing and needs no third party.
+	traceRoute(r.Context(), "primary", "no overflow window is open, so the subscription serves it")
 	s.forward(w, r, body, "primary", s.primary, s.primaryDetector, s.secondaryReady() || len(ladder) > 0, "", ladder)
 }
 
@@ -1674,6 +1698,8 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 		}
 	}
 	rid := requestIDFrom(in.Context())
+	traceHop(in.Context(), TraceHop{Slot: slot, Route: route, Model: model, RequestedModel: requestedModel,
+		Status: status, DurationMS: time.Since(start).Milliseconds(), Note: note, Destination: destination})
 	err := s.metrics.Write(metrics.Event{
 		Time: time.Now(), RequestID: rid, SessionID: in.Header.Get("x-claude-code-session-id"), AgentID: in.Header.Get("x-claude-code-agent-id"),
 		Slot: slot, Route: route, Model: model, RequestedModel: requestedModel, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),
