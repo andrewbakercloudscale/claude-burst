@@ -51,8 +51,8 @@ func Write(p string, root map[string]any) error {
 		return err
 	}
 	// Best-effort throughout: see internal/backup's doc comment. This file
-	// carries the shunt guard hook among other things, and a writer that skips
-	// this is exactly how a rollback silently reinstalled it on 2026-09-21.
+	// carries hooks among other things, and a writer that skips
+	// this is exactly how a rollback silently reinstalled one on 2026-09-21.
 	_ = backup.Snapshot(p) // archive the outgoing version, for history
 	b, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {

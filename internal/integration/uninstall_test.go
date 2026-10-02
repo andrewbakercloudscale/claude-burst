@@ -4,10 +4,11 @@ package integration
 // binary) in a throwaway HOME. launchctl is stubbed, since bootout would touch the
 // developer's real LaunchAgents.
 //
-// Token shunting installs a hook into ~/.claude/settings.json that runs this binary
-// on every Read and Bash call, and a skill that tells Claude to run it. An uninstall
-// that removes the binary but leaves those behind leaves a hook pointing at nothing
-// and a skill instructing Claude to run a command that no longer exists.
+// Token shunting (removed 2026-10-02) installed a hook into ~/.claude/settings.json
+// that runs this binary on every Read and Bash call, and a skill that tells Claude
+// to run it. An uninstall that removes the binary but leaves those behind leaves a
+// hook pointing at nothing and a skill instructing Claude to run a command that no
+// longer exists.
 
 import (
 	"io"
@@ -26,11 +27,8 @@ func TestInstallScriptUninstallRemovesShuntHookAndSkill(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not available")
 	}
-	r := newRig(t, true)
-	if _, se, c := r.run("", "shunt", "enable"); c != 0 {
-		t.Fatalf("enable: %s", se)
-	}
-	skill := filepath.Join(r.home, ".claude", "skills", "claude-burst-shunt", "SKILL.md")
+	r := newHomeRig(t)
+	skill := r.installLegacyShunt()
 	if !strings.Contains(strings.Join(preToolUseCommands(r.settings()), " "), "shunt guard") {
 		t.Fatalf("precondition: the hook should be installed")
 	}
@@ -73,16 +71,7 @@ func TestInstallScriptUninstallRemovesShuntHookAndSkill(t *testing.T) {
 	if _, err := os.Stat(target); err == nil {
 		t.Errorf("the binary should be gone")
 	}
-	cmds := preToolUseCommands(r.settings())
-	if len(cmds) != 1 || cmds[0] != "~/theirs.sh" {
-		t.Errorf("uninstall must remove the shunt hook and only that, leaving the user's own hook: %v", cmds)
-	}
-	if _, err := os.Stat(skill); err == nil {
-		t.Errorf("the skill tells Claude to run a binary that no longer exists; it must be removed")
-	}
-	if r.settings()["model"] != "sonnet" {
-		t.Errorf("an unrelated setting was disturbed")
-	}
+	r.assertLegacyShuntGone(skill)
 	contains(t, "uninstall output", string(out), "token-shunting")
 	if log, _ := os.ReadFile(touched); !strings.Contains(string(log), "defaults delete com.mitchellh.ghostty") {
 		t.Errorf("the defaults stub was not used, so the real one may have run: %q", log)

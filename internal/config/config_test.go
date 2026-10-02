@@ -268,3 +268,39 @@ func TestFallbackChainInFileReplacesDefault(t *testing.T) {
 		t.Fatalf("an emptied chain came back: %v", again.FallbackChain)
 	}
 }
+
+// Token shunting was removed on 2026-10-02, but config.json files written
+// while it existed still carry a "shunt" block, some with read and write on.
+// Load must keep reading them: a parse error here would take the gateway down
+// on the first start after an upgrade. The block is ignored, and the next Save
+// drops it.
+func TestLoadIgnoresALegacyShuntBlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_BURST_BACKUP_DIR", "")
+	dir := filepath.Join(home, ".config", "claude-burst")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"listen":"127.0.0.1:7999","shunt":{"read":true,"write":true,"min_lines":350,"chunk_lines":6000,"timeout_seconds":120,"model":"zai-org/GLM-5.3"}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a config with a legacy shunt block must still load: %v", err)
+	}
+	if cfg.Listen != "127.0.0.1:7999" {
+		t.Errorf("the rest of the file was not read: listen=%q", cfg.Listen)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"shunt"`) {
+		t.Errorf("Save should drop the legacy shunt block:\n%s", b)
+	}
+}

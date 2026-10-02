@@ -36,7 +36,6 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
-	"github.com/andrewbakercloudscale/claude-burst/internal/shunt"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 	"github.com/andrewbakercloudscale/claude-burst/internal/touchid"
 )
@@ -79,16 +78,13 @@ type Server struct {
 	// so tests can drive both answers: a gate that is only ever exercised
 	// in its allow direction is not a gate.
 	authenticate func(reason string) error
-	// shuntBin is the binary path written into the shunt guard hook and skill.
-	// A field so tests do not bake the test binary's path into settings.json.
-	shuntBin string
 }
 
 func New(gateway *router.Server, metricsPath, version, extraHost, rootHelper string) *Server {
 	return &Server{gateway: gateway, metricsPath: metricsPath, version: version, repos: newRepoResolver(),
 		extraHost: strings.ToLower(extraHost), rootHelper: rootHelper,
 		storeKey: keychain.Store, keyInfo: keychain.Describe, loadKey: keychain.Load,
-		authenticate: touchid.Authenticate, shuntBin: shunt.SelfPath()}
+		authenticate: touchid.Authenticate}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -103,8 +99,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))
 	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
 	mux.HandleFunc("/api/downgrade", s.mutating(s.handleDowngrade))
-	mux.HandleFunc("/api/shunt", s.mutating(s.handleShunt))
-	mux.HandleFunc("/api/shunt-activity", s.readOnly(s.handleShuntActivity))
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/pruning", s.mutating(s.handlePruning))
 	mux.HandleFunc("/api/compaction", s.mutating(s.handleCompaction))
@@ -266,10 +260,6 @@ type stateResponse struct {
 	// SecondaryReady is whether the RUNNING gateway has a secondary it can
 	// fail over to: built, with its credential. False on a single plan.
 	SecondaryReady bool `json:"secondary_ready"`
-
-	// Shunt is the token-shunting feature: what is switched on, whether the
-	// pieces that enforce it are actually in place, and what it has saved.
-	Shunt shuntInfo `json:"shunt"`
 }
 
 type downgradeInfo struct {
@@ -461,7 +451,6 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Until = time.Unix(st.OverflowUntil, 0).Format(time.RFC3339)
 	}
 	resp.Downgrade = s.downgradeInfo(cfg)
-	resp.Shunt = s.shuntInfo(cfg)
 	resp.Context = s.contextInfo(cfg)
 	resp.Handover = handover.GetStatus()
 	resp.PrimaryHealth = s.gateway.Health()
@@ -547,14 +536,10 @@ func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Worker calls are merged in for display only. They are read from their own
-	// log and never written to metrics.jsonl, so the totals and the activity
-	// chart keep counting gateway requests and nothing else.
-	var calls []shunt.Event
-	if lp, err := config.ShuntLogPath(); err == nil {
-		calls, _ = shunt.Recent(lp, limit, shuntCalls)
+	if events == nil {
+		events = []metrics.Event{} // the page reads .length, so an empty log is [] and never null
 	}
-	writeJSON(w, mergeRequests(events, calls, limit))
+	writeJSON(w, events)
 }
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
