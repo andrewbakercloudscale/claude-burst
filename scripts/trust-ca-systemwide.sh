@@ -42,12 +42,12 @@ if [[ ! -f "$CA_CERT" ]]; then
 fi
 
 # Refuse a CA that could vouch for any website. Since 2026-10-02 the CA is
-# name-constrained to the intercepted host; an older one is replaced the
-# next time the gateway starts. Trusting an unconstrained one system-wide
+# name-constrained to the intercepted host; an older one is kept until
+# `claude-burst ca-rotate` replaces it with no session running. Trusting an unconstrained one system-wide
 # would let anyone holding its key impersonate any site to every app.
 if ! openssl x509 -in "$CA_CERT" -noout -text 2>/dev/null | grep -q "Name Constraints: critical"; then
   echo "refusing: $CA_CERT has no critical name constraint, so it could sign for any website." >&2
-  echo "restart the gateway (it replaces the CA with a constrained one), then run this again." >&2
+  echo "close every Claude Code session, run: claude-burst ca-rotate, then run this again." >&2
   exit 1
 fi
 
