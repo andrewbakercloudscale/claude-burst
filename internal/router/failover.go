@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/hotspot"
 )
 
 // subscriptionLimitDetector triggers failover only when Anthropic's own
@@ -158,6 +159,51 @@ type meteredFailureDetector struct {
 	failures             []time.Time
 	transportFailures    []time.Time
 	now                  func() time.Time
+
+	// hotspotMultiplier scales transportMinFailures while the failure went
+	// out through a phone hotspot; 0 or 1 is off. Set by withHotspot, which
+	// only buildDetector calls. See
+	// config.MeteredFailoverConfig.HotspotTransportMultiplier.
+	hotspotMultiplier int
+	logf              func(format string, a ...any)
+}
+
+// withHotspot turns on the phone-hotspot tolerance. logf receives the line
+// saying a failure was counted but held back; nil drops it.
+func (d *meteredFailureDetector) withHotspot(multiplier int, logf func(format string, a ...any)) *meteredFailureDetector {
+	d.hotspotMultiplier = multiplier
+	d.logf = logf
+	return d
+}
+
+// failedOnHotspot reports whether a transport failure went out through an
+// iPhone Personal Hotspot. A variable so tests decide, never the machine
+// they run on (TestMain stubs it).
+//
+// The failed connection's own local address is the best witness: it is the
+// interface this request actually used (the 2026-10-02 log line reads
+// "write tcp 172.20.10.2:53938->160.79.104.10:443"). A dial that never got a
+// socket has no source address, so the routing table is asked instead.
+var failedOnHotspot = func(err error) bool {
+	if on, ok := failedOnHotspotFromSource(err); ok {
+		return on
+	}
+	return hotspot.RouteOnHotspot()
+}
+
+// failedOnHotspotFromSource answers from the error's own source address;
+// ok is false when the error carries none.
+func failedOnHotspotFromSource(err error) (on, ok bool) {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Source != nil {
+		switch a := op.Source.(type) {
+		case *net.TCPAddr:
+			return hotspot.IsHotspotAddr(a.IP), true
+		case *net.UDPAddr:
+			return hotspot.IsHotspotAddr(a.IP), true
+		}
+	}
+	return false, false
 }
 
 func newMeteredFailureDetector(windowSeconds, minFailures, transportMinFailures int) *meteredFailureDetector {
@@ -184,7 +230,8 @@ func (d *meteredFailureDetector) OnResponse(status int, h http.Header, body []by
 	if !isMeteredFailureStatus(status) {
 		return FailoverDecision{}
 	}
-	return d.recordFailure(&d.failures, d.minFailures, fmt.Sprintf("status %d", status), h)
+	dec, _ := d.recordFailure(&d.failures, d.minFailures, fmt.Sprintf("status %d", status), "", h)
+	return dec
 }
 
 func (d *meteredFailureDetector) OnError(err error) FailoverDecision {
@@ -216,7 +263,21 @@ func (d *meteredFailureDetector) OnError(err error) FailoverDecision {
 		// Reproduced live: 2026-08-31.
 		return FailoverDecision{}
 	}
-	return d.recordFailure(&d.transportFailures, d.transportMinFailures, "transport error: "+err.Error(), nil)
+	threshold, qualifier := d.transportMinFailures, ""
+	onHotspot := d.hotspotMultiplier > 1 && failedOnHotspot(err)
+	if onHotspot {
+		// On a phone the mobile uplink is what usually failed, and the
+		// secondary is behind it too. Only transport failures are scaled:
+		// a 429 or 5xx (OnResponse) is Anthropic answering, which no phone
+		// can fake. See config.MeteredFailoverConfig.HotspotTransportMultiplier.
+		threshold *= d.hotspotMultiplier
+		qualifier = fmt.Sprintf(" on a phone hotspot: needs %d failures", threshold)
+	}
+	dec, n := d.recordFailure(&d.transportFailures, threshold, "transport error: "+err.Error(), qualifier, nil)
+	if onHotspot && !dec.Failover && d.logf != nil {
+		d.logf("metered failover held back: transport failure %d of %d within %ds%s (latest: %v)", n, threshold, d.windowSeconds, qualifier, err)
+	}
+	return dec
 }
 
 // isClientCancellation reports whether err is the outbound request dying
@@ -255,7 +316,10 @@ func isLocalConnectivityFailure(err error) bool {
 	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
-func (d *meteredFailureDetector) recordFailure(bucket *[]time.Time, threshold int, detail string, h http.Header) FailoverDecision {
+// recordFailure adds a failure to bucket and fires once threshold of them are
+// inside the window. It also returns how many are, for the caller's log
+// line. qualifier is appended to the reason, after the count it explains.
+func (d *meteredFailureDetector) recordFailure(bucket *[]time.Time, threshold int, detail, qualifier string, h http.Header) (FailoverDecision, int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	now := d.now()
@@ -269,7 +333,7 @@ func (d *meteredFailureDetector) recordFailure(bucket *[]time.Time, threshold in
 	kept = append(kept, now)
 	*bucket = kept
 	if len(*bucket) < threshold {
-		return FailoverDecision{}
+		return FailoverDecision{}, len(*bucket)
 	}
 	var reset int64
 	if h != nil {
@@ -279,8 +343,8 @@ func (d *meteredFailureDetector) recordFailure(bucket *[]time.Time, threshold in
 		Failover: true,
 		ResetAt:  reset,
 		Claim:    "metered_sustained_failures",
-		Reason:   fmt.Sprintf("%d failures within %ds (latest: %s)", len(*bucket), d.windowSeconds, detail),
-	}
+		Reason:   fmt.Sprintf("%d failures within %ds%s (latest: %s)", len(*bucket), d.windowSeconds, qualifier, detail),
+	}, len(*bucket)
 }
 
 // isMeteredFailureStatus reports whether status counts toward the metered
