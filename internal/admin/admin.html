@@ -1292,6 +1292,7 @@
       <div class="hint">The first three are carried out by the usage panel's hooks and launcher, so they need the panel below. They apply to the next session you start.</div>
       <div class="mac-toggles">
         <label><input type="checkbox" data-popt="remote_control"> <b>Start with Remote Control</b><span>every interactive <code>claude</code> starts with <code>--remote-control</code>, so you can pick it up on claude.ai or your phone</span></label>
+        <label><input type="checkbox" data-popt="bypass_permissions"> <b>Start with bypass permissions</b><span>Claude Code runs tools without asking first, in every session however it is started: sets <code>permissions.defaultMode</code> to <code>bypassPermissions</code> in <code>~/.claude/settings.json</code>, and the Finder launcher's <code>--dangerously-skip-permissions</code> follows it. Off asks before each tool, as Claude Code does by default</span></label>
         <label><input type="checkbox" data-popt="session_title"> <b>Name the session after its folder</b><span>new sessions are titled with the repo's folder name instead of "Claude Code", so windows and Remote Control sessions are told apart. Resumed sessions keep their name</span></label>
         <label><input type="checkbox" data-popt="caffeinate"> <b>Keep the Mac awake while a session runs</b><span><code>caffeinate -i</code> for as long as the panel runs: stops idle sleep, not lid-close sleep (that is the setting above)</span></label>
         <label><input type="checkbox" id="macStatusLine"> <b>Show cost and model under the prompt</b><span>Claude Code's status line runs <a href="https://github.com/ryoppippi/ccusage" target="_blank" rel="noopener noreferrer">ccusage</a> to show the model, this session's cost, today's spend and the burn rate under the prompt. Uses ccusage if installed, else fetches it with npx. A status line of your own is left alone<span id="macStatusLineNote"></span></span></label>
@@ -4165,8 +4166,10 @@ function renderMac() {
   setDot("nd-sessions", p.installed && Object.values(p.options).some(Boolean) ? "ok" : "");
   for (const cb of document.querySelectorAll("[data-popt]")) {
     if (!formDirty[cb.closest("#sec-panel") ? "pn" : "po"]) cb.checked = !!p.options[cb.dataset.popt];
-    cb.disabled = !p.installed;
-    cb.closest("label").classList.toggle("disabled", !p.installed);
+    // Bypass lives in settings.json, so it works with or without the panel.
+    const off = !p.installed && cb.dataset.popt !== "bypass_permissions";
+    cb.disabled = off;
+    cb.closest("label").classList.toggle("disabled", off);
   }
   $("panelStatus").innerHTML = p.installed
     ? `<span class="pill p">installed</span>${p.repo_dir ? ` <span class="hint">from <code>${esc(p.repo_dir)}</code></span>` : ""}`
@@ -4244,14 +4247,15 @@ function cleanForm(f) { formDirty[f] = false; $(formSave[f]).disabled = true; }
 for (const el of document.querySelectorAll("#sec-sessions [data-popt], #macHandover, #macStatusLine")) el.addEventListener("change", () => markForm("po"));
 for (const el of document.querySelectorAll("#sec-panel [data-popt], [data-pnum]")) el.addEventListener("input", () => markForm("pn"));
 for (const el of document.querySelectorAll("[data-notify]")) el.addEventListener("change", () => markForm("nt"));
-const poptValues = scope => Object.fromEntries([...document.querySelectorAll(scope + " [data-popt]")].map(c => [c.dataset.popt, c.checked]));
+const poptValues = scope => Object.fromEntries([...document.querySelectorAll(scope + " [data-popt]")].filter(c => !c.disabled).map(c => [c.dataset.popt, c.checked]));
 
 $("poSave").onclick = async () => {
   $("poSave").disabled = true;
   const done = [];
   try {
-    if (!document.querySelector("#sec-sessions [data-popt]").disabled) {
-      await post("/api/panel-options", poptValues("#sec-sessions"));
+    const opts = poptValues("#sec-sessions");
+    if (Object.keys(opts).length) {
+      await post("/api/panel-options", opts);
       done.push("session options");
     }
     const sl = await (await fetch("/api/statusline")).json();
