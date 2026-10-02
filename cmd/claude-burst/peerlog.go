@@ -14,7 +14,7 @@ import (
 //
 // Diagnostic only, opt-in via CLAUDE_BURST_LOG_TLS_PEERS, built to
 // root-cause the still-open TLS handshake-error storm documented in
-// INVESTIGATION-TLS-STORM.md. dtrace's syscall provider -- that
+// docs/history/investigation-tls-storm.md. dtrace's syscall provider -- that
 // investigation's own documented next step -- turned out to be fully
 // blocked by SIP on the machine where this was needed ("does not match any
 // probes. System Integrity Protection is on"), with no unprivileged

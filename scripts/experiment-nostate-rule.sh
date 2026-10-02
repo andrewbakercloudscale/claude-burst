@@ -185,7 +185,7 @@ elif (( after_direct > base_direct )); then
   echo "  drawing anything from it; the baseline rate is ~1 in 20 by itself."
 else
   echo "  no improvement. The no-state rule is NOT the fix; record it as ruled"
-  echo "  out in INVESTIGATION-TLS-STORM.md so nobody proposes it a second time."
+  echo "  out in docs/history/investigation-tls-storm.md so nobody proposes it a second time."
 fi
 echo
 echo "(reverting unconditionally, whatever the verdict)"

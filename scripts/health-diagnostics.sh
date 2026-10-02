@@ -49,7 +49,7 @@
 #
 # Note what this does NOT fix. While transparent mode is installed, the direct
 # probe fails for whatever port the pf rdr targets, whichever port that is --
-# see INVESTIGATION-TLS-STORM.md's 2026-09-08 update. So in transparent mode
+# see docs/history/investigation-tls-storm.md's 2026-09-08 update. So in transparent mode
 # the real-path probe below is not a fallback, it is the only trustworthy
 # check; the direct ones are expected to fail and are kept because they are
 # the only option in base-url mode and before the redirect is installed.
