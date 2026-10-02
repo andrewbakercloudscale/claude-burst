@@ -93,12 +93,39 @@ func TestSnapshotRejectsOnlyOnARateThatOutnumbersSuccesses(t *testing.T) {
 		t.Fatalf("last failure must be the last trust-relevant one: %+v", s)
 	}
 
-	// Sessions restarted: they complete more handshakes than fail.
+	// Sessions restarted: once the hang-ups age out of the window, and the
+	// sessions complete handshakes again, it clears.
+	ck.add(Window + time.Second)
 	for i := 0; i < 80; i++ {
 		w.ConnState(&fakeConn{}, http.StateActive)
 	}
 	if s := w.Snapshot(); s.Rejecting {
-		t.Fatalf("successes outnumbering failures is not a rejection: %+v", s)
+		t.Fatalf("a recovered gateway must not read as a rejection: %+v", s)
+	}
+}
+
+// 2026-10-02 13:23: after a redeploy every open session refused the gateway,
+// 27 hang-ups and one reset, under RejectThreshold, and the page said 7/7.
+// Hang-ups alone trip the lower HangupThreshold, however many succeed.
+func TestHangupsAloneReadAsARejection(t *testing.T) {
+	ck := &clock{t: time.Date(2026, 10, 2, 13, 23, 0, 0, time.Local)}
+	w := newWithClock(io.Discard, ck.now)
+	for i := 0; i < 100; i++ {
+		w.ConnState(&fakeConn{}, http.StateActive)
+	}
+	for i := 0; i < 27; i++ {
+		logLine(w, 61000+i, "EOF")
+	}
+	logLine(w, 61100, "read tcp 127.0.0.1:17777->127.0.0.1:61100: read: connection reset by peer")
+	if s := w.Snapshot(); !s.Rejecting {
+		t.Fatalf("28 hang-ups in two minutes must read as a rejection: %+v", s)
+	}
+	w2 := newWithClock(io.Discard, ck.now)
+	for i := 0; i < HangupThreshold-1; i++ {
+		logLine(w2, 62000+i, "EOF")
+	}
+	if s := w2.Snapshot(); s.Rejecting {
+		t.Fatalf("a few hang-ups are background: %+v", s)
 	}
 }
 
