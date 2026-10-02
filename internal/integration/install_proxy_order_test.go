@@ -40,9 +40,9 @@ echo "launchctl $1" >> "$STUB_DIR/calls"
 exit 0
 `
 
-// sudoStub has cached credentials and runs only the test's own copies of
+// proxySudoStub has cached credentials and runs only the test's own copies of
 // the helpers; anything else is a test failure.
-const sudoStub = `#!/bin/sh
+const proxySudoStub = `#!/bin/sh
 [ "$1" = "-n" ] && shift
 [ "$1" = "true" ] && exit 0
 case "$1" in
@@ -91,7 +91,7 @@ func runInstallProxy(t *testing.T, unhealthy int) (calls []string, out string, c
 	write(t, filepath.Join(home, ".config", "claude-burst", "config.json"), `{"listen": "127.0.0.1:17777"}`)
 
 	stubs := map[string]string{
-		"curl": healthStub, "launchctl": launchctlNotLoaded, "sudo": sudoStub,
+		"curl": healthStub, "launchctl": launchctlNotLoaded, "sudo": proxySudoStub,
 		"sleep": loggingStub, "lsof": loggingStub,
 	}
 	for _, name := range []string{"pfctl", "networksetup", "security", "defaults", "pmset", "ioreg", "dscacheutil", "killall"} {
