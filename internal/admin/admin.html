@@ -973,7 +973,7 @@
         </div>
         <button class="primary" id="compactSave">&#x2713; Save</button>
       </div>
-      <div class="hint" style="margin-top:6px"><strong>Compact at</strong>: the context that triggers a summary (default 400k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 320k at the default threshold). <strong>Delay between compactions</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
+      <div class="hint" style="margin-top:6px"><strong>Compact at</strong>: the context that triggers a summary (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default threshold). <strong>Delay between compactions</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
       <div class="hint" style="margin-top:6px"><strong>Before</strong>: the context the session would have had at its latest summary without Burst. <strong>After</strong>: what it actually sent. <strong>Saved per turn</strong>: the difference. <strong>Net saved</strong>: what Burst saved on the session after paying for its summaries and cache rewrites (hover for the parts). How these are worked out, including what happens when a session would have outgrown the 1M window: see <em>How the savings are calculated</em> below.</div>
       <div id="compactNote"></div>
       <div class="row" style="align-items:center;gap:16px;margin-top:10px;flex-wrap:wrap">
@@ -2557,7 +2557,7 @@ function renderCompaction(s) {
     const typing = [$("compactWarn"), $("compactAt"), $("compactWindow")].includes(document.activeElement);
     if (!typing) {
       $("compactWarn").value = k.warn_at_percent || 80;
-      $("compactAt").value = Math.round((k.compact_at_tokens || 400000) / 1000);
+      $("compactAt").value = Math.round((k.compact_at_tokens || 300000) / 1000);
       $("compactWindow").value = k.window_minutes || 30;
     }
   }
@@ -2581,7 +2581,7 @@ function renderCompaction(s) {
   // The chart's own day count (its window includes today), so both headers agree.
   renderSavingsByRepo(c.savings_by_repo || [], (cs.daily || []).length || days);
   setDot("nd-compaction", k.enabled ? "ok" : "");
-  const at = k.compact_at_tokens || 400000, warnAt = at * (k.warn_at_percent || 80) / 100;
+  const at = k.compact_at_tokens || 300000, warnAt = at * (k.warn_at_percent || 80) / 100;
   const sorted = [...allRows].sort((a, b) => (b.context || 0) - (a.context || 0));
   const over = sorted.filter(r => (r.context || 0) >= at);
   const pool = csOverOnly ? over : sorted;
