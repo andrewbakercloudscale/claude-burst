@@ -57,7 +57,7 @@ func startGateway(t *testing.T, upstreamURL string) *drainRig {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(shuntBinary(t), "serve")
+	cmd := exec.Command(burstBinary(t), "serve")
 	cmd.Env = append(os.Environ(), "HOME="+home)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

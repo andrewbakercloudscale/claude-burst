@@ -3,17 +3,14 @@
 #
 # Usage:
 #   ./install.sh              install (or reinstall/update) claude-burst
-#   ./install.sh uninstall    remove the routing, the token-shunting hook and
-#                             skill, the LaunchAgent and the binary
+#   ./install.sh uninstall    remove the routing, the LaunchAgent and the binary,
+#                             and any token-shunting hook and skill an earlier
+#                             install left behind
 #
 # Uninstall intentionally keeps ~/.config/claude-burst (config, state,
 # metrics) and the macOS Keychain secret, since those are not things you
 # want wiped by an accidental rerun. See the printed message at the end
 # of uninstall for how to purge them too.
-#
-# Note that shunting is switched OFF in config.json as part of uninstall (that is
-# how its hook and skill are removed), so a later reinstall needs
-# `claude-burst shunt enable` to turn it back on.
 
 # This is a zsh script (${0:A:h}, read "var?prompt"). `bash install.sh` dies at
 # the first zsh-only expansion with "A: unbound variable", so hand it to zsh.
@@ -53,11 +50,12 @@ apply_keep_awake() {
 
 uninstall() {
   if [[ -x "$TARGET" ]]; then
-    # Token shunting puts a hook in ~/.claude/settings.json that runs this binary
-    # before every Read and Bash call, and a skill telling Claude to run it. Both
-    # have to come out while the binary still exists to remove them: left behind,
-    # the hook points at nothing and the skill instructs Claude to run a command
-    # that is gone. A no-op when shunting was never enabled.
+    # Token shunting (removed 2026-10-02) put a hook in ~/.claude/settings.json
+    # that runs this binary before every Read and Bash call, and a skill telling
+    # Claude to run it. Both have to come out while the binary still exists:
+    # left behind, the hook points at nothing and the skill names a command that
+    # is gone. Current binaries' `disable` removes them too; `shunt disable` is
+    # kept for a binary installed before that. A no-op when it was never enabled.
     "$TARGET" shunt disable >/dev/null 2>&1 || true
     "$TARGET" disable || true
   fi
@@ -71,7 +69,7 @@ uninstall() {
     sudo "$ROOT/scripts/lid-awake-root.sh" remove || echo "WARNING: run: sudo $ROOT/scripts/lid-awake-root.sh remove" >&2
   fi
   defaults delete com.mitchellh.ghostty NSAppSleepDisabled >/dev/null 2>&1 || true
-  echo "Removed Claude Burst routing, the token-shunting hook and skill, and the LaunchAgent."
+  echo "Removed Claude Burst routing, any leftover token-shunting hook and skill, and the LaunchAgent."
   echo "Kept ~/.config/claude-burst (config, state, metrics) and the macOS Keychain secret intentionally."
   echo "To purge those too: rm -rf ~/.config/claude-burst"
   echo "  and delete whichever secondary key you stored:"
