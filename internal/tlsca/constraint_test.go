@@ -4,11 +4,16 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
+	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -40,10 +45,13 @@ func TestCAIsNameConstrainedToTheInterceptedHost(t *testing.T) {
 }
 
 // An install from before the constraint has an unconstrained CA, trusted by
-// every running Claude Code session. Migrating must give a constrained CA,
-// delete the old key, and serve a chain that BOTH the old CA (sessions
-// started earlier) and the new one (sessions started later) accept.
-func TestMigratingAnUnconstrainedCAKeepsOldAndNewClientsWorking(t *testing.T) {
+// every running Claude Code session. Starting the gateway must keep using
+// it: on 2026-10-02 replacing it at start (with a "bridge" chain meant to
+// keep old sessions working) failed every running session with
+// SELF_SIGNED_CERT_IN_CHAIN. The leaf must chain to the existing CA alone,
+// checked by real Node TLS when node is installed, since Go's verifier
+// accepted the bridge chain that Node refused.
+func TestStartingKeepsAnUnconstrainedCA(t *testing.T) {
 	dir := t.TempDir()
 	caCertPath, caKeyPath, _, _ := Files(dir)
 	legacy, legacyKey := writeLegacyCA(t, caCertPath, caKeyPath)
@@ -52,42 +60,84 @@ func TestMigratingAnUnconstrainedCAKeepsOldAndNewClientsWorking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newCA, newKey, _, err := loadCA(caCertPath, caKeyPath)
-	if err != nil || newCA == nil || !constrainedTo(newCA, host) {
-		t.Fatalf("after migration the CA is not constrained: %v", err)
+	ca, key, _, err := loadCA(caCertPath, caKeyPath)
+	if err != nil || ca == nil || !key.Equal(legacyKey) {
+		t.Fatalf("starting replaced the CA running sessions trust: %v", err)
 	}
-	if newKey.Equal(legacyKey) {
-		t.Fatal("the unconstrained key is still on disk")
+	if len(leaf.Certificate) != 1 {
+		t.Fatalf("chain has %d certificates, want the leaf alone", len(leaf.Certificate))
 	}
-	if len(leaf.Certificate) != 2 {
-		t.Fatalf("chain has %d certificates, want leaf + bridge", len(leaf.Certificate))
+	if err := leaf.Leaf.CheckSignatureFrom(legacy); err != nil {
+		t.Fatalf("leaf not signed by the existing CA: %v", err)
 	}
-	bridge, err := x509.ParseCertificate(leaf.Certificate[1])
+	if Constrained(dir, host) {
+		t.Error("Constrained says yes for an unconstrained CA")
+	}
+	nodeAccepts(t, dir, caPEM)
+}
+
+// Rotate gives a constrained CA, deletes the old key, keeps the old
+// certificate for trust removal, and the new chain works in Node.
+func TestRotateReplacesTheCA(t *testing.T) {
+	dir := t.TempDir()
+	caCertPath, caKeyPath, _, _ := Files(dir)
+	_, legacyKey := writeLegacyCA(t, caCertPath, caKeyPath)
+	if _, _, err := LoadOrCreate(dir, host); err != nil {
+		t.Fatal(err)
+	}
+	caPEM, err := Rotate(dir, host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inter := x509.NewCertPool()
-	inter.AddCert(bridge)
-
-	oldRoots := x509.NewCertPool()
-	oldRoots.AddCert(legacy)
-	if _, err := leaf.Leaf.Verify(x509.VerifyOptions{DNSName: host, Roots: oldRoots, Intermediates: inter}); err != nil {
-		t.Errorf("a session that trusts only the old CA rejects the chain: %v", err)
+	_, key, _, err := loadCA(caCertPath, caKeyPath)
+	if err != nil || key == nil || key.Equal(legacyKey) {
+		t.Fatalf("the old key survived rotation: %v", err)
 	}
-	newRoots := x509.NewCertPool()
-	newRoots.AppendCertsFromPEM(caPEM)
-	if _, err := leaf.Leaf.Verify(x509.VerifyOptions{DNSName: host, Roots: newRoots, Intermediates: inter}); err != nil {
-		t.Errorf("a session that trusts the new CA rejects the chain: %v", err)
+	if !Constrained(dir, host) {
+		t.Error("rotated CA is not constrained")
 	}
-	if _, legacyPath := migrationFiles(dir); !fileExists(legacyPath) {
+	if !fileExists(legacyFile(dir)) {
 		t.Error("the old certificate was not kept for trust removal")
 	}
+	nodeAccepts(t, dir, caPEM)
+}
 
-	// Stable afterwards: a second start neither migrates again nor drops
-	// the bridge while it is valid.
-	again, _, err := LoadOrCreate(dir, host)
-	if err != nil || len(again.Certificate) != 2 {
-		t.Fatalf("second start: err=%v chain=%d", err, len(again.Certificate))
+// nodeAccepts serves dir's leaf chain over TLS and connects with Node
+// trusting only caPEM, the way Claude Code does with NODE_EXTRA_CA_CERTS.
+func nodeAccepts(t *testing.T, dir string, caPEM []byte) {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Log("node not installed: Node TLS check skipped")
+		return
+	}
+	leaf, _, err := LoadOrCreate(dir, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{*leaf}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.(*tls.Conn).Handshake()
+			c.Close()
+		}
+	}()
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	os.WriteFile(caFile, caPEM, 0600)
+	script := `const tls=require("tls"),fs=require("fs");
+const c=tls.connect({port:+process.argv[1],host:"127.0.0.1",servername:"` + host + `",ca:[fs.readFileSync(process.argv[2])]},()=>{console.log("OK");c.end()});
+c.on("error",e=>{console.log(e.code||e.message);process.exit(1)});`
+	out, err := exec.Command(node, "-e", script, fmt.Sprint(ln.Addr().(*net.TCPAddr).Port), caFile).CombinedOutput()
+	if err != nil {
+		t.Fatalf("Node rejected the chain: %s", out)
 	}
 }
 
@@ -95,9 +145,12 @@ func writeLegacyCA(t *testing.T, certPath, keyPath string) (*x509.Certificate, *
 	t.Helper()
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "claude-burst local CA"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage: x509.KeyUsageCertSign, BasicConstraintsValid: true, IsCA: true,
+		// The shape real installs have: same name as a new CA, pathlen:0.
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{Organization: []string{"claude-burst local intercept"}, CommonName: "claude-burst local CA"},
+		NotBefore:    time.Now().Add(-time.Hour), NotAfter: time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true, IsCA: true, MaxPathLen: 0, MaxPathLenZero: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {

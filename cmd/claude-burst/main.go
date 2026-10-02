@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
@@ -69,6 +70,8 @@ func main() {
 		disable(os.Args[2:])
 	case "uninstall-hooks":
 		uninstallHooks(os.Args[2:])
+	case "ca-rotate":
+		caRotate(os.Args[2:])
 	case "status":
 		status()
 	case "reset":
@@ -101,6 +104,7 @@ Commands:
   keychain-set      Store a secondary's API key in macOS Keychain (--provider together|openrouter|bedrock)
   enable            Point Claude Code at the local gateway via ~/.claude/settings.json
   disable           Remove Claude Burst from Claude Code settings
+  ca-rotate         Replace the local intercept CA (only with no Claude Code session running)
   uninstall-hooks   Remove every hook, skill and command Burst put in ~/.claude (install.sh uninstall runs it)
   status            Show routing state
   reset             Clear overflow state immediately (back to primary)
@@ -207,11 +211,10 @@ func serve(args []string) {
 			fmt.Fprintln(os.Stderr, msg)
 			logger.Print(msg)
 		} else if !strings.Contains(string(b), strings.TrimSpace(string(caPEM))) {
-			// The CA was regenerated (expiry, or the 2026-10-02 move to a
-			// name-constrained CA): Claude Code sessions started from now on
-			// need the new one in the bundle. Sessions already running keep
-			// the bundle they read at startup and are served a bridge
-			// certificate instead (see tlsca).
+			// The CA was regenerated (expiry, a changed intercept host, or
+			// ca-rotate): Claude Code sessions started from now on need the
+			// new one in the bundle. Sessions already running keep the
+			// bundle they read at startup and must be restarted (see tlsca).
 			if err := tlsca.EnsureInBundle(cfg.Intercept.CABundle, caPEM); err != nil {
 				logger.Printf("WARNING: the CA was renewed but %s could not be updated: %v. Run: claude-burst enable", cfg.Intercept.CABundle, err)
 			} else {
@@ -840,6 +843,11 @@ func enable(args []string) {
 				fatal(err)
 			}
 			fmt.Printf("removed ANTHROPIC_BASE_URL from %s (transparent mode needs it unset)\n", p)
+		} else if cur := claudesettings.BaseURL(root); cur != "" {
+			// Left alone, but say what it means: Claude Code sends to that
+			// host, not to the intercepted one, so nothing reaches this gateway.
+			fmt.Printf("WARNING: %s sets ANTHROPIC_BASE_URL=%s (not ours, left as it is).\n"+
+				"Claude Code sends its requests there, not to %s, so transparent mode will not see them.\n", p, cur, cfg.Intercept.Host)
 		} else {
 			fmt.Printf("ANTHROPIC_BASE_URL already unset in %s\n", p)
 		}
@@ -867,6 +875,16 @@ Undo at any time with:
 Then restart Claude Code. Verify with: claude-burst status
 `, helper, cfg.Intercept.Host, portOf(cfg.Listen), helper)
 		return
+	}
+
+	// Someone else's gateway (Portkey, a corporate LLM proxy, Bedrock via a
+	// broker) is configuration we do not own. Overwriting it would route
+	// their traffic around the gateway they chose, and disable would then
+	// remove the key entirely, losing their URL for good.
+	if cur := claudesettings.BaseURL(root); cur != "" && !claudesettings.OwnBaseURL(cur, cfg.Listen) {
+		fatal(fmt.Errorf("%s already sets ANTHROPIC_BASE_URL=%s, which is not this gateway. "+
+			"Refusing to overwrite it. Remove it yourself if Claude Burst should take over, "+
+			"or point Claude Burst's upstream at that gateway instead", p, cur))
 	}
 
 	// Important: do NOT set a gateway API credential here. In
@@ -1020,4 +1038,40 @@ func superviseHotspot(logger *log.Logger) {
 		}()
 		time.Sleep(time.Minute)
 	}
+}
+
+// caRotate replaces an unconstrained local CA with one constrained to the
+// intercepted host. The gateway no longer does this by itself: every Claude
+// Code session running at that moment trusts only the old CA and fails TLS
+// until restarted (2026-10-02, see internal/tlsca), so this refuses while
+// any is running unless --force is given.
+func caRotate(args []string) {
+	force := false
+	for _, a := range args {
+		if a != "--force" {
+			fatal(fmt.Errorf("ca-rotate: unknown argument %q (only --force)", a))
+		}
+		force = true
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		fatal(err)
+	}
+	if out, _ := exec.Command("pgrep", "-x", "claude").Output(); len(strings.TrimSpace(string(out))) > 0 && !force {
+		n := len(strings.Fields(string(out)))
+		fatal(fmt.Errorf("%d Claude Code process(es) running. Each trusts only the current CA and would fail every request with SELF_SIGNED_CERT_IN_CHAIN until restarted. Close them all and run this again, or pass --force and restart them yourself", n))
+	}
+	caPEM, err := tlsca.Rotate(cfg.Intercept.CADir, cfg.Intercept.Host)
+	if err != nil {
+		fatal(err)
+	}
+	if err := tlsca.EnsureInBundle(cfg.Intercept.CABundle, caPEM); err != nil {
+		fatal(err)
+	}
+	fmt.Printf(`new CA in %s, constrained to %s, and in %s.
+Next:
+  1. restart the gateway: launchctl kickstart -k gui/$UID/ninja.andrewbaker.claude-burst
+  2. if the old CA was trusted system-wide: sudo %s
+  3. start Claude Code sessions again
+`, cfg.Intercept.CADir, cfg.Intercept.Host, cfg.Intercept.CABundle, filepath.Join(filepath.Dir(rootHelperPath()), "trust-ca-systemwide.sh"))
 }

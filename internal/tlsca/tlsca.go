@@ -15,11 +15,19 @@
 // that key could have impersonated any website to every app on the Mac. The
 // key is written 0600 in a 0700 directory and never leaves the machine.
 //
-// Migrating an unconstrained CA (see migrateLegacy) keeps running Claude
-// Code sessions working: Node reads its CA bundle once at startup, so a
-// session started before the change still trusts only the old CA. For a
-// short transition the gateway also presents a bridge certificate, the new
-// CA's public key signed by the old CA, after which the old key is deleted.
+// The CA is never replaced while it is valid, and never automatically.
+// Node reads its CA bundle once, at startup, so every running Claude Code
+// session trusts exactly the CA that was in force when it started. On
+// 2026-10-02 the gateway replaced an unconstrained CA at start and served a
+// "bridge" (the new CA's key signed by the old one) so running sessions
+// would keep working. They did not: the old CA has pathlen:0, so it may not
+// certify another CA, and the bridge's subject and issuer were the same name,
+// so Go left out its Authority Key Identifier and OpenSSL took it for a
+// self-signed root. Every running session failed with
+// SELF_SIGNED_CERT_IN_CHAIN, and the old key had already been overwritten.
+// No chain served by the gateway can satisfy a client that trusts a CA whose
+// key is gone, so the only safe rotation is one done while no session is
+// running: see Rotate, called by `claude-burst ca-rotate`, which checks that.
 package tlsca
 
 import (
@@ -43,10 +51,6 @@ import (
 const (
 	caValidity   = 10 * 365 * 24 * time.Hour
 	leafValidity = 397 * 24 * time.Hour
-	// bridgeValidity is how long sessions started before a migration keep
-	// working without a restart.
-	bridgeValidity = 30 * 24 * time.Hour
-
 	// Reissue a leaf before it actually expires. Without this the gateway
 	// would keep serving a valid-looking cert until the moment it went stale,
 	// then fail every request at once with a TLS error that looks like a
@@ -57,12 +61,9 @@ const (
 	endMarker   = "# END claude-burst CA"
 )
 
-// Migration files: the bridge certificate presented during a transition, and
-// the old CA's certificate, kept (without its key) so the system-wide trust
-// can be found and removed.
-func migrationFiles(dir string) (bridgeCert, legacyCert string) {
-	return filepath.Join(dir, "bridge-cert.pem"), filepath.Join(dir, "ca-legacy-cert.pem")
-}
+// legacyFile is where Rotate keeps the replaced CA's certificate (never its
+// key), so trust-ca-systemwide.sh can find and remove the old system trust.
+func legacyFile(dir string) string { return filepath.Join(dir, "ca-legacy-cert.pem") }
 
 // Files returns the on-disk locations under dir.
 func Files(dir string) (caCert, caKey, leafCert, leafKey string) {
@@ -89,17 +90,11 @@ func LoadOrCreate(dir, host string) (*tls.Certificate, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if caCert != nil && !constrainedTo(caCert, host) {
-		old, oldKey := caCert, caKey
-		caCert, caKey, caPEM, err = createCA(caCertPath, caKeyPath, host)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(old.PermittedDNSDomains) == 0 {
-			if err := migrateLegacy(dir, old, oldKey, caCert, caKey); err != nil {
-				return nil, nil, err
-			}
-		}
+	// A CA constrained to another host cannot sign for this one at all (the
+	// intercepted host was changed), so nothing could be kept working: make a
+	// new one. An unconstrained CA is kept; see the package comment.
+	if caCert != nil && len(caCert.PermittedDNSDomains) > 0 && !constrainedTo(caCert, host) {
+		caCert = nil
 	}
 	if caCert == nil {
 		caCert, caKey, caPEM, err = createCA(caCertPath, caKeyPath, host)
@@ -118,11 +113,6 @@ func LoadOrCreate(dir, host string) (*tls.Certificate, []byte, error) {
 			return nil, nil, err
 		}
 	}
-	if bridge := loadBridge(dir, caCert); bridge != nil {
-		chained := *leaf
-		chained.Certificate = append(append([][]byte{}, leaf.Certificate...), bridge.Raw)
-		leaf = &chained
-	}
 	return leaf, caPEM, nil
 }
 
@@ -134,57 +124,38 @@ func constrainedTo(ca *x509.Certificate, host string) bool {
 		len(ca.ExcludedDNSDomains) == 0
 }
 
-// migrateLegacy signs the new CA's public key with the old, unconstrained
-// CA (the bridge), keeps the old certificate for trust removal, and deletes
-// the old key. A session started before the migration still trusts only the
-// old CA; served as leaf + bridge, its chain still reaches that CA.
-func migrateLegacy(dir string, old *x509.Certificate, oldKey *ecdsa.PrivateKey, ca *x509.Certificate, caKey *ecdsa.PrivateKey) error {
-	bridgePath, legacyPath := migrationFiles(dir)
-	notAfter := time.Now().Add(bridgeValidity)
-	if old.NotAfter.Before(notAfter) {
-		notAfter = old.NotAfter
-	}
-	tmpl := *ca
-	tmpl.NotAfter = notAfter
-	serial, err := randomSerial()
-	if err != nil {
-		return err
-	}
-	tmpl.SerialNumber = serial
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, old, &caKey.PublicKey, oldKey)
-	if err != nil {
-		return fmt.Errorf("tlsca: create bridge cert: %w", err)
-	}
-	if err := writeFile(bridgePath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0644); err != nil {
-		return err
-	}
-	if err := writeFile(legacyPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: old.Raw}), 0644); err != nil {
-		return err
-	}
-	// The old key itself is gone already: createCA wrote the new key over it.
-	return nil
+// Constrained reports whether the CA in dir exists and may sign only for
+// host. An install from before 2026-10-02 has an unconstrained CA; it keeps
+// working, and `claude-burst ca-rotate` replaces it when no session runs.
+func Constrained(dir, host string) bool {
+	caCertPath, caKeyPath, _, _ := Files(dir)
+	c, _, _, err := loadCA(caCertPath, caKeyPath)
+	return err == nil && c != nil && constrainedTo(c, host)
 }
 
-// loadBridge returns the bridge certificate while it is still valid and
-// still certifies the current CA's key; otherwise nil.
-func loadBridge(dir string, ca *x509.Certificate) *x509.Certificate {
-	bridgePath, _ := migrationFiles(dir)
-	b, err := os.ReadFile(bridgePath)
-	if err != nil {
-		return nil
+// Rotate replaces the CA in dir with a new one constrained to host, and
+// reissues the leaf. The old certificate is kept as ca-legacy-cert.pem for
+// trust removal; its key is deleted. It returns the new CA in PEM form for
+// the trust bundle.
+//
+// Every Claude Code session running at that moment trusts only the old CA
+// and will fail TLS against the gateway until restarted, and no certificate
+// chain can prevent that (see the package comment). The caller must make
+// sure none is running.
+func Rotate(dir, host string) ([]byte, error) {
+	caCertPath, caKeyPath, leafCertPath, leafKeyPath := Files(dir)
+	if old, err := os.ReadFile(caCertPath); err == nil {
+		if err := writeFile(legacyFile(dir), old, 0644); err != nil {
+			return nil, err
+		}
 	}
-	block, _ := pem.Decode(b)
-	if block == nil {
-		return nil
+	for _, p := range []string{caKeyPath, caCertPath, leafCertPath, leafKeyPath, filepath.Join(dir, "bridge-cert.pem")} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("tlsca: remove %s: %w", p, err)
+		}
 	}
-	c, err := x509.ParseCertificate(block.Bytes)
-	if err != nil || time.Now().After(c.NotAfter) {
-		return nil
-	}
-	if pk, ok := c.PublicKey.(*ecdsa.PublicKey); !ok || !pk.Equal(ca.PublicKey) {
-		return nil
-	}
-	return c
+	_, caPEM, err := LoadOrCreate(dir, host)
+	return caPEM, err
 }
 
 func loadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {

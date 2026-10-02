@@ -67,6 +67,13 @@ func Write(p string, root map[string]any) error {
 	return nil
 }
 
+// OwnBaseURL says whether url points at this gateway (its listen address,
+// or any loopback http port, which is what every earlier version wrote).
+// Anything else, such as a Portkey or corporate gateway, is the user's.
+func OwnBaseURL(url, listen string) bool {
+	return url == "http://"+listen || url == "https://"+listen || strings.HasPrefix(url, "http://127.0.0.1:")
+}
+
 // BaseURL returns the currently configured ANTHROPIC_BASE_URL, if any.
 func BaseURL(root map[string]any) string {
 	env, _ := root["env"].(map[string]any)
@@ -88,10 +95,7 @@ func ClearBaseURL(root map[string]any, listen string) bool {
 		return false
 	}
 	v, ok := env[BaseURLKey].(string)
-	if !ok {
-		return false
-	}
-	if v != "http://"+listen && v != "https://"+listen && !strings.HasPrefix(v, "http://127.0.0.1:") {
+	if !ok || !OwnBaseURL(v, listen) {
 		return false
 	}
 	delete(env, BaseURLKey)
