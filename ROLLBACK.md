@@ -7,16 +7,24 @@ case) or `scripts/rollback.sh` (emergency case, below).
 ## Remove everything
 
 ```sh
-./install.sh uninstall            # everything below, with one sudo prompt
-./install.sh uninstall --purge    # also deletes ~/.config/claude-burst and the Keychain keys
+./install.sh uninstall            # everything below, with one sudo prompt if anything needs root
+./install.sh uninstall --purge    # the same, and delete ~/.config/claude-burst too
 ```
 
-`./install.sh uninstall` removes the routing, the `/etc/hosts` block, the pf anchor, the
-System-keychain CA trust, both guards, the lid keep-awake daemon, every Claude Code hook
-Burst added, the LaunchAgent and the binary. It then checks that each one is gone and fails
-loudly, naming what is left, if anything remains. It keeps `~/.config/claude-burst` (your
-configuration, metrics and the CA) unless you pass `--purge`, so an accidental rerun does not
-wipe them.
+`./install.sh uninstall` removes the transparent mode redirect and pf anchor, the
+System-keychain CA trust, the admin hostname entry, the pf guard and the lid keep-awake
+daemon (asking for sudo only when one of them is there), then the gateway watchdog, every
+Claude Code hook Burst added, the LaunchAgent and the binary. It then checks that each one is
+gone and exits non-zero, naming what is left and the command that removes it, if anything
+remains. If `/etc/hosts` still redirects `api.anthropic.com` after the root steps, it stops
+with the gateway still running, because removing the gateway then would cut the whole Mac off
+from Anthropic.
+
+It keeps `~/.config/claude-burst` (configuration, metrics, logs, backups and the CA) unless you
+pass `--purge`, so an accidental rerun does not wipe them. It always keeps the secondary's key
+in the Keychain (it prints the `security delete-generic-password` command), the PATH line in
+`~/.zprofile`, `/var/log/claude-burst-pf.log` and the usage panel. The README's
+[Uninstall](README.md#uninstall) section lists the steps in order.
 
 ## Emergency recovery, without this machine's help
 
@@ -72,7 +80,9 @@ That alone restores Anthropic access machine-wide; everything else is tidy-up.
 | Handover hooks (`SessionStart`, `SessionEnd`) | Session handover installed | **Remove** in the dashboard's Session handover section |
 | Coordination hooks (seven) | Session coordination is on | switch it off in the dashboard |
 
-Every write to `settings.json` is backed up first, under `~/.config/claude-burst/backups/`.
+`claude-burst uninstall-hooks` removes every hook, skill and command Burst put in `~/.claude`
+at once, touching nothing else in `settings.json`; `./install.sh uninstall` runs it. Every write
+to `settings.json` is backed up first, under `~/.config/claude-burst/backups/`.
 
 ### Transparent mode (machine-wide, root)
 
