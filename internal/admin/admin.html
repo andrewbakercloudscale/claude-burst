@@ -1300,7 +1300,7 @@
           <option value="480">for 8 hours after I last used it</option>
         </select>
       </label>
-      <div class="hint" style="margin-top:4px">"Used" is a Claude Code turn, from this Mac or from your phone through Remote Control, or the lid being open. Once the time passes the Mac sleeps as usual; opening the lid wakes it and starts the time again, and the hotspot is tried at once if there is no network.</div>
+      <div class="hint" style="margin-top:4px">"Used" is a Claude Code turn, from this Mac or from your phone through Remote Control, or the lid being open. Once the time passes the Mac sleeps as usual; opening the lid wakes it and starts the time again, and if there is no network the hotspot is tried at once and then on the usual timing until the Mac is back online.</div>
       <div class="row" style="margin-top:10px">
         <button class="primary" id="kaApply" disabled>&#x2713; Apply</button>
         <span id="kaPending" class="hint"></span>
@@ -1309,7 +1309,7 @@
       <div id="kaNote"></div>
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
-      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it soon after this Mac goes offline and keeps trying for a while, as set under <b>Timing</b> (defaults: about 10 seconds after Wi-Fi is lost, then every minute for 30 minutes), and starts again after the next time it is back online. The password is required: without it macOS refuses a join made in the background. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
+      <div class="hint">With the lid shut macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. Pick the hotspot and Burst tries to join it soon after this Mac goes offline and keeps trying for a while, as set under <b>Timing</b> (defaults: about 10 seconds after Wi-Fi is lost, then every minute for 30 minutes), and starts again after the next time it is back online. Opening the lid with no network tries at once and keeps trying, even when <b>When</b> is set to lid shut. The password is required: without it macOS refuses a join made in the background. On an iPhone, turn on <b>Allow Others to Join</b> in Personal Hotspot so the network stays visible.</div>
       <div class="set-grid" style="margin-top:10px">
         <label>Network<select id="hsSsid"><option value="">Off: do not join anything</option></select></label>
         <label>When<select id="hsWhen"><option value="lid-closed">only with the lid shut</option><option value="always">any time this Mac is offline</option></select></label>
