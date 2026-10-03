@@ -34,11 +34,37 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+# offer_signing asks, once per Mac, to set up the local signing certificate
+# (scripts/signing-setup.sh). Without it every build is signed ad hoc, macOS
+# treats each update as a new program, and folder permissions such as Desktop
+# access are asked for again after every update. CLAUDE_BURST_SIGNING=yes or
+# no answers it without asking.
+offer_signing() {
+  source "$ROOT/scripts/codesign.sh"
+  burst_sign_ready && return 0
+  [[ "${CLAUDE_BURST_SIGNING:-ask}" == "no" ]] && return 0
+  if [[ "${CLAUDE_BURST_SIGNING:-ask}" != "yes" ]]; then
+    if [[ ! -t 0 ]]; then
+      echo "Optional: run scripts/signing-setup.sh once so macOS remembers folder permissions across updates."
+      return 0
+    fi
+    local answer
+    echo
+    echo "macOS asks again for folder access (Desktop, Documents) after every update unless"
+    echo "builds are signed with one local certificate. Setting it up asks for your password"
+    echo "or Touch ID, and possibly your login Keychain password."
+    read -r "answer?Sign builds so macOS remembers your Allow? [Y/n] "
+    [[ -z "$answer" || "$answer" == [Yy]* ]] || { echo "Skipped. Run scripts/signing-setup.sh any time."; return 0; }
+  fi
+  zsh "$ROOT/scripts/signing-setup.sh" --identity-only || echo "WARNING: signing setup did not finish; this build is signed ad hoc. Rerun scripts/signing-setup.sh any time."
+}
+
 # keep_awake_lid_closed (default false) keeps Claude Code in Ghostty, and
 # Remote Control, running with the lid shut; keep_awake_lid_closed_power
 # picks ac (default, plugged in only) or always. Re-applied from config.json
 # on every install, so a reinstall or a new machine with the same config ends
 # up in the same state. False touches nothing and asks for no password.
+
 apply_keep_awake() {
   local cfg="$HOME/.config/claude-burst/config.json" on mode
   on="$(python3 -c "import json;print(str(json.load(open('$cfg')).get('keep_awake_lid_closed',False)).lower())" 2>/dev/null || echo false)"
@@ -255,6 +281,7 @@ install() {
     *) echo "Unsupported Mac architecture: $ARCH" >&2; exit 1 ;;
   esac
 
+  offer_signing
   mkdir -p "$INSTALL_DIR"
   # Staged in the SAME directory so the final mv is an atomic rename.
   staged="$INSTALL_DIR/.claude-burst.new.$$"
