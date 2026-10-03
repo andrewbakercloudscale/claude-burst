@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
 // The runtime half of proxy-side compaction; compact.go has the pure
@@ -385,6 +386,8 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		st.summary, st.hash, st.p0, st.swapAt, st.marks = "", "", 0, 0, nil
 		st.startedAt = time.Time{}
 		st.notice("the summary no longer fits (history cleared, compacted or rewound), so the full history goes again; a new summary can start at once")
+		notice.Publish(alertCompact, notice.Warn, "Compaction summary dropped",
+			"The history was cleared, compacted or rewound, so the summary no longer fits. The full history goes again; a new summary can start at once.")
 		dirty = true
 	}
 	if st.next != "" && (len(msgs) <= st.nextP0 || prefixHash(msgs, st.nextP0) != st.nextHash) {
@@ -392,6 +395,8 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		st.next, st.nextHash, st.nextP0, st.nextMarks = "", "", 0, nil
 		st.startedAt = time.Time{}
 		st.notice("the waiting summary no longer fits (history cleared, compacted or rewound) and was dropped; a new one can start at once")
+		notice.Publish(alertCompact, notice.Warn, "Compaction summary dropped",
+			"The history was cleared, compacted or rewound before the waiting summary swapped in. A new one can start at once.")
 		dirty = true
 	}
 
@@ -650,6 +655,8 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 		if len(reason) > 160 {
 			reason = reason[:160] + "..."
 		}
+		notice.Publish(alertCompact, notice.Warn, "Compaction failed",
+			fmt.Sprintf("The summary could not be written (%s). The full history keeps going; the next attempt is in %s.", reason, retryAfterFailure))
 		st.notice("the summary failed (%s); the next attempt is in %s", reason, retryAfterFailure)
 		return
 	}
