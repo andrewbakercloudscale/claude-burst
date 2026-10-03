@@ -74,7 +74,7 @@ The usage panel floats the same notice it shows for a pauseless compaction over 
 | Compaction failed, or its summary was dropped | warning | fades |
 | Transparent mode: Burst CA no longer trusted, or the `/etc/hosts` redirect missing | error | Transparent mode restored |
 | The pf guard or the gateway watchdog logged a problem; its repair is shown only when the problem was | error | the repair |
-| Gateway restarting (replies in flight finish first), then Gateway ready | information | Gateway ready |
+| Gateway restarting (replies in flight finish first), then Gateway ready; not shown for a restart `scripts/deploy.sh` makes | information | Gateway ready |
 | The gateway not answering at all (the panel's own check, 3 polls in a row) | error | Burst gateway back |
 | A session's context at its warn level (80% of its Compact at, the repository's own when set; never with compaction off for the repository), once per compaction window, on that session's panel | information | fades |
 | Today's API-equivalent spend through Burst passed the level set beside the switch (0 is off), once a day per level | warning | fades |

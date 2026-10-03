@@ -5,9 +5,11 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
@@ -96,6 +98,11 @@ func exitWhenIdleOnSignal(inflight func() int64, logger *log.Logger) {
 // announceDrain and announceReady put a restart on screen. The ok of a
 // gateway that came back resolves the restart; a gateway that never comes
 // back is the usage panel's to report, since nothing here is left to.
+//
+// A restart scripts/deploy.sh asked for is not news: it writes the marker
+// first, and both lines then go to the log only. On 3 and 4 Oct 2026 every
+// deploy put the pair on screen. A deploy whose gateway never comes back is
+// still reported, by the panel's own health check.
 func announceDrain(inflight int64) {
 	detail := "No replies in flight."
 	if inflight == 1 {
@@ -103,9 +110,47 @@ func announceDrain(inflight int64) {
 	} else if inflight > 1 {
 		detail = fmt.Sprintf("%d replies in flight finish first.", inflight)
 	}
+	if plannedRestart(false) {
+		return
+	}
 	notice.Publish("gateway", notice.Info, "Gateway restarting", detail)
 }
 
 func announceReady(version string) {
+	if plannedRestart(true) {
+		return
+	}
 	notice.Publish("gateway", notice.OK, "Gateway ready", "Claude Burst "+version+" is serving.")
+}
+
+// plannedRestartPath is the marker deploy.sh writes before it restarts the
+// gateway. A var for the tests.
+var plannedRestartPath = func() string {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "planned-restart")
+}
+
+// plannedRestartFor is how long a marker counts: a deploy's drain can take
+// 50 seconds, and a stale marker must not hide a crash hours later.
+const plannedRestartFor = 3 * time.Minute
+
+// plannedRestart reports a fresh marker, and removes it when the restart is
+// over (consume), so it quiets one restart only.
+func plannedRestart(consume bool) bool {
+	p := plannedRestartPath()
+	if p == "" {
+		return false
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	fresh := time.Since(fi.ModTime()) < plannedRestartFor
+	if consume || !fresh {
+		os.Remove(p)
+	}
+	return fresh
 }
