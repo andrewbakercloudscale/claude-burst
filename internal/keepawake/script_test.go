@@ -88,6 +88,43 @@ const withMonitor = builtInOnly + `        LG HDR 4K:
           Online: Yes
 `
 
+// The real lid and power checks, against stub ioreg and pmset that print the
+// line looked for and then far more, the way the real ones do. Piped into
+// grep -q under pipefail, the writer died of SIGPIPE and a shut lid read as
+// open, while CLAUDE_BURST_TEST_LID hid it from every other test here.
+func TestLidAndPowerReadWithRealSizedOutput(t *testing.T) {
+	bin := t.TempDir()
+	stub := func(name, first string) {
+		body := "#!/bin/sh\ncat <<'EOF'\n" + first + "\nEOF\nyes 'padding padding padding padding' | head -c 2000000\n"
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub("ioreg", `  |   "AppleClamshellState" = Yes`)
+	stub("pmset", `Now drawing from 'Battery Power'`)
+	stub("system_profiler", "")
+	cmd := exec.Command("zsh", "../../scripts/lid-awake-root.sh", "screen")
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "CLAUDE_BURST_ROOT_STATE_DIR="+t.TempDir(),
+		"CLAUDE_BURST_TEST_SLEEPDISABLED=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("screen: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "off" {
+		t.Errorf("lid shut per ioreg: want off, got %s", got)
+	}
+	// Mode ac on battery: sleep allowed, so desired is 0.
+	cmd = exec.Command("zsh", "../../scripts/lid-awake-root.sh", "desired", "ac")
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "CLAUDE_BURST_ROOT_STATE_DIR="+t.TempDir())
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("desired: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "0" {
+		t.Errorf("on battery per pmset, mode ac: want 0, got %s", got)
+	}
+}
+
 // The screen goes off with the lid shut while the Mac is being kept awake,
 // and only then: never with the lid open, never when the Mac would sleep
 // anyway, and never with an external monitor (clamshell mode, in use).
