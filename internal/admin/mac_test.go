@@ -215,6 +215,39 @@ func TestStaleLidDaemonIsAProblem(t *testing.T) {
 	}
 }
 
+// The machine-wide half reads as one of off, missing, stale, stopped or ok,
+// so the dashboard can say exactly what the password is for.
+func TestLidDaemonState(t *testing.T) {
+	s := newTestServer(t)
+	scripts := filepath.Join(t.TempDir(), "scripts")
+	os.MkdirAll(scripts, 0o755)
+	s.rootHelper = filepath.Join(scripts, "transparent-root.sh")
+	os.WriteFile(filepath.Join(scripts, "lid-awake-root.sh"), []byte("new"), 0o755)
+	installedLidScript = filepath.Join(t.TempDir(), "lid-awake-root.sh")
+	running := true
+	lidDaemonRunning = func() bool { return running }
+
+	if got := s.lidDaemonState(false); got != "off" {
+		t.Errorf("keep-awake off: %q", got)
+	}
+	if got := s.lidDaemonState(true); got != "missing" {
+		t.Errorf("never installed: %q", got)
+	}
+	os.WriteFile(installedLidScript, []byte("old"), 0o755)
+	if got := s.lidDaemonState(true); got != "stale" {
+		t.Errorf("older copy: %q", got)
+	}
+	os.WriteFile(installedLidScript, []byte("new"), 0o755)
+	running = false
+	if got := s.lidDaemonState(true); got != "stopped" {
+		t.Errorf("not running: %q", got)
+	}
+	running = true
+	if got := s.lidDaemonState(true); got != "ok" {
+		t.Errorf("current and running: %q", got)
+	}
+}
+
 // Bypass is settings.json's permissions.defaultMode, so it reaches every way
 // Claude Code starts. Saving it edits that one key, keeps the rest of the
 // file, writes the launcher's panel key beside it, and turning it off leaves

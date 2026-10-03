@@ -1,5 +1,6 @@
-# Sourced by install.sh and deploy.sh: get macOS's folder prompts answered
-# while someone is at the Mac.
+# Sourced by install.sh and deploy.sh: get what needs a person at the Mac
+# (macOS's folder prompts, the keep-awake daemon's password) done while they
+# are still at the Terminal.
 #
 # The gateway reads repositories under ~/Desktop (to name a session's
 # repository) and runs git in its own checkout (the update check). macOS
@@ -47,5 +48,32 @@ for r in json.loads(sys.argv[1]).get("results", []):
         line += f" ({r['detail']})"
     print(line)
 PY
+  return 0
+}
+
+# burst_lid_daemon_update CHECKOUT_DIR: the keep-awake daemon runs a
+# root-owned copy of lid-awake-root.sh and never rereads the checkout, so a
+# fix to it (the screen going off behind a shut lid) is not live until
+# someone types a password. With someone at this Terminal, ask now; without,
+# say where to do it. Only when keep-awake is on. Never fails the caller.
+burst_lid_daemon_update() {
+  local root="$1" cfg="$HOME/.config/claude-burst/config.json" installed=/usr/local/libexec/claude-burst/lid-awake-root.sh
+  local on mode idle
+  on="$(python3 -c "import json;print(str(json.load(open('$cfg')).get('keep_awake_lid_closed',False)).lower())" 2>/dev/null || echo false)"
+  [[ "$on" == true ]] || return 0
+  if [[ -f "$installed" ]] && cmp -s "$root/scripts/lid-awake-root.sh" "$installed" && pgrep -f 'lid-awake-root.sh watch' >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "  keep-awake: the lid daemon needs your password to update (no one at this Terminal). Press Grant permission under Lid & hotspot on the dashboard."
+    return 0
+  fi
+  mode="$(python3 -c "import json;print(json.load(open('$cfg')).get('keep_awake_lid_closed_power') or 'ac')" 2>/dev/null || echo ac)"
+  idle="$(python3 -c "import json;print(int(json.load(open('$cfg')).get('keep_awake_idle_minutes') or 0))" 2>/dev/null || echo 0)"
+  echo
+  echo "Keep-awake: the lid daemon (it keeps the Mac awake and turns the screen off behind"
+  echo "the shut lid) is out of date or not running. sudo will ask for your password."
+  sudo "$root/scripts/lid-awake-root.sh" apply "$mode" "$idle" "$HOME/.config/claude-burst/last-activity" \
+    || echo "  keep-awake: not updated. Press Grant permission under Lid & hotspot on the dashboard."
   return 0
 }

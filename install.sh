@@ -393,6 +393,7 @@ PLIST
   # shellcheck source=./scripts/folder-access.sh
   source "$ROOT/scripts/folder-access.sh"
   burst_folder_access "$dash" "$ROOT"
+  burst_lid_daemon_update "$ROOT"
   secondary="$(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('provider') or '')" 2>/dev/null || true)"
   case "$secondary" in
     openai-compatible) sec_line="Secondary: $(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('model') or '')" 2>/dev/null) at $(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('base_url') or '')" 2>/dev/null)" ;;
