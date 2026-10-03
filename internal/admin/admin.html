@@ -732,6 +732,7 @@
   <div class="navgroup">This Mac</div>
   <a class="navlink" data-target="sec-mac"><span class="nd" id="nd-mac"></span><span class="label">Lid &amp; hotspot</span></a>
   <a class="navlink" data-target="sec-notify"><span class="nd" id="nd-notify"></span><span class="label">Notifications</span></a>
+  <a class="navlink" data-target="sec-permissions"><span class="nd" id="nd-permissions"></span><span class="label">Permissions</span></a>
 
   <div class="navgroup">Health</div>
   <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
@@ -1453,6 +1454,23 @@
 <div class="row" style="margin-top:10px"><button class="primary" id="ntSave" disabled>&#x2713; Save</button><button id="ntTest">Send a test notification</button></div>
       <div class="hint" style="margin-top:6px">Send a test to check that macOS shows them. If nothing appears within a few seconds, turn on <b>System Settings &gt; Notifications &gt; Script Editor</b> and try again. Every notification Burst sends is also written to the gateway log.</div>
       <div id="ntNote"></div>
+    </div>
+  </section>
+
+  <section id="sec-permissions" style="scroll-margin-top:70px">
+    <h2>Permissions <span class="applies" data-where="login Keychain + System Settings" data-when="now"></span> <span class="hint">what macOS lets Burst do, and how to fix what it does not</span></h2>
+    <div class="body">
+      <div class="hint">Burst finds the repository each session runs in by looking for <code>.git</code> above it. Under <b>Desktop</b>, <b>Documents</b> and <b>Downloads</b> macOS asks first ("claude-burst would like to access files in your Desktop folder"). macOS remembers your answer per program, and an unsigned update counts as a new program, so the question came back after every update. Signing with a local certificate keeps one Allow for good. This page never looks inside the folders by itself, because looking is what asks.</div>
+      <div id="permSigning" style="margin:10px 0"></div>
+      <div id="permFolders" style="margin:10px 0"></div>
+      <div class="row">
+        <button class="primary" id="permSetup">Set up signing</button>
+        <button id="permCheck">Check folder access</button>
+        <button id="permPrivacy">Open Privacy settings</button>
+        <button id="permRefresh">Refresh</button>
+      </div>
+      <div class="hint" style="margin-top:6px">Check folder access looks inside Desktop, Documents and Downloads now, so macOS may ask for each one. Set up signing opens Terminal: macOS asks for your password or Touch ID, and the Keychain may ask for your login password.</div>
+      <div id="permNote"></div>
     </div>
   </section>
 
@@ -4538,6 +4556,55 @@ $("finderRemove").onclick = () => {
   finderAction("remove");
 };
 loadFinder();
+
+// Permissions. The GET never looks inside the protected folders (looking
+// is what makes macOS ask); Check does, on a click.
+let permState = null;
+async function loadPermissions() {
+  try { permState = await (await fetch("/api/permissions")).json(); } catch { return; }
+  renderPermissions();
+}
+function permPill(state) {
+  if (state === "allowed" || state === "ok") return `<span class="pill p">${state === "ok" ? "signed" : "allowed"}</span>`;
+  if (state === "denied") return `<span class="pill bad">denied</span>`;
+  if (state === "warn") return `<span class="pill s">not signed</span>`;
+  return `<span class="pill">${esc(state)}</span>`;
+}
+function renderPermissions() {
+  const p = permState; if (!p) return;
+  const sg = p.signing;
+  $("permSigning").innerHTML = `<div style="margin:4px 0">${permPill(sg.state)} <b>Code signing</b> <span class="hint">${
+    esc(sg.authority ? "signed by " + sg.authority : "signature unknown")}${sg.identifier ? ", " + esc(sg.identifier) : ""}</span></div>
+    <div class="hint">${esc(sg.meaning)}${sg.fix ? " " + esc(sg.fix) : ""}</div>`;
+  $("permFolders").innerHTML = (p.folders || []).map(f => `<div style="margin:8px 0">${permPill(f.state)} <b>${esc(f.folder)}</b>${
+    f.at && !f.at.startsWith("0001") ? ` <span class="hint">as of ${esc(new Date(f.at).toLocaleTimeString())}</span>` : ""}${
+    (f.repos || []).length ? `<div class="hint">repositories: ${f.repos.map(r => `<code>${esc(r)}</code>`).join(", ")}</div>` : ""}
+    <div class="hint">${esc(f.meaning)}${f.fix ? " " + esc(f.fix) : ""}</div></div>`).join("");
+  const denied = (p.folders || []).some(f => f.state === "denied");
+  setDot("nd-permissions", denied ? "bad" : sg.state === "ok" ? "ok" : "warn");
+  $("permSetup").textContent = sg.signed ? "✓ Signed" : "Set up signing";
+  $("permSetup").disabled = sg.signed || !sg.script_found;
+  $("permSetup").title = sg.signed ? "This build is signed with the local certificate"
+    : sg.script_found ? "" : "scripts/signing-setup.sh was not found next to this install";
+}
+async function permAction(path, btn, busy) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = busy;
+  try {
+    const r = await post(path, {});
+    if (r.permissions) { permState = r.permissions; }
+    const lines = r.results ? r.results.map(x => `${x.folder}: ${x.state}${x.detail ? " (" + x.detail + ")" : ""}`) : [r.detail || "Done."];
+    note($("permNote"), "ok", lines.join("\n"));
+  } catch (e) { note($("permNote"), "bad", e.message); }
+  btn.textContent = label; btn.disabled = false;
+  if (permState) renderPermissions();
+  if (path !== "/api/permissions-check") loadPermissions();
+}
+$("permSetup").onclick = () => permAction("/api/signing-setup", $("permSetup"), "Opening Terminal...");
+$("permCheck").onclick = () => permAction("/api/permissions-check", $("permCheck"), "Checking (answer any macOS prompt)...");
+$("permPrivacy").onclick = () => permAction("/api/open-privacy-settings", $("permPrivacy"), "Opening...");
+$("permRefresh").onclick = loadPermissions;
+loadPermissions();
 
 // ---- Session coordination -------------------------------------------------
 function coAgo(sec) {

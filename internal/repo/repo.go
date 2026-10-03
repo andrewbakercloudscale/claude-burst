@@ -216,6 +216,10 @@ func observe(dir string, err error) {
 	e.State, e.At = state, time.Now()
 }
 
+// Observe records the answer to a look at dir made elsewhere, such as the
+// dashboard's own check, so Access reflects it too.
+func Observe(dir string, err error) { observe(dir, err) }
+
 // noteRepo records a repository root found under a protected folder.
 func noteRepo(root string) {
 	f := protectedFolder(root)
@@ -249,8 +253,8 @@ func Access() []FolderAccess {
 	return out
 }
 
-// resetAccess forgets every observation. For tests.
-func resetAccess() {
+// ResetAccess forgets every observation. For tests, here and in admin.
+func ResetAccess() {
 	access.mu.Lock()
 	access.m = nil
 	access.mu.Unlock()
