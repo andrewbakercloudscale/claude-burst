@@ -46,6 +46,12 @@ func TestGuardLinesBecomeOnScreenAlerts(t *testing.T) {
 	appendLine(t, pf, "2026-10-03 10:01:10 HEALED: anchor reloaded")
 	s.notifyRound(n, time.Now())
 
+	// Broken and repaired between two rounds: the guard did its job and
+	// nobody saw a break, so the repair is not news either.
+	appendLine(t, pf, "2026-10-03 10:02:00 BROKEN: rdr rule missing")
+	appendLine(t, pf, "2026-10-03 10:02:05 HEALED: anchor reloaded")
+	s.notifyRound(n, time.Now())
+
 	got := alerts()
 	if len(got) != 2 || got[0] != "error: pf guard hit a problem" || got[1] != "ok: pf guard repaired the redirect" {
 		t.Fatalf("alerts = %q", got)
