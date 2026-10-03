@@ -2983,12 +2983,13 @@ $("resetTop").onclick = async () => {
 };
 
 $("restart").onclick = async () => {
-  if (!confirm("Restart the gateway?\n\nIn-flight requests will be dropped. If it is managed by launchd it comes straight back; if you started it by hand, it will simply stop.")) return;
+  if (!confirm("Restart the gateway?\n\nReplies in flight finish first (at most 50s). If it is managed by launchd it comes straight back; if you started it by hand, it will simply stop.")) return;
   delete $("actNote").dataset.overflowClaim;
+  const before = await fetch("/api/state").then(r => r.json()).then(s => s.pid).catch(() => null);
   try {
     note($("actNote"), "warn", (await post("/api/restart")).ok + " - waiting for it to come back...");
   } catch (e) { note($("actNote"), "bad", e.message); return; }
-  awaitGatewayBack();
+  awaitGatewayBack(before);
 };
 
 // Polls for the gateway to actually come back after a restart, rather than
@@ -3000,12 +3001,22 @@ $("restart").onclick = async () => {
 // path refresh() already renders). Either way this always ends by leaving
 // the page in a state that says something true, not a stale "restarting..."
 // that outlives the actual attempt.
-async function awaitGatewayBack() {
-  const attempts = 12, delayMs = 1500; // ~18s: launchd restarts are normally sub-second
+// oldPid, when known, is the process that was asked to restart: it keeps
+// answering while it drains its in-flight replies (at most 50s), so only a
+// different pid is "back".
+async function awaitGatewayBack(oldPid) {
+  const attempts = 50, delayMs = 1500; // ~75s: a 50s drain, then launchd's restart
   for (let i = 0; i < attempts; i++) {
     await new Promise(r => setTimeout(r, delayMs));
     try {
       const r = await fetch("/api/state");
+      if (r.ok && oldPid) {
+        const pid = await r.clone().json().then(s => s.pid).catch(() => null);
+        if (pid === oldPid) {
+          note($("actNote"), "warn", "Finishing replies in flight before restarting (at most 50s)...");
+          continue;
+        }
+      }
       if (r.ok) {
         await refresh();
         const s = await fetch("/api/state").then(r => r.json()).catch(() => null);

@@ -1053,3 +1053,24 @@ func TestDashboardRefusesToBeFramed(t *testing.T) {
 		t.Errorf("Content-Security-Policy = %q", got)
 	}
 }
+
+// Restart must go through the gateway's SIGTERM drain, never exit outright:
+// an immediate exit cut every Claude Code session mid-reply.
+func TestRestartSignalsForDrain(t *testing.T) {
+	called := make(chan struct{}, 1)
+	orig := restartSelf
+	restartSelf = func() error { called <- struct{}{}; return nil }
+	defer func() { restartSelf = orig }()
+
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	s.handleRestart(rec, httptest.NewRequest(http.MethodPost, "/api/restart", nil))
+	if !strings.Contains(rec.Body.String(), "in-flight replies finish") {
+		t.Fatalf("reply should say it waits for in-flight replies: %s", rec.Body.String())
+	}
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart never signalled the drain")
+	}
+}
