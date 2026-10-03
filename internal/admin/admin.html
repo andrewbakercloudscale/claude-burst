@@ -1514,8 +1514,8 @@
         <label><input type="checkbox" data-notify="compaction"> <b>A session was compacted</b><span>when Pauseless Compaction swaps a session onto its summary</span></label>
         <label><input type="checkbox" data-notify="guards"> <b>A guard acted</b><span>when the pf guard (it keeps the macOS firewall rule that sends Claude Code's traffic through Burst in place) or the gateway watchdog (it restarts Burst if it has stopped) repaired something, or removed the redirect so Claude Code could reach Anthropic directly</span></label>
       </div>
-<div class="row" style="margin-top:10px"><button class="primary" id="ntSave" disabled>&#x2713; Save</button><button id="ntTest">Send a test notification</button></div>
-      <div class="hint" style="margin-top:6px">Send a test to check that macOS shows them. If nothing appears within a few seconds, turn on <b>System Settings &gt; Notifications &gt; Script Editor</b> and try again. Every notification Burst sends is also written to the gateway log.</div>
+<div class="row" style="margin-top:10px"><button class="primary" id="ntSave" disabled>&#x2713; Save</button><button id="ntTest">Send a test notification</button><button id="ntSetup">Allow notifications</button></div>
+      <div class="hint" style="margin-top:6px">Send a test to check that macOS shows them. Burst's notifications come from Script Editor, which macOS only lists in <b>System Settings &gt; Notifications</b> once it has asked you. <b>Allow notifications</b> opens Script Editor on the Mac: press Run, then Allow. Every notification Burst sends is also written to the gateway log.</div>
       <div id="ntNote"></div>
     </div>
   </section>
@@ -5022,10 +5022,17 @@ $("alSpendSave").onclick = async (e) => {
 $("ntTest").onclick = async () => {
   $("ntTest").disabled = true;
   try {
-    await post("/api/notify-test");
-    note($("ntNote"), "ok", "Sent. If no notification appeared top right, allow notifications for Script Editor in System Settings > Notifications.");
+    const r = await post("/api/notify-test");
+    if (r.warning) note($("ntNote"), "warn", r.warning);
+    else note($("ntNote"), "ok", "Sent. If nothing appeared top right, check System Settings > Notifications > Script Editor, and that Focus is not on.");
   } catch (e) { note($("ntNote"), "bad", "Could not send: " + e.message); }
   finally { $("ntTest").disabled = false; }
+};
+$("ntSetup").onclick = async () => {
+  $("ntSetup").disabled = true;
+  try { note($("ntNote"), "ok", (await post("/api/notify-setup")).detail); }
+  catch (e) { note($("ntNote"), "bad", e.message); }
+  finally { $("ntSetup").disabled = false; }
 };
 $("ntSave").onclick = async () => {
   const n = Object.fromEntries([...document.querySelectorAll("[data-notify]")].map(c => [c.dataset.notify, c.checked]));

@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,5 +211,38 @@ func TestAppleQuote(t *testing.T) {
 		if got := appleQuote(in); got != want {
 			t.Errorf("appleQuote(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// The test says when macOS will drop it: osascript exits 0 either way.
+func TestNotifyTestWarnsWhenScriptEditorWasNeverAllowed(t *testing.T) {
+	s := newTestServer(t)
+	rec := recordNotifications(t)
+	old := notifyRegistered
+	t.Cleanup(func() { notifyRegistered = old })
+	for _, registered := range []bool{false, true} {
+		notifyRegistered = func() bool { return registered }
+		rr := mutate(t, s, "/api/notify-test", "{}")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if got := strings.Contains(rr.Body.String(), "Allow notifications"); got == registered {
+			t.Errorf("registered=%v: body %s", registered, rr.Body.String())
+		}
+	}
+	if n := len(rec.take()); n != 2 {
+		t.Errorf("sent %d, want 2", n)
+	}
+}
+
+func TestNotifySetupOpensScriptEditor(t *testing.T) {
+	s := newTestServer(t)
+	old := openNotifySetup
+	t.Cleanup(func() { openNotifySetup = old })
+	opened := 0
+	openNotifySetup = func() error { opened++; return nil }
+	rr := mutate(t, s, "/api/notify-setup", "{}")
+	if rr.Code != http.StatusOK || opened != 1 || !strings.Contains(rr.Body.String(), "press Run") {
+		t.Fatalf("status=%d opened=%d body=%s", rr.Code, opened, rr.Body.String())
 	}
 }
