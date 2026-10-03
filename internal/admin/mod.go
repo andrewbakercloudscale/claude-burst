@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -29,6 +30,11 @@ type modResponse struct {
 	// Alerts are events newer than ?since= for this session or for nobody;
 	// another session's own events stay with that session.
 	Alerts []notice.Event `json:"alerts"`
+	// Problems are the warnings and errors still standing, newest first:
+	// the band shows the first as a line until its "back" event clears it.
+	Problems []notice.Event `json:"problems"`
+	// Toasts is the dashboard's "also as toasts in the session" option.
+	Toasts bool `json:"toasts"`
 }
 
 func (s *Server) handleMod(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +42,8 @@ func (s *Server) handleMod(w http.ResponseWriter, r *http.Request) {
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 
 	st := s.gateway.Status()
-	resp := modResponse{Version: s.version, Route: "PRIMARY", Alerts: []notice.Event{}}
+	resp := modResponse{Version: s.version, Route: "PRIMARY", Alerts: []notice.Event{}, Problems: []notice.Event{},
+		Toasts: readModSettings().Toasts}
 	if st.OverflowUntil > time.Now().Unix() {
 		resp.Route, resp.Overflow = "SECONDARY", true
 		resp.Reason = st.LastReason
@@ -63,6 +70,35 @@ func (s *Server) handleMod(w http.ResponseWriter, r *http.Request) {
 				resp.Alerts = append(resp.Alerts, e)
 			}
 		}
+		resp.Problems = standingProblems(evs, sid, time.Now())
+
 	}
 	writeJSON(w, resp)
+}
+
+// standingProblems are the warnings and errors no later event of the same
+// kind has cleared, newest first. A problem older than a day is dropped: a
+// gateway that never saw the matching "back" event must not leave a line
+// in the band forever.
+func standingProblems(evs []notice.Event, sid string, now time.Time) []notice.Event {
+	last := map[string]notice.Event{}
+	order := []string{}
+	for _, e := range evs {
+		if e.Session != "" && e.Session != sid {
+			continue
+		}
+		if _, seen := last[e.Kind]; !seen {
+			order = append(order, e.Kind)
+		}
+		last[e.Kind] = e
+	}
+	out := []notice.Event{}
+	for _, k := range order {
+		e := last[k]
+		if (e.Severity == notice.Warn || e.Severity == notice.Error) && now.Sub(e.At) < 24*time.Hour {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TS > out[j].TS })
+	return out
 }

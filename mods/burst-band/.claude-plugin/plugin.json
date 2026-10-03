@@ -1,6 +1,6 @@
 {
   "name": "burst-band",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Claude Burst inside the session: route, real context and compaction above the prompt, the usage panel's summary in /burst, Burst alerts as toasts",
   "author": { "name": "Andrew Baker" }
 }

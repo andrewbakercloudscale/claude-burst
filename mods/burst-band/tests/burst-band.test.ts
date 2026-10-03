@@ -29,7 +29,7 @@ function mod(over: Record<string, unknown> = {}) {
     version: '0.10.0', route: 'PRIMARY', overflow: false, primary_failing: 0,
     today_usd: 102.25, today_requests: 12963,
     session: { session: 'S1', model: 'claude-opus-5-5', context: 70000, state: 'ok', compact_at: 300000 },
-    alerts: [], ...over,
+    alerts: [], problems: [], toasts: true, ...over,
   }
 }
 
@@ -132,4 +132,24 @@ test('/burst opens a pane with the panel summary and Burst details', async ($, o
   // A background colour's numbers are not read as bold, dim or a colour.
   const view = await ui.find({ type: 'Text', text: /^\[View\]$/ })
   expect(view.props).toEqual({ color: 'rgb(0,0,0)', backgroundColor: 'rgb(125,249,255)', bold: true })
+})
+
+test('toasts are off unless the dashboard turns them on', async ($, on) => {
+  const toasts: string[] = []
+  const clock = stubs(on, [mod({ toasts: false }), mod({ toasts: false, alerts: [{ id: 'a', kind: 'network', severity: 'error', title: 'Network offline', ts: 1000000100 }] })], toasts)
+  await start($)
+  await clock.advance(5000)
+  expect(toasts).toEqual([])
+})
+
+test('a standing problem is a line in the band and in the pane', async ($, on) => {
+  stubs(on, [mod({ problems: [{ id: 'a', kind: 'network', severity: 'error', title: 'Network offline', ts: 1 }] })], [])
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await start($)
+  const band = await $.ui.mount(BAND)
+  expect((await band.find({ type: 'Text', text: '⚠ Network offline' })).props.color).toBe('red')
+  await band.unmount()
+  await $.command.run({ command: 'burst', args: '' })
+  const pane = await $.ui.mount(PANE)
+  expect(await pane.find({ type: 'Text', text: 'Network offline' })).toBeDefined()
 })

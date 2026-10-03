@@ -108,6 +108,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/state", s.readOnly(s.handleState))
 	mux.HandleFunc("/api/mod", s.readOnly(s.handleMod))
+	mux.HandleFunc("/api/mod-status", s.readOnly(s.handleModStatus))
+	mux.HandleFunc("/api/mod-action", s.mutating(s.handleModAction))
 	mux.HandleFunc("/api/requests", s.readOnly(s.handleRequests))
 	mux.HandleFunc("/api/responses", s.readOnly(s.handleResponses))
 	mux.HandleFunc("/api/history", s.readOnly(s.handleHistory))
