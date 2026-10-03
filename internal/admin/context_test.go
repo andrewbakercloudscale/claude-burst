@@ -3,6 +3,7 @@ package admin
 import (
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -133,10 +134,10 @@ func TestCompactionToggleSavesAppliesLiveAndValidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := config.CompactionConfig{Enabled: true, CompactAtTokens: 350000, WarnAtPercent: 60, WindowMinutes: 30}
-	if cfg.PrimaryCompaction != want {
+	if !reflect.DeepEqual(cfg.PrimaryCompaction, want) {
 		t.Fatalf("config.json has %+v", cfg.PrimaryCompaction)
 	}
-	if got := stateOf(t, s).Context.Compaction; got != want {
+	if got := stateOf(t, s).Context.Compaction; !reflect.DeepEqual(got, want) {
 		t.Fatalf("state reports %+v", got)
 	}
 	for _, body := range []string{
@@ -148,5 +149,52 @@ func TestCompactionToggleSavesAppliesLiveAndValidates(t *testing.T) {
 		if rr := mutate(t, s, "/api/compaction", body); rr.Code != http.StatusBadRequest {
 			t.Fatalf("%s: status=%d, want 400", body, rr.Code)
 		}
+	}
+}
+
+// Repository overrides: added, changed, turned off and removed one at a
+// time, validated, and kept when the main compaction form is saved.
+func TestCompactionRepoOverrides(t *testing.T) {
+	s := newTestServer(t)
+	writeConfig(t, os.Getenv("HOME"))
+	overrides := func() []config.RepoCompaction {
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.PrimaryCompaction.RepoOverrides
+	}
+	ok := func(body, want string) {
+		t.Helper()
+		rr := mutate(t, s, "/api/compaction/repo", body)
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), want) {
+			t.Fatalf("%s: status=%d body=%s", body, rr.Code, rr.Body.String())
+		}
+	}
+	ok(`{"repo":"/src/big/","compact_at_tokens":600000}`, "big: compacts at 600k")
+	ok(`{"repo":"/src/never","off":true}`, "never compacted on its own")
+	ok(`{"repo":"/src/big","compact_at_tokens":700000}`, "compacts at 700k")
+	want := []config.RepoCompaction{{Repo: "/src/big", CompactAtTokens: 700000}, {Repo: "/src/never", Off: true}}
+	if got := overrides(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("one entry per repository, path cleaned: %+v", got)
+	}
+
+	for _, body := range []string{`{"repo":"relative/path","compact_at_tokens":600000}`, `{"repo":"/src/x","compact_at_tokens":10000}`, `{"repo":"/src/x"}`} {
+		if rr := mutate(t, s, "/api/compaction/repo", body); rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: want 400, got %d", body, rr.Code)
+		}
+	}
+
+	// Saving the main form must not wipe them.
+	if rr := mutate(t, s, "/api/compaction", `{"enabled":true,"compact_at_tokens":350000}`); rr.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", rr.Code, rr.Body.String())
+	}
+	if got := overrides(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the main form wiped the overrides: %+v", got)
+	}
+
+	ok(`{"repo":"/src/big","remove":true}`, "override removed")
+	if got := overrides(); len(got) != 1 || got[0].Repo != "/src/never" {
+		t.Fatalf("remove: %+v", got)
 	}
 }
