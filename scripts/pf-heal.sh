@@ -27,7 +27,7 @@
 #   not installed-> nothing (no hosts block = nobody is being redirected here;
 #                   a rollback must not be undone by a watchdog)
 #   path broken  -> log it, repair whichever piece is actually missing, log
-#                   the outcome, notify the console user
+#                   the outcome, put up a usage panel alert
 #   still broken -> after $MAX_FAILURES consecutive failed cycles, REMOVE the
 #                   redirect entirely and say so, loudly
 #
@@ -155,18 +155,16 @@ rotate_log() {
   fi
 }
 
-# Posts to the console user's GUI session. A root LaunchDaemon has no session
-# of its own, so osascript must be re-entered as that user -- without this the
-# notification silently goes nowhere, which is the failure shape this whole
-# file exists to stop repeating.
-notify() {
-  local msg="$1" uid
-  uid=$(stat -f %u /dev/console 2>/dev/null) || return 0
-  [[ -n "$uid" && "$uid" != "0" ]] || return 0
-  launchctl asuser "$uid" /usr/bin/osascript \
-    -e 'on run argv' \
-    -e 'display notification (item 1 of argv) with title "claude-burst"' \
-    -e 'end run' "$msg" >/dev/null 2>&1 || true
+# Puts the message up as a usage panel alert through the dashboard's
+# /api/alert, the same pop-up as every other Burst alert: the user asked for
+# no macOS notifications. With the dashboard down there is no panel alert
+# either, but the panel says so itself when the dashboard stops answering,
+# and the line is in this log.
+notify() { # $1 = severity (info, ok, warn, error), $2 = message
+  local sev="$1" msg="$2" body
+  body=$(printf '{"kind":"pf-heal","severity":"%s","title":"%s"}' "$sev" "${msg//\"/\\\"}")
+  curl -s -o /dev/null -m 3 -X POST -H 'X-Claude-Burst-Admin: 1' -H 'Content-Type: application/json' \
+    --data "$body" http://127.0.0.1:7788/api/alert 2>/dev/null || log "alert not delivered (dashboard not answering): $msg"
 }
 
 hosts_redirect_present() { grep -qF "$HOSTS_MARKER" "$HOSTS_FILE" 2>/dev/null; }
@@ -333,7 +331,7 @@ fi
 
 if [[ ! -x "$ROOT_HELPER" ]]; then
   log "FATAL: cannot repair -- no executable helper at $ROOT_HELPER"
-  notify "claude-burst: the intercept is broken and the repair helper is missing. Run: sudo transparent-root.sh remove"
+  notify error "claude-burst: the intercept is broken and the repair helper is missing. Run: sudo transparent-root.sh remove"
   return 1
 fi
 
@@ -369,7 +367,7 @@ printf '%s\n' "$reload_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
 if intercept_path_healthy; then
   log "HEALED: $INTERCEPT_HOST answers from this gateway again"
   clear_failures
-  notify "Transparent proxy self-healed: the intercept was broken and has been repaired."
+  notify ok "Transparent proxy self-healed: the intercept was broken and has been repaired."
   return 0
 fi
 
@@ -379,7 +377,7 @@ set_failures "$n"
 log "repair FAILED, consecutive failures: $n/$MAX_FAILURES"
 
 if (( n < MAX_FAILURES )); then
-  notify "claude-burst: the intercept is broken; repair attempt $n of $MAX_FAILURES did not fix it. Retrying."
+  notify warn "claude-burst: the intercept is broken; repair attempt $n of $MAX_FAILURES did not fix it. Retrying."
   return 1
 fi
 
@@ -395,12 +393,12 @@ printf '%s\n' "$remove_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
 if (( remove_rc == 0 )); then
   log "BAILED OUT: transparent mode removed. Claude Code now talks to Anthropic directly. Reinstall with: sudo $ROOT_HELPER install"
   clear_failures
-  notify "claude-burst could not repair the intercept, so it removed it. Claude works normally again; burst is no longer in the path."
+  notify warn "claude-burst could not repair the intercept, so it removed it. Claude works normally again; burst is no longer in the path."
   return 0
 fi
 
 log "FATAL: bail-out itself failed (exit $remove_rc). This Mac may still be unable to reach $INTERCEPT_HOST. Run by hand: sudo $ROOT_HELPER remove"
-notify "claude-burst: could not repair OR remove the redirect. Run: sudo transparent-root.sh remove"
+notify error "claude-burst: could not repair OR remove the redirect. Run: sudo transparent-root.sh remove"
 return 1
 }
 
