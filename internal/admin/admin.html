@@ -1313,7 +1313,7 @@
         <label><input type="checkbox" data-popt="session_title"> <b>Name the session after its folder</b><span>new sessions are titled with the repo's folder name instead of "Claude Code", so windows and Remote Control sessions are told apart. Resumed sessions keep their name</span></label>
         <label><input type="checkbox" data-popt="close_button"> <b>Buttons on the usage panel</b><span>an <code>[X]</code> in the panel's top-right corner closes it, and the split it opened in; <code>[View]</code> on the Proxy State line opens this dashboard. While on, a plain drag in the panel does not select text: hold Shift to select</span></label>
         <label><input type="checkbox" data-popt="compact_notice"> <b>Show pauseless compaction on screen</b><span>while this gateway summarises a session in the background, a floating notice over its Ghostty window reads "Async Compaction In Progress", then "Async Compaction Finished". It shows only while Ghostty is in front and never takes focus. Needs the usage panel</span></label>
-        <label><input type="checkbox" data-popt="alerts"> <b>Show gateway alerts on screen</b><span>the same floating notice for what this gateway runs into: failing over to the secondary and back, a limit hit, requests failing, the network dropping, transparent mode breaking, a restart, and the gateway not answering at all. Errors stay until they clear; the rest fade. Needs the usage panel <button id="alTest" type="button">Send a test alert</button><span id="alNote"></span></span></label>
+        <label><input type="checkbox" data-popt="alerts"> <b>Show gateway alerts on screen</b><span>the same floating notice for what this gateway runs into: failing over to the secondary and back, a limit hit, requests failing, the network dropping, transparent mode breaking, a restart, and the gateway not answering at all. Errors stay until they clear; the rest fade. Needs the usage panel <button id="alTest" type="button">Send a test alert</button><span id="alNote"></span><br>Also when today's spend through Burst passes $<input type="number" id="alSpend" min="0" max="100000" step="any" style="width:90px"> (API-equivalent, once a day; 0 is off) <button id="alSpendSave" type="button">Save</button><span id="alSpendNote"></span></span></label>
         <label><input type="checkbox" data-popt="caffeinate"> <b>Keep the Mac awake while a session runs</b><span><code>caffeinate -i</code> for as long as the panel runs: stops idle sleep, not lid-close sleep (that is the setting above)</span></label>
         <label><input type="checkbox" id="macStatusLine"> <b>Show cost and model under the prompt</b><span>Claude Code's status line runs <a href="https://github.com/ryoppippi/ccusage" target="_blank" rel="noopener noreferrer">ccusage</a> to show the model, this session's cost, today's spend and the burn rate under the prompt. Uses ccusage if installed, else fetches it with npx. A status line of your own is left alone<span id="macStatusLineNote"></span></span></label>
         <label><input type="checkbox" id="macHandover"> <b>Write a handover when a session closes</b><span>updates HANDOFF.md in repos that have one; details and the texts used are in <a href="#" id="macHoLink">Session handover</a></span></label>
@@ -4823,6 +4823,7 @@ function renderSettings() {
     `TLS peer logging: <b>${st.peer_log ? "on" : "off"}</b> (the <code>CLAUDE_BURST_LOG_TLS_PEERS</code> variable in the LaunchAgent)`,
   ].join("<br>") + `<br>These change what Claude Code connects to, so they are set with <code>claude-burst configure</code> and a reinstall, not from this page.`;
   if (!setDirty.fc) $("fcText").value = Object.entries(st.fallback_chain || {}).sort().map(([m, r]) => `${m}: ${r.join(", ")}`).join("\n");
+  if (!setDirty.al && document.activeElement !== $("alSpend")) $("alSpend").value = st.alert_daily_spend_usd || 0;
 
   if (!setDirty.pr) {
     const all = st.pricing || [], unused = all.filter(p => p.price && !p.requests);
@@ -4944,6 +4945,17 @@ $("alTest").onclick = async (e) => {
     note($("alNote"), "ok", "Sent. It floats over Claude Code's Ghostty window when Ghostty is in front, within a few seconds.");
   } catch (err) { note($("alNote"), "bad", "Could not send: " + err.message); }
   finally { $("alTest").disabled = false; }
+};
+$("alSpend").oninput = () => markDirty("al");
+$("alSpendSave").onclick = async (e) => {
+  e.preventDefault();
+  const usd = Number($("alSpend").value || 0);
+  try {
+    await post("/api/alert-spend", {usd});
+    setDirty.al = false;
+    if (settings) settings.alert_daily_spend_usd = usd;
+    note($("alSpendNote"), "ok", usd > 0 ? `Saved: an alert once today's spend passes $${usd}.` : "Saved: no spend alert.");
+  } catch (err) { note($("alSpendNote"), "bad", "Could not save: " + err.message); }
 };
 $("ntTest").onclick = async () => {
   $("ntTest").disabled = true;

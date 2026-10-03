@@ -2,7 +2,9 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -63,6 +65,31 @@ func (s *Server) handleAlertTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"ok": "sent"})
 }
 
+// handleAlertSpend saves the daily spend level for the on-screen alert:
+// {"usd": N}, 0 to turn it off. Read live by the notifier.
+func (s *Server) handleAlertSpend(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		USD *float64 `json:"usd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.USD == nil {
+		http.Error(w, `body must be {"usd": <dollars>}, 0 for off`, http.StatusBadRequest)
+		return
+	}
+	if *req.USD < 0 || *req.USD > 100000 || math.IsNaN(*req.USD) {
+		http.Error(w, "the spend level must be between 0 (off) and 100000 dollars", http.StatusBadRequest)
+		return
+	}
+	if err := config.Update(func(c *config.Config) error {
+		c.AlertDailySpendUSD = *req.USD
+		return nil
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.gateway.Logf("alert: daily spend level set to $%v (0 is off)", *req.USD)
+	writeJSON(w, map[string]float64{"usd": *req.USD})
+}
+
 // appleQuote makes an AppleScript string literal.
 func appleQuote(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
@@ -75,6 +102,7 @@ type notifier struct {
 	pfEvents   int
 	selfEvents int
 	intercept  interceptCheck
+	alerts     alertRounds
 }
 
 // StartNotifier runs until ctx ends.
@@ -172,6 +200,7 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 		}
 		alertIntercept(n.intercept, ic)
 	}
+	s.alertRound(&n.alerts, cfg, now)
 	n.started, n.overflow, n.compacted, n.pfEvents, n.selfEvents, n.intercept = true, over, comp, pf, self, ic
 }
 

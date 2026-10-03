@@ -60,6 +60,7 @@ type settingsView struct {
 	AdminHostname   string                       `json:"admin_hostname"`
 	PeerLog         bool                         `json:"peer_log"`
 	Notify          config.NotifyConfig          `json:"notify"`
+	AlertSpendUSD   float64                      `json:"alert_daily_spend_usd"`
 	Hotspot         hotspotView                  `json:"hotspot"`
 	RestartNeeded   []string                     `json:"restart_needed"`
 }
@@ -157,6 +158,7 @@ func (s *Server) readSettings() (settingsView, error) {
 		AdminHostname:   disk.AdminHostname,
 		PeerLog:         os.Getenv("CLAUDE_BURST_LOG_TLS_PEERS") == "1",
 		Notify:          disk.Notify,
+		AlertSpendUSD:   disk.AlertDailySpendUSD,
 		Hotspot: hotspotView{
 			HotspotConfig:  hs,
 			Known:          hotspot.KnownNetworks(),

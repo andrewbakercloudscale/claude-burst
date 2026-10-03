@@ -436,6 +436,11 @@ type Config struct {
 	// looking elsewhere. Read live by the gateway, no restart needed.
 	Notify NotifyConfig `json:"notify,omitempty"`
 
+	// AlertDailySpendUSD puts an on-screen alert up when today's
+	// API-equivalent spend through the gateway passes this many dollars,
+	// once per day per level. 0 is off. Read live.
+	AlertDailySpendUSD float64 `json:"alert_daily_spend_usd,omitempty"`
+
 	// Hotspot joins a named Wi-Fi network when this Mac is offline, so a
 	// session left running with the lid shut can reach Anthropic from a
 	// phone's hotspot. Read live, no restart needed. See internal/hotspot.
