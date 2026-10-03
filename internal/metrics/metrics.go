@@ -40,11 +40,15 @@ type Event struct {
 	// Destination is the actual outbound URL (scheme+host+path, no query)
 	// this request was sent to -- what actually answers "did this go to
 	// primary or secondary", independent of the Slot label.
-	Destination  string `json:"destination,omitempty"`
-	HTTPStatus   int    `json:"http_status"`
-	DurationMS   int64  `json:"duration_ms"`
-	InputTokens  int64  `json:"input_tokens,omitempty"`
-	OutputTokens int64  `json:"output_tokens,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	// HTTPStatus is what the client was answered. A request that never got
+	// an upstream answer records the status the gateway sent (502), and one
+	// the client abandoned records StatusClientClosed. Until 2026-10-03 both
+	// recorded 0, which no error count included.
+	HTTPStatus   int   `json:"http_status"`
+	DurationMS   int64 `json:"duration_ms"`
+	InputTokens  int64 `json:"input_tokens,omitempty"`
+	OutputTokens int64 `json:"output_tokens,omitempty"`
 	// InputTokens is uncached input only. The cached part of the context is
 	// here, and on a long primary session it is nearly all of it: without
 	// these, a 150k-token turn recorded as input_tokens=2.
@@ -492,7 +496,7 @@ func Daily(path string, days int) (History, error) {
 				d.PrunedTokens += e.PrunedBytes / BytesPerToken
 				d.PrunedUSD += e.PrunedUSD
 			}
-			if e.HTTPStatus >= 400 {
+			if IsError(e) {
 				d.Errors++
 			}
 			d.InputTokens += e.InputTokens
@@ -661,4 +665,14 @@ func percentile(v []int64, p float64) int64 {
 		i = len(v) - 1
 	}
 	return v[i]
+}
+
+// StatusClientClosed records a request the client abandoned (nginx's 499):
+// pressing Esc in Claude Code is not a gateway error.
+const StatusClientClosed = 499
+
+// IsError is a request that failed for a reason other than the client
+// leaving.
+func IsError(e Event) bool {
+	return e.HTTPStatus >= 400 && e.HTTPStatus != StatusClientClosed
 }
