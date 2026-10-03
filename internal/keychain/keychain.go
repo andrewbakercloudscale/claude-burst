@@ -1,7 +1,9 @@
 package keychain
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +16,30 @@ import (
 // securityPath is the Keychain CLI; a variable so tests run a stub instead
 // of reading or writing the real login Keychain.
 var securityPath = "/usr/bin/security"
+
+// timeout bounds every security call. A locked login Keychain can leave it
+// waiting on a dialog nobody sees (the gateway runs headless under
+// launchd), and the caller, a gateway starting or a dashboard request,
+// would wait with it. A variable so tests can shorten it.
+var timeout = 10 * time.Second
+
+// errTimedOut names the likely cause, since a bare "signal: killed" does not.
+var errTimedOut = errors.New("the Keychain did not answer in time (is the login Keychain locked?)")
+
+// security runs the Keychain CLI with args, bounded by timeout.
+func security(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, securityPath, args...)
+	// Kill only reaches security itself; WaitDelay stops a child holding
+	// its output open from keeping CombinedOutput waiting anyway.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return out, errTimedOut
+	}
+	return out, err
+}
 
 func account() string {
 	if u, err := user.Current(); err == nil && u.Username != "" {
@@ -29,8 +55,7 @@ func Store(service, value string) error {
 	if value == "" {
 		return fmt.Errorf("empty key")
 	}
-	cmd := exec.Command(securityPath, "add-generic-password", "-U", "-a", account(), "-s", service, "-w", value)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := security("add-generic-password", "-U", "-a", account(), "-s", service, "-w", value); err != nil {
 		return fmt.Errorf("security add-generic-password: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -47,8 +72,10 @@ func Load(service, envVar string) (string, error) {
 	if v := os.Getenv(envVar); v != "" {
 		return v, nil
 	}
-	cmd := exec.Command(securityPath, "find-generic-password", "-a", account(), "-s", service, "-w")
-	out, err := cmd.CombinedOutput()
+	out, err := security("find-generic-password", "-a", account(), "-s", service, "-w")
+	if errors.Is(err, errTimedOut) {
+		return "", fmt.Errorf("reading %q: %w", service, err)
+	}
 	if err != nil {
 		return "", fmt.Errorf("key not found in %s or macOS Keychain (service %q)", envVar, service)
 	}
@@ -63,7 +90,7 @@ func Load(service, envVar string) (string, error) {
 // "no secret in the Keychain", and it already holds. Any other failure is
 // returned, so a caller never reports a password removed that is still there.
 func Delete(service string) error {
-	out, err := exec.Command(securityPath, "delete-generic-password", "-a", account(), "-s", service).CombinedOutput()
+	out, err := security("delete-generic-password", "-a", account(), "-s", service)
 	if err == nil {
 		return nil
 	}
@@ -109,7 +136,7 @@ func Describe(service, envVar string) Info {
 	if os.Getenv(envVar) != "" {
 		return Info{Present: true, Source: "environment"}
 	}
-	out, err := exec.Command(securityPath, "find-generic-password", "-a", account(), "-s", service).CombinedOutput()
+	out, err := security("find-generic-password", "-a", account(), "-s", service)
 	if err != nil {
 		return Info{}
 	}
