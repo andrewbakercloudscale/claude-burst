@@ -659,3 +659,44 @@ func TestOrphanToolResultBecomesUserText(t *testing.T) {
 		t.Fatalf("a result with its call present must stay a tool message: %v", tools)
 	}
 }
+
+// A secondary stream that stops before the reply finished (no [DONE], no
+// finish_reason) ends in an error event, not a reply cut short that reads
+// as whole. One that finished but sent no [DONE] is fine.
+func TestTranslateOpenAIStreamBrokenMidReply(t *testing.T) {
+	cut := "data: " + `{"choices":[{"delta":{"content":"half a sen"},"finish_reason":null}]}` + "\n\n"
+	rr := httptest.NewRecorder()
+	if _, err := translateOpenAIStream(rr, strings.NewReader(cut), "claude-sonnet-5"); err == nil {
+		t.Fatal("a cut stream must be reported as an error")
+	}
+	out := rr.Body.String()
+	if !strings.Contains(out, "event: error") || !strings.Contains(out, "broke mid-reply") {
+		t.Fatalf("want an error event:\n%s", out)
+	}
+	if strings.Contains(out, "message_stop") {
+		t.Fatalf("a broken reply must not end like a whole one:\n%s", out)
+	}
+
+	done := "data: " + `{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}` + "\n\n"
+	rr = httptest.NewRecorder()
+	if _, err := translateOpenAIStream(rr, strings.NewReader(done), "claude-sonnet-5"); err != nil {
+		t.Fatalf("finish_reason without [DONE] is a whole reply: %v", err)
+	}
+	if strings.Contains(rr.Body.String(), "event: error") {
+		t.Fatal("no error event for a whole reply")
+	}
+}
+
+// A non-streamed secondary reply that cannot be translated is an error the
+// client sees, not an empty 200.
+func TestTranslateNonStreamFailureIsAnError(t *testing.T) {
+	p := &OpenAICompatibleProvider{}
+	rr := httptest.NewRecorder()
+	resp := &http.Response{Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader("<html>bad gateway</html>"))}
+	if _, err := p.TranslateResponse(rr, resp, "claude-sonnet-5"); err == nil {
+		t.Fatal("want an error")
+	}
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"type":"error"`) {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
