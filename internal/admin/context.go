@@ -313,7 +313,7 @@ func (s *Server) handleCompactionRepo(w http.ResponseWriter, r *http.Request) {
 	default:
 		msg += fmt.Sprintf("compacts at %dk", req.CompactAtTokens/1000)
 	}
-	if _, err := os.Stat(root); err != nil {
+	if _, err := os.Stat(root); err != nil && !req.Remove {
 		msg += "; note: that folder does not exist on this Mac"
 	}
 	writeJSON(w, map[string]string{"ok": msg + "; applied to the running gateway"})
