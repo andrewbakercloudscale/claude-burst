@@ -974,6 +974,22 @@
         <button class="primary" id="compactSave">&#x2713; Save</button>
       </div>
       <div class="hint" style="margin-top:6px"><strong>Compact at</strong>: the context that triggers a summary (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default threshold). <strong>Delay between compactions</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
+      <h3 class="mac-h">Repository overrides</h3>
+      <div class="hint">Sessions in these repositories compact at their own size instead of <em>Compact at</em> above, or never on their own (<code>/compact-async</code> still works). <em>Warn when at</em> and the delay apply to each repository's own size. A repository is the folder holding <code>.git</code> above where Claude Code was started; every other repository uses <em>Compact at</em>.</div>
+      <div id="roList" style="margin-top:6px"></div>
+      <div class="row" style="align-items:flex-end">
+        <div style="flex:1;min-width:240px">
+          <label for="roRepo">Repository (full path)</label>
+          <input id="roRepo" list="roRepos" placeholder="/Users/you/src/project" autocomplete="off"><datalist id="roRepos"></datalist>
+        </div>
+        <div>
+          <label for="roAt">Compact at (k tokens)</label>
+          <input type="number" id="roAt" min="50" max="900" step="10" style="width:110px" placeholder="500">
+        </div>
+        <label style="display:flex;gap:8px;align-items:center;font-size:14px;font-weight:600;color:var(--text);margin:0 0 9px;cursor:pointer"><input type="checkbox" id="roOff" style="width:auto;margin:0"> Never compact</label>
+        <button class="primary" id="roAdd">&#x2713; Save override</button>
+      </div>
+      <div id="roNote"></div>
       <div class="hint" style="margin-top:6px"><strong>Before</strong>: the context the session would have had at its latest summary without Burst. <strong>After</strong>: what it actually sent. <strong>Saved per turn</strong>: the difference. <strong>Net saved</strong>: what Burst saved on the session after paying for its summaries and cache rewrites (hover for the parts). How these are worked out, including what happens when a session would have outgrown the 1M window: see <em>How the savings are calculated</em> below.</div>
       <div id="compactNote"></div>
       <div class="row" style="align-items:center;gap:16px;margin-top:10px;flex-wrap:wrap">
@@ -2584,16 +2600,19 @@ function renderCompaction(s) {
   // The chart's own day count (its window includes today), so both headers agree.
   renderSavingsByRepo(c.savings_by_repo || [], (cs.daily || []).length || days);
   setDot("nd-compaction", k.enabled ? "ok" : "");
-  const at = k.compact_at_tokens || 300000, warnAt = at * (k.warn_at_percent || 80) / 100;
+  renderRepoOverrides(k, c);
+  const at = k.compact_at_tokens || 300000, warnPct = (k.warn_at_percent || 80) / 100;
+  // Each session's own limit: a repository override, or 0 when it never compacts.
+  const limitOf = r => r.compact_at === undefined ? at : r.compact_at;
   const sorted = [...allRows].sort((a, b) => (b.context || 0) - (a.context || 0));
-  const over = sorted.filter(r => (r.context || 0) >= at);
+  const over = sorted.filter(r => limitOf(r) > 0 && (r.context || 0) >= limitOf(r));
   const pool = csOverOnly ? over : sorted;
   const rows = csTop ? pool.slice(0, csTop) : pool;
   $("csShown").textContent = allRows.length
-    ? `Showing ${rows.length} of ${allRows.length} session${allRows.length === 1 ? "" : "s"}; ${over.length} over the ${Math.round(at / 1000)}k limit.`
+    ? `Showing ${rows.length} of ${allRows.length} session${allRows.length === 1 ? "" : "s"}; ${over.length} over ${(k.repo_overrides || []).length ? "their" : `the ${Math.round(at / 1000)}k`} limit.`
     : "";
   if (allRows.length && !rows.length) {
-    $("compactSessions").innerHTML = `<div class="empty">No session is over the ${Math.round(at / 1000)}k compaction limit right now. Untick the box above to see all ${allRows.length}.</div>`;
+    $("compactSessions").innerHTML = `<div class="empty">No session is over its compaction limit right now. Untick the box above to see all ${allRows.length}.</div>`;
     return;
   }
   if (!rows.length) {
@@ -2606,7 +2625,8 @@ function renderCompaction(s) {
   for (const x of cs.sessions || []) saved[x.session + "|" + x.model] = x;
   const tok = n => n ? esc(num(Math.round(n / 1000))) + "k" : "-";
   $("compactSessions").innerHTML = `<table><thead><tr>
-      <th>Session</th><th>Model</th><th>State</th>
+      <th>Session</th><th>Repository</th><th>Model</th><th>State</th>
+      <th class="num" title="The context that triggers a summary for this session: Compact at, or its repository's override">Limit</th>
       <th class="num" title="Context size of the request before the latest compaction">Before</th>
       <th class="num" title="Context size straight after the latest compaction">After</th>
       <th class="num" title="Context size of this session's latest request. Amber from the warn size, red from the compact size">Context</th>
@@ -2616,17 +2636,69 @@ function renderCompaction(s) {
       const x = saved[r.session + "|" + r.model];
       return `<tr>
       <td class="mono" title="${esc(r.session)}">${esc(r.session.slice(0, 8))}</td>
+      <td class="mono" title="${esc(r.repo_root || "")}">${esc(r.repo || "-")}</td>
       <td class="mono">${esc(r.model || "-")}</td>
       <td>${esc(r.state)}</td>
+      <td class="num" title="${r.override ? "this repository's override" : "Compact at"}">${limitOf(r) ? tok(limitOf(r)) : "never"}${r.override ? ` <span class="hint">repo</span>` : ""}</td>
       <td class="num">${x ? tok(x.before) : "-"}</td>
       <td class="num">${x ? tok(x.after) : "-"}</td>
-      <td class="num ${r.context >= at ? "st-5" : r.context >= warnAt ? "st-4" : ""}">${tok(r.context)}</td>
+      <td class="num ${limitOf(r) && r.context >= limitOf(r) ? "st-5" : limitOf(r) && r.context >= limitOf(r) * warnPct ? "st-4" : ""}">${tok(r.context)}</td>
       <td class="num">${x ? `<b style="color:var(--pc-a)">${tok(x.per_turn_tokens)}</b> <span class="hint">${esc(smallUSD(x.per_turn_usd))}</span>` : "-"}</td>
       <td class="num" title="${x ? esc(`$${x.saved_usd.toFixed(2)} of context compacted, less $${x.summary_usd.toFixed(2)} summaries and $${x.rewrite_usd.toFixed(2)} cache rewrites, over ${x.requests} turns and ${x.compactions} compaction(s)`) : ""}">${x ? `${esc(signedUSD(x.net_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
       <td class="mono">${x ? esc(stamp(x.at)) : "-"}</td>
     </tr>`;
     }).join("")}</tbody></table>`;
 }
+
+// Repository overrides: listed from config.json, each saved or removed on
+// its own (/api/compaction/repo), so they never wait on the form above.
+function renderRepoOverrides(k, c) {
+  const list = k.repo_overrides || [], base = p => p.split("/").filter(Boolean).pop() || p;
+  $("roList").innerHTML = list.length ? `<table><thead><tr><th>Repository</th><th>Path</th><th class="num">Compact at</th><th></th></tr></thead><tbody>${
+    list.map(o => `<tr><td class="mono">${esc(base(o.repo))}</td><td class="mono hint">${esc(o.repo)}</td>
+      <td class="num">${o.off ? "never" : esc(num(Math.round(o.compact_at_tokens / 1000))) + "k"}</td>
+      <td style="text-align:right"><button data-ro-edit="${esc(o.repo)}">Edit</button> <button data-ro-remove="${esc(o.repo)}">Remove</button></td></tr>`).join("")
+  }</tbody></table>` : `<div class="hint">No overrides: every repository compacts at ${Math.round((k.compact_at_tokens || 300000) / 1000)}k.</div>`;
+  // Suggestions: repositories seen in tracked sessions and in the savings.
+  const paths = new Set();
+  for (const r of c.sessions || []) if (r.repo_root) paths.add(r.repo_root);
+  for (const r of c.savings_by_repo || []) if (r.path) paths.add(r.path);
+  const opts = [...paths].sort().map(p => `<option value="${esc(p)}">`).join("");
+  if ($("roRepos").innerHTML !== opts) $("roRepos").innerHTML = opts;
+}
+function editRepoOverride(path) {
+  const o = ((lastCompactState?.context?.compaction || {}).repo_overrides || []).find(x => x.repo === path);
+  $("roRepo").value = path;
+  $("roOff").checked = !!(o && o.off);
+  $("roAt").value = o && !o.off ? Math.round(o.compact_at_tokens / 1000) : "";
+  $("roAt").disabled = $("roOff").checked;
+  $("roRepo").scrollIntoView({block: "center", behavior: "smooth"});
+  $("roAt").focus();
+}
+async function saveRepoOverride(body) {
+  try {
+    note($("roNote"), "ok", (await post("/api/compaction/repo", body)).ok);
+    return true;
+  } catch (e) {
+    note($("roNote"), "bad", e.message);
+    return false;
+  } finally {
+    refresh();
+  }
+}
+$("roOff").onchange = () => { $("roAt").disabled = $("roOff").checked; };
+$("roAdd").onclick = async () => {
+  const repo = $("roRepo").value.trim(), off = $("roOff").checked;
+  if (!repo) { note($("roNote"), "bad", "Enter the repository's full path, or pick one from the list."); return; }
+  if (await saveRepoOverride({repo, off, compact_at_tokens: (parseInt($("roAt").value, 10) || 0) * 1000})) {
+    $("roRepo").value = $("roAt").value = ""; $("roOff").checked = false; $("roAt").disabled = false;
+  }
+};
+$("roList").onclick = e => {
+  const ed = e.target.closest("[data-ro-edit]"), rm = e.target.closest("[data-ro-remove]");
+  if (ed) editRepoOverride(ed.dataset.roEdit);
+  if (rm) saveRepoOverride({repo: rm.dataset.roRemove, remove: true});
+};
 
 async function saveCompaction() {
   const body = {
@@ -3975,6 +4047,12 @@ function renderActivity() {
 // same sessions over the same days, so its net column adds up to the
 // chart's total. Bars are the net saving; a repository where compaction
 // cost more than it saved shows a red amount and no bar.
+$("pcRepoSplit").addEventListener("click", e => {
+  const a = e.target.closest("[data-ro-edit]");
+  if (!a) return;
+  e.preventDefault();
+  editRepoOverride(a.dataset.roEdit);
+});
 function renderSavingsByRepo(repos, days) {
   const box = $("pcRepoBox");
   box.hidden = !repos.length;
@@ -3986,7 +4064,8 @@ function renderSavingsByRepo(repos, days) {
     `<div class="mrow mhead" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700">
        <span>Repository</span><span>Share of net saving</span><span class="amt">Sessions · compactions · saved − costs = net</span></div>` +
     repos.map(r => `<div class="mrow">
-      <span class="mono" title="${esc(r.path || r.repo)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.repo)}</span>
+      <span class="mono" title="${esc(r.path || r.repo)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.repo)}${
+        r.path ? ` <a href="#" data-ro-edit="${esc(r.path)}" style="font-family:inherit;font-size:11px" title="Give this repository its own Compact at">limit</a>` : ""}</span>
       <span class="mbar"><span style="width:${(Math.max(r.net_usd, 0) / top * 100).toFixed(1)}%;background:var(--pcs-saved)"></span></span>
       <span class="amt" title="${esc(`${num(r.requests)} compacted requests. Costs: $${(r.summary_usd || 0).toFixed(2)} for summaries, $${(r.rewrite_usd || 0).toFixed(2)} for cache rewrites.`)}">${esc(num(r.sessions))} · ${esc(num(r.compactions))} · $${(r.saved_usd || 0).toFixed(2)} − $${((r.summary_usd || 0) + (r.rewrite_usd || 0)).toFixed(2)} = <span style="color:${r.net_usd >= 0 ? "var(--pc-a)" : "var(--bad)"};font-weight:600">${esc(signedUSD(r.net_usd))}</span>${
         total > 0 && r.net_usd > 0 ? ` <span style="color:var(--faint)">(${Math.round(100 * r.net_usd / total)}%)</span>` : ""}</span>

@@ -118,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config", s.mutating(s.handleConfig))
 	mux.HandleFunc("/api/pruning", s.mutating(s.handlePruning))
 	mux.HandleFunc("/api/compaction", s.mutating(s.handleCompaction))
+	mux.HandleFunc("/api/compaction/repo", s.mutating(s.handleCompactionRepo))
 	mux.HandleFunc("/api/prompt-notice", s.mutating(s.handlePromptNotice))
 	mux.HandleFunc("/api/prompt-notice-test", s.mutating(s.handlePromptNoticeTest))
 	mux.HandleFunc("/api/coordination", s.readOnly(s.handleCoordination))

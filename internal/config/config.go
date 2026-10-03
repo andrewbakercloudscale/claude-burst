@@ -83,6 +83,52 @@ type CompactionConfig struct {
 	// after the history before it has changed is not documented, so the
 	// gateway undoes the swap and resends on a 400 (see compact_run.go).
 	MidTurn bool `json:"mid_turn,omitempty"`
+	// RepoOverrides give particular repositories their own Compact at, or
+	// none at all. Everything else (the warning percentage, the delay
+	// between compactions, mid-turn) applies to the repository's own limit.
+	RepoOverrides []RepoCompaction `json:"repo_overrides,omitempty"`
+}
+
+// RepoCompaction is one repository's override. Repo is the repository's
+// root, an absolute path: two checkouts of the same project can differ.
+type RepoCompaction struct {
+	Repo            string `json:"repo"`
+	CompactAtTokens int64  `json:"compact_at_tokens,omitempty"`
+	// Off never compacts this repository's sessions on its own;
+	// /compact-async still does, since the user chose the moment.
+	Off bool `json:"off,omitempty"`
+}
+
+// NeverTokens is the Compact at of a repository with compaction off: no
+// context reaches it.
+const NeverTokens = int64(1) << 62
+
+// ForRepo is c (resolved) as it applies to sessions in the repository at
+// root, and the override that applied, nil when none did. root "" (a
+// session whose repository is unknown) gets the default.
+func (c CompactionConfig) ForRepo(root string) (CompactionConfig, *RepoCompaction) {
+	c = c.Resolved()
+	if root == "" {
+		return c, nil
+	}
+	root = filepath.Clean(root)
+	for i := range c.RepoOverrides {
+		o := c.RepoOverrides[i]
+		if o.Repo == "" || filepath.Clean(o.Repo) != root {
+			continue
+		}
+		switch {
+		case o.Off:
+			c.CompactAtTokens, c.WarnAtTokens = NeverTokens, NeverTokens
+		case o.CompactAtTokens > 0:
+			c.CompactAtTokens = o.CompactAtTokens
+			c.WarnAtTokens = o.CompactAtTokens * int64(c.WarnAtPercent) / 100
+		default:
+			continue
+		}
+		return c, &o
+	}
+	return c, nil
 }
 
 const (

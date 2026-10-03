@@ -29,6 +29,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+	"github.com/andrewbakercloudscale/claude-burst/internal/repo"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
@@ -104,7 +105,9 @@ type Server struct {
 	// compaction is proxy-side compaction of long primary sessions
 	// (compact.go, compact_run.go). Always present; off unless enabled.
 	compaction *compactor
-	client     *http.Client
+	// repos names each session's repository, for per-repository Compact at.
+	repos  *repo.Resolver
+	client *http.Client
 	// probe measures local network health after a transport failure. A field so
 	// tests can say "the network is down" or "up" without depending on the
 	// machine they run on having working DNS.
@@ -206,6 +209,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 
 	s := &Server{
 		compaction:      newCompactor(cfg.PrimaryCompaction, compactionStatePath(statePath), logger),
+		repos:           repo.New(),
 		cfg:             cfg,
 		primary:         primary,
 		primaryDetector: primaryDetector,

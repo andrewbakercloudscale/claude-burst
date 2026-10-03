@@ -6,15 +6,16 @@ import (
 	"testing"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+	"github.com/andrewbakercloudscale/claude-burst/internal/repo"
 )
 
 func TestRepoSpendGroupsSessionsByRepository(t *testing.T) {
 	home := t.TempDir()
-	repo := filepath.Join(home, "work", "proj")
-	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+	repoDir := filepath.Join(home, "work", "proj")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repoDir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	projects := filepath.Join(home, "claude", "projects", "-x")
@@ -28,11 +29,10 @@ func TestRepoSpendGroupsSessionsByRepository(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("a", repo)
-	write("b", filepath.Join(repo, "sub")) // a subdirectory counts as the repo
+	write("a", repoDir)
+	write("b", filepath.Join(repoDir, "sub")) // a subdirectory counts as the repo
 	write("c", "/private/tmp/scratch")
-	r := &repoResolver{cache: map[string][2]string{}, dir: filepath.Join(home, "claude", "projects"),
-		temp: []string{"/private/tmp/"}}
+	r := &repoResolver{repo.NewWith(filepath.Join(home, "claude", "projects"), []string{"/private/tmp/"})}
 	got := r.repoSpend(map[string]metrics.SessionUse{
 		"a": {Requests: 2, USD: 1}, "b": {Requests: 3, USD: 4},
 		"c": {Requests: 1, USD: 0.5}, "gone": {Requests: 1, USD: 0.25},
@@ -50,7 +50,7 @@ func TestRepoSpendGroupsSessionsByRepository(t *testing.T) {
 			t.Fatalf("row %d: want %+v, got %+v", i, w, got[i])
 		}
 	}
-	if got[0].Path != repo {
+	if got[0].Path != repoDir {
 		t.Fatalf("repo path: %q", got[0].Path)
 	}
 	// Compaction's saving adds up per repository, net (b's is negative),
@@ -73,7 +73,7 @@ func TestRepoSpendGroupsSessionsByRepository(t *testing.T) {
 		t.Fatalf("savings by repo: %+v", sv)
 	}
 	if p := sv[0]; p.Sessions != 2 || p.Compactions != 3 || p.Requests != 6 || p.SavedTokens != 150 ||
-		p.SavedUSD != 4.25 || p.SummaryUSD != 0.5 || p.RewriteUSD != 1.25 || p.NetUSD != 2.5 || p.Path != repo {
+		p.SavedUSD != 4.25 || p.SummaryUSD != 0.5 || p.RewriteUSD != 1.25 || p.NetUSD != 2.5 || p.Path != repoDir {
 		t.Fatalf("proj savings: %+v", p)
 	}
 }

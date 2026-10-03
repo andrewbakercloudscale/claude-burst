@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -222,6 +226,9 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, ok := updateConfig(w, func(c *config.Config) error {
+		// Repository overrides have their own endpoint; this form never
+		// carries them, so it must not wipe them.
+		req.RepoOverrides = c.PrimaryCompaction.RepoOverrides
 		c.PrimaryCompaction = req
 		return nil
 	})
@@ -243,4 +250,71 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		state += "; the prompt notice hook could not be updated: " + err.Error()
 	}
 	writeJSON(w, map[string]string{"ok": state + "; applied to the running gateway"})
+}
+
+// repoOverrideRequest adds, changes or removes one repository's Compact at.
+type repoOverrideRequest struct {
+	Repo            string `json:"repo"`
+	CompactAtTokens int64  `json:"compact_at_tokens"`
+	Off             bool   `json:"off"`
+	Remove          bool   `json:"remove"`
+}
+
+func (s *Server) handleCompactionRepo(w http.ResponseWriter, r *http.Request) {
+	var req repoOverrideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	root := strings.TrimSpace(req.Repo)
+	if strings.HasPrefix(root, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			root = filepath.Join(home, root[2:])
+		}
+	}
+	if !filepath.IsAbs(root) {
+		http.Error(w, "repository must be a full path, such as /Users/you/src/project", http.StatusBadRequest)
+		return
+	}
+	root = filepath.Clean(root)
+	if !req.Remove && !req.Off && (req.CompactAtTokens < minCompactAt || req.CompactAtTokens > maxCompactAt) {
+		http.Error(w, fmt.Sprintf("compact threshold must be between %dk and %dk tokens", minCompactAt/1000, maxCompactAt/1000), http.StatusBadRequest)
+		return
+	}
+	var applied config.CompactionConfig
+	if _, ok := updateConfig(w, func(c *config.Config) error {
+		var kept []config.RepoCompaction
+		for _, o := range c.PrimaryCompaction.RepoOverrides {
+			if filepath.Clean(o.Repo) != root {
+				kept = append(kept, o)
+			}
+		}
+		if !req.Remove {
+			o := config.RepoCompaction{Repo: root, Off: req.Off}
+			if !req.Off {
+				o.CompactAtTokens = req.CompactAtTokens
+			}
+			kept = append(kept, o)
+			sort.Slice(kept, func(i, j int) bool { return kept[i].Repo < kept[j].Repo })
+		}
+		c.PrimaryCompaction.RepoOverrides = kept
+		applied = c.PrimaryCompaction
+		return nil
+	}); !ok {
+		return
+	}
+	s.gateway.SetCompaction(applied)
+	msg := filepath.Base(root) + ": "
+	switch {
+	case req.Remove:
+		msg += "override removed, back to the default Compact at"
+	case req.Off:
+		msg += "never compacted on its own (/compact-async still works)"
+	default:
+		msg += fmt.Sprintf("compacts at %dk", req.CompactAtTokens/1000)
+	}
+	if _, err := os.Stat(root); err != nil {
+		msg += "; note: that folder does not exist on this Mac"
+	}
+	writeJSON(w, map[string]string{"ok": msg + "; applied to the running gateway"})
 }

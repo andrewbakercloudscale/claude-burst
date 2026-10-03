@@ -358,6 +358,14 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	if isSideRequest(msgs) {
 		return s.applySideRequest(in, top, body, msgs, key)
 	}
+	// The session's repository may have its own Compact at, or none. Looked
+	// up outside the lock: the first lookup reads the transcript.
+	_, root := s.repos.Resolve(sid)
+	cfg, override := cfg.ForRepo(root)
+	limit := fmt.Sprintf("compact at %dk", cfg.CompactAtTokens/1000)
+	if override != nil {
+		limit += " for " + filepath.Base(root)
+	}
 	ci := compactInfo{key: key}
 	now := time.Now()
 	window := time.Duration(cfg.WindowMinutes) * time.Minute
@@ -389,8 +397,8 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 
 	if st.lastContext >= cfg.WarnAtTokens && (st.warnedAt.IsZero() || now.Sub(st.warnedAt) >= window) {
 		st.warnedAt = now
-		s.logger.Printf("req=%s warn stage=compaction session=%s context=%dk (warn at %dk, compact at %dk)",
-			rid, key, st.lastContext/1000, cfg.WarnAtTokens/1000, cfg.CompactAtTokens/1000)
+		s.logger.Printf("req=%s warn stage=compaction session=%s context=%dk (warn at %dk, %s)",
+			rid, key, st.lastContext/1000, cfg.WarnAtTokens/1000, limit)
 	}
 
 	bounds := promptBoundaries(msgs)
@@ -429,7 +437,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			if forced {
 				why = " (requested with /compact-async)"
 			}
-			s.logger.Printf("req=%s compaction start session=%s context=%dk summarising %d of %d messages%s", rid, key, st.lastContext/1000, p, len(msgs), why)
+			s.logger.Printf("req=%s compaction start session=%s context=%dk (%s) summarising %d of %d messages%s", rid, key, st.lastContext/1000, limit, p, len(msgs), why)
 			if forced {
 				st.notice("/compact-async: %d earlier messages (context %dk) are being summarised in the background. Keep working: it swaps in with your next prompt once ready, with no pause", p, st.lastContext/1000)
 			} else {
@@ -879,13 +887,34 @@ type CompactionSession struct {
 	State       string    `json:"state"`
 	CompactedAt time.Time `json:"compacted_at,omitempty"`
 	Summarised  int       `json:"summarised_messages,omitempty"`
+	// Repo is the session's repository, and CompactAt the limit that applies
+	// to it: 0 when compaction is off for that repository. Override says
+	// the limit is the repository's own, not the default.
+	Repo      string `json:"repo,omitempty"`
+	RepoRoot  string `json:"repo_root,omitempty"`
+	CompactAt int64  `json:"compact_at"`
+	Override  bool   `json:"override,omitempty"`
 }
 
 // CompactionSessions lists tracked sessions, largest context first.
 func (s *Server) CompactionSessions() []CompactionSession {
+	// Repositories first, outside the lock: a first lookup reads a transcript.
+	s.compaction.mu.Lock()
+	sids := map[string]bool{}
+	for k := range s.compaction.sessions {
+		sid, _, _ := strings.Cut(k, "|")
+		sids[sid] = true
+	}
+	s.compaction.mu.Unlock()
+	type where struct{ name, root string }
+	repos := make(map[string]where, len(sids))
+	for sid := range sids {
+		name, root := s.repos.Resolve(sid)
+		repos[sid] = where{name, root}
+	}
+
 	s.compaction.mu.Lock()
 	defer s.compaction.mu.Unlock()
-	cfg := s.compaction.cfg
 	var out []CompactionSession
 	for k, st := range s.compaction.sessions {
 		if st.lastContext == 0 && st.summary == "" && !st.pending {
@@ -893,6 +922,7 @@ func (s *Server) CompactionSessions() []CompactionSession {
 		}
 		sid, model, _ := strings.Cut(k, "|")
 		model, _, _ = strings.Cut(model, "|")
+		cfg, override := s.compaction.cfg.ForRepo(repos[sid].root)
 		state := "ok"
 		switch {
 		case st.pending:
@@ -910,7 +940,11 @@ func (s *Server) CompactionSessions() []CompactionSession {
 		case st.lastContext >= cfg.WarnAtTokens:
 			state = "warning"
 		}
-		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0}
+		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0,
+			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil}
+		if override != nil && override.Off {
+			cs.CompactAt = 0
+		}
 		if !st.startedAt.IsZero() {
 			cs.CompactedAt = st.startedAt
 		}

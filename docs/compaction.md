@@ -48,6 +48,12 @@ Good to know:
 - **Only your prompt triggers it.** The marker inside a file Claude reads, or any other tool output, is ignored.
 - **Cost:** one summary request on your subscription, read from cache, typically about $0.20 API-equivalent (see [the savings](#how-the-savings-are-calculated)).
 
+## A different limit for some repositories
+
+*Compact at* is the default for every session. Under **Repository overrides** in the dashboard, a repository can have its own size (a big monorepo that needs more context, say 500k) or **Never compact**, which leaves its sessions alone unless you run `/compact-async`. *Warn when at* and the delay between compactions apply to the repository's own size.
+
+A session's repository is the folder holding `.git` above where Claude Code was started, read from its transcript. The match is on the full path, so two checkouts of the same project can differ. A session whose repository cannot be worked out yet uses *Compact at*. The sessions table shows each session's repository and the limit that applies to it.
+
 ## How the savings are calculated
 
 A compacted request does not record what it would have sent without Burst, so the dashboard works it out by replaying each session from `metrics.jsonl`, request by request, beside a **"without Burst" twin**:
