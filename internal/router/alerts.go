@@ -94,6 +94,13 @@ func (s *Server) alertOutcome(slot string, status int) {
 func (s *Server) alertUpstreamFailure(slot string, now time.Time) {
 	s.alerts.mu.Lock()
 	a := &s.alerts
+	// While the network is down every request fails for that one reason,
+	// which "Network offline" already says: counting them here added a
+	// "Requests are failing" and a "succeeding again" to the same outage.
+	if a.networkDown {
+		a.mu.Unlock()
+		return
+	}
 	a.lastFailure = now
 	a.failures = append(a.failures, now)
 	for len(a.failures) > 0 && now.Sub(a.failures[0]) > upstreamWindow {
@@ -139,6 +146,10 @@ func (s *Server) alertNetworkUp() {
 	s.alerts.mu.Lock()
 	was := s.alerts.networkDown
 	s.alerts.networkDown = false
+	if was {
+		// Failures from before the outage belong to it too.
+		s.alerts.failures = nil
+	}
 	s.alerts.mu.Unlock()
 	if was {
 		notice.Publish(alertNetwork, notice.OK, "Network back", "Anthropic is answering again.")

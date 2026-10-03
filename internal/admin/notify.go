@@ -88,11 +88,14 @@ func (s *Server) handleAlertSpend(w http.ResponseWriter, r *http.Request) {
 }
 
 type notifier struct {
-	started    bool
-	pfEvents   int
-	selfEvents int
-	intercept  interceptCheck
-	alerts     alertRounds
+	started bool
+	// guardBroken is which guards have a problem on screen, so their repair
+	// is shown and an unseen one is not.
+	guardBroken map[string]bool
+	pfEvents    int
+	selfEvents  int
+	intercept   interceptCheck
+	alerts      alertRounds
 }
 
 // StartNotifier runs until ctx ends.
@@ -127,10 +130,10 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 	if n.started {
 		// The usage panel has its own switch for these.
 		if pf > n.pfEvents {
-			alertGuardLine("pf", lastLine(pfHealEvents(pfHealLog, 1000)))
+			n.alertGuardLine("pf", lastLine(pfHealEvents(pfHealLog, 1000)))
 		}
 		if self > n.selfEvents {
-			alertGuardLine("watchdog", lastLine(pfHealEvents(selfLog, 1000)))
+			n.alertGuardLine("watchdog", lastLine(pfHealEvents(selfLog, 1000)))
 		}
 		alertIntercept(n.intercept, ic)
 	}
@@ -182,19 +185,29 @@ func alertIntercept(was, now interceptCheck) {
 	}
 }
 
-// alertGuardLine turns a new guard log line into an alert: a repair is
-// good news, anything else the guard logs is a problem it met.
-func alertGuardLine(guard, line string) {
+// alertGuardLine turns a new guard log line into an alert: anything other
+// than a repair is a problem the guard met. A repair is shown only when its
+// problem was: a guard that fixes a dropped pf rule within its own round
+// (a network reconnect does that) did its job unseen, and a green "repaired"
+// popup for a break nobody saw was one more alert in a burst of five.
+func (n *notifier) alertGuardLine(guard, line string) {
 	if line == "" {
 		return
 	}
 	name := map[string]string{"pf": "pf guard", "watchdog": "Gateway watchdog"}[guard]
 	for _, good := range []string{"HEALED", "recovered", "reloaded successfully"} {
 		if strings.Contains(line, good) {
-			notice.Publish("guard-"+guard, notice.OK, name+" repaired the redirect", line)
+			if n.guardBroken[guard] {
+				delete(n.guardBroken, guard)
+				notice.Publish("guard-"+guard, notice.OK, name+" repaired the redirect", line)
+			}
 			return
 		}
 	}
+	if n.guardBroken == nil {
+		n.guardBroken = map[string]bool{}
+	}
+	n.guardBroken[guard] = true
 	notice.Publish("guard-"+guard, notice.Error, name+" hit a problem", line+" (details under Guards on the dashboard)")
 }
 

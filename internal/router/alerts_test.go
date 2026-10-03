@@ -139,3 +139,23 @@ func TestAlertNetworkDownAndUp(t *testing.T) {
 		t.Fatalf("events = %q", got)
 	}
 }
+
+// One outage, one pair of alerts: the 5xx replies a dead network causes
+// are not a second problem, before or after "Network back".
+func TestNetworkOutageDoesNotAlsoAlertUpstream(t *testing.T) {
+	events := captureNotices(t)
+	s, _ := newChainServer(t, "http://127.0.0.1:1", nil)
+	for i := 0; i < upstreamFailures-1; i++ {
+		s.alertOutcome("primary", http.StatusBadGateway) // the first failures, before DNS is checked
+	}
+	s.alertNetworkDown()
+	for i := 0; i < 2*upstreamFailures; i++ {
+		s.alertOutcome("primary", http.StatusBadGateway)
+	}
+	s.notePrimaryAnswered("primary")
+	s.alertOutcome("primary", http.StatusBadGateway) // one more after: under the threshold again
+	got := titles(events())
+	if len(got) != 2 || got[0] != "error: Network offline" || got[1] != "ok: Network back" {
+		t.Fatalf("events = %q", got)
+	}
+}
