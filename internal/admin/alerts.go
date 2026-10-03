@@ -40,6 +40,7 @@ type alertRounds struct {
 	awakeSeen    bool
 	awakeOn      bool
 	awakeProblem string
+	awakeOffAt   time.Time // first read of an unexplained off, not yet said
 
 	handoverSeen bool
 	handoverSize int64
@@ -123,10 +124,29 @@ func (s *Server) alertKeepAwake(a *alertRounds, cfg config.Config, now time.Time
 			problem = "the keep-awake daemon is not running: press Grant on the dashboard"
 		}
 	}
+	// An off with no reason of Burst's own is something else on the Mac
+	// resetting SleepDisabled. The lid daemon puts it back within its minute
+	// (it did at 00:08:13 on 4 Oct 2026, 40 seconds after a "turned off"
+	// alert and its "back on" pair), so it is said only if it lasts.
+	// "Does not match the power source" is the off itself, not a cause.
+	cause := problem
+	if strings.HasPrefix(problem, "SleepDisabled does not match") {
+		cause = ""
+	}
+	if on {
+		a.awakeOffAt = time.Time{}
+	} else if a.awakeSeen && a.awakeOn && keepAwakeOffExplained(st, cfg, now, cause) == "" {
+		if a.awakeOffAt.IsZero() {
+			a.awakeOffAt = now
+		}
+		if now.Sub(a.awakeOffAt) < unexplainedOffGrace {
+			return
+		}
+	}
 	if a.awakeSeen {
 		switch {
 		case a.awakeOn && !on:
-			notice.Publish("keep-awake", notice.Warn, "Keep-awake turned off", keepAwakeOffReason(st, cfg, now, problem))
+			notice.Publish("keep-awake", notice.Warn, "Keep-awake turned off", keepAwakeOffReason(st, cfg, now, cause))
 		case !a.awakeOn && on:
 			notice.Publish("keep-awake", notice.OK, "Keep-awake back on", "The Mac stays awake with the lid shut again.")
 		case problem != "" && problem != a.awakeProblem:
@@ -136,7 +156,20 @@ func (s *Server) alertKeepAwake(a *alertRounds, cfg config.Config, now time.Time
 	a.awakeSeen, a.awakeOn, a.awakeProblem = true, on, problem
 }
 
+// unexplainedOffGrace is how long an off nobody in Burst asked for may last
+// before it is an alert: past the lid daemon's one-minute check.
+const unexplainedOffGrace = 90 * time.Second
+
 func keepAwakeOffReason(st keepawake.Status, cfg config.Config, now time.Time, problem string) string {
+	if r := keepAwakeOffExplained(st, cfg, now, problem); r != "" {
+		return r
+	}
+	return "Something else on the Mac turned it off, and the keep-awake daemon has not put it back. The Mac sleeps if the lid is shut. Details under Lid and power on the dashboard."
+}
+
+// keepAwakeOffExplained is the reason Burst itself turned keep-awake off,
+// or "" when it did not.
+func keepAwakeOffExplained(st keepawake.Status, cfg config.Config, now time.Time, problem string) string {
 	idle := time.Duration(cfg.KeepAwakeIdleMinutes) * time.Minute
 	switch {
 	case idle > 0 && !st.LastActivity.IsZero() && now.Sub(st.LastActivity) >= idle:
@@ -146,7 +179,7 @@ func keepAwakeOffReason(st keepawake.Status, cfg config.Config, now time.Time, p
 	case problem != "":
 		return problem + ". The Mac sleeps if the lid is shut."
 	}
-	return "The Mac sleeps if the lid is shut."
+	return ""
 }
 
 // handoverLine is one line of the handover log: date, time, what, the

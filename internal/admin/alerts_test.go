@@ -167,6 +167,32 @@ func TestAlertKeepAwakeTurnsOffAndBack(t *testing.T) {
 	if r := keepAwakeOffReason(keepawake.Status{OnAC: false, SleepDisabledKnown: true}, cfg, now, ""); !strings.Contains(r, "On battery") {
 		t.Errorf("battery reason = %q", r)
 	}
+	// Off with no reason of Burst's own, put back by the lid daemon inside
+	// the grace: nothing said. Off for longer: said, as something else.
+	base := len(alerts())
+	since := func() []string { return alerts()[base:] }
+	a = &alertRounds{}
+	live = keepawake.Status{SleepDisabled: true, SleepDisabledKnown: true, OnAC: true,
+		AppliedMode: config.KeepAwakeOnAC, DaemonInstalled: true, GhosttyNapOff: true}
+	s.alertKeepAwake(a, cfg, now)
+	live.SleepDisabled = false
+	s.alertKeepAwake(a, cfg, now.Add(30*time.Second))
+	live.SleepDisabled = true
+	s.alertKeepAwake(a, cfg, now.Add(60*time.Second))
+	if got := since(); len(got) != 0 {
+		t.Fatalf("a reset the daemon undid said %q", got)
+	}
+	live.SleepDisabled = false
+	s.alertKeepAwake(a, cfg, now.Add(90*time.Second))
+	s.alertKeepAwake(a, cfg, now.Add(150*time.Second))
+	if got := since(); len(got) != 0 {
+		t.Fatalf("said %q inside the grace", got)
+	}
+	s.alertKeepAwake(a, cfg, now.Add(180*time.Second))
+	if got := since(); strings.Join(got, "|") != "warn: Keep-awake turned off" {
+		t.Fatalf("a lasting reset said %q", got)
+	}
+
 	cfg.KeepAwakeIdleMinutes = 30
 	if r := keepAwakeOffReason(keepawake.Status{OnAC: true, LastActivity: now.Add(-31 * time.Minute)}, cfg, now, ""); !strings.Contains(r, "30 minutes") {
 		t.Errorf("idle reason = %q", r)
