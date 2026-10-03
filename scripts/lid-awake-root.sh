@@ -81,8 +81,12 @@ log() { print -r -- "$(date '+%Y-%m-%d %H:%M:%S %z') $*" >> "$LOG" 2>/dev/null; 
 current() { pmset -g | awk '$1 == "SleepDisabled" { print $2; exit }'; }
 
 # "ac" or "battery". A Mac with no battery reports AC Power, as it should.
+# Read whole, then matched: under pipefail, `pmset ... | head -1` or
+# `| grep -q` can kill the writer with SIGPIPE and fail the pipeline, which
+# reads as "no match" whatever the output said (see lid_closed).
 power_source() {
-  if pmset -g batt | head -1 | grep -q "'Battery Power'"; then echo battery; else echo ac; fi
+  local b; b="$(pmset -g batt 2>/dev/null)"
+  if [[ "${b%%$'\n'*}" == *"'Battery Power'"* ]]; then echo battery; else echo ac; fi
 }
 
 valid_mode() { [[ "$1" == ac || "$1" == always ]]; }
@@ -94,7 +98,12 @@ valid_activity() { [[ "$1" =~ ^/Users/[A-Za-z0-9._-]+/\.config/claude-burst/last
 lid_closed() {
   # CLAUDE_BURST_TEST_LID (shut|open) is for the tests only; launchd never sets it.
   case "${CLAUDE_BURST_TEST_LID:-}" in shut) return 0 ;; open) return 1 ;; esac
-  ioreg -r -k AppleClamshellState -d 4 2>/dev/null | grep -q '"AppleClamshellState" = Yes'
+  # Captured, never piped into grep -q: with pipefail, grep stopping at the
+  # match killed ioreg mid-write and the pipeline failed, so a shut lid read
+  # as open. On 3 Oct 2026 ten of ten checks said open with the lid shut, and
+  # the screen stayed lit until macOS's own display sleep turned it off.
+  local io; io="$(ioreg -r -k AppleClamshellState -d 4 2>/dev/null)"
+  [[ "$io" == *'"AppleClamshellState" = Yes'* ]]
 }
 
 mtime() { stat -f %m "$1" 2>/dev/null || echo 0; }
