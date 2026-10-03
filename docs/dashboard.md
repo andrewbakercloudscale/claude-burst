@@ -45,6 +45,26 @@ Screenshots are of a real dashboard with session ids, repository names and dolla
 - **Name the session after its folder**: new sessions are titled with the repo's folder name instead of "Claude Code". Resumed sessions keep their name.
 - **Keep the Mac awake while a session runs**: `caffeinate -i` while the panel runs. Stops idle sleep, not lid-close sleep.
 - **Write a handover when a session closes**: the same switch as in [Session handover](handover.md).
+- **Show gateway alerts on screen** (on by default, `CLAUDE_PANEL_ALERTS`): see below. **Send a test alert** shows one.
+
+### Gateway alerts on screen
+
+The usage panel floats the same notice it shows for a pauseless compaction over Claude Code's Ghostty window when the gateway runs into something. It shows only while Ghostty is in front and never takes focus. Colours: blue for information, green when something is back to normal, amber for a warning, red for an error.
+
+| What | Shown as | Clears with |
+|---|---|---|
+| Failed over to the secondary (with the reset time and why) | warning | Back on Claude, once every limit has reset |
+| A Claude limit hit with no secondary set up | warning | fades |
+| 5 or more failed replies (5xx) within 2 minutes; cancelled requests do not count | error | Requests are succeeding again, after 2 clean minutes |
+| Network offline (DNS failing on this Mac) | error | Network back |
+| A secondary key that worked can no longer be read (locked Keychain, deleted key) | warning | Secondary key available |
+| Compaction failed, or its summary was dropped | warning | fades |
+| Transparent mode: Burst CA no longer trusted, or the `/etc/hosts` redirect missing | error | Transparent mode restored |
+| The pf guard or the gateway watchdog logged a problem, or repaired it | error or ok | the repair |
+| Gateway restarting (replies in flight finish first), then Gateway ready | information | Gateway ready |
+| The gateway not answering at all (the panel's own check, 3 polls in a row) | error | Burst gateway back |
+
+Information and all clear notices show for 3 seconds, warnings for 8; an error stays until what clears it arrives, or 10 minutes. The same alert repeats at most once in 5 minutes. The gateway writes them to `~/.config/claude-burst/notices.json` (newest 20); the panel shows only those newer than when it started.
 
 **Usage panel** (Sessions menu): a live panel in a Ghostty split beside Claude Code, showing the session's cost and burn rate, context used, a row per turn with its context, cache hit rate and cost, and where Burst compacted. The section explains what it installs and shows a masked screenshot.
 
