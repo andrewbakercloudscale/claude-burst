@@ -63,8 +63,13 @@ The usage panel floats the same notice it shows for a pauseless compaction over 
 | The pf guard or the gateway watchdog logged a problem, or repaired it | error or ok | the repair |
 | Gateway restarting (replies in flight finish first), then Gateway ready | information | Gateway ready |
 | The gateway not answering at all (the panel's own check, 3 polls in a row) | error | Burst gateway back |
+| A session's context at its warn level (80% of its Compact at, the repository's own when set; never with compaction off for the repository), once per compaction window, on that session's panel | information | fades |
+| Today's API-equivalent spend through Burst passed the level set beside the switch (0 is off), once a day per level | warning | fades |
+| Keep-awake turned itself off (the idle time limit, on battery in plugged-in mode, or a problem), or back on | warning | Keep-awake back on |
+| Another session finished, or had its handover written (not shown on that session's own panel) | information | fades |
+| A newer Claude Burst release than the one running, once per version | information | fades |
 
-Information and all clear notices show for 3 seconds, warnings for 8; an error stays until what clears it arrives, or 10 minutes. The same alert repeats at most once in 5 minutes. The gateway writes them to `~/.config/claude-burst/notices.json` (newest 20); the panel shows only those newer than when it started.
+Information and all clear notices show for 3 seconds, warnings for 8; an error stays until what clears it arrives, or 10 minutes. The same alert repeats at most once in 5 minutes. The gateway writes them to `~/.config/claude-burst/notices.json` (newest 20); the panel shows only those newer than when it started, and with several panels open each alert shows once, on one of them.
 
 **Usage panel** (Sessions menu): a live panel in a Ghostty split beside Claude Code, showing the session's cost and burn rate, context used, a row per turn with its context, cache hit rate and cost, and where Burst compacted. The section explains what it installs and shows a masked screenshot.
 
