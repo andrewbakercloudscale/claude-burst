@@ -16,7 +16,7 @@ It binds loopback only and needs no login (see [the admin UI](#the-local-admin-u
 
 The menu down the left follows you as you scroll, grouped by job:
 
-- **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, and **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in).
+- **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in), and [Usage](#usage).
 - **Context**: [Pauseless Compaction](compaction.md), Context & cache.
 - **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
 - **Sessions**: [Session handover](handover.md), [Session coordination](coordination.md), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
@@ -34,6 +34,19 @@ A **Needs attention** list above the overview collects everything not doing what
 ![Analytics: latency, errors, spend by model and spend by repository, each in its own panel](screenshots/analytics.png)
 
 Screenshots are of a real dashboard with session ids, repository names and dollar figures replaced.
+
+## Usage
+
+**Usage** (Observe menu) is every request in a window you choose, narrowed down with filters. The views above answer fixed questions over whole days; this one answers questions like "the secondary, in this repository, in the last hour, only the failures".
+
+- **Filters**: window (last hour, 24 hours, 7 days, 30 days, or a custom range up to 92 days), model, provider (the primary or secondary slot, or a route such as `anthropic`), repository, session and result. Your last filter is remembered in this browser.
+- **Totals**: requests split into ok, errors and cancelled; success rate (cancelled requests, which are you pressing Esc, are left out); tokens by type; cache hit rate (cache reads as a share of everything the model read); estimated cost; output speed in tokens a second; latency p50 and p95 over successful model requests.
+- **Trend**: stacked tokens by type (input, cache read, cache write, output), or requests and errors, or cost. Bars are 5 minutes for the last hour, hourly for 24 hours and local days for 7 and 30 days. Empty bars stay in, because a gap is information.
+- **Breakdowns** by model, provider, repository and result. Click a name to filter by it.
+- **Requests**: the newest first, 25 a page. Click one for its detail: request and session ids, slot, route, requested model, destination, cache writes, pruning and compaction, limit and note.
+- **Prices used for the cost estimate**: the table the costs come from, which is `config.json`'s `pricing` over the built-in prices. Cache rates not set there are derived from the input rate and marked.
+
+Times are local. Status 0 requests are counted as "unknown": they come from before the gateway recorded what it answered. When the log rotation means the window reaches back further than the log, the section says so. The data comes from `GET /api/usage`, which takes the same filters as query parameters.
 
 ## Session options and the usage panel
 

@@ -10,8 +10,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
 
 // The dashboard's JavaScript, run in a real browser against this package's
@@ -53,6 +55,15 @@ func TestDashboardRunsInABrowser(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Three requests in the last hour for the Usage section to total: one
+	// ok, one failure and one cancelled, so its success rate is 50%.
+	mw := metrics.New(s.metricsPath)
+	for i, st := range []int{200, 502, metrics.StatusClientClosed} {
+		if err := mw.Write(metrics.Event{Time: time.Now().Add(-time.Duration(10+i) * time.Minute), Slot: "primary", Route: "anthropic",
+			Model: "claude-smoke", HTTPStatus: st, DurationMS: 1200, InputTokens: 100, OutputTokens: 40, CacheReadTokens: 300}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// Loading the page must only read. A POST here would be the page
 	// changing settings on its own.
@@ -83,6 +94,11 @@ func TestDashboardRunsInABrowser(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "signed by "+signingName) || !strings.Contains(string(out), "Downloads") {
 		t.Fatal("the Permissions section did not render signing and folders")
+	}
+	for _, want := range []string{"1 ok, 1 errors, 1 cancelled", "Success rate 50.0%", "Cache hit rate 75.0%", "claude-smoke"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("the Usage section did not render %q", want)
+		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
