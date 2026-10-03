@@ -248,12 +248,11 @@ func (s *Server) checkoutFolder() (dir, folder string) {
 }
 
 // checkGitAccess runs git in the claude-burst checkout, the way the update
-// check does. macOS asks about git separately from claude-burst itself: on
-// 3 Oct 2026 the gateway read Desktop fine while the git it started sat
-// waiting on its own prompt, and every update check timed out as "could
-// not reach GitHub". Asking here, while someone is at the Mac, is what
-// gets that Allow clicked. Not ok when the checkout is in no protected
-// folder: there is nothing to ask.
+// check does. While any of the gateway's folder prompts sits unanswered,
+// git's file access waits behind it: on 3 Oct 2026 the gateway had read
+// Desktop fine, yet every update check timed out as "could not reach
+// GitHub" until the Documents and Downloads prompts were answered. Not ok
+// when the checkout is in no protected folder: there is nothing to ask.
 func (s *Server) checkGitAccess() (gitAccess, bool) {
 	dir, folder := s.checkoutFolder()
 	if folder == "" {
