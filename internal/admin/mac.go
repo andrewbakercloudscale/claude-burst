@@ -177,6 +177,7 @@ var panelOptions = map[string]string{
 	"session_title":  "CLAUDE_PANEL_SESSION_TITLE",
 	"cost_alerts":    "CLAUDE_PANEL_COST_ALERTS",
 	"close_button":   "CLAUDE_PANEL_CLOSE_BUTTON",
+	"compact_notice": "CLAUDE_PANEL_COMPACTION_OVERLAY",
 }
 
 // panelNumbers are the panel's numeric options, with their defaults and the
@@ -192,7 +193,7 @@ var panelNumbers = map[string]struct {
 }
 
 // panelDefaults are what the panel does when a key is absent.
-var panelDefaults = map[string]bool{"remote_control": false, "caffeinate": false, "session_title": true, "cost_alerts": true, "close_button": true}
+var panelDefaults = map[string]bool{"remote_control": false, "caffeinate": false, "session_title": true, "cost_alerts": true, "close_button": true, "compact_notice": true}
 
 type panelView struct {
 	Installed bool               `json:"installed"`
