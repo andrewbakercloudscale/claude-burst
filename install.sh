@@ -390,6 +390,9 @@ PLIST
   dash="$(python3 -c "import json;print(json.load(open('$cfgjson')).get('admin_listen') or '127.0.0.1:7788')" 2>/dev/null || echo '127.0.0.1:7788')"
   gw="$(python3 -c "import json;print(json.load(open('$cfgjson')).get('listen','127.0.0.1:7777'))" 2>/dev/null || echo '127.0.0.1:7777')"
   mode="$(python3 -c "import json;print((json.load(open('$cfgjson')).get('intercept') or {}).get('mode') or 'base-url')" 2>/dev/null || echo base-url)"
+  # shellcheck source=./scripts/folder-access.sh
+  source "$ROOT/scripts/folder-access.sh"
+  burst_folder_access "$dash" "$ROOT"
   secondary="$(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('provider') or '')" 2>/dev/null || true)"
   case "$secondary" in
     openai-compatible) sec_line="Secondary: $(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('model') or '')" 2>/dev/null) at $(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('base_url') or '')" 2>/dev/null)" ;;

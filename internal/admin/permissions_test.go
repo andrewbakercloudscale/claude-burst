@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/repo"
 )
@@ -187,5 +189,60 @@ func TestOpenPrivacySettings(t *testing.T) {
 	}
 	if len(*calls) != 1 || (*calls)[0] != "open "+privacySettingsURL {
 		t.Errorf("calls: %q", *calls)
+	}
+}
+
+// Check also runs git in a checkout under Desktop, the way the update check
+// does: macOS asks about git on its own, and an unanswered prompt shows as
+// waiting rather than a GitHub failure.
+func TestPermissionsCheckAsksForGit(t *testing.T) {
+	s := newTestServer(t)
+	stubPermissions(t, "Signature=adhoc\n", false, func(string) ([]os.DirEntry, error) { return nil, nil })
+	checkout := filepath.Join(os.Getenv("HOME"), "Desktop", "claude-burst")
+	if err := os.MkdirAll(filepath.Join(checkout, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.rootHelper = filepath.Join(checkout, "scripts", "transparent-root.sh")
+	oldG, oldWait := runGit, permCheckWait
+	t.Cleanup(func() { runGit, permCheckWait = oldG, oldWait })
+	permCheckWait = 50 * time.Millisecond
+	var ran []string
+	runGit = func(ctx context.Context, dir string, args ...string) (string, error) {
+		ran = append(ran, dir+" "+strings.Join(args, " "))
+		<-ctx.Done() // macOS is showing its prompt
+		return "", ctx.Err()
+	}
+	rr := mutate(t, s, "/api/permissions-check", "{}")
+	var resp struct {
+		Results []struct{ Folder, State, Detail string }
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	last := resp.Results[len(resp.Results)-1]
+	if last.Folder != "git in Desktop" || last.State != "waiting" || !strings.Contains(last.Detail, "git may read Desktop") {
+		t.Errorf("git result: %+v", last)
+	}
+	if len(ran) != 1 || ran[0] != checkout+" rev-parse --git-dir" {
+		t.Errorf("git ran: %q", ran)
+	}
+}
+
+// A checkout in no protected folder has nothing for macOS to ask about.
+func TestPermissionsCheckSkipsGitOutsideProtectedFolders(t *testing.T) {
+	s := newTestServer(t)
+	stubPermissions(t, "Signature=adhoc\n", false, func(string) ([]os.DirEntry, error) { return nil, nil })
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "scripts"), 0o755)
+	s.rootHelper = filepath.Join(dir, "scripts", "transparent-root.sh")
+	oldG := runGit
+	t.Cleanup(func() { runGit = oldG })
+	runGit = func(ctx context.Context, dir string, args ...string) (string, error) {
+		t.Errorf("git ran: %v", args)
+		return "", nil
+	}
+	rr := mutate(t, s, "/api/permissions-check", "{}")
+	if strings.Contains(rr.Body.String(), "git in") {
+		t.Errorf("body: %s", rr.Body.String())
 	}
 }

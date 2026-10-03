@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // The Upgrade button, against real git repositories in a temp dir: a bare
@@ -450,5 +451,25 @@ func TestCheckVersionButtonIsAlwaysAvailable(t *testing.T) {
 	}
 	if strings.Contains(src, `$("upgradeTop").disabled = b.disabled`) {
 		t.Fatal("a status must not disable the button")
+	}
+}
+
+// A local git command that hangs is macOS waiting on a prompt, not GitHub:
+// the check says so and never fetches.
+func TestUpgradeSaysWhenGitIsWaitingOnMacOS(t *testing.T) {
+	r := newUpgradeRig(t)
+	oldG, oldWait := runGit, localGitWait
+	t.Cleanup(func() { runGit, localGitWait = oldG, oldWait })
+	localGitWait = 50 * time.Millisecond
+	runGit = func(ctx context.Context, dir string, args ...string) (string, error) {
+		if args[0] == "fetch" {
+			t.Errorf("fetched while git was stuck")
+		}
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	st := r.status(true)
+	if !strings.Contains(st.Error, "git did not answer") || strings.Contains(st.Error, "GitHub") {
+		t.Fatalf("status = %+v", st)
 	}
 }
