@@ -153,3 +153,30 @@ test('a standing problem is a line in the band and in the pane', async ($, on) =
   const pane = await $.ui.mount(PANE)
   expect(await pane.find({ type: 'Text', text: 'Network offline' })).toBeDefined()
 })
+
+test('the context bar shows what the context is made of, and /context-bar hides it', async ($, on) => {
+  const parts = [
+    { name: 'System prompt', tokens: 6000 },
+    { name: 'System tools', tokens: 14000 },
+    { name: 'Messages', tokens: 20000 },
+    { name: 'Tool results', tokens: 30000 },
+  ]
+  stubs(on, [mod({ session: { session: 'S1', context: 70000, state: 'ok', compact_at: 300000, parts } })], [])
+  await start($)
+  let ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: '70k of 300k (23%)' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Tool results 30k' })).toBeDefined()
+  const results = await ui.find({ type: 'Text', text: /^█+$/, color: 'green' })
+  expect(results).toBeDefined()
+  expect(await $.command.run({ command: 'context-bar', args: '' })).toEqual({})
+  ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: 'Tool results 30k' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'ctx 70k of 300k' })).toBeDefined()
+})
+
+test('no context bar before a response reports the parts', async ($, on) => {
+  stubs(on, [mod()], [])
+  await start($)
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /of 300k \(/ })).toBeUndefined()
+})
