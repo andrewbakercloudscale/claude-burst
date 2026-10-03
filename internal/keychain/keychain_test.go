@@ -189,3 +189,25 @@ func TestParseKeychainDateGarbage(t *testing.T) {
 		}
 	}
 }
+
+// A security call that hangs (a locked Keychain's dialog) gives up at the
+// timeout with an error that says why, instead of hanging its caller.
+func TestLoadTimesOut(t *testing.T) {
+	hang := filepath.Join(t.TempDir(), "security")
+	if err := os.WriteFile(hang, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath, oldTimeout := securityPath, timeout
+	securityPath, timeout = hang, 200*time.Millisecond
+	t.Cleanup(func() { securityPath, timeout = oldPath, oldTimeout })
+	t.Setenv("CLAUDE_BURST_TEST_UNSET_KEY", "")
+
+	start := time.Now()
+	_, err := Load("claude-burst-test", "CLAUDE_BURST_TEST_UNSET_KEY")
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("Load waited %s", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not answer in time") {
+		t.Fatalf("want a timeout error, got %v", err)
+	}
+}
