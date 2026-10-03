@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ const (
 	alertNetwork   = "network"
 	alertSecondary = "secondary-key"
 	alertCompact   = "compaction"
+	alertContext   = "context"
 )
 
 // Upstream failures: this many 5xx replies within upstreamWindow is an
@@ -166,6 +168,22 @@ func (s *Server) alertSecondaryKey(err error) {
 	case back:
 		notice.Publish(alertSecondary, notice.OK, "Secondary key available", "Failover to "+s.secondary.Name()+" works again.")
 	}
+}
+
+// alertContextNear says a session's context has reached the warn level
+// (80% of its Compact at by default, the repository's own when it has
+// one), once per session per compaction window: it is called from the
+// same place, and on the same schedule, as the warn line in the log. A
+// repository with compaction off never gets here, its warn level being
+// NeverTokens.
+func alertContextNear(sid, root string, context, compactAt int64) {
+	where := "this session"
+	if root != "" {
+		where = filepath.Base(root)
+	}
+	notice.PublishFor(sid, alertContext, notice.Info,
+		fmt.Sprintf("Context at %dk of %dk, compaction soon", context/1000, compactAt/1000),
+		"In "+where+". Burst summarises the older history in the background at "+fmt.Sprintf("%dk", compactAt/1000)+"; nothing pauses.")
 }
 
 func (s *Server) anyOverflow(now time.Time) bool {
