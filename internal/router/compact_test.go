@@ -112,6 +112,24 @@ func TestPrefixHashDetectsAChangedHistory(t *testing.T) {
 	}
 }
 
+func TestPrefixHashIgnoresWhatClaudeCodeRewrites(t *testing.T) {
+	sent := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"go"}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"thinking","thinking":"hm","signature":"s"},{"type":"text","text":"done","cache_control":{"type":"ephemeral"}}]}`),
+	}
+	later := []json.RawMessage{
+		sent[0],
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"done"}]}`),
+	}
+	if prefixHash(sent, 2) != prefixHash(later, 2) {
+		t.Fatal("a moved cache_control or cleared thinking must not drop a summary")
+	}
+	edited := []json.RawMessage{sent[0], json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"DONE"}]}`)}
+	if prefixHash(later, 2) == prefixHash(edited, 2) {
+		t.Fatal("changed text must still count as a changed history")
+	}
+}
+
 func TestSummaryFromText(t *testing.T) {
 	if got := summaryFromText("preamble <summary>\nthe gist\n</summary> trailer"); got != "the gist" {
 		t.Fatalf("got %q", got)

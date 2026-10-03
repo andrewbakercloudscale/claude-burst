@@ -376,6 +376,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	st := s.compaction.state(key)
 	st.seen = now
 	dirty := false
+	quietStart := false
 
 	// A summary only fits the history it was made from.
 	// A dropped summary also reopens the window: the session is back to its
@@ -394,9 +395,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary (%s); window reopened", rid, key, divergence(msgs, st.nextP0, st.nextMarks))
 		st.next, st.nextHash, st.nextP0, st.nextMarks = "", "", 0, nil
 		st.startedAt = time.Time{}
-		st.notice("the waiting summary no longer fits (history cleared, compacted or rewound) and was dropped; a new one can start at once")
-		notice.Publish(alertCompact, notice.Warn, "Compaction summary dropped",
-			"The history was cleared, compacted or rewound before the waiting summary swapped in. A new one can start at once.")
+		// Log only: a summary that never swapped in changed nothing the
+		// model sees, and a notice for it, then one for the summary that
+		// replaces it, was most of the noise on 2026-10-03.
+		quietStart = true
 		dirty = true
 	}
 
@@ -446,7 +448,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			s.logger.Printf("req=%s compaction start session=%s context=%dk (%s) summarising %d of %d messages%s", rid, key, st.lastContext/1000, limit, p, len(msgs), why)
 			if forced {
 				st.notice("/compact-async: %d earlier messages (context %dk) are being summarised in the background. Keep working: it swaps in with your next prompt once ready, with no pause", p, st.lastContext/1000)
-			} else {
+			} else if !quietStart {
 				st.notice("context is %dk, so %d earlier messages are being summarised in the background. Keep working: it swaps in at a later prompt, with no pause", st.lastContext/1000, p)
 			}
 			s.compaction.running.Add(1)

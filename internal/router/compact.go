@@ -77,12 +77,57 @@ func prefixHash(msgs []json.RawMessage, n int) string {
 		if json.Unmarshal(msgs[i], &v) != nil {
 			h.Write(msgs[i])
 		} else {
-			b, _ := json.Marshal(v)
+			b, _ := json.Marshal(hashForm(v))
 			h.Write(b)
 		}
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// hashForm drops what Claude Code changes in a message it has already sent:
+// the cache_control breakpoint, which moves forward every request, and
+// thinking blocks, which it clears from older turns. Neither is part of the
+// conversation a summary covers. On 2026-10-03 the message just before the
+// boundary changed after every summary, so each one was dropped as soon as
+// it was ready and a new one started: six summaries and eighteen notices in
+// one session, none of them swapped in.
+func hashForm(v any) any {
+	msg, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	blocks, ok := msg["content"].([]any)
+	if !ok {
+		return v
+	}
+	kept := make([]any, 0, len(blocks))
+	for _, b := range blocks {
+		bm, ok := b.(map[string]any)
+		if !ok {
+			kept = append(kept, b)
+			continue
+		}
+		if t, _ := bm["type"].(string); t == "thinking" || t == "redacted_thinking" {
+			continue
+		}
+		if _, has := bm["cache_control"]; has {
+			c := make(map[string]any, len(bm))
+			for k, x := range bm {
+				if k != "cache_control" {
+					c[k] = x
+				}
+			}
+			bm = c
+		}
+		kept = append(kept, bm)
+	}
+	out := make(map[string]any, len(msg))
+	for k, x := range msg {
+		out[k] = x
+	}
+	out["content"] = kept
+	return out
 }
 
 // rewriteWithSummary returns messages [p0, len) with the summary and the
