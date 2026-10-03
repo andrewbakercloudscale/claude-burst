@@ -682,8 +682,12 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	waitFor(t, func() bool { return s.compactionReady("S") })
 
 	got := strings.Join(s.PromptNotices("S", false), "\n")
-	if !strings.Contains(got, "450k, so 4 earlier messages are being summarised") || !strings.Contains(got, "ready and swaps in with this message") {
-		t.Fatalf("want the start and the ready line, got:\n%s", got)
+	if !strings.Contains(got, "450k, so 4 earlier messages are being summarised") {
+		t.Fatalf("want the start line, got:\n%s", got)
+	}
+	// Ready gets no line of its own: "done" follows on the next request.
+	if strings.Contains(got, "summary is ready") {
+		t.Fatalf("the ready line repeats the done line, got:\n%s", got)
 	}
 	if again := s.PromptNotices("S", false); len(again) != 0 {
 		t.Fatalf("each line is shown once, got %q", again)
@@ -710,7 +714,7 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 }
 
 // Inside a long turn the summary cannot swap in. The hook after a tool call
-// says so once, and the next prompt still gets its own ready line.
+// says so once, and the next prompt adds nothing until the swap is done.
 func TestPromptNoticesMidTurnSayItWaitsForTheNextPrompt(t *testing.T) {
 	f := &fakeAnthropic{context: 450_000}
 	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
@@ -729,8 +733,8 @@ func TestPromptNoticesMidTurnSayItWaitsForTheNextPrompt(t *testing.T) {
 	if again := s.PromptNotices("S", true); len(again) != 0 {
 		t.Fatalf("the waiting line is shown once per summary, got %q", again)
 	}
-	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "ready and swaps in with this message") {
-		t.Fatalf("the next prompt still gets its ready line, got:\n%s", got)
+	if got := s.PromptNotices("S", false); len(got) != 0 {
+		t.Fatalf("the next prompt waits for the done line, got %q", got)
 	}
 
 	// After the swap nothing is waiting, so mid-turn says only what happened.
