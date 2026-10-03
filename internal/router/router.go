@@ -127,7 +127,9 @@ type Server struct {
 	// failoverNotices are lines waiting to be shown in Claude Code's window
 	// at the next prompt of any session: a switch to the paid secondary is
 	// never silent. Held by failoverMu; not part of state.json.
-	failoverMu      sync.Mutex
+	failoverMu sync.Mutex
+	// alerts is what the on-screen alerts need to say a problem ended.
+	alerts          alertState
 	failoverNotices []string
 
 	// health is whether the primary is answering right now, for the
@@ -468,6 +470,7 @@ func (s *Server) secondaryReady() bool {
 		s.logger.Printf("secondary route=%s has no usable credential (%v): treating it as absent, so Anthropic's own limits pass through to Claude Code", s.secondary.Name(), err)
 	}
 	s.readyAt, s.readyErr = time.Now(), err
+	s.alertSecondaryKey(err)
 	return err == nil
 }
 
@@ -518,6 +521,7 @@ func (s *Server) notePrimaryAnswered(slot string) {
 	s.health.LastAnswer = time.Now()
 	s.health.Failures = 0
 	s.health.FailingSince = time.Time{}
+	s.alertNetworkUp()
 }
 
 func (s *Server) notePrimaryFailure(slot string, err error) {
@@ -571,6 +575,7 @@ func (s *Server) releaseOutageWindow(model string) {
 	s.saveStateLocked()
 	s.logger.Printf("released outage window for model=%q: the secondary also failed at the transport level, so the next request tries the primary", model)
 	s.addFailoverNotice(fmt.Sprintf("\u26a1 Claude Burst: back on Anthropic for %s. The secondary could not answer either, so the outage is being treated as this machine's network.", model))
+	s.alertBackOnPrimary("The secondary could not answer either, so " + model + " goes to Anthropic again.")
 }
 
 // ClearOverflow reopens every route: the forced account-wide window and each
@@ -767,6 +772,7 @@ func (s *Server) activateOverflow(model string, resetAt int64, claim, reason str
 		what = model + " requests"
 	}
 	s.addFailoverNotice(fmt.Sprintf("\u26a1 Claude Burst: %s now go to the secondary until %s, because %s", what, time.Unix(resetAt, 0).Format("15:04"), plainReason(claim, reason)))
+	s.alertFailedOver(what, time.Unix(resetAt, 0), plainReason(claim, reason))
 	s.logger.Printf("model=%q rejected until %s claim=%s reason=%s", model, time.Unix(resetAt, 0).Format(time.RFC3339), claim, reason)
 }
 
@@ -1148,6 +1154,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			// dead host (four Together timeouts in a row, 2026-09-21), and it
 			// would arm a window blaming a model for a laptop changing WiFi.
 			s.notePrimaryFailure(slot, err)
+			s.alertNetworkDown()
 			s.logger.Printf("req=%s no_failover route=%s reason=%q (local network unavailable: control DNS failed)", rid, p.Name(), "network down")
 			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
@@ -1754,6 +1761,7 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 		}
 	}
 	rid := requestIDFrom(in.Context())
+	s.alertOutcome(slot, status)
 	traceHop(in.Context(), TraceHop{Slot: slot, Route: route, Model: model, RequestedModel: requestedModel,
 		Status: status, DurationMS: time.Since(start).Milliseconds(), Note: note, Destination: destination})
 	err := s.metrics.Write(metrics.Event{
