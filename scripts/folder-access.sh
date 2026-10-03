@@ -3,10 +3,10 @@
 #
 # The gateway reads repositories under ~/Desktop (to name a session's
 # repository) and runs git in its own checkout (the update check). macOS
-# asks about each of those separately, and only when the gateway first
-# tries, which is usually hours later with nobody watching: the prompt sits
-# unanswered and every update check times out. On 3 Oct 2026 the gateway
-# read Desktop fine while the git it started waited on a prompt of its own.
+# asks about each folder only when the gateway first tries, which is
+# usually hours later with nobody watching, and while a prompt sits
+# unanswered the gateway's git waits behind it: on 3 Oct 2026 every update
+# check timed out until the Documents and Downloads prompts were answered.
 #
 # So straight after an install or deploy, with the person still at the
 # Terminal, ask the gateway to look now (the dashboard's Check folder
