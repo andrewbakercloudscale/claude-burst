@@ -35,9 +35,13 @@ import (
 // without it networksetup uses the password macOS already has for the network.
 const KeychainService = "claude-burst-hotspot"
 
-// probeAddrs are dialled to tell online from offline.
+// probeAddrs are dialled to tell online from offline: four operators, so a
+// network that blocks one or two public resolvers (some offices and hotels
+// do) is not taken for no internet, which would join the phone hotspot
+// for nothing. Addresses, not names: under transparent mode
+// api.anthropic.com resolves to this Mac, which always answers.
 var (
-	probeAddrs = []string{"1.1.1.1:443", "8.8.8.8:443"}
+	probeAddrs = []string{"1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443", "208.67.222.222:443"}
 )
 
 // WiFiDevice finds the Wi-Fi interface (en0 on every current Mac, but not
@@ -102,12 +106,25 @@ func parseLidClosed(out string) bool {
 	return false
 }
 
-// Online reports whether either probe address accepts a TCP connection.
+// Online reports whether any probe address accepts a TCP connection. All
+// are dialled at once, so offline takes one 4s timeout, not one per address.
 var Online = func() bool {
-	for _, a := range probeAddrs {
-		c, err := net.DialTimeout("tcp", a, 4*time.Second)
-		if err == nil {
-			c.Close()
+	return anyAccepts(probeAddrs, 4*time.Second)
+}
+
+func anyAccepts(addrs []string, timeout time.Duration) bool {
+	ok := make(chan bool, len(addrs))
+	for _, a := range addrs {
+		go func(a string) {
+			c, err := net.DialTimeout("tcp", a, timeout)
+			if err == nil {
+				c.Close()
+			}
+			ok <- err == nil
+		}(a)
+	}
+	for range addrs {
+		if <-ok {
 			return true
 		}
 	}
@@ -288,7 +305,7 @@ func joinSteps(ssid string, attempts int, restoreOnFail bool, progress func(Step
 		}
 		return steps
 	}
-	emit(Step{Name: "Internet through it", Pending: true, Detail: "checking 1.1.1.1 / 8.8.8.8"})
+	emit(Step{Name: "Internet through it", Pending: true, Detail: "checking Cloudflare, Google, Quad9 and OpenDNS"})
 	for i := 0; i < 10 && !Online(); i++ {
 		time.Sleep(2 * time.Second)
 	}
@@ -298,7 +315,7 @@ func joinSteps(ssid string, attempts int, restoreOnFail bool, progress func(Step
 		return steps
 	}
 	logEvent("joined %q: online", ssid)
-	emit(Step{Name: "Internet through it", OK: true, Detail: "reached 1.1.1.1 / 8.8.8.8"})
+	emit(Step{Name: "Internet through it", OK: true, Detail: "reached the internet"})
 	return steps
 }
 
