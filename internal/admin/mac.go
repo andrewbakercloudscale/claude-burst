@@ -39,6 +39,8 @@ type keepAwakeView struct {
 	// or update: off (keep-awake off), ok, stale (an older copy of
 	// lid-awake-root.sh), missing (never installed) or stopped.
 	Daemon string `json:"daemon"`
+	// Original is what "Restore original power settings" puts back.
+	Original keepawake.Original `json:"original"`
 }
 
 // lidDaemonRunning says whether the root watch loop is up. A variable so
@@ -76,6 +78,7 @@ func (s *Server) readKeepAwake() keepAwakeView {
 	}
 	v.Problem = v.Live.Problem(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
 	v.Daemon = s.lidDaemonState(cfg.KeepAwakeLidClosed)
+	v.Original = readOriginal()
 	if v.Problem == "" {
 		switch v.Daemon {
 		case "stale":
@@ -114,6 +117,9 @@ func (s *Server) staleLidDaemon() string {
 // preference: `defaults` ignores HOME, so a test's temporary HOME does not
 // protect it, and one did turn this machine's setting off.
 var setGhosttyAppNap = keepawake.SetGhosttyAppNap
+
+// readOriginal is a variable for the same reason.
+var readOriginal = keepawake.ReadOriginal
 
 // sudoNonInteractive runs a root command only if sudo has cached
 // credentials. Never prompts: the gateway has no terminal. A variable for

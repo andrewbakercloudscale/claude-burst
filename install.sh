@@ -65,12 +65,35 @@ offer_signing() {
 # on every install, so a reinstall or a new machine with the same config ends
 # up in the same state. False touches nothing and asks for no password.
 
+# Ghostty's App Nap as it was before Claude Burst first changed it, so an
+# uninstall or the dashboard's restore button puts back exactly that. Same
+# file and rules as internal/keepawake.SetGhosttyAppNap.
+APPNAP_ORIGINAL="$HOME/.config/claude-burst/ghostty-appnap.original"
+appnap_record_original() {
+  [[ -f "$APPNAP_ORIGINAL" ]] && return 0
+  local was
+  was="$(defaults read com.mitchellh.ghostty NSAppSleepDisabled 2>/dev/null)" || was=unset
+  [[ "$was" == 1 ]] && was=unset   # set by an older Claude Burst that kept no record
+  mkdir -p "${APPNAP_ORIGINAL:h}" && echo "$was" > "$APPNAP_ORIGINAL"
+}
+appnap_restore_original() {
+  local was=unset
+  [[ -f "$APPNAP_ORIGINAL" ]] && was="$(<"$APPNAP_ORIGINAL")"
+  case "$was" in
+    0) defaults write com.mitchellh.ghostty NSAppSleepDisabled -bool NO ;;
+    1) defaults write com.mitchellh.ghostty NSAppSleepDisabled -bool YES ;;
+    *) defaults delete com.mitchellh.ghostty NSAppSleepDisabled >/dev/null 2>&1 || true ;;
+  esac
+  rm -f "$APPNAP_ORIGINAL"
+}
+
 apply_keep_awake() {
   local cfg="$HOME/.config/claude-burst/config.json" on mode
   on="$(python3 -c "import json;print(str(json.load(open('$cfg')).get('keep_awake_lid_closed',False)).lower())" 2>/dev/null || echo false)"
   [[ "$on" == true ]] || return 0
   mode="$(python3 -c "import json;print(json.load(open('$cfg')).get('keep_awake_lid_closed_power') or 'ac')" 2>/dev/null || echo ac)"
   echo "keep_awake_lid_closed is true (mode $mode): applying; sudo will ask for your password."
+  appnap_record_original
   defaults write com.mitchellh.ghostty NSAppSleepDisabled -bool YES
   if ! sudo "$ROOT/scripts/lid-awake-root.sh" apply "$mode"; then
     echo "WARNING: keep-awake not applied; the lid will still sleep the Mac. Run:" >&2
@@ -200,7 +223,7 @@ uninstall() {
 
   # 4. The LaunchAgent and the binary.
   rm -f "$PLIST" "$TARGET"
-  defaults delete com.mitchellh.ghostty NSAppSleepDisabled >/dev/null 2>&1 || true
+  appnap_restore_original
   if (( purge )); then
     rm -rf "$CONFIG_DIR"
   fi
