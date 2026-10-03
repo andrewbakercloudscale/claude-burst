@@ -72,6 +72,9 @@ CNF
   echo "Signing identity ready."
 fi
 
+# --identity-only: install.sh signs the build it is installing itself.
+[[ "${1:-}" == "--identity-only" ]] && exit 0
+
 if [[ -x "$TARGET" ]]; then
   # Captured, not piped into grep -q: under pipefail, grep exiting at the
   # first match can fail codesign with SIGPIPE and so the whole test.
