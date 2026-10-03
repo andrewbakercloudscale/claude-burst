@@ -5,11 +5,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/hotspot"
+	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 )
 
 func postSettings(t *testing.T, s *Server, body string) (*httptest.ResponseRecorder, map[string]any) {
@@ -268,10 +271,37 @@ func TestRestartNeededOnlyListsStartupSettings(t *testing.T) {
 	}
 }
 
-// One GET: it reads networksetup, ioreg and the Keychain (read only) and
-// dials the reachability probes, so it is kept to a single shape check.
+// stubMacForSettings answers everything the settings view asks the Mac:
+// the Keychain through a stub security that records its calls, and the
+// hotspot's networksetup, ioreg and online probe with fixed answers. It
+// returns how many times the stub security ran.
+func stubMacForSettings(t *testing.T) func() int {
+	t.Helper()
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	stub := filepath.Join(dir, "security")
+	body := "#!/bin/sh\necho \"$*\" >> " + calls + "\nexit 44\n" // 44: item not found
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(keychain.SetSecurityPathForTesting(stub))
+	t.Setenv("CLAUDE_BURST_HOTSPOT_PASSWORD", "")
+	known, lid, online := hotspot.KnownNetworks, hotspot.LidClosed, hotspot.Online
+	hotspot.KnownNetworks = func() []string { return []string{"Test Phone"} }
+	hotspot.LidClosed = func() bool { return false }
+	hotspot.Online = func() bool { return true }
+	t.Cleanup(func() { hotspot.KnownNetworks, hotspot.LidClosed, hotspot.Online = known, lid, online })
+	return func() int {
+		b, _ := os.ReadFile(calls)
+		return strings.Count(string(b), "\n")
+	}
+}
+
+// The settings view's shape, built without the real Keychain, network or
+// hotspot commands: every Mac answer below comes from stubMacForSettings.
 func TestSettingsGetShape(t *testing.T) {
 	s := newTestServer(t)
+	securityCalls := stubMacForSettings(t)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7788/api/settings", nil))
 	if rec.Code != http.StatusOK {
@@ -289,5 +319,11 @@ func TestSettingsGetShape(t *testing.T) {
 	}
 	if v.Listen == "" || v.AdminListen == "" {
 		t.Fatal("listen addresses missing")
+	}
+	if !v.Hotspot.Online || len(v.Hotspot.Known) != 1 || v.Hotspot.Known[0] != "Test Phone" || v.Hotspot.PasswordStored {
+		t.Fatalf("hotspot view did not come from the stubs: %+v", v.Hotspot)
+	}
+	if securityCalls() == 0 {
+		t.Fatal("the password check must go through the stub security, not the real Keychain")
 	}
 }
