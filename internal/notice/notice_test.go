@@ -97,6 +97,30 @@ func TestWriteIsAtomicAndReplacesADamagedFile(t *testing.T) {
 	}
 }
 
+func TestPublishOnceSurvivesARestart(t *testing.T) {
+	p, path, clock := newTest(t)
+	if !p.PublishOnce("update", Info, "Claude Burst 0.6.0 available", "") {
+		t.Fatal("first not published")
+	}
+	*clock = clock.Add(time.Hour)
+	if p.PublishOnce("update", Info, "Claude Burst 0.6.0 available", "") {
+		t.Fatal("published twice")
+	}
+	// A new publisher on the same file is a restarted gateway.
+	q := New(path, nil)
+	if q.PublishOnce("update", Info, "Claude Burst 0.6.0 available", "") {
+		t.Fatal("published again after a restart")
+	}
+	if !q.PublishOnce("update", Info, "Claude Burst 0.7.0 available", "") {
+		t.Fatal("a new version was held back")
+	}
+	q.PublishFor("abc", "handover", Info, "Handover written", "")
+	evs := read(t, q, path)
+	if len(evs) != 3 || evs[2].Session != "abc" {
+		t.Fatalf("events = %+v", evs)
+	}
+}
+
 func TestNoDefaultIsANoOp(t *testing.T) {
 	SetDefault(nil)
 	if Publish("x", Info, "y", "") {
