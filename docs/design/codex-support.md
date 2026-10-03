@@ -20,8 +20,7 @@ On this Mac `~/.codex` exists (the desktop app's state) but there is no
 2. **Getting the traffic.** Prefer direct mode: Codex supports custom
    `model_providers` in `~/.codex/config.toml` with a `base_url`, so pointing
    it at `http://127.0.0.1:17777/v1` needs no CA or pf. Transparent
-   interception of `api.openai.com` is the fallback, and `chatgpt.com` should
-   stay out of scope (it carries the ChatGPT web app too).
+   interception is the other route (see below).
 3. **Failover.** Primary: the user's ChatGPT plan (see below). Secondary: an
    OpenAI-compatible provider (Together, Portkey) with its own key.
 4. **Accounting.** Requests, tokens and cost in the same tables, with a
@@ -42,7 +41,9 @@ The user signs in to Codex with ChatGPT, so the traffic is
 - **Fallback: transparent on `chatgpt.com`.** Every `chatgpt.com` request
   then passes through Burst, including the ChatGPT website. Only
   `/backend-api/codex/` is routed or counted; everything else is a blind
-  passthrough. Worse blast radius, so only if the config key fails.
+  passthrough. The user is fine with website traffic passing through
+  (2026-10-03), so this is an equal option, not a last resort: pick
+  whichever covers both the CLI and the desktop app.
 - **Failover target.** When the ChatGPT plan is rate limited (429 or a
   usage limit message), the secondary is an OpenAI-compatible provider with
   its own key. That needs Responses to Chat Completions translation unless
