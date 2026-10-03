@@ -16,6 +16,7 @@ let burst = null // last /api/mod answer, null while the dashboard is down
 let down = false
 let panel = [] // the usage panel's summary rows, as parsed segments
 let since = 0 // alerts at or before this were here before the session
+let showBar = true // the context bar under the band; /context-bar toggles it
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -32,6 +33,11 @@ export function register(on) {
     } catch (err) {
       $.ui.log('could not add /burst: ' + err)
     }
+    try {
+      await $.command.register({ name: 'context-bar', description: 'Show or hide the context bar: what the context Burst sends is made of', immediate: true })
+    } catch (err) {
+      $.ui.log('could not add /context-bar: ' + err)
+    }
     return next(e)
   })
 
@@ -40,11 +46,19 @@ export function register(on) {
     return {}
   })
 
+  on('command.run', { command: 'context-bar' }, async ($) => {
+    showBar = !showBar
+    $.ui.invalidate('ui.render')
+    return {}
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const { Box, Text } = $.ui.resolve(e)
     const theirs = await next(e)
-    const row = Box({ flexDirection: 'row', columnGap: 1, children: bandSegments(Text) })
-    return theirs ? Box({ flexDirection: 'column', children: [theirs, row] }) : row
+    const rows = [Box({ flexDirection: 'row', columnGap: 1, children: bandSegments(Text) })]
+    if (showBar) rows.push(...contextBar(Box, Text, e.viewport && e.viewport.columns))
+    const band = rows.length === 1 ? rows[0] : Box({ flexDirection: 'column', children: rows })
+    return theirs ? Box({ flexDirection: 'column', children: [theirs, band] }) : band
   })
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
@@ -135,6 +149,55 @@ function bandSegments(Text) {
   return out
 }
 
+// One colour per part, in the gateway's order (internal/router/context_parts.go).
+const PART_COLOURS = {
+  'System prompt': 'gray',
+  'System tools': 'cyan',
+  'MCP tools': 'magenta',
+  'Memory files': 'yellow',
+  'Messages': 'blue',
+  'Tool results': 'green',
+}
+
+// The context bar: what the context Burst really sends is made of, as a
+// stacked bar against the compaction limit (or the context itself when
+// compaction is off), with a legend underneath. Nothing until a response
+// from this session has reported its context.
+export function contextBar(Box, Text, columns) {
+  const s = burst && burst.session
+  if (!s || !s.parts || s.parts.length === 0 || !(s.context > 0)) return []
+  const scale = Math.max(s.compact_at || 0, s.context)
+  const width = Math.max(10, Math.min(60, (columns || 80) - 30))
+  const cells = []
+  let used = 0
+  for (const p of s.parts) {
+    const n = Math.max(1, Math.round((p.tokens * width) / scale))
+    const take = Math.min(n, width - used)
+    if (take <= 0) break
+    cells.push(Text({ color: PART_COLOURS[p.name], children: ['█'.repeat(take)] }))
+    used += take
+  }
+  if (used < width) cells.push(Text({ dimColor: true, children: ['░'.repeat(width - used)] }))
+  const pct = Math.round((s.context * 100) / scale)
+  const bar = Box({
+    flexDirection: 'row',
+    columnGap: 1,
+    children: [
+      Box({ flexDirection: 'row', children: cells }),
+      Text({ dimColor: true, children: [kTokens(s.context) + (s.compact_at > 0 ? ' of ' + kTokens(s.compact_at) + ' (' + pct + '%)' : '')] }),
+    ],
+  })
+  const legend = Box({
+    flexDirection: 'row',
+    columnGap: 2,
+    flexWrap: 'wrap',
+    children: s.parts.map((p) =>
+      Text({ children: [Text({ color: PART_COLOURS[p.name], children: ['■ '] }), Text({ dimColor: true, children: [p.name + ' ' + kTokens(p.tokens)] })] }),
+    ),
+  })
+  return [bar, legend]
+}
+
 function burstRows() {
   if (down || !burst) return [['Gateway', 'dashboard not answering at ' + DASHBOARD, 'red']]
   const rows = [
@@ -144,6 +207,7 @@ function burstRows() {
   const s = burst.session
   if (s) {
     rows.push(['Context sent', kTokens(s.context) + (s.compact_at > 0 ? ', compacts at ' + kTokens(s.compact_at) : ', compaction off'), undefined])
+    for (const p of s.parts || []) rows.push(['  ' + p.name, kTokens(p.tokens), PART_COLOURS[p.name]])
     rows.push(['Compaction', s.state, s.state === 'ok' ? undefined : 'cyan'])
   } else {
     rows.push(['Compaction', 'no request from this session yet', undefined])

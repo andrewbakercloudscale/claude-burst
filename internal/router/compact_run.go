@@ -68,7 +68,8 @@ type compactState struct {
 	// the waiting summary has been announced, and the context before the
 	// latest swap until a response reports the context after it.
 	notices     []string
-	waitShown   bool // told mid-turn that it waits for the next prompt
+	waitShown   bool          // told mid-turn that it waits for the next prompt
+	parts       []ContextPart // the last request's make-up, scaled to lastContext
 	swappedFrom int64
 	swappedMsgs int
 	// A mid-turn swap the API has not yet answered with a success. Memory
@@ -232,6 +233,8 @@ type compactInfo struct {
 	// without the swap if the API rejects it.
 	midTurn  bool
 	original []byte
+	// parts: the request's make-up in bytes, for the band's context bar.
+	parts []int64
 }
 
 type compactInfoKey struct{}
@@ -309,6 +312,9 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 	s.compaction.mu.Lock()
 	st := s.compaction.state(ci.key)
 	st.lastContext = ctxTokens
+	if ci.parts != nil {
+		st.parts = scaleParts(ci.parts, ctxTokens)
+	}
 	if ci.midTurn && st.midTurnUnproven {
 		st.midTurnUnproven, st.undo = false, nil
 		s.logger.Printf("req=%s compaction mid-turn accepted session=%s: the API answered the swapped request normally", requestIDFrom(in.Context()), ci.key)
@@ -520,6 +526,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			s.compaction.save()
 		}
 		s.compaction.mu.Unlock()
+		ci.parts = contextBytes(top, msgs)
 		return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 	}
 	out := rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt)
@@ -538,6 +545,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		return body, in
 	}
 	ci.applied, ci.removedMsgs, ci.removedBytes = true, len(msgs)-len(out), int64(len(body)-len(newBody))
+	ci.parts = contextBytes(top, out)
 	return newBody, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 }
 
@@ -900,6 +908,8 @@ type CompactionSession struct {
 	RepoRoot  string `json:"repo_root,omitempty"`
 	CompactAt int64  `json:"compact_at"`
 	Override  bool   `json:"override,omitempty"`
+	// Parts is what the context is made of, for the band's context bar.
+	Parts []ContextPart `json:"parts,omitempty"`
 }
 
 // CompactionSessions lists tracked sessions, largest context first.
@@ -947,7 +957,7 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			state = "warning"
 		}
 		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0,
-			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil}
+			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil, Parts: st.parts}
 		if override != nil && override.Off {
 			cs.CompactAt = 0
 		}
