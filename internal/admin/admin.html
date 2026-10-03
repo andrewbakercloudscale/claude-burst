@@ -958,6 +958,7 @@
         <div><label for="ugProvider">Provider</label><select id="ugProvider"><option value="">All providers</option><option value="primary">primary (slot)</option><option value="secondary">secondary (slot)</option></select></div>
         <div><label for="ugRepo">Repository</label><select id="ugRepo"><option value="">All repositories</option></select></div>
         <div><label for="ugResult">Result</label><select id="ugResult"><option value="">All results</option><option value="ok">ok</option><option value="error">error</option><option value="cancelled">cancelled</option><option value="unknown">unknown</option></select></div>
+        <div><label for="ugTraffic">Traffic</label><select id="ugTraffic"><option value="">Model requests</option><option value="all">All traffic</option></select></div>
         <div><label for="ugSession">Session</label><input id="ugSession" placeholder="session id"></div>
         <div><button id="ugReset">Reset</button></div>
       </div>
@@ -5187,7 +5188,7 @@ loadSettings();
 // Drawn from /api/usage. Uses the page's helpers ($, esc, num, money, note,
 // stamp) from the main script above. The filter is remembered per browser.
 (() => {
-  const F = ["ugRange", "ugFrom", "ugTo", "ugModel", "ugProvider", "ugRepo", "ugResult", "ugSession"];
+  const F = ["ugRange", "ugFrom", "ugTo", "ugModel", "ugProvider", "ugRepo", "ugResult", "ugTraffic", "ugSession"];
   let metric = "tokens", offset = 0, last = null, open = null;
   const LIMIT = 25;
   const TOKENS = [
@@ -5240,7 +5241,7 @@ loadSettings();
       q.set("from", $("ugFrom").value);
       q.set("to", $("ugTo").value);
     }
-    for (const [id, k] of [["ugModel", "model"], ["ugProvider", "provider"], ["ugRepo", "repo"], ["ugResult", "result"], ["ugSession", "session"]])
+    for (const [id, k] of [["ugModel", "model"], ["ugProvider", "provider"], ["ugRepo", "repo"], ["ugResult", "result"], ["ugTraffic", "traffic"], ["ugSession", "session"]])
       if ($(id).value.trim()) q.set(k, $(id).value.trim());
     let r;
     try {
@@ -5330,14 +5331,30 @@ loadSettings();
     $("ugChart").onmouseleave = () => { tip.style.opacity = 0; };
   }
 
+  // Errors as a share of the row's requests: 10 of 9,484 and 1 of 104 are
+  // not the same problem.
+  function errPct(x) {
+    const p = 100 * x.errors / x.requests;
+    return (p < 0.1 ? "<0.1" : p < 10 ? p.toFixed(1) : p.toFixed(0)) + "%";
+  }
+  // A row that used tokens but rounds to $0.00 says so, rather than free.
+  function cost(x) { return x.usd > 0 && x.usd < 0.005 ? "<$0.01" : money(x.usd); }
+
   function groups() {
     const g = (title, list, filter) => `<div><h3>${esc(title)}</h3><table><thead><tr><th></th><th class="n">Req</th><th class="n">Err</th><th class="n">Tokens</th><th class="n">Cost</th></tr></thead><tbody>${
       (list || []).slice(0, 10).map(x => `<tr><td class="k">${filter ? `<a href="#" data-ug-f="${filter}" data-ug-v="${esc(x.key)}">${esc(x.key)}</a>` : esc(x.key)}</td>
-        <td class="n">${num(x.requests)}</td><td class="n"${x.errors ? ' style="color:var(--bad)"' : ""}>${num(x.errors)}</td>
-        <td class="n">${short(x.tokens)}</td><td class="n">${x.unpriced ? "unpriced" : money(x.usd)}</td></tr>`).join("") ||
+        <td class="n">${num(x.requests)}</td><td class="n nowrap"${x.errors ? ' style="color:var(--bad)"' : ""}>${num(x.errors)}${x.errors ? ` <span class="hint">${errPct(x)}</span>` : ""}</td>
+        <td class="n">${short(x.tokens)}</td><td class="n">${x.unpriced ? "unpriced" : cost(x)}</td></tr>`).join("") ||
       `<tr><td colspan="5" class="hint">nothing in this window</td></tr>`}</tbody></table></div>`;
     $("ugGroups").innerHTML = g("By model", last.by_model, "ugModel") + g("By provider", last.by_provider, "ugProvider") +
       g("By repository", last.by_repo, "ugRepo") + g("By result", last.by_result, "ugResult");
+  }
+
+  // The path of a call that is not a model request, the IDs in it shortened.
+  function endpoint(dest) {
+    if (!dest) return "-";
+    const p = dest.replace(/^[a-z]+:\/\/[^/]+/i, "");
+    return p.split("/").map(x => x.length > 16 ? x.slice(0, 8) + "..." : x).join("/");
   }
 
   function rows() {
@@ -5355,7 +5372,7 @@ loadSettings();
           ["limit", e.limit_claim], ["note", e.note], ["pricing", e.pricing_unknown ? "unpriced" : e.repriced ? "repriced at today's rates" : ""],
         ].filter(([, v]) => v !== undefined && v !== null && v !== "" && v !== 0).map(([k, v]) => `<span><b>${esc(k)}</b> ${esc(v)}</span>`).join("")}</td></tr>` : "";
         return `<tr class="ug-row" data-ug-open="${esc(id)}"><td class="nowrap">${esc(stamp(e.time))}</td><td>${pill(e.result)}</td>
-          <td class="mono">${esc(e.model || "-")}</td><td>${esc(e.provider || "-")}</td><td>${esc(e.repo || "-")}</td>
+          <td class="mono">${e.model ? esc(e.model) : `<span class="hint" title="not a model request">${esc(endpoint(e.destination))}</span>`}</td><td>${esc(e.provider || "-")}</td><td>${esc(e.repo || "-")}</td>
           <td class="n">${nr(e.input_tokens)}</td><td class="n">${nr(e.cache_read_tokens)}</td><td class="n">${nr(e.output_tokens)}</td>
           <td class="n">${nr(e.duration_ms)}</td><td class="n">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? money(e.api_equivalent_usd) : "-"}</td></tr>` + detail;
       }).join("") || `<tr><td colspan="10" class="hint">No requests match.</td></tr>`) + "</tbody>";
