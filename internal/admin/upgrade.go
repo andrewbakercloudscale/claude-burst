@@ -103,6 +103,7 @@ func (s *Server) checkUpgrade(ctx context.Context, force bool) upgradeStatus {
 	}
 	st := s.computeUpgrade(ctx)
 	upgradeLast = &st
+	alertUpgrade(st)
 	return st
 }
 

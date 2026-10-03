@@ -134,6 +134,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/settings", s.readOnly(s.handleSettingsGet))
 	mux.HandleFunc("/api/notify-test", s.mutating(s.handleNotifyTest))
 	mux.HandleFunc("/api/alert-test", s.mutating(s.handleAlertTest))
+	mux.HandleFunc("/api/alert-spend", s.mutating(s.handleAlertSpend))
 	mux.HandleFunc("/api/statusline", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			s.readOnly(s.handleStatusLineGet)(w, r)
