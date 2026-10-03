@@ -149,6 +149,9 @@ DRAIN_TIMEOUT=70
 restart_gateway() {
   local plist="$HOME/Library/LaunchAgents/$LABEL.plist" old_pid pid waited=0
   old_pid="$(launchagent_pid)"
+  # A planned restart: the gateway logs it and leaves it off the screen.
+  # The panel's health check still says so if it never comes back.
+  touch "$HOME/.config/claude-burst/planned-restart"
   if [[ -f "$plist" ]] && ! /usr/libexec/PlistBuddy -c "Print :ExitTimeOut" "$plist" >/dev/null 2>&1; then
     /usr/libexec/PlistBuddy -c "Add :ExitTimeOut integer 60" "$plist"
     log "added ExitTimeOut=60 to $plist so launchd lets a drain finish; reloading the job to apply it"
