@@ -22,19 +22,37 @@ On this Mac `~/.codex` exists (the desktop app's state) but there is no
    it at `http://127.0.0.1:17777/v1` needs no CA or pf. Transparent
    interception of `api.openai.com` is the fallback, and `chatgpt.com` should
    stay out of scope (it carries the ChatGPT web app too).
-3. **Failover.** Primary: OpenAI with the user's key. Secondary: any
-   OpenAI-compatible provider (Together, Portkey). That is a passthrough, not
-   a translation, so it is simpler than Claude Code's secondary.
+3. **Failover.** Primary: the user's ChatGPT plan (see below). Secondary: an
+   OpenAI-compatible provider (Together, Portkey) with its own key.
 4. **Accounting.** Requests, tokens and cost in the same tables, with a
    client column (Claude Code, Codex) so the two are never summed blind.
 5. **Session features.** Compaction, coordination and the band are Claude
    Code specific; leave them off for Codex at first.
 
+## Decided: ChatGPT login (2026-10-03)
+
+The user signs in to Codex with ChatGPT, so the traffic is
+`chatgpt.com/backend-api/codex/responses` with the ChatGPT token, not
+`api.openai.com`. That changes step 2:
+
+- **First try `chatgpt_base_url`.** Codex's config has a key for the ChatGPT
+  backend's address. If it accepts `http://127.0.0.1:17777/backend-api/`,
+  Burst gets only Codex's calls and forwards them to `chatgpt.com` with the
+  token untouched. Verify against the installed Codex before building on it.
+- **Fallback: transparent on `chatgpt.com`.** Every `chatgpt.com` request
+  then passes through Burst, including the ChatGPT website. Only
+  `/backend-api/codex/` is routed or counted; everything else is a blind
+  passthrough. Worse blast radius, so only if the config key fails.
+- **Failover target.** When the ChatGPT plan is rate limited (429 or a
+  usage limit message), the secondary is an OpenAI-compatible provider with
+  its own key. That needs Responses to Chat Completions translation unless
+  the provider speaks Responses.
+- **Cost.** ChatGPT plan calls show tokens and an API equivalent, the same
+  way Claude subscription calls do.
+
 ## Open questions
 
-- Does the user run Codex with a ChatGPT login or an API key? A ChatGPT
-  login cannot be routed through a custom provider, which would leave only
-  transparent mode on `chatgpt.com`.
-- Is the CLI wanted, or only the desktop app?
+- Is the CLI wanted, or only the desktop app? Both read `~/.codex/config.toml`.
+- Does the desktop app honour `chatgpt_base_url`?
 
 Related: [opencode-support.md](opencode-support.md), the same inbound gap.
