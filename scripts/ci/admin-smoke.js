@@ -33,6 +33,8 @@ const { chromium } = require("playwright");
     report.roList = (await page.textContent("#roList")).replace(/\s+/g, " ").trim();
     report.permissions = (await page.textContent("#sec-permissions")).replace(/\s+/g, " ").trim().slice(0, 1500);
     report.compactSessions = (await page.textContent("#compactSessions")).replace(/\s+/g, " ").trim().slice(0, 200);
+    report.usage = (await page.textContent("#ugTiles")).replace(/\s+/g, " ").trim().slice(0, 600);
+    report.usageRows = (await page.textContent("#ugRows")).replace(/\s+/g, " ").trim().slice(0, 600);
     report.title = await page.title();
   } catch (e) {
     errors.push("smoke: " + e.message.split("\n")[0]);
