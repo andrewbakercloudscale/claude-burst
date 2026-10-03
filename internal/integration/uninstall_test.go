@@ -96,7 +96,7 @@ func newUninstallRun(t *testing.T) *uninstallRun {
 	dst.Close()
 
 	stubs := t.TempDir()
-	for name, body := range map[string]string{"sudo": sudoStub, "security": securityStub, "launchctl": logStub, "defaults": logStub} {
+	for name, body := range map[string]string{"sudo": sudoStub, "security": securityStub, "launchctl": logStub, "defaults": logStub, "claude": logStub} {
 		must(t, os.WriteFile(filepath.Join(stubs, name), []byte(body), 0o755))
 	}
 	for _, d := range []string{"pf.anchors", "state", "LaunchDaemons"} {
@@ -236,7 +236,8 @@ func TestInstallScriptUninstallRemovesEveryHook(t *testing.T) {
 	}
 	contains(t, "stub calls", calls,
 		"launchctl bootout gui/", "ninja.andrewbaker.claude-burst-selfheal", // the watchdog, through its own script
-		"defaults delete com.mitchellh.ghostty", "security find-certificate")
+		"defaults delete com.mitchellh.ghostty", "security find-certificate",
+		"claude plugin marketplace remove burst") // the burst-band mod, through update-mod.sh
 	// The watchdog reloads the gateway, and a gateway that starts reinstalls
 	// its hooks: both must be stopped before the hooks come out.
 	if strings.Index(calls, "claude-burst-selfheal") > strings.Index(calls, "/ninja.andrewbaker.claude-burst\n") {

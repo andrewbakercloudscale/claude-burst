@@ -61,7 +61,7 @@ OpenRouter, Bedrock and a metered API key are in [Providers](docs/providers.md).
 
 **Lid shut, offline.** Close the lid and Claude Code keeps running, still reachable from your phone through Remote Control, and when the internet drops Burst joins the phone hotspot you picked. See [Lid shut, hotspot and notifications](docs/lid-and-hotspot.md).
 
-**See everything.** The dashboard on `http://127.0.0.1:7788` shows health checks, routing, spend by model and by repository, compaction savings, who is editing what, and a **Needs attention** list. A terminal usage panel shows the same beside each session. See [The dashboard](docs/dashboard.md).
+**See everything.** The dashboard on `http://127.0.0.1:7788` shows health checks, routing, spend by model and by repository, compaction savings, who is editing what, and a **Needs attention** list. A terminal usage panel shows the same beside each session, and the `burst-band` mod shows it inside the session itself: Burst's route, the context Burst really sends and its compaction state above the prompt, the panel's summary in `/burst`, and Burst's warnings as toasts (Claude Code 2.1.287 or later; mods do not draw on Remote Control). See [The dashboard](docs/dashboard.md).
 
 **Keep Remote Control.** Claude Code turns Remote Control off whenever `ANTHROPIC_BASE_URL` names anything but Anthropic. Transparent mode leaves that variable alone and redirects at DNS instead, with a local certificate. See [Transparent intercept mode](docs/transparent-mode.md).
 
@@ -95,7 +95,7 @@ Claude Burst is a man-in-the-middle for your Claude traffic by design. This is w
 - **Ghostty** is assumed by the lid-shut feature (it turns off Ghostty's App Nap), by the handover's window-close handling and by the usage panel's split. Everything else works in any terminal.
 - **Optional:** a key for a secondary (Together AI, OpenRouter, another OpenAI-compatible endpoint, or Amazon Bedrock). See [Providers](docs/providers.md).
 
-`./install.sh` builds `claude-burst` into `~/.local/bin`, writes the initial configuration, adds `~/.local/bin` to `~/.zprofile` if needed, sets `ANTHROPIC_BASE_URL=http://127.0.0.1:7777` in `~/.claude/settings.json` (and adds no credential of its own, so your saved login stays in use), and starts the LaunchAgent. At the end it offers the optional [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel), a separate repository; `CLAUDE_BURST_PANEL=yes` or `no` answers without the prompt.
+`./install.sh` builds `claude-burst` into `~/.local/bin`, writes the initial configuration, adds `~/.local/bin` to `~/.zprofile` if needed, sets `ANTHROPIC_BASE_URL=http://127.0.0.1:7777` in `~/.claude/settings.json` (and adds no credential of its own, so your saved login stays in use), and starts the LaunchAgent. At the end it offers the optional [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel), a separate repository; `CLAUDE_BURST_PANEL=yes` or `no` answers without the prompt. It also installs the `burst-band` mod from `mods/burst-band` (`CLAUDE_BURST_MOD=no` skips it), and every deploy brings the installed copy up to date.
 
 ## Commands
 
