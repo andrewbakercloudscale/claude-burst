@@ -1,11 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
 // Graceful restart.
@@ -69,6 +72,7 @@ func exitWhenIdleOnSignal(inflight func() int64, logger *log.Logger) {
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigs
 	logger.Printf("received %s: draining, %d inference request(s) in flight; exiting when none are (at most %s)", sig, inflight(), drainDeadline)
+	announceDrain(inflight())
 
 	done := make(chan struct{})
 	go func() {
@@ -85,5 +89,23 @@ func exitWhenIdleOnSignal(inflight func() int64, logger *log.Logger) {
 	case sig := <-sigs:
 		logger.Printf("received %s again: exiting now with %d inference request(s) in flight", sig, inflight())
 	}
+	notice.Flush(2 * time.Second)
 	os.Exit(0)
+}
+
+// announceDrain and announceReady put a restart on screen. The ok of a
+// gateway that came back resolves the restart; a gateway that never comes
+// back is the usage panel's to report, since nothing here is left to.
+func announceDrain(inflight int64) {
+	detail := "No replies in flight."
+	if inflight == 1 {
+		detail = "1 reply in flight finishes first."
+	} else if inflight > 1 {
+		detail = fmt.Sprintf("%d replies in flight finish first.", inflight)
+	}
+	notice.Publish("gateway", notice.Info, "Gateway restarting", detail)
+}
+
+func announceReady(version string) {
+	notice.Publish("gateway", notice.OK, "Gateway ready", "Claude Burst "+version+" is serving.")
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/hotspot"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
@@ -242,6 +243,10 @@ func serve(args []string) {
 		fatal(fmt.Errorf("bind %s: %w", cfg.Listen, err))
 	}
 	logger.Printf("claude-burst %s bound %s (%s) in %s -- accepting connections now", version, cfg.Listen, scheme, time.Since(bindStart))
+	if dir, err := config.ConfigDir(); err == nil {
+		notice.SetDefault(notice.New(notice.Path(dir), logger))
+		announceReady(version)
+	}
 	if os.Getenv("CLAUDE_BURST_LOG_TLS_PEERS") != "" {
 		ln = &peerLoggingListener{Listener: ln, logger: logger}
 		logger.Print("peer-log: diagnostic peer attribution ENABLED via CLAUDE_BURST_LOG_TLS_PEERS (lsof per connection)")
