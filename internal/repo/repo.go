@@ -14,6 +14,8 @@ package repo
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,7 +127,10 @@ func (r *Resolver) repoOf(dir string) (name, root string) {
 		}
 	}
 	for d := dir; ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+		_, err := stat(filepath.Join(d, ".git"))
+		observe(d, err)
+		if err == nil {
+			noteRepo(d)
 			return filepath.Base(d), d
 		}
 		if p := filepath.Dir(d); p == d {
@@ -133,4 +138,124 @@ func (r *Resolver) repoOf(dir string) (name, root string) {
 		}
 	}
 	return filepath.Base(dir), dir
+}
+
+// stat is os.Stat, a variable so tests can answer as a denied folder would.
+var stat = os.Stat
+
+// The folders macOS guards with a privacy prompt ("claude-burst would like
+// to access files in your Desktop folder"). Looking for .git under them is
+// what raises it, so the lookups here are also the only honest record of
+// whether access is granted: nothing else may look, since looking asks.
+var protectedFolders = []string{"Desktop", "Documents", "Downloads"}
+
+// Access states for a protected folder.
+const (
+	Allowed = "allowed"  // a lookup under it got an answer
+	Denied  = "denied"   // a lookup under it was refused
+	NotSeen = "not seen" // no session has run under it since the gateway started
+)
+
+// FolderAccess is what lookups under one protected folder last observed.
+type FolderAccess struct {
+	Folder string    `json:"folder"` // "Desktop"
+	Path   string    `json:"path"`
+	State  string    `json:"state"`
+	At     time.Time `json:"at,omitempty"` // the last observation
+	Repos  []string  `json:"repos"`        // repository roots found under it
+}
+
+var access struct {
+	mu sync.Mutex
+	m  map[string]*FolderAccess // folder name -> observation
+}
+
+// protectedFolder names the protected folder path is in, or "".
+func protectedFolder(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	for _, f := range protectedFolders {
+		base := filepath.Join(home, f)
+		if path == base || strings.HasPrefix(path, base+string(filepath.Separator)) {
+			return f
+		}
+	}
+	return ""
+}
+
+func accessEntry(folder string) *FolderAccess {
+	if access.m == nil {
+		access.m = map[string]*FolderAccess{}
+	}
+	e := access.m[folder]
+	if e == nil {
+		home, _ := os.UserHomeDir()
+		e = &FolderAccess{Folder: folder, Path: filepath.Join(home, folder), State: NotSeen}
+		access.m[folder] = e
+	}
+	return e
+}
+
+// observe records what a lookup in dir says about its protected folder: a
+// refusal is Denied, any other answer (found or not there) is Allowed.
+// The latest observation wins, so granting access later shows up.
+func observe(dir string, err error) {
+	f := protectedFolder(dir)
+	if f == "" {
+		return
+	}
+	state := Allowed
+	if err != nil && errors.Is(err, fs.ErrPermission) {
+		state = Denied
+	}
+	access.mu.Lock()
+	defer access.mu.Unlock()
+	e := accessEntry(f)
+	e.State, e.At = state, time.Now()
+}
+
+// Observe records the answer to a look at dir made elsewhere, such as the
+// dashboard's own check, so Access reflects it too.
+func Observe(dir string, err error) { observe(dir, err) }
+
+// noteRepo records a repository root found under a protected folder.
+func noteRepo(root string) {
+	f := protectedFolder(root)
+	if f == "" {
+		return
+	}
+	access.mu.Lock()
+	defer access.mu.Unlock()
+	e := accessEntry(f)
+	for _, r := range e.Repos {
+		if r == root {
+			return
+		}
+	}
+	if len(e.Repos) < 50 {
+		e.Repos = append(e.Repos, root)
+	}
+}
+
+// Access reports each protected folder as the lookups so far have seen it,
+// in a fixed order. It never touches the folders itself.
+func Access() []FolderAccess {
+	access.mu.Lock()
+	defer access.mu.Unlock()
+	out := make([]FolderAccess, 0, len(protectedFolders))
+	for _, f := range protectedFolders {
+		e := *accessEntry(f)
+		e.Repos = append([]string{}, e.Repos...)
+		out = append(out, e)
+	}
+	return out
+}
+
+// ResetAccess forgets every observation. For tests, here and in admin.
+func ResetAccess() {
+	access.mu.Lock()
+	access.m = nil
+	access.mu.Unlock()
 }

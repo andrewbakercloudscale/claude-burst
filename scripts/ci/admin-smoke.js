@@ -31,6 +31,7 @@ const { chromium } = require("playwright");
     }, want, { timeout: 15000 });
     await page.waitForTimeout(1500); // let the other first renders land
     report.roList = (await page.textContent("#roList")).replace(/\s+/g, " ").trim();
+    report.permissions = (await page.textContent("#sec-permissions")).replace(/\s+/g, " ").trim().slice(0, 1500);
     report.compactSessions = (await page.textContent("#compactSessions")).replace(/\s+/g, " ").trim().slice(0, 200);
     report.title = await page.title();
   } catch (e) {
