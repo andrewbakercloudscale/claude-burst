@@ -41,6 +41,7 @@ func TestDashboardRunsInABrowser(t *testing.T) {
 
 	s := newTestServer(t)
 	stubMacForSettings(t)
+	stubPermissions(t, "Identifier="+signingIdentifier+"\nAuthority="+signingName+"\n", true, nil)
 	repo := filepath.Join(t.TempDir(), "smoke-repo")
 	cfg := config.Default()
 	cfg.PrimaryCompaction.RepoOverrides = []config.RepoCompaction{{Repo: repo, CompactAtTokens: 250_000}}
@@ -79,6 +80,9 @@ func TestDashboardRunsInABrowser(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "250k") {
 		t.Fatal("the repository override did not render with its limit")
+	}
+	if !strings.Contains(string(out), "signed by "+signingName) || !strings.Contains(string(out), "Downloads") {
+		t.Fatal("the Permissions section did not render signing and folders")
 	}
 	mu.Lock()
 	defer mu.Unlock()

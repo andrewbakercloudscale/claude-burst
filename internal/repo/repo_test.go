@@ -48,8 +48,8 @@ func TestResolveRetriesAMissAfterTTL(t *testing.T) {
 func TestAccessRecordsWhatLookupsSaw(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	resetAccess()
-	t.Cleanup(resetAccess)
+	ResetAccess()
+	t.Cleanup(ResetAccess)
 	projects := filepath.Join(home, ".claude", "projects")
 	desk := filepath.Join(home, "Desktop", "proj")
 	docs := filepath.Join(home, "Documents", "other")
