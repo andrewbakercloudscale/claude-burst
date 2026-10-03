@@ -280,7 +280,9 @@
   tbody tr:hover { background: var(--panel-2); }
   .mono { font-family: var(--mono); font-size: 12px; }
   .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); }
-  .scroll { overflow-x: auto; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+  /* Times and ids stay on one line; the table scrolls sideways instead. */
+  .scroll td.mono { white-space: nowrap; }
 
   .pill { font: 11px var(--mono); padding: 1.5px 7px; border-radius: 5px; border: 1px solid var(--border);
           background: var(--panel-2); color: var(--muted); }
@@ -304,6 +306,17 @@
   details.resp > summary::before { content: "›"; color: var(--faint); transition: transform .12s; display: inline-block; }
   details.resp[open] > summary::before { transform: rotate(90deg); }
   details.resp > summary:hover { background: var(--panel-2); }
+  /* The path takes what is left and ends in "..." rather than pushing the
+     destination off the right edge, where nothing could scroll to it. */
+  details.resp > summary > * { flex-shrink: 0; }
+  details.resp > summary > .rp { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  details.resp > summary > .rd { color: var(--muted); white-space: nowrap; }
+  details.resp > summary .rl { color: var(--faint); font-family: var(--sans, inherit); margin-left: 6px; }
+  details.resp > summary > .spacer { flex: 0 1 0; }
+  @media (max-width: 720px) {
+    details.resp > summary { flex-wrap: wrap; row-gap: 4px; }
+    details.resp > summary > .rp { flex-basis: 100%; order: 5; }
+  }
   .hdrs { padding: 4px 14px 14px 32px; }
   .hdrs div { display: grid; grid-template-columns: minmax(210px, auto) 1fr; gap: 12px; padding: 3px 0;
               font: 12px var(--mono); border-top: 1px dashed var(--border); }
@@ -2310,6 +2323,12 @@ function controlPlaneLabel(destination) {
   return null;
 }
 
+// shortPath cuts the ids in a path (session ids run to 30 characters) so a
+// row fits its line; the full path is in the tooltip and the detail.
+function shortPath(p) {
+  return String(p || "").split("/").map(x => x.length > 16 ? x.slice(0, 8) + "..." : x).join("/");
+}
+
 function renderResponses(rows) {
   if (!rows.length) {
     $("responses").innerHTML = `<div class="empty">No responses captured yet. This ring is in memory, so it starts empty after a restart.</div>`;
@@ -2326,8 +2345,9 @@ function renderResponses(rows) {
         <span class="mono">${esc(stamp(r.time))}</span>
         <span class="pill ${r.slot === "primary" ? "p" : "s"}">${esc(r.slot || "?")}</span>
         <span class="mono st-${String(r.status)[0]}">${esc(r.status)}</span>
-        <span class="mono">${esc(r.method)} ${esc(r.path)}</span>
-        <span class="mono" style="color:var(--muted)" title="${esc(r.destination || "")}">&rarr; ${esc(destHost(r.destination))}</span>
+        <span class="mono rp" title="${esc(r.method + " " + r.path)}">${esc(r.method)} ${esc(shortPath(r.path))}${
+          controlPlaneLabel(r.destination) ? ` <span class="rl">${esc(controlPlaneLabel(r.destination))}</span>` : ""}</span>
+        <span class="mono rd" title="${esc(r.destination || "")}">&rarr; ${esc(destHost(r.destination))}</span>
         ${r.model && r.slot === "secondary" ? `<span class="mono" style="color:var(--muted)">${esc(r.model)}</span>` : ""}
         <span class="spacer"></span>
         <span class="pill">${keys.length} hdr${flagged ? " · " + flagged + " rate-limit" : ""}</span>
