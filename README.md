@@ -23,8 +23,8 @@ Claude Burst is a local gateway that sits between Claude Code and Anthropic. **I
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.4.0 at the time of writing)
-git clone --branch v0.4.0 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.5.0 at the time of writing)
+git clone --branch v0.5.0 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 # 2. Build, install and start the gateway (base-url mode: no root, no certificates)
