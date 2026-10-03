@@ -545,29 +545,43 @@
   .tile .v { font-size: 18px; font-weight: 640; letter-spacing: -.02em; margin-top: 3px; }
   .tile .h { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 
-  /* Model split: a bar per served model, widest first. Answers the question
-     the spend total cannot -- the models behind it differ in price by an
-     order of magnitude, so "$38" says nothing about what to change. */
-  /* Fixed column widths, the same for every row: with an auto-width amount
-     column each row sized itself, and the bars started at a different x on
-     every line. */
-  .mrow { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 2fr) var(--amt-w, 200px); gap: 16px;
-          align-items: center; padding: 7px 16px; font-size: 12.5px; }
-  #repoSplit { --amt-w: 360px; }
-  #pcRepoSplit { --amt-w: 380px; }
-  .mrow.mhead { background: var(--thead-bg); color: var(--text) !important;
-                border-top: 0 !important; border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
-  .mrow.mhead .amt { color: var(--text); font: inherit; }
-  .mrow.mhead + .mrow { border-top: 0; }
+  .band-demo { font: 12.5px/1.5 var(--mono); background: #1d2029; color: #d6dae6; padding: 9px 14px; border-radius: 8px;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .band-demo .g { color: #4ade80; font-weight: 700; } .band-demo .c { color: #22d3ee; }
+  .band-demo .r { color: #f87171; } .band-demo .g2 { color: #4ade80; } .band-demo .d { color: #6b7280; }
+  /* Share tables: spend by model, by repository, savings by repository and
+     the Usage breakdowns. One figure per column, each with its own header;
+     the share of the total sits beside its bar, never next to a count. The
+     old rows packed "5,793 · $388.56 (47%) · $160.61" into one cell, and
+     the reader had to guess which number was which. */
+  .stbl-wrap { overflow-x: auto; }
+  table.stbl { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: auto; }
+  table.stbl th { font-size: 10.5px; letter-spacing: .07em; white-space: nowrap; padding: 7px 12px; }
+  table.stbl td { padding: 7px 12px; vertical-align: middle; }
+  table.stbl tbody tr:hover td { background: var(--panel-2); }
+  table.stbl .nm { font-family: var(--mono); max-width: 0; width: 30%; }
+  table.stbl .nm > .t { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.stbl .nm .pill { margin-right: 6px; }
+  table.stbl .sh { width: 28%; min-width: 140px; }
+  table.stbl .sh .b { display: flex; align-items: center; gap: 8px; }
+  table.stbl .sh .bar { flex: 1; height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden;
+                        box-shadow: inset 0 0 0 1px var(--border); }
+  table.stbl .sh .bar span { display: block; height: 100%; border-radius: 4px; }
+  table.stbl .sh .pct { width: 3.2em; text-align: right; font-size: 11.5px; color: var(--muted);
+                        font-variant-numeric: tabular-nums; }
+  table.stbl .n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  table.stbl th.n { text-align: right; }
+  table.stbl .n.bad { color: var(--bad); font-weight: 600; }
+  table.stbl .n.good { color: var(--pc-a); font-weight: 600; }
+  table.stbl .n.dim, table.stbl .dim { color: var(--faint); }
+  table.stbl tfoot td { font-weight: 650; border-top: 2px solid var(--border); border-bottom: 0; }
   @media (max-width: 720px) {
-    .mrow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 5px; }
-    .mrow .mbar { grid-column: 1 / -1; grid-row: 2; }
-    .mrow.mhead > span:nth-child(2) { display: none; }
+    table.stbl .sh { display: none; }
+    table.stbl .nm { width: auto; max-width: none; }
+    table.stbl .nm > .t { white-space: normal; overflow-wrap: break-word; }
+    table.stbl .nm .pill { display: block; width: fit-content; margin: 0 0 3px; }
+    table.stbl th, table.stbl td { padding-left: 8px; padding-right: 8px; }
   }
-  .mrow + .mrow { border-top: 1px solid var(--border); }
-  .mbar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
-  .mbar span { display: block; height: 100%; border-radius: 4px; }
-  .mrow .amt { font: 12px var(--mono); color: var(--muted); text-align: right; white-space: nowrap; }
 
   @media (max-width: 900px) {
     .app { grid-template-columns: minmax(0, 1fr); }
@@ -733,6 +747,7 @@
   <a class="navlink" data-target="sec-coord"><span class="nd" id="nd-coord"></span><span class="label">Session coordination</span></a>
   <a class="navlink" data-target="sec-sessions"><span class="nd" id="nd-sessions"></span><span class="label">Session options</span></a>
   <a class="navlink" data-target="sec-panel"><span class="nd" id="nd-panel"></span><span class="label">Usage panel</span></a>
+  <a class="navlink" data-target="sec-band"><span class="nd" id="nd-band"></span><span class="label">In-session band</span></a>
   <a class="navlink" data-target="sec-finder"><span class="nd" id="nd-finder"></span><span class="label">Finder shortcuts</span></a>
 
   <div class="navgroup">This Mac</div>
@@ -936,11 +951,12 @@
     <style>
       #sec-usage .ug-filters > div { min-width: 0; }
       #sec-usage .ug-filters select, #sec-usage .ug-filters input { min-width: 150px; }
-      #sec-usage .ug-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
+      #sec-usage .ug-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
       #sec-usage .ug-groups > div { background: var(--panel); padding: 10px 16px 12px; min-width: 0; }
       #sec-usage .ug-groups h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
-      #sec-usage .ug-groups table td, #sec-usage .ug-groups table th { padding: 4px 6px; }
-      #sec-usage .ug-groups td.k { font-family: var(--mono); overflow-wrap: anywhere; }
+      #sec-usage .ug-groups table.stbl td, #sec-usage .ug-groups table.stbl th { padding: 5px 8px; }
+      #sec-usage .ug-groups table.stbl .nm { width: 38%; }
+      #sec-usage .ug-groups table.stbl .sh { width: 16%; min-width: 96px; }
       #sec-usage td.n, #sec-usage th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
       #sec-usage tr.ug-row { cursor: pointer; }
       #sec-usage tr.ug-row:hover td { background: var(--panel-2); }
@@ -1424,6 +1440,27 @@
     </div>
   </section>
 
+  <section id="sec-band" style="scroll-margin-top:70px">
+    <h2>In-session band <span class="applies" data-where="~/.claude/plugins" data-when="next session"></span></h2>
+    <div class="body">
+      <div class="band-demo" aria-hidden="true"><span class="g">&#x26A1; PRIMARY</span> ctx 169k of 300k <span class="c">compacted</span> <span class="d">&middot;</span> Session <span class="r">$73.74</span>, Burn <span class="g2">$2.42/hr</span> <span class="d">&middot;</span> Today <span class="g2">$91.93</span></div>
+      <div class="hint" style="font-size:13.5px;line-height:1.55;margin-top:10px">A line above Claude Code's prompt, inside the session: Burst's route, the context Burst really sends and its compaction state, any problem still standing (such as <b>Network offline</b>), and the usage panel's Session and Today rows in the panel's own colours. Type <code>/burst</code> for the panel's whole summary and Burst's details. It is a Claude Code mod (<code>mods/burst-band</code>), installed as the plugin <code>burst-band@burst</code>; Burst's install and every deploy keep it up to date.
+        <br><br>It needs Claude Code 2.1.287 or later, and draws only in the terminal on this Mac: Claude Code does not draw mods over Remote Control or on the phone. The Session and Today rows need the usage panel.</div>
+      <div id="bandStatus" style="margin:10px 0"><span class="hint">checking...</span></div>
+      <div class="row">
+        <button class="primary" id="bandInstall">&#x2913; Install</button>
+        <button id="bandRemove">&#x2715; Remove</button>
+        <button id="bandRefresh">Check again</button>
+      </div>
+      <div id="bandNote"></div>
+      <pre id="bandLog" class="mac-log" hidden></pre>
+      <h3 class="mac-h">Where alerts show</h3>
+      <div class="mac-toggles">
+        <label><input type="checkbox" id="bandToasts"> <b>Also as toasts in the session</b><span>Burst's warnings and errors pop up at the top right of Claude Code, from the band. Off by default: the Ghostty pop-ups (<a href="#" data-target="sec-sessions">Session options</a>, <b>Show gateway alerts on screen</b>) already show every alert, and the band shows a standing problem as a line whether this is on or not. Turn the pop-ups off and this on to have alerts only inside the session.</span></label>
+      </div>
+    </div>
+  </section>
+
   <section id="sec-finder" style="scroll-margin-top:70px">
     <h2>Finder shortcuts <span class="applies" data-where="~/Library/Services, ~/.local/bin" data-when="now"></span></h2>
     <div class="body">
@@ -1520,7 +1557,7 @@
   <section id="sec-notify" style="scroll-margin-top:70px">
     <h2>Notifications</h2>
     <div class="body">
-      <div class="hint">Burst's notifications are the pop-ups the usage panel floats over Claude Code's Ghostty window, the same style as its loading notice: failing over to the secondary and back, limits, failures, the network, guards repairing the redirect, compaction and more. Each stays at least 10 seconds while Ghostty is in front. Switch them on or off under <a href="#" data-target="sec-sessions">Session options</a>, <b>Show gateway alerts on screen</b>. Burst no longer sends macOS notifications.</div>
+      <div class="hint">Burst's notifications are the pop-ups the usage panel floats over Claude Code's Ghostty window, the same style as its loading notice: failing over to the secondary and back, limits, failures, the network, guards repairing the redirect, compaction and more. Each stays at least 10 seconds while Ghostty is in front. Switch them on or off under <a href="#" data-target="sec-sessions">Session options</a>, <b>Show gateway alerts on screen</b>. Burst no longer sends macOS notifications. Inside the session, the <a href="#" data-target="sec-band">In-session band</a> shows a problem that is still standing, and can show alerts as toasts too.</div>
       <div class="row" style="margin-top:10px"><button id="ntTest">Send a test alert</button></div>
       <div id="ntNote"></div>
     </div>
@@ -1842,6 +1879,26 @@ function stamp(t) {
 
 function money(n) { return "$" + (n || 0).toFixed(2); }
 function num(n) { return (n || 0).toLocaleString(); }
+
+// shareTable draws a table with one figure per column. Each row is
+// {name, title, share, color, cells: [html], cls: [class]}: share is the
+// row's part of the column the bar measures (0..1), drawn as a bar with its
+// percentage beside it, so a percentage never sits next to a count. cols is
+// [{h, title}] for the figure columns; foot, when given, is a totals row.
+function sharePct(f) {
+  const p = 100 * f;
+  return p <= 0 ? "" : p < 1 ? "<1%" : Math.round(p) + "%";
+}
+function shareTable(nameHead, shareHead, cols, rows, foot) {
+  const th = cols.map(c => `<th class="n"${c.title ? ` title="${esc(c.title)}"` : ""}>${esc(c.h)}</th>`).join("");
+  const body = rows.map(r => `<tr>
+    <td class="nm" title="${esc(r.title || "")}"><span class="t">${r.name}</span></td>
+    <td class="sh"><div class="b"><span class="bar"><span style="width:${(Math.max(0, Math.min(1, r.share || 0)) * 100).toFixed(1)}%;background:${r.color}"></span></span><span class="pct">${sharePct(r.share || 0)}</span></div></td>
+    ${r.cells.map((c, i) => `<td class="n ${(r.cls && r.cls[i]) || ""}">${c}</td>`).join("")}</tr>`).join("");
+  const tf = foot ? `<tfoot><tr><td class="nm"><span class="t">${foot.name}</span></td><td class="sh"></td>${
+    foot.cells.map((c, i) => `<td class="n ${(foot.cls && foot.cls[i]) || ""}">${c}</td>`).join("")}</tr></tfoot>` : "";
+  return `<div class="stbl-wrap"><table class="stbl"><thead><tr><th>${esc(nameHead)}</th><th class="sh">${esc(shareHead)}</th>${th}</tr></thead><tbody>${body}</tbody>${tf}</table></div>`;
+}
 
 async function post(path, body) {
   const r = await fetch(path, {method: "POST", headers: H, body: JSON.stringify(body || {})});
@@ -4114,17 +4171,19 @@ function renderActivity() {
   renderRepoSplit(h);
   const models = (h.models || []).slice(0, 8);
   if (!models.length) { $("modelSplit").innerHTML = ""; return; }
-  const top = Math.max(...models.map(m => m.requests));
-  $("modelSplit").innerHTML =
-    `<div class="mrow mhead" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700">
-       <span>Model</span><span>Share of requests</span><span class="amt">Requests · spend</span></div>` +
-    models.map(m => `<div class="mrow">
-      <span class="mono" title="${esc(m.model)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        <span class="pill ${m.slot === "secondary" ? "s" : "p"}">${esc(m.slot || "?")}</span> ${esc(m.model)}</span>
-      <span class="mbar"><span style="width:${(m.requests / top * 100).toFixed(1)}%;background:${
-        m.slot === "secondary" ? "var(--s-secondary)" : "var(--s-primary)"}"></span></span>
-      <span class="amt">${esc(num(m.requests))} · ${esc(m.unpriced ? "unpriced" : money(m.usd))}</span>
-    </div>`).join("");
+  const totalReq = models.reduce((t, m) => t + m.requests, 0);
+  const totalUSD = models.reduce((t, m) => t + (m.usd || 0), 0);
+  $("modelSplit").innerHTML = shareTable("Model", "Share of spend",
+    [{h: "Requests"}, {h: "Spend"}, {h: "Per request", title: "Spend divided by requests: what one request on this model costs on average"}],
+    models.map(m => ({
+      name: `<span class="pill ${m.slot === "secondary" ? "s" : "p"}">${esc(m.slot || "?")}</span>${esc(m.model)}`,
+      title: m.model,
+      share: totalUSD ? (m.usd || 0) / totalUSD : 0,
+      color: m.slot === "secondary" ? "var(--s-secondary)" : "var(--s-primary)",
+      cells: [esc(num(m.requests)), esc(m.unpriced ? "unpriced" : money(m.usd)),
+        esc(m.unpriced || !m.requests ? "" : "$" + ((m.usd || 0) / m.requests).toFixed(3))],
+    })),
+    {name: "Total", cells: [esc(num(totalReq)), esc(money(totalUSD)), ""]});
 }
 
 // Spend per repository: each session's spend, filed under the repository
@@ -4145,36 +4204,49 @@ function renderSavingsByRepo(repos, days) {
   const box = $("pcRepoBox");
   box.hidden = !repos.length;
   if (!repos.length) { $("pcRepoSplit").innerHTML = ""; return; }
-  const top = Math.max(...repos.map(r => r.net_usd), 0.0001);
   const total = repos.reduce((t, r) => t + r.net_usd, 0);
   $("pcRepoSum").innerHTML = `net <b>${esc(signedUSD(total))}</b> over ${days} days, ${repos.length} ${repos.length === 1 ? "repository" : "repositories"}`;
-  $("pcRepoSplit").innerHTML =
-    `<div class="mrow mhead" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700">
-       <span>Repository</span><span>Share of net saving</span><span class="amt">Sessions · compactions · saved − costs = net</span></div>` +
-    repos.map(r => `<div class="mrow">
-      <span class="mono" title="${esc(r.path || r.repo)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.repo)}${
-        r.path ? ` <a href="#" data-ro-edit="${esc(r.path)}" style="font-family:inherit;font-size:11px" title="Give this repository its own Compact at">limit</a>` : ""}</span>
-      <span class="mbar"><span style="width:${(Math.max(r.net_usd, 0) / top * 100).toFixed(1)}%;background:var(--pcs-saved)"></span></span>
-      <span class="amt" title="${esc(`${num(r.requests)} compacted requests. Costs: $${(r.summary_usd || 0).toFixed(2)} for summaries, $${(r.rewrite_usd || 0).toFixed(2)} for cache rewrites.`)}">${esc(num(r.sessions))} · ${esc(num(r.compactions))} · $${(r.saved_usd || 0).toFixed(2)} − $${((r.summary_usd || 0) + (r.rewrite_usd || 0)).toFixed(2)} = <span style="color:${r.net_usd >= 0 ? "var(--pc-a)" : "var(--bad)"};font-weight:600">${esc(signedUSD(r.net_usd))}</span>${
-        total > 0 && r.net_usd > 0 ? ` <span style="color:var(--faint)">(${Math.round(100 * r.net_usd / total)}%)</span>` : ""}</span>
-    </div>`).join("");
+  const sumOf = k => repos.reduce((t, r) => t + (r[k] || 0), 0);
+  $("pcRepoSplit").innerHTML = shareTable("Repository", "Share of net saving",
+    [{h: "Sessions"}, {h: "Compactions"}, {h: "Saved", title: "What the summaries saved before their own costs"},
+     {h: "Costs", title: "Paid for the summaries and the cache rewrites after each swap"}, {h: "Net"}],
+    repos.map(r => ({
+      name: esc(r.repo) + (r.path ? ` <a href="#" data-ro-edit="${esc(r.path)}" style="font-family:var(--sans, inherit);font-size:11px" title="Give this repository its own Compact at">limit</a>` : ""),
+      title: `${r.path || r.repo}: ${num(r.requests)} compacted requests. Costs: $${(r.summary_usd || 0).toFixed(2)} for summaries, $${(r.rewrite_usd || 0).toFixed(2)} for cache rewrites.`,
+      share: total > 0 ? Math.max(r.net_usd, 0) / total : 0,
+      color: "var(--pcs-saved)",
+      cells: [esc(num(r.sessions)), esc(num(r.compactions)), esc(money(r.saved_usd)),
+        esc(money((r.summary_usd || 0) + (r.rewrite_usd || 0))), esc(signedUSD(r.net_usd))],
+      cls: ["", "", "", "dim", r.net_usd >= 0 ? "good" : "bad"],
+    })),
+    {name: "Total", cells: [esc(num(sumOf("sessions"))), esc(num(sumOf("compactions"))), esc(money(sumOf("saved_usd"))),
+      esc(money(sumOf("summary_usd") + sumOf("rewrite_usd"))), esc(signedUSD(total))],
+     cls: ["", "", "", "dim", total >= 0 ? "good" : "bad"]});
 }
 
 function renderRepoSplit(h) {
   const repos = (h.repos || []).slice(0, 12);
   if (!repos.length) { $("repoSplit").innerHTML = ""; return; }
-  const top = Math.max(...repos.map(r => r.usd), 0.0001);
   const total = repos.reduce((t, r) => t + r.usd, 0);
-  $("repoSplit").innerHTML =
-    `<div class="mrow mhead" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700">
-       <span>Repository</span><span>Share of spend</span><span class="amt">Sessions · requests · spend · compaction saved</span></div>` +
-    repos.map(r => `<div class="mrow">
-      <span class="mono" title="${esc(r.path || r.repo)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.repo)}</span>
-      <span class="mbar"><span style="width:${(r.usd / top * 100).toFixed(1)}%;background:var(--s-primary)"></span></span>
-      <span class="amt">${esc(num(r.sessions))} · ${esc(num(r.requests))} · ${esc(money(r.usd))}${r.unpriced ? " +unpriced" : ""}${
-        total ? ` <span style="color:var(--faint)">(${Math.round(100 * r.usd / total)}%)</span>` : ""} · ${
-        r.compacted ? `<span style="color:${r.saved_usd >= 0 ? "var(--pc-a)" : "var(--bad)"};font-weight:600" title="Pauseless Compaction's saving on this repository's sessions over the same days, after paying for its summaries and cache rewrites">${esc(signedUSD(r.saved_usd))}</span>` : `<span style="color:var(--faint)" title="No session in this repository was compacted in this window">–</span>`}</span>
-    </div>`).join("");
+  const anyCompacted = repos.some(r => r.compacted);
+  const cols = [{h: "Sessions"}, {h: "Requests"}, {h: "Spend"}];
+  if (anyCompacted) cols.push({h: "Compaction saved", title: "Pauseless Compaction's saving on this repository's sessions over the same days, after paying for its summaries and cache rewrites"});
+  $("repoSplit").innerHTML = shareTable("Repository", "Share of spend", cols,
+    repos.map(r => {
+      const cells = [esc(num(r.sessions)), esc(num(r.requests)), esc(money(r.usd)) + (r.unpriced ? " +unpriced" : "")];
+      const cls = ["", "", ""];
+      if (anyCompacted) {
+        cells.push(r.compacted ? esc(signedUSD(r.saved_usd)) : `<span title="No session in this repository was compacted in this window">-</span>`);
+        cls.push(r.compacted ? (r.saved_usd >= 0 ? "good" : "bad") : "dim");
+      }
+      return {name: esc(r.repo), title: r.path || r.repo, share: total ? r.usd / total : 0, color: "var(--s-primary)", cells, cls};
+    }), (() => {
+      const sum = k => repos.reduce((t, r) => t + (r[k] || 0), 0);
+      const saved = repos.filter(r => r.compacted).reduce((t, r) => t + r.saved_usd, 0);
+      return {name: repos.length < (h.repos || []).length ? `Top ${repos.length}` : "Total",
+        cells: [esc(num(sum("sessions"))), esc(num(sum("requests"))), esc(money(total))].concat(anyCompacted ? [esc(signedUSD(saved))] : []),
+        cls: ["", "", ""].concat(anyCompacted ? [saved >= 0 ? "good" : "bad"] : [])};
+    })());
 }
 
 $("metricSeg").onclick = e => {
@@ -5261,6 +5333,64 @@ function renderAttention() {
 }
 
 loadSettings();
+
+// The in-session band: /api/mod-status asks Claude Code itself (a second or
+// two), so it loads on its own and never holds up the page.
+let bandPoll;
+async function loadBand() {
+  let st;
+  try {
+    const r = await fetch("/api/mod-status");
+    st = await r.json();
+  } catch (e) {
+    $("bandStatus").innerHTML = `<span class="pill">unknown</span> <span class="hint">${esc(String(e))}</span>`;
+    return;
+  }
+  const running = st.last && !st.last.finished;
+  let pill;
+  if (!st.claude) pill = `<span class="pill">Claude Code not found</span>`;
+  else if (!st.supported) pill = `<span class="pill">needs Claude Code 2.1.287+</span>`;
+  else if (!st.installed) pill = `<span class="pill">not installed</span>`;
+  else if (!st.current) pill = `<span class="pill s">installed, out of date</span>`;
+  else pill = `<span class="pill p">installed, current</span>`;
+  $("bandStatus").innerHTML = pill + ` <span class="hint">${st.installed ? `version ${esc(st.version || "?")}` : ""}${st.claude ? ` &middot; Claude Code ${esc(st.claude)}` : ""}${
+    st.hint ? ` &middot; ${esc(st.hint)}` : ""}${st.error ? ` &middot; ${esc(st.error)}` : ""}</span>`;
+  $("bandInstall").textContent = st.installed ? (st.current ? "\u2913 Reinstall" : "\u2913 Update") : "\u2913 Install";
+  $("bandInstall").disabled = running || !st.supported || !st.source;
+  $("bandRemove").disabled = running || !st.installed;
+  if (!formDirty.band) $("bandToasts").checked = !!st.toasts;
+  setDot("nd-band", st.installed && st.current ? "ok" : st.installed ? "warn" : "");
+  const run = st.last;
+  if (run) {
+    $("bandLog").hidden = false;
+    $("bandLog").textContent = run.output || "";
+    if (running) note($("bandNote"), "warn", run.action === "remove" ? "Removing..." : "Installing...");
+    else note($("bandNote"), run.ok ? "ok" : "bad", run.ok
+      ? (run.action === "remove" ? "Removed. Sessions already running keep it until they end." : "Done. New Claude Code sessions load it; running ones keep the copy they started with.")
+      : "It failed; the output is below.");
+  }
+  clearTimeout(bandPoll);
+  if (running) bandPoll = setTimeout(loadBand, 1500);
+}
+async function bandAction(body) {
+  try {
+    await post("/api/mod-action", body);
+  } catch (e) {
+    note($("bandNote"), "bad", String(e.message || e));
+    return false;
+  }
+  return true;
+}
+$("bandInstall").onclick = async () => { if (await bandAction({action: "install"})) loadBand(); };
+$("bandRemove").onclick = async () => { if (await bandAction({action: "remove"})) loadBand(); };
+$("bandRefresh").onclick = () => { $("bandStatus").innerHTML = `<span class="hint">checking...</span>`; loadBand(); };
+$("bandToasts").onchange = async e => {
+  formDirty.band = true;
+  const ok = await bandAction({action: "toasts", toasts: e.target.checked});
+  formDirty.band = false;
+  if (ok) note($("bandNote"), "ok", e.target.checked ? "Saved: alerts also show as toasts in the session, within 5 seconds." : "Saved: no toasts in the session; the band still shows a standing problem.");
+};
+loadBand();
 </script>
 <script>
 // ---- Usage ------------------------------------------------------------------
@@ -5375,11 +5505,13 @@ loadSettings();
     const W = Math.max(320, $("ugChartWrap").clientWidth - 32), Hh = 180, padL = 46, padB = 22;
     const max = Math.max(1e-9, ...data.map(b => S.reduce((a, s) => a + val(s, b), 0)));
     const n = Math.max(1, data.length), slot = (W - padL) / n, bw = Math.max(1, slot * 0.72);
-    const y = v => (Hh - padB) * (1 - v / max);
+    // padT keeps the top gridline's label inside the chart; at 0 it was cut in half.
+    const padT = 10, y = v => padT + (Hh - padB - padT) * (1 - v / max);
     const fmt = v => metric === "cost" ? "$" + (v < 10 ? v.toFixed(2) : v.toFixed(0)) : short(v);
     let svg = `<svg viewBox="0 0 ${W} ${Hh}" height="${Hh}" role="img" aria-label="Usage trend">`;
     for (const f of [0, 0.5, 1]) svg += `<line x1="${padL}" x2="${W}" y1="${y(max * f)}" y2="${y(max * f)}" stroke="var(--grid)"/><text x="${padL - 6}" y="${y(max * f) + 4}" text-anchor="end" font-size="10" fill="var(--faint)">${esc(fmt(max * f))}</text>`;
-    const every = Math.ceil(n / 8);
+    // One label per ~80px: eight across a phone ran into each other.
+    const every = Math.ceil(n / Math.max(2, Math.min(8, Math.floor((W - padL) / 80))));
     data.forEach((b, i) => {
       const x = padL + i * slot + (slot - bw) / 2;
       let base = 0;
@@ -5419,14 +5551,37 @@ loadSettings();
   // A row that used tokens but rounds to $0.00 says so, rather than free.
   function cost(x) { return x.usd > 0 && x.usd < 0.005 ? "<$0.01" : money(x.usd); }
 
+  // Four breakdowns of the same requests. One figure per column: errors are
+  // a count (the rate is in its tooltip), and each row's share of the cost
+  // sits beside its bar. "By result" has no error column, since it is the
+  // error split; its bar is the share of requests instead.
   function groups() {
-    const g = (title, list, filter) => `<div><h3>${esc(title)}</h3><table><thead><tr><th></th><th class="n">Req</th><th class="n">Err</th><th class="n">Tokens</th><th class="n">Cost</th></tr></thead><tbody>${
-      (list || []).slice(0, 10).map(x => `<tr><td class="k">${filter ? `<a href="#" data-ug-f="${filter}" data-ug-v="${esc(x.key)}">${esc(x.key)}</a>` : esc(x.key)}</td>
-        <td class="n">${num(x.requests)}</td><td class="n nowrap"${x.errors ? ' style="color:var(--bad)"' : ""}>${num(x.errors)}${x.errors ? ` <span class="hint">${errPct(x)}</span>` : ""}</td>
-        <td class="n">${short(x.tokens)}</td><td class="n">${x.unpriced ? "unpriced" : cost(x)}</td></tr>`).join("") ||
-      `<tr><td colspan="5" class="hint">nothing in this window</td></tr>`}</tbody></table></div>`;
+    const g = (title, list, filter, byResult) => {
+      list = (list || []).slice(0, 10);
+      if (!list.length) return `<div><h3>${esc(title)}</h3><p class="hint">nothing in this window</p></div>`;
+      const totReq = list.reduce((t, x) => t + x.requests, 0);
+      const totUSD = list.reduce((t, x) => t + (x.usd || 0), 0);
+      const cols = [{h: "Requests"}].concat(byResult ? [] : [{h: "Errors", title: "Failed requests; hover a number for the rate"}], [{h: "Tokens"}, {h: "Cost"}]);
+      return `<div><h3>${esc(title)}</h3>${shareTable("", byResult ? "Share of requests" : "Share of cost", cols, list.map(x => {
+        const cells = [esc(num(x.requests))];
+        const cls = [""];
+        if (!byResult) {
+          cells.push(x.errors ? `<span title="${esc(num(x.errors) + " of " + num(x.requests) + " requests failed (" + errPct(x) + ")")}">${esc(num(x.errors))}</span>` : `<span class="dim">0</span>`);
+          cls.push(x.errors ? "bad" : "");
+        }
+        cells.push(esc(short(x.tokens)), esc(x.unpriced ? "unpriced" : cost(x)));
+        cls.push("", "");
+        return {
+          name: filter ? `<a href="#" data-ug-f="${filter}" data-ug-v="${esc(x.key)}">${esc(x.key)}</a>` : esc(x.key),
+          title: x.key,
+          share: byResult ? (totReq ? x.requests / totReq : 0) : (totUSD ? (x.usd || 0) / totUSD : 0),
+          color: byResult && x.key === "error" ? "var(--bad)" : "var(--s-primary)",
+          cells, cls,
+        };
+      }))}</div>`;
+    };
     $("ugGroups").innerHTML = g("By model", last.by_model, "ugModel") + g("By provider", last.by_provider, "ugProvider") +
-      g("By repository", last.by_repo, "ugRepo") + g("By result", last.by_result, "ugResult");
+      g("By repository", last.by_repo, "ugRepo") + g("By result", last.by_result, "ugResult", true);
   }
 
   // The path of a call that is not a model request, the IDs in it shortened.
