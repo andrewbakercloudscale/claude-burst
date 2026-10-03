@@ -81,9 +81,10 @@ async function refresh($) {
     down = false
     for (const a of burst.alerts || []) {
       since = Math.max(since, a.ts)
-      // Info and ok lines already reach the session as prompt notices; only
-      // what needs acting on is worth a toast.
-      if (a.severity === 'warn' || a.severity === 'error') $.ui.toast('Burst: ' + a.title)
+      // Toasts only when the dashboard asks for them: the Ghostty pop-ups
+      // show every alert already, and the band shows a standing problem as
+      // a line of its own. Info and ok never: they are news, not a problem.
+      if (burst.toasts && (a.severity === 'warn' || a.severity === 'error')) $.ui.toast('Burst: ' + a.title)
     }
   } catch (err) {
     if (!down) $.ui.toast('Burst dashboard not answering')
@@ -120,6 +121,10 @@ function bandSegments(Text) {
       if (s.state && s.state !== 'ok') out.push(Text({ color: 'cyan', children: [s.state] }))
     }
   }
+  const problem = (burst && burst.problems || [])[0]
+  if (problem) {
+    out.push(Text({ color: problem.severity === 'error' ? 'red' : 'yellow', bold: true, children: ['⚠ ' + problem.title] }))
+  }
   for (const want of ['Session:', 'Today:']) {
     const line = panel.find((l) => l.text.includes(want))
     if (line) {
@@ -143,6 +148,7 @@ function burstRows() {
   } else {
     rows.push(['Compaction', 'no request from this session yet', undefined])
   }
+  for (const p of burst.problems || []) rows.push(['Problem', p.title, p.severity === 'error' ? 'red' : 'yellow'])
   rows.push(['Last 24h', burst.today_requests + ' requests, $' + burst.today_usd.toFixed(2) + ' at API prices', undefined])
   rows.push(['Version', burst.version, undefined])
   return rows
