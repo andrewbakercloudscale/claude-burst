@@ -22,8 +22,21 @@ source "$ROOT/scripts/codesign.sh"
 KC="$HOME/Library/Keychains/login.keychain-db"
 TARGET="$HOME/.local/bin/claude-burst"
 
+# Step 3 alone, for a run stopped at its password prompt: the identity
+# exists then, but codesign may not be allowed to use its key unasked.
+allow_codesign() {
+  echo "Letting codesign use it without asking (enter your login Keychain password, the one you log in to this Mac with)..."
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -D "$BURST_SIGN_NAME" -t private "$KC" >/dev/null
+}
+
 if burst_sign_ready; then
   echo "\"$BURST_SIGN_NAME\" is already set up."
+  probe=$(mktemp)
+  cp /usr/bin/true "$probe"
+  if ! codesign -f -s "$BURST_SIGN_NAME" "$probe" </dev/null >/dev/null 2>&1; then
+    allow_codesign
+  fi
+  rm -f "$probe"
 else
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
@@ -49,8 +62,8 @@ CNF
   security import "$tmp/id.p12" -k "$KC" -P "$pass" -T /usr/bin/codesign >/dev/null
   echo "2/3 Trusting it for code signing (macOS asks for your password)..."
   security add-trusted-cert -p codeSign -k "$KC" "$tmp/cert.pem"
-  echo "3/3 Letting codesign use it without asking (enter your login Keychain password)..."
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -D "$BURST_SIGN_NAME" -t private "$KC" >/dev/null
+  echo -n "3/3 "
+  allow_codesign
   if ! burst_sign_ready; then
     echo "The certificate is in the Keychain but macOS does not list it as a valid signing identity." >&2
     echo "Check Keychain Access, login, My Certificates, \"$BURST_SIGN_NAME\"." >&2
