@@ -73,7 +73,10 @@ CNF
 fi
 
 if [[ -x "$TARGET" ]]; then
-  if codesign -dv "$TARGET" 2>&1 | grep -Fq "Authority=$BURST_SIGN_NAME"; then
+  # Captured, not piped into grep -q: under pipefail, grep exiting at the
+  # first match can fail codesign with SIGPIPE and so the whole test.
+  sig="$(codesign -dvv "$TARGET" 2>&1 || :)"
+  if [[ "$sig" == *"Authority=$BURST_SIGN_NAME"* ]]; then
     echo "The installed claude-burst is already signed with it."
     exit 0
   fi
