@@ -127,6 +127,8 @@ fail() { echo "[deploy] FAILED: $*" >&2; exit 1; }
 source "$ROOT/scripts/health-diagnostics.sh"
 # shellcheck source=./uncommitted.sh
 source "$ROOT/scripts/uncommitted.sh"
+# shellcheck source=./codesign.sh
+source "$ROOT/scripts/codesign.sh"
 
 # Liveness polling wraps the shared gateway_healthy() from
 # health-diagnostics.sh -- see its comment for why probing 127.0.0.1:7777
@@ -227,13 +229,24 @@ if ! "$TMPBIN" --help >/dev/null 2>&1; then
 fi
 log "build OK, smoke test passed"
 
-# no-op guard: skip the disable/restart dance entirely if nothing changed
-if [[ -x "$TARGET" ]] && cmp -s "$TMPBIN" "$TARGET"; then
+# no-op guard: skip the disable/restart dance entirely if nothing changed.
+# Compared on the unsigned build: signing makes every copy differ. The sha
+# beside the installed binary is the unsigned build it came from.
+BUILD_SHA="$(burst_build_sha "$TMPBIN")"
+SHA_FILE="$INSTALL_DIR/.claude-burst.build-sha"
+if [[ -x "$TARGET" ]] && { [[ "$(cat "$SHA_FILE" 2>/dev/null)" == "$BUILD_SHA" ]] || cmp -s "$TMPBIN" "$TARGET"; }; then
   rm -f "$TMPBIN"
   log "new build is byte-identical to the installed binary -- nothing to deploy"
   # The panel is a separate repo with its own changes: update it either way.
   zsh "$ROOT/scripts/update-panel.sh"
   exit 0
+fi
+
+# Signed now, before anything live is touched, and smoke-tested again.
+burst_sign "$TMPBIN"
+if ! "$TMPBIN" --help >/dev/null 2>&1; then
+  rm -f "$TMPBIN"
+  fail "signed binary failed its --help smoke test -- discarded, gateway untouched, still enabled"
 fi
 
 # What is about to ship that no commit holds: listed, and kept.
@@ -276,6 +289,7 @@ fi
 
 # --- 4. Atomic install ---
 mv "$TMPBIN" "$TARGET"
+printf '%s\n' "$BUILD_SHA" > "$SHA_FILE"
 chmod 755 "$TARGET"
 log "installed new binary at $TARGET"
 

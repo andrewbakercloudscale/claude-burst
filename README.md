@@ -45,6 +45,8 @@ open http://127.0.0.1:7788                   # the dashboard
 ./install.sh uninstall
 ```
 
+If macOS asks whether "claude-burst" may access your Desktop (or Documents) folder after every update, run `scripts/signing-setup.sh` once: it signs builds with a local certificate so one Allow lasts.
+
 OpenRouter, Bedrock and a metered API key are in [Providers](docs/providers.md). To keep Claude Code's Remote Control, switch to [transparent mode](docs/transparent-mode.md) from the dashboard's **Install** section once this works.
 
 ## What it does

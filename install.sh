@@ -285,7 +285,12 @@ install() {
   # SIGKILLs every later launch of it (exit 137) while the old process keeps
   # serving. A rename gives the new binary a fresh inode and leaves the running
   # one alone until the LaunchAgent restart below. Same reason as scripts/deploy.sh.
+  # shellcheck source=./scripts/codesign.sh
+  source "$ROOT/scripts/codesign.sh"
+  sha="$(burst_build_sha "$staged")"
+  burst_sign "$staged"
   mv -f "$staged" "$TARGET"
+  printf '%s\n' "$sha" > "$(dirname "$TARGET")/.claude-burst.build-sha"
 
   ZPROFILE="$HOME/.zprofile"
   PATH_LINE='export PATH="$HOME/.local/bin:$PATH" # claude-burst'
