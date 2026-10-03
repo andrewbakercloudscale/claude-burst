@@ -87,7 +87,6 @@ func (s *Server) handleAlertSpend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]float64{"usd": *req.USD})
 }
 
-
 type notifier struct {
 	started    bool
 	pfEvents   int
