@@ -122,15 +122,93 @@ func GhosttyAppNapDisabled() bool {
 	return err == nil && strings.TrimSpace(string(out)) == "1"
 }
 
-// SetGhosttyAppNap disables Ghostty's App Nap (on) or restores the default.
+// StateFile holds SleepDisabled as it was before Claude Burst first changed
+// it, written by lid-awake-root.sh and removed when it restores it.
+const StateFile = "/etc/claude-burst/lid-awake.state"
+
+// appNapOriginalPath records Ghostty's NSAppSleepDisabled as it was before
+// Claude Burst first changed it: "unset", "0" or "1". install.sh writes the
+// same file.
+func appNapOriginalPath() string {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "ghostty-appnap.original")
+}
+
+// ghosttyAppNapRaw is the key as `defaults` stores it, or "unset".
+func ghosttyAppNapRaw() string {
+	out, err := exec.Command("defaults", "read", GhosttyDomain, "NSAppSleepDisabled").Output()
+	if err != nil {
+		return "unset"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// SetGhosttyAppNap disables Ghostty's App Nap (on), or puts back what was
+// there before Claude Burst first disabled it (off).
 func SetGhosttyAppNap(disabled bool) error {
+	path := appNapOriginalPath()
 	if disabled {
+		if _, err := os.Stat(path); path != "" && os.IsNotExist(err) {
+			was := ghosttyAppNapRaw()
+			// Already 1 with nothing recorded: an older Claude Burst set it
+			// without recording, and always deleted it on the way out.
+			if was == "1" {
+				was = "unset"
+			}
+			os.WriteFile(path, []byte(was+"\n"), 0o644)
+		}
 		return exec.Command("defaults", "write", GhosttyDomain, "NSAppSleepDisabled", "-bool", "YES").Run()
 	}
-	if GhosttyAppNapDisabled() {
-		return exec.Command("defaults", "delete", GhosttyDomain, "NSAppSleepDisabled").Run()
+	was := "unset"
+	if b, err := os.ReadFile(path); err == nil {
+		was = strings.TrimSpace(string(b))
 	}
-	return nil
+	var err error
+	switch was {
+	case "0":
+		err = exec.Command("defaults", "write", GhosttyDomain, "NSAppSleepDisabled", "-bool", "NO").Run()
+	case "1":
+		err = exec.Command("defaults", "write", GhosttyDomain, "NSAppSleepDisabled", "-bool", "YES").Run()
+	default:
+		if ghosttyAppNapRaw() != "unset" {
+			err = exec.Command("defaults", "delete", GhosttyDomain, "NSAppSleepDisabled").Run()
+		}
+	}
+	if err == nil && path != "" {
+		os.Remove(path)
+	}
+	return err
+}
+
+// Original is the power settings as they were before Claude Burst changed
+// them, for the dashboard's restore button.
+type Original struct {
+	// Changed says something is still not as it was.
+	Changed bool `json:"changed"`
+	// SleepDisabled before Claude Burst: "0", "1", or "" when Claude Burst
+	// has not changed it.
+	SleepDisabled string `json:"sleep_disabled,omitempty"`
+	// AppNap before Claude Burst: "unset" (macOS default), "0", "1", or ""
+	// when Claude Burst has not changed it.
+	AppNap string `json:"app_nap,omitempty"`
+}
+
+// ReadOriginal reports what the restore button would put back.
+func ReadOriginal() Original {
+	var o Original
+	if b, err := os.ReadFile(StateFile); err == nil {
+		o.SleepDisabled = strings.TrimSpace(string(b))
+	}
+	if b, err := os.ReadFile(appNapOriginalPath()); err == nil {
+		o.AppNap = strings.TrimSpace(string(b))
+	} else if GhosttyAppNapDisabled() {
+		o.AppNap = "unset" // see SetGhosttyAppNap
+	}
+	o.Changed = o.SleepDisabled != "" || o.AppNap != ""
+	return o
 }
 
 // OnACPower reads the power source from `pmset -g batt`, whose first line is

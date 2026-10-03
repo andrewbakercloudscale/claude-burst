@@ -1468,6 +1468,11 @@
       <div id="kaLive" class="hint" style="margin-top:8px"></div>
       <div class="row" style="margin-top:8px;align-items:center"><span id="kaDaemon"></span><button id="kaGrant">Grant permission</button></div>
       <div id="kaNote"></div>
+      <h3 class="mac-h">Restore my original power settings</h3>
+      <div class="hint">Puts back the power settings this Mac had before Claude Burst changed them, and turns keep-awake off. Uninstalling Claude Burst does the same.</div>
+      <div id="origWas" class="hint" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:8px"><button id="origRestore">&#x21ba; Restore original power settings</button></div>
+      <div id="origNote"></div>
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
       <div class="hint">With the lid shut, macOS will not join your phone's hotspot by itself (Instant Hotspot needs someone at the Mac), so a session left running loses the internet when you leave home Wi-Fi. This is the other half of keeping a session alive with the lid shut: <b>Keep working with the lid closed</b> above stops the Mac sleeping so Claude Code keeps working, and this keeps it online. Pick the hotspot here and Burst joins it for you when this Mac goes offline, so the session carries on in your bag and you can follow it from your phone through Remote Control. Opening the lid with no network also tries straight away and keeps trying, whatever <b>When</b> says.</div>
@@ -4316,6 +4321,7 @@ function renderMac() {
   if (!kaPick) $("kaIdle").value = String(ka.idle_minutes || 0);
   $("kaIdle").disabled = ((document.querySelector('input[name="kaMode"]:checked') || {}).value || "off") === "off";
   kaUpdateApply();
+  renderOriginal();
   const power = lv.on_ac ? "on mains power" : "on battery";
   const bits = [`Now ${power}${lv.battery ? ` (${esc(lv.battery)})` : ""}`,
     `lid sleep is ${lv.sleep_disabled ? "<b>overridden</b>: the Mac stays awake with the lid shut" : "<b>normal</b>: closing the lid sleeps the Mac"}`];
@@ -4380,6 +4386,36 @@ const lidDaemonText = {
   missing: ["bad", "needs your password", "the lid daemon is not installed, so the lid still sleeps the Mac"],
   stopped: ["bad", "needs your password", "the lid daemon is not running"],
   off: ["", "not needed", "keep-awake is off"],
+};
+// What "Restore original power settings" puts back, in plain words.
+function renderOriginal() {
+  const o = macState && macState.keep_awake && macState.keep_awake.original;
+  if (!o) return;
+  if (!o.changed) {
+    $("origWas").textContent = "Nothing to restore: Claude Burst has not changed this Mac's power settings.";
+    $("origRestore").disabled = true;
+    return;
+  }
+  const bits = [];
+  if (o.sleep_disabled) bits.push(o.sleep_disabled === "1" ? "the Mac stayed awake with the lid shut (SleepDisabled 1)" : "shutting the lid slept the Mac (SleepDisabled 0)");
+  if (o.app_nap) bits.push(o.app_nap === "unset" ? "macOS could nap Ghostty (its default)" : o.app_nap === "1" ? "Ghostty's App Nap was off" : "Ghostty's App Nap was on");
+  $("origWas").textContent = "Before Claude Burst: " + bits.join("; ") + ".";
+  $("origRestore").disabled = false;
+}
+$("origRestore").onclick = async () => {
+  if (!confirm("Restore this Mac's original power settings?\n\nKeep-awake turns off, so shutting the lid sleeps the Mac again and Claude Code stops until you open it.")) return;
+  $("origRestore").disabled = true;
+  note($("origNote"), "warn", "Restoring...");
+  let viaTerminal = false;
+  try { const x = await post("/api/keep-awake", {mode: "off", idle_minutes: 0}); note($("origNote"), "ok", x.detail); kaPick = null; viaTerminal = !!x.script; }
+  catch (e) { note($("origNote"), "bad", e.message); }
+  await loadMac();
+  // The password is typed in Terminal: watch until the record is gone.
+  if (viaTerminal) for (let i = 0; i < 40 && macState && macState.keep_awake.original.changed; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    await loadMac();
+    if (!macState.keep_awake.original.changed) note($("origNote"), "ok", "Restored.");
+  }
 };
 function renderLidDaemon() {
   const ka = macState && macState.keep_awake;
