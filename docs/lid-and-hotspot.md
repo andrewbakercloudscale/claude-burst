@@ -76,3 +76,5 @@ macOS notifications (through `osascript`) for events worth knowing while you loo
 - **Guards**: the pf guard or the gateway watchdog repaired something, or removed the redirect.
 
 Starting the gateway announces nothing already true. `config.json` is read live, so no restart.
+
+macOS files these under Script Editor, and drops them silently until Script Editor has been allowed to notify; until it has asked once, Script Editor is not even listed in System Settings, Notifications. **Send a test notification** says when that is the case. **Allow notifications** opens a one-line script in Script Editor on the Mac: press Run, then Allow.

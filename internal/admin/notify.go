@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,6 +42,38 @@ func (s *Server) notify(title, body string) {
 	s.gateway.Logf("notify sent title=%q", title)
 }
 
+// scriptEditorID is the app macOS files osascript's notifications under.
+const scriptEditorID = "com.apple.ScriptEditor2"
+
+// notifyRegistered says whether macOS has ever been asked to let Script
+// Editor notify. Until it has, Script Editor is missing from System
+// Settings > Notifications, there is nothing to turn on, and macOS drops
+// every notification without a word while osascript exits 0: on 3 Oct
+// 2026 the test button said "Sent" and nothing appeared. A variable so
+// tests never read the real preferences.
+var notifyRegistered = func() bool {
+	out, err := exec.Command("defaults", "export", "com.apple.ncprefs", "-").Output()
+	return err == nil && strings.Contains(string(out), scriptEditorID)
+}
+
+// openNotifySetup opens a one-line script in Script Editor. Running it
+// from there is what makes macOS ask whether Script Editor may send
+// notifications; nothing run in the background gets that question. A
+// variable so tests never open an app.
+var openNotifySetup = func() error {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "allow-notifications.applescript")
+	body := "-- Press Run (the play button above), then Allow when macOS asks.\n" +
+		"display notification \"Notifications from Claude Burst are on.\" with title \"Claude Burst\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		return err
+	}
+	return exec.Command("open", "-a", "Script Editor", path).Run()
+}
+
 // handleNotifyTest sends one notification on demand, so someone can tell
 // whether macOS shows them at all before relying on them.
 func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +82,21 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.gateway.Logf("notify sent title=%q (test from the dashboard)", "Claude Burst: test notification")
-	writeJSON(w, map[string]string{"ok": "sent"})
+	resp := map[string]any{"ok": "sent", "registered": true}
+	if !notifyRegistered() {
+		resp["registered"] = false
+		resp["warning"] = "macOS dropped it: Script Editor has never been allowed to send notifications, so it is not even listed in System Settings > Notifications. Press Allow notifications, then Run in the Script Editor window that opens, then Allow."
+	}
+	writeJSON(w, resp)
+}
+
+// handleNotifySetup opens the script that gets macOS to ask.
+func (s *Server) handleNotifySetup(w http.ResponseWriter, r *http.Request) {
+	if err := openNotifySetup(); err != nil {
+		http.Error(w, "could not open Script Editor: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"detail": "Script Editor is open on the Mac: press Run (the play button), then Allow when macOS asks. Then Send a test notification again."})
 }
 
 // handleAlertTest publishes one on-screen alert, so someone can see what
