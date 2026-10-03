@@ -685,7 +685,7 @@ func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage
 	dest := out.URL.Scheme + "://" + out.URL.Host + out.URL.Path
 	resp, err := s.client.Do(out)
 	if err != nil {
-		s.writeMetric(in, "primary", s.primary.Name(), model, model, 0, start, tokenUsage{}, "", 0, "compaction summary failed: "+err.Error(), dest)
+		s.writeMetric(in, "primary", s.primary.Name(), model, model, http.StatusBadGateway, start, tokenUsage{}, "", 0, "compaction summary failed: "+err.Error(), dest)
 		return "", err
 	}
 	defer resp.Body.Close()

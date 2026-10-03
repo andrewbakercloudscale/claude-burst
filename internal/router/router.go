@@ -1033,7 +1033,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 		s.logger.Printf("req=%s error stage=%s route=%s requested_model=%q err=%v", rid, stage, p.Name(), reqModel, err)
 		http.Error(w, err.Error(), status)
-		s.writeMetric(in, slot, p.Name(), reqModel, reqModel, 0, start, tokenUsage{}, "", 0, stage+" failed: "+err.Error(), "")
+		s.writeMetric(in, slot, p.Name(), reqModel, reqModel, status, start, tokenUsage{}, "", 0, stage+" failed: "+err.Error(), "")
 		return
 	}
 
@@ -1115,7 +1115,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		// paid provider generating a response that nobody is left to read.
 		if in.Context().Err() != nil {
 			s.logger.Printf("req=%s client_gone route=%s err=%v (no failover, not replayed)", rid, p.Name(), err)
-			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "client cancelled: "+err.Error(), destination)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, metrics.StatusClientClosed, start, pruned, "", 0, "client cancelled: "+err.Error(), destination)
 			return
 		}
 		if slot == "secondary" {
@@ -1139,7 +1139,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			s.notePrimaryFailure(slot, err)
 			s.logger.Printf("req=%s no_failover route=%s reason=%q (local network unavailable: control DNS failed)", rid, p.Name(), "network down")
 			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
-			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
 		}
 		// A transport error on the primary is retried for about 30 seconds
@@ -1203,7 +1203,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			}
 			s.logger.Printf("req=%s error stage=upstream_call route=%s err=%v", rid, p.Name(), err)
 			http.Error(w, p.Name()+" upstream error: "+err.Error(), http.StatusBadGateway)
-			s.writeMetric(in, slot, p.Name(), serveModel, model, 0, start, pruned, "", 0, "upstream call failed: "+err.Error(), destination)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "upstream call failed: "+err.Error(), destination)
 			return
 		}
 	}
