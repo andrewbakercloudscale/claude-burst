@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
@@ -100,6 +101,29 @@ func TestAlertSecondaryKeyOnlyWhenAWorkingKeyStops(t *testing.T) {
 	got := titles(events())
 	if len(got) != 2 || got[0] != "warn: Secondary key unavailable" || got[1] != "ok: Secondary key available" {
 		t.Fatalf("events = %q", got)
+	}
+}
+
+func TestAlertContextNearCompaction(t *testing.T) {
+	events := captureNotices(t)
+	f := &fakeAnthropic{context: 340_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 80, WindowMinutes: 60})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5]) // learns the context: 340k
+	send(t, s, "S", all[:7]) // over 320k: warned
+	send(t, s, "S", all[:9]) // same window: not again
+	s.compaction.running.Wait()
+
+	notice.Flush(2 * time.Second)
+	evs, _ := notice.Read(notice.Default().Path())
+	var got []notice.Event
+	for _, e := range evs {
+		if e.Kind == alertContext {
+			got = append(got, e)
+		}
+	}
+	if len(got) != 1 || got[0].Title != "Context at 340k of 400k, compaction soon" || got[0].Session != "S" {
+		t.Fatalf("context alerts = %+v (all: %q)", got, titles(events()))
 	}
 }
 

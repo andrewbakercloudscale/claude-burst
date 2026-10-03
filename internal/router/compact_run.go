@@ -404,6 +404,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		st.warnedAt = now
 		s.logger.Printf("req=%s warn stage=compaction session=%s context=%dk (warn at %dk, %s)",
 			rid, key, st.lastContext/1000, cfg.WarnAtTokens/1000, limit)
+		alertContextNear(sid, root, st.lastContext, cfg.CompactAtTokens)
 	}
 
 	bounds := promptBoundaries(msgs)
