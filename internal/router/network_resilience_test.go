@@ -400,3 +400,46 @@ func TestStaleWriteThatFailsTwiceCountsOnce(t *testing.T) {
 		t.Fatal("one failed request armed a window with transport_error_min_failures 2")
 	}
 }
+
+// A phone out of data: names resolve, every connection is cut, Anthropic's and
+// an unrelated control site's alike. 2026-10-04 00:24 failed over to Together,
+// which was cut the same way. No failover, and the client hears why.
+func TestNetworkNotPassingTrafficDoesNotFailOver(t *testing.T) {
+	var mu sync.Mutex
+	secondaryHits := 0
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		secondaryHits++
+		mu.Unlock()
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","content":[]}`))
+	}))
+	t.Cleanup(secondary.Close)
+
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-key")
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = "http://127.0.0.1:1"
+	cfg.BedrockBaseURL = secondary.URL
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: "http://127.0.0.1:1", FailoverStrategy: "subscription-limit+metered-failures"}
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(&bytes.Buffer{}, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probe = func() netProbe {
+		return netProbe{dnsOK: true, webDown: true, webErr: errors.New("read: connection reset by peer")}
+	}
+
+	for i := 0; i < 3; i++ {
+		rr := httptest.NewRecorder()
+		s.ServeHTTP(rr, messagesRequest("claude-sonnet-5"))
+		if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), "not passing traffic") {
+			t.Fatalf("request %d: %d %q", i, rr.Code, rr.Body.String())
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if secondaryHits != 0 {
+		t.Fatalf("failed over %d times on a network that passes nothing", secondaryHits)
+	}
+}
