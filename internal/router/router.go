@@ -105,6 +105,10 @@ type Server struct {
 	// compaction is proxy-side compaction of long primary sessions
 	// (compact.go, compact_run.go). Always present; off unless enabled.
 	compaction *compactor
+	// snapMu guards the last fully logged network snapshot (logSnapshot).
+	snapMu    sync.Mutex
+	snapState string
+	snapAt    time.Time
 	// repos names each session's repository, for per-repository Compact at.
 	repos  *repo.Resolver
 	client *http.Client
@@ -1100,12 +1104,19 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		// secondary's DNS lookup failed outright ~90s later, and the log gave
 		// no way to tell whether that was one continuous network outage or two
 		// unrelated failures. This snapshot answers that next time.
-		probe := s.probe
-		if probe == nil {
-			probe = probeNetwork
+		// A client that went away needs no network diagnosis: until
+		// 2026-10-03 every cancelled request (Esc, a heartbeat dropped at
+		// session end) ran a DNS probe and logged a full snapshot, and these
+		// lines were 16% of the log's bytes.
+		var np netProbe // set whenever the client is still there, the only case that reads it
+		if in.Context().Err() == nil {
+			probe := s.probe
+			if probe == nil {
+				probe = probeNetwork
+			}
+			np = probe()
+			s.logSnapshot(rid, p.Name(), err, np)
 		}
-		np := probe()
-		s.logger.Printf("req=%s %s", rid, np.snapshot(p.Name(), err))
 		// The client's own context is what Prepare was given, so if it is
 		// done, this request died because the CALLER went away -- not because
 		// the upstream failed. Checked here as well as in the detector
@@ -1429,6 +1440,36 @@ func probeNetwork() netProbe {
 	p.dnsDur = time.Since(start)
 	p.dnsOK = p.dnsErr == nil
 	return p
+}
+
+// snapshotRepeat is how long an unchanged network state is logged in short
+// form: a burst of failures on one network logs its interfaces and DNS
+// once, then only each failure's own error.
+const snapshotRepeat = time.Minute
+
+// logSnapshot logs np for a transport failure, in full when the network
+// state differs from the last full one or that is snapshotRepeat old.
+func (s *Server) logSnapshot(rid, route string, triggerErr error, np netProbe) {
+	state := np.state()
+	s.snapMu.Lock()
+	same := state == s.snapState && time.Since(s.snapAt) < snapshotRepeat
+	if !same {
+		s.snapState, s.snapAt = state, time.Now()
+	}
+	at := s.snapAt
+	s.snapMu.Unlock()
+	if same {
+		s.logger.Printf("req=%s network-snapshot route=%s trigger_err=%q (network unchanged since %s)",
+			rid, route, triggerErr, at.Format("15:04:05"))
+		return
+	}
+	s.logger.Printf("req=%s %s", rid, np.snapshot(route, triggerErr))
+}
+
+// state is the snapshot without its timing, for telling a changed network
+// from the same one.
+func (p netProbe) state() string {
+	return strings.Join(p.ifaces, ",") + "|" + fmt.Sprint(p.dnsOK)
 }
 
 func (p netProbe) snapshot(route string, triggerErr error) string {
