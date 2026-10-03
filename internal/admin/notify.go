@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
+	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
 // macOS notifications for events that matter while looking at something
@@ -47,6 +50,19 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"ok": "sent"})
 }
 
+// handleAlertTest publishes one on-screen alert, so someone can see what
+// they look like and that the usage panel shows them. Each press shows:
+// the title carries the time, so the repeat limit never holds one back.
+func (s *Server) handleAlertTest(w http.ResponseWriter, r *http.Request) {
+	if notice.Default() == nil {
+		http.Error(w, "on-screen alerts are not running in this gateway", http.StatusServiceUnavailable)
+		return
+	}
+	notice.Publish("test", notice.Info, "Test alert "+time.Now().Format("15:04:05"),
+		"If you can see this over Claude Code, gateway alerts reach you.")
+	writeJSON(w, map[string]string{"ok": "sent"})
+}
+
 // appleQuote makes an AppleScript string literal.
 func appleQuote(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
@@ -58,6 +74,7 @@ type notifier struct {
 	compacted  map[string]time.Time
 	pfEvents   int
 	selfEvents int
+	intercept  interceptCheck
 }
 
 // StartNotifier runs until ctx ends.
@@ -104,6 +121,7 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 	pf := len(pfHealEvents(pfHealLog, 1000))
 	_, _, selfLog := selfHealPaths()
 	self := len(pfHealEvents(selfLog, 1000))
+	ic := readInterceptCheck(cfg)
 
 	if n.started {
 		if nc.Failover {
@@ -144,6 +162,82 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 				s.notify("Claude Burst: gateway watchdog acted", "The gateway was restarted or the redirect removed. Details under Guards.")
 			}
 		}
+		// On screen, whatever the macOS notification settings: the usage
+		// panel has its own switch for these.
+		if pf > n.pfEvents {
+			alertGuardLine("pf", lastLine(pfHealEvents(pfHealLog, 1000)))
+		}
+		if self > n.selfEvents {
+			alertGuardLine("watchdog", lastLine(pfHealEvents(selfLog, 1000)))
+		}
+		alertIntercept(n.intercept, ic)
 	}
-	n.started, n.overflow, n.compacted, n.pfEvents, n.selfEvents = true, over, comp, pf, self
+	n.started, n.overflow, n.compacted, n.pfEvents, n.selfEvents, n.intercept = true, over, comp, pf, self, ic
+}
+
+// interceptCheck is what transparent mode needs to work, read from disk
+// each round: the /etc/hosts redirect, and the local CA in the bundle
+// Claude Code trusts.
+type interceptCheck struct {
+	on        bool // transparent mode configured
+	hosts, ca bool
+}
+
+func readInterceptCheck(cfg config.Config) interceptCheck {
+	if !cfg.Intercept.Transparent() {
+		return interceptCheck{}
+	}
+	ic := interceptCheck{on: true}
+	if b, err := os.ReadFile(cfg.Intercept.CABundle); err == nil {
+		ic.ca = tlsca.HasBlock(string(b))
+	}
+	if h, err := os.ReadFile(hostsFile); err == nil {
+		ic.hosts = config.HostsRedirectActive(h, cfg.Intercept.Host)
+	}
+	return ic
+}
+
+// hostsFile is /etc/hosts; a variable for tests.
+var hostsFile = "/etc/hosts"
+
+// alertIntercept puts a change in transparent mode's two prerequisites on
+// screen. Only changes: a Mac set up without them says so on the
+// dashboard, not in a popup every ten seconds.
+func alertIntercept(was, now interceptCheck) {
+	if !was.on || !now.on {
+		return
+	}
+	switch {
+	case was.ca && !now.ca:
+		notice.Publish("intercept", notice.Error, "Burst CA no longer trusted",
+			"Claude Code's certificate bundle lost the Burst CA, so its requests fail TLS. Reinstall transparent mode from the dashboard.")
+	case was.hosts && !now.hosts:
+		notice.Publish("intercept", notice.Error, "Transparent redirect missing",
+			"/etc/hosts no longer sends Claude Code to Burst, so it talks to Anthropic directly. Reinstall transparent mode from the dashboard.")
+	case now.ca && now.hosts && !(was.ca && was.hosts):
+		notice.Publish("intercept", notice.OK, "Transparent mode restored", "Claude Code is routed through Burst again.")
+	}
+}
+
+// alertGuardLine turns a new guard log line into an alert: a repair is
+// good news, anything else the guard logs is a problem it met.
+func alertGuardLine(guard, line string) {
+	if line == "" {
+		return
+	}
+	name := map[string]string{"pf": "pf guard", "watchdog": "Gateway watchdog"}[guard]
+	for _, good := range []string{"HEALED", "recovered", "reloaded successfully"} {
+		if strings.Contains(line, good) {
+			notice.Publish("guard-"+guard, notice.OK, name+" repaired the redirect", line)
+			return
+		}
+	}
+	notice.Publish("guard-"+guard, notice.Error, name+" hit a problem", line+" (details under Guards on the dashboard)")
+}
+
+func lastLine(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[len(lines)-1]
 }
