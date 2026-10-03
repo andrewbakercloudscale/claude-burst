@@ -17,6 +17,15 @@ import (
 // of reading or writing the real login Keychain.
 var securityPath = "/usr/bin/security"
 
+// SetSecurityPathForTesting points the package at another security
+// executable (a stub) and returns a func that restores the real one. For
+// other packages' tests, which must never read or write the login Keychain.
+func SetSecurityPathForTesting(path string) (restore func()) {
+	old := securityPath
+	securityPath = path
+	return func() { securityPath = old }
+}
+
 // timeout bounds every security call. A locked login Keychain can leave it
 // waiting on a dialog nobody sees (the gateway runs headless under
 // launchd), and the caller, a gateway starting or a dashboard request,
