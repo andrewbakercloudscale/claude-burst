@@ -1,0 +1,4 @@
+{
+  "description": "The burst-band hooks module",
+  "modules": ["./register.js"]
+}
