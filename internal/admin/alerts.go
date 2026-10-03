@@ -110,6 +110,19 @@ func (s *Server) alertKeepAwake(a *alertRounds, cfg config.Config, now time.Time
 	}
 	on := st.SleepDisabled
 	problem := st.Problem(true, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
+	if problem == "" {
+		// The lid daemon is what turns the screen off behind a shut lid; an
+		// old or missing one drains the battery with the screen lit. Only a
+		// password fixes it, so say so where it will be seen.
+		switch s.lidDaemonState(true) {
+		case "stale":
+			problem = "the keep-awake daemon runs an older copy and needs your password to update: press Grant on the dashboard"
+		case "missing":
+			problem = "the keep-awake daemon is not installed: press Grant on the dashboard"
+		case "stopped":
+			problem = "the keep-awake daemon is not running: press Grant on the dashboard"
+		}
+	}
 	if a.awakeSeen {
 		switch {
 		case a.awakeOn && !on:

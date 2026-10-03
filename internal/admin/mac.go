@@ -35,6 +35,33 @@ type keepAwakeView struct {
 	Idle    int              `json:"idle_minutes"`
 	Live    keepawake.Status `json:"live"`
 	Problem string           `json:"problem,omitempty"`
+	// Daemon is the machine-wide half, which only a password can install
+	// or update: off (keep-awake off), ok, stale (an older copy of
+	// lid-awake-root.sh), missing (never installed) or stopped.
+	Daemon string `json:"daemon"`
+}
+
+// lidDaemonRunning says whether the root watch loop is up. A variable so
+// tests never look at the real process table.
+var lidDaemonRunning = func() bool {
+	return exec.Command("pgrep", "-f", "lid-awake-root.sh watch").Run() == nil
+}
+
+// lidDaemonState is keepAwakeView.Daemon.
+func (s *Server) lidDaemonState(on bool) string {
+	if !on {
+		return "off"
+	}
+	if _, err := os.Stat(installedLidScript); err != nil {
+		return "missing"
+	}
+	if s.staleLidDaemon() != "" {
+		return "stale"
+	}
+	if !lidDaemonRunning() {
+		return "stopped"
+	}
+	return "ok"
 }
 
 // installedLidScript is the root-owned copy the keep-awake daemon runs
@@ -48,8 +75,16 @@ func (s *Server) readKeepAwake() keepAwakeView {
 		v.Mode = cfg.KeepAwakeLidClosedPower
 	}
 	v.Problem = v.Live.Problem(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
-	if v.Problem == "" && cfg.KeepAwakeLidClosed {
-		v.Problem = s.staleLidDaemon()
+	v.Daemon = s.lidDaemonState(cfg.KeepAwakeLidClosed)
+	if v.Problem == "" {
+		switch v.Daemon {
+		case "stale":
+			v.Problem = s.staleLidDaemon()
+		case "missing":
+			v.Problem = "the keep-awake daemon is not installed"
+		case "stopped":
+			v.Problem = "the keep-awake daemon is not running"
+		}
 	}
 	return v
 }

@@ -1460,6 +1460,7 @@
         <span id="kaPending" class="hint"></span>
       </div>
       <div id="kaLive" class="hint" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:8px;align-items:center"><span id="kaDaemon"></span><button id="kaGrant">Grant permission</button></div>
       <div id="kaNote"></div>
 
       <h3 class="mac-h">Join a hotspot when offline</h3>
@@ -1520,6 +1521,7 @@
       <div class="hint">Burst finds the repository each session runs in by looking for <code>.git</code> above it. Under <b>Desktop</b>, <b>Documents</b> and <b>Downloads</b> macOS asks first ("claude-burst would like to access files in your Desktop folder"). macOS remembers your answer per program, and an unsigned update counts as a new program, so the question came back after every update. Signing with a local certificate keeps one Allow for good. This page never looks inside the folders by itself, because looking is what asks.</div>
       <div id="permSigning" style="margin:10px 0"></div>
       <div id="permFolders" style="margin:10px 0"></div>
+      <div class="row" style="margin:10px 0;align-items:center"><span id="permLid"></span><button id="permLidGrant">Grant permission</button></div>
       <div class="row">
         <button class="primary" id="permSetup">Set up signing</button>
         <button id="permCheck">Check folder access</button>
@@ -4326,6 +4328,7 @@ function renderMac() {
   };
   if (bl.length) html += `<div class="note warn" style="margin-top:6px">${bl.map(blName).join(" and ")} ${bl.length === 1 ? "is" : "are"} also keeping this Mac awake, even with the lid shut and on battery, whatever you choose here${ka.mode !== "off" && ka.idle_minutes ? `. While ${bl.length === 1 ? "it runs" : "they run"}, the ${ka.idle_minutes >= 60 ? ka.idle_minutes / 60 + " hour" : ka.idle_minutes + " minute"} limit above does nothing` : ""}. Stop ${bl.length === 1 ? "it" : "them"} to let the Mac sleep.</div>`;
   $("kaLive").innerHTML = html;
+  renderLidDaemon();
   setDot("nd-mac", ka.problem ? "warn" : ka.mode !== "off" ? "ok" : "");
 
   const p = m.panel;
@@ -4361,6 +4364,53 @@ function renderMac() {
   clearTimeout(panelPoll);
   if (p.running) panelPoll = setTimeout(loadMac, 1500);
 }
+// The machine-wide half of keep-awake: the root daemon that overrides lid
+// sleep and turns the screen off behind the shut lid. Only a password
+// installs or updates it, so its state and the button for it sit both
+// here and under Permissions.
+const lidDaemonText = {
+  ok: ["p", "granted", "the lid daemon is installed, current and running"],
+  stale: ["bad", "needs your password", "the lid daemon runs an older copy, so the latest fixes (the screen going off behind the lid) are not live"],
+  missing: ["bad", "needs your password", "the lid daemon is not installed, so the lid still sleeps the Mac"],
+  stopped: ["bad", "needs your password", "the lid daemon is not running"],
+  off: ["", "not needed", "keep-awake is off"],
+};
+function renderLidDaemon() {
+  const ka = macState && macState.keep_awake;
+  if (!ka) return;
+  const [cls, pill, text] = lidDaemonText[ka.daemon] || ["", ka.daemon || "unknown", ""];
+  const html = `<span class="pill ${cls}">${esc(pill)}</span> <b>Keep-awake (machine-wide)</b> <span class="hint">${esc(text)}</span>`;
+  $("kaDaemon").innerHTML = html;
+  $("permLid").innerHTML = html;
+  if (permState) renderPermissions();
+  for (const id of ["kaGrant", "permLidGrant"]) {
+    $(id).hidden = ka.daemon === "off";
+    $(id).classList.toggle("primary", ka.daemon !== "ok");
+    $(id).textContent = ka.daemon === "ok" ? "Grant again" : "Grant permission";
+  }
+}
+// Grant reruns apply with what is saved, never an unsaved choice on the
+// form: the password is for the daemon, not for a change nobody pressed
+// Apply on.
+async function grantLid(btn, noteEl) {
+  const ka = macState && macState.keep_awake;
+  if (!ka || ka.mode === "off") return;
+  btn.disabled = true;
+  try {
+    const x = await post("/api/keep-awake", {mode: ka.mode, idle_minutes: ka.idle_minutes || 0});
+    note(noteEl, "ok", x.detail);
+    for (let i = 0; i < 40 && x.script; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      await loadMac();
+      if (macState.keep_awake.daemon === "ok") { note(noteEl, "ok", "Granted: the lid daemon is current and running."); break; }
+    }
+  } catch (e) { note(noteEl, "bad", e.message); }
+  btn.disabled = false;
+  await loadMac();
+}
+$("kaGrant").onclick = () => grantLid($("kaGrant"), $("kaNote"));
+$("permLidGrant").onclick = () => grantLid($("permLidGrant"), $("permNote"));
+
 // Choosing an option only selects it; Apply saves it and runs the change,
 // which for the machine-wide part means a password prompt.
 let kaPick = null;
@@ -4637,7 +4687,8 @@ function renderPermissions() {
     (f.repos || []).length ? `<div class="hint">repositories: ${f.repos.map(r => `<code>${esc(r)}</code>`).join(", ")}</div>` : ""}
     <div class="hint">${esc(f.meaning)}${f.fix ? " " + esc(f.fix) : ""}</div></div>`).join("");
   const denied = (p.folders || []).some(f => f.state === "denied");
-  setDot("nd-permissions", denied ? "bad" : sg.state === "ok" ? "ok" : "warn");
+  const lidBad = macState && ["stale", "missing", "stopped"].includes(macState.keep_awake.daemon);
+  setDot("nd-permissions", denied || lidBad ? "bad" : sg.state === "ok" ? "ok" : "warn");
   $("permSetup").textContent = sg.signed ? "✓ Signed" : "Set up signing";
   $("permSetup").disabled = sg.signed || !sg.script_found;
   $("permSetup").title = sg.signed ? "This build is signed with the local certificate"

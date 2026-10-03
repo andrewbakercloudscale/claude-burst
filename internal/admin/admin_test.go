@@ -30,6 +30,15 @@ func newTestServer(t *testing.T) *Server {
 	t.Setenv("HOME", home)
 
 	dir := t.TempDir()
+	// The keep-awake daemon reads as installed, current and running unless a
+	// test says otherwise: never the real /usr/local copy or process table.
+	oldLid, oldRun := installedLidScript, lidDaemonRunning
+	installedLidScript = filepath.Join(dir, "lid-awake-root.sh")
+	if err := os.WriteFile(installedLidScript, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lidDaemonRunning = func() bool { return true }
+	t.Cleanup(func() { installedLidScript, lidDaemonRunning = oldLid, oldRun })
 	gw, err := router.New(config.Default(), filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatal(err)
