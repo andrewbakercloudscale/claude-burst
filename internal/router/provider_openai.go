@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -123,7 +124,24 @@ func (p *OpenAICompatibleProvider) TranslateResponse(w http.ResponseWriter, resp
 	if strings.Contains(ct, "text/event-stream") {
 		return translateOpenAIStream(w, resp.Body, model)
 	}
-	return translateOpenAINonStream(w, resp.Body, model)
+	tok, err := translateOpenAINonStream(w, resp.Body, model)
+	if err != nil {
+		// Nothing has been written yet (every error return precedes the
+		// write), so the client can be told. Until 2026-10-03 it got an
+		// empty 200, which Claude Code reads as an empty reply.
+		writeAnthropicError(w, http.StatusBadGateway, "api_error",
+			"Claude Burst: the secondary's reply could not be translated ("+err.Error()+")")
+	}
+	return tok, err
+}
+
+// writeAnthropicError answers with an error in the Messages API's own shape,
+// so Claude Code shows the message and treats it as an API error.
+func writeAnthropicError(w http.ResponseWriter, status int, kind, msg string) {
+	b, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": kind, "message": msg}})
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(b)
 }
 
 // --- request translation: Anthropic Messages -> OpenAI chat-completions ---
@@ -578,6 +596,9 @@ func translateOpenAIStream(w http.ResponseWriter, body io.Reader, model string) 
 
 	var tok tokenUsage
 	stopReason := "end_turn"
+	// Whether the upstream said it was done ([DONE] or a finish_reason). A
+	// stream that stops without either broke mid-reply.
+	finished := false
 
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -591,6 +612,7 @@ func translateOpenAIStream(w http.ResponseWriter, body io.Reader, model string) 
 			continue
 		}
 		if raw == "[DONE]" {
+			finished = true
 			break
 		}
 		var chunk openaiStreamChunk
@@ -644,9 +666,21 @@ func translateOpenAIStream(w http.ResponseWriter, body io.Reader, model string) 
 
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			stopReason = mapFinishReason(*choice.FinishReason)
+			finished = true
 		}
 	}
-	if err := sc.Err(); err != nil {
+	err := sc.Err()
+	if err == nil && !finished {
+		err = errors.New("the stream ended before the reply finished")
+	}
+	if err != nil {
+		// The status line went out long ago, so the stream itself carries
+		// the failure, as the Messages API does: an error event, after which
+		// Claude Code reports an API error instead of keeping a reply cut
+		// short as if it were whole. Until 2026-10-03 it just stopped.
+		ensureStarted()
+		writeEvent("error", map[string]any{"type": "error", "error": map[string]any{
+			"type": "api_error", "message": "Claude Burst: the secondary's stream broke mid-reply (" + err.Error() + ")"}})
 		return tok, err
 	}
 
