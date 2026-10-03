@@ -16,6 +16,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "stable"
+      # TestDashboardRunsInABrowser drives admin.html in headless Chromium.
+      # Playwright lives outside the repo; the test finds it through
+      # CLAUDE_BURST_PLAYWRIGHT and skips when it is absent.
+      - name: Playwright for the dashboard smoke test
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw"
+          cd "$RUNNER_TEMP/pw"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright@1
+          npx playwright install chromium
+          echo "CLAUDE_BURST_PLAYWRIGHT=$RUNNER_TEMP/pw" >> "$GITHUB_ENV"
       - run: go vet ./...
       - name: go test (race, coverage)
         run: go test ./... -race -coverprofile=coverage.out
