@@ -110,6 +110,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/requests", s.readOnly(s.handleRequests))
 	mux.HandleFunc("/api/responses", s.readOnly(s.handleResponses))
 	mux.HandleFunc("/api/history", s.readOnly(s.handleHistory))
+	mux.HandleFunc("/api/usage", s.readOnly(s.handleUsage))
 	mux.HandleFunc("/api/test-connection", s.readOnly(s.handleTestConnection))
 	mux.HandleFunc("/api/log", s.readOnly(s.handleLog))
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))

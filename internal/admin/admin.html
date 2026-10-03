@@ -712,6 +712,7 @@
   <a class="navlink" data-target="sec-savings"><span class="nd"></span><span class="label">Compaction savings</span></a>
   <a class="navlink" data-target="sec-models"><span class="nd"></span><span class="label">Spend by model</span></a>
   <a class="navlink" data-target="sec-repos"><span class="nd"></span><span class="label">Spend by repository</span></a>
+  <a class="navlink" data-target="sec-usage"><span class="nd"></span><span class="label">Usage</span></a>
 
   <div class="navgroup">Context</div>
   <a class="navlink nav-pc" data-target="sec-compaction"><span class="nd" id="nd-compaction"></span><span class="label">Pauseless Compaction</span></a>
@@ -919,6 +920,66 @@
   <section id="sec-repos" style="scroll-margin-top:70px">
     <h2>Spend by repository <span class="hint">each session's spend, under the repository it ran in, and what Pauseless Compaction saved it</span></h2>
     <div id="repoSplit" style="padding-bottom:6px"></div>
+  </section>
+
+  <!-- Usage: every request in a window the reader picks, filtered down to
+       the slice in question. The fixed views above answer set questions over
+       whole days; this one answers "the secondary, in this repository, in
+       the last hour, only the failures". Its script is the second script
+       block at the end of the page. -->
+  <section id="sec-usage" style="scroll-margin-top:70px">
+    <style>
+      #sec-usage .ug-filters > div { min-width: 0; }
+      #sec-usage .ug-filters select, #sec-usage .ug-filters input { min-width: 150px; }
+      #sec-usage .ug-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
+      #sec-usage .ug-groups > div { background: var(--panel); padding: 10px 16px 12px; min-width: 0; }
+      #sec-usage .ug-groups h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
+      #sec-usage .ug-groups table td, #sec-usage .ug-groups table th { padding: 4px 6px; }
+      #sec-usage .ug-groups td.k { font-family: var(--mono); overflow-wrap: anywhere; }
+      #sec-usage td.n, #sec-usage th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      #sec-usage tr.ug-row { cursor: pointer; }
+      #sec-usage tr.ug-row:hover td { background: var(--panel-2); }
+      #sec-usage tr.ug-detail td { background: var(--panel-2); font: 11.5px/1.6 var(--mono); }
+      #sec-usage tr.ug-detail span { display: inline-block; margin-right: 18px; }
+      #sec-usage tr.ug-detail b { color: var(--faint); font-weight: 600; }
+      #sec-usage .ug-pager { display: flex; gap: 10px; align-items: center; padding: 8px 16px 12px; }
+      #sec-usage details { padding: 0 16px 12px; }
+      #sec-usage details summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+    </style>
+    <h2>Usage <span class="hint">every request in a window you choose: filter it down, see the trend, open any request</span></h2>
+    <div class="body">
+      <div class="row ug-filters">
+        <div><label for="ugRange">Window</label><select id="ugRange">
+          <option value="1h">Last hour</option><option value="24h" selected>Last 24 hours</option>
+          <option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="custom">Custom</option></select></div>
+        <div id="ugCustomFrom" hidden><label for="ugFrom">From</label><input type="datetime-local" id="ugFrom"></div>
+        <div id="ugCustomTo" hidden><label for="ugTo">To</label><input type="datetime-local" id="ugTo"></div>
+        <div><label for="ugModel">Model</label><select id="ugModel"><option value="">All models</option></select></div>
+        <div><label for="ugProvider">Provider</label><select id="ugProvider"><option value="">All providers</option><option value="primary">primary (slot)</option><option value="secondary">secondary (slot)</option></select></div>
+        <div><label for="ugRepo">Repository</label><select id="ugRepo"><option value="">All repositories</option></select></div>
+        <div><label for="ugResult">Result</label><select id="ugResult"><option value="">All results</option><option value="ok">ok</option><option value="error">error</option><option value="cancelled">cancelled</option><option value="unknown">unknown</option></select></div>
+        <div><label for="ugSession">Session</label><input id="ugSession" placeholder="session id"></div>
+        <div><button id="ugReset">Reset</button></div>
+      </div>
+      <div id="ugNote"></div>
+    </div>
+    <div class="tiles" id="ugTiles"></div>
+    <div class="chart-head">
+      <strong style="font-size:13px;font-weight:620">Trend</strong>
+      <span class="seg" id="ugMetric">
+        <button data-m="tokens" class="on">Tokens</button>
+        <button data-m="requests">Requests</button>
+        <button data-m="cost">Cost</button>
+      </span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="legend" id="ugLegend"></span>
+    </div>
+    <div class="chart-wrap" id="ugChartWrap"><div id="ugChart"></div><div class="chart-tip" id="ugTip"></div></div>
+    <div class="ug-groups" id="ugGroups"></div>
+    <div class="scroll"><table id="ugRows"></table></div>
+    <div class="ug-pager"><button id="ugPrev">Newer</button><button id="ugNext">Older</button><span class="hint" id="ugPage"></span></div>
+    <details><summary>Prices used for the cost estimate</summary><div class="hint" id="ugPriceSource" style="margin:6px 0"></div><div class="scroll" id="ugPrices"></div></details>
+    <div class="hint" style="padding:0 16px 12px" id="ugCoverage"></div>
   </section>
 
   <div class="pagegroup">Context</div>
@@ -5120,6 +5181,235 @@ function renderAttention() {
 }
 
 loadSettings();
+</script>
+<script>
+// ---- Usage ------------------------------------------------------------------
+// Drawn from /api/usage. Uses the page's helpers ($, esc, num, money, note,
+// stamp) from the main script above. The filter is remembered per browser.
+(() => {
+  const F = ["ugRange", "ugFrom", "ugTo", "ugModel", "ugProvider", "ugRepo", "ugResult", "ugSession"];
+  let metric = "tokens", offset = 0, last = null, open = null;
+  const LIMIT = 25;
+  const TOKENS = [
+    {k: "input_tokens", name: "Input", color: "var(--s-primary)"},
+    {k: "cache_read_tokens", name: "Cache read", color: "var(--s-saved)"},
+    {k: "cache_write_tokens", name: "Cache write", color: "var(--pcs-saved)"},
+    {k: "output_tokens", name: "Output", color: "var(--s-secondary)"},
+  ];
+  const SERIES = {
+    tokens: TOKENS,
+    requests: [{k: "ok", name: "Requests", color: "var(--s-primary)", v: b => b.requests - b.errors},
+               {k: "errors", name: "Errors", color: "var(--bad)"}],
+    cost: [{k: "usd", name: "Cost", color: "var(--s-primary)"}],
+  };
+  const pct = v => v == null ? "-" : (v * 100).toFixed(1) + "%";
+  const short = n => n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(Math.round(n || 0));
+
+  function save() {
+    const v = {};
+    for (const id of F) v[id] = $(id).value;
+    try { localStorage.setItem("ugFilter", JSON.stringify(v)); } catch (e) {}
+  }
+  function restore() {
+    let v = {};
+    try { v = JSON.parse(localStorage.getItem("ugFilter") || "{}") || {}; } catch (e) {}
+    for (const id of F) if (typeof v[id] === "string") {
+      const el = $(id);
+      // A model or repository saved last time may not be in this window's
+      // list yet; keep it selectable so the filter is not silently dropped.
+      if (el.tagName === "SELECT" && v[id] && ![...el.options].some(o => o.value === v[id])) el.add(new Option(v[id], v[id]));
+      el.value = v[id];
+    }
+  }
+  function custom() { const c = $("ugRange").value === "custom"; $("ugCustomFrom").hidden = $("ugCustomTo").hidden = !c; }
+
+  function fillSelect(id, values, all) {
+    const el = $(id), cur = el.value;
+    const fixed = id === "ugProvider" ? [["", all], ["primary", "primary (slot)"], ["secondary", "secondary (slot)"]] : [["", all]];
+    const vals = values.filter(x => !fixed.some(f => f[0] === x));
+    if (cur && !vals.includes(cur) && !fixed.some(f => f[0] === cur)) vals.push(cur);
+    el.innerHTML = fixed.concat(vals.map(x => [x, x])).map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+    el.value = cur;
+  }
+
+  async function load() {
+    custom();
+    const q = new URLSearchParams({range: $("ugRange").value, limit: LIMIT, offset});
+    if ($("ugRange").value === "custom") {
+      if (!$("ugFrom").value || !$("ugTo").value) { note($("ugNote"), "warn", "Pick a start and an end for the custom window."); return; }
+      q.set("from", $("ugFrom").value);
+      q.set("to", $("ugTo").value);
+    }
+    for (const [id, k] of [["ugModel", "model"], ["ugProvider", "provider"], ["ugRepo", "repo"], ["ugResult", "result"], ["ugSession", "session"]])
+      if ($(id).value.trim()) q.set(k, $(id).value.trim());
+    let r;
+    try {
+      const res = await fetch("/api/usage?" + q);
+      const text = await res.text();
+      if (!res.ok) throw new Error(text.trim() || res.statusText);
+      r = JSON.parse(text);
+    } catch (e) { note($("ugNote"), "bad", e.message); return; }
+    $("ugNote").innerHTML = "";
+    last = r;
+    fillSelect("ugModel", r.options.models || [], "All models");
+    fillSelect("ugProvider", r.options.providers || [], "All providers");
+    fillSelect("ugRepo", r.options.repos || [], "All repositories");
+    render();
+  }
+
+  function render() {
+    const r = last;
+    if (!r) return;
+    const t = r.totals;
+    const tiles = [
+      {k: "Requests", v: num(t.requests), h: `${num(t.ok)} ok, ${num(t.errors)} errors, ${num(t.cancelled)} cancelled${t.unknown ? ", " + num(t.unknown) + " unknown" : ""}`},
+      {k: "Success rate", v: pct(t.success_rate), h: "cancelled (Esc) and unknown left out",
+       cls: t.success_rate != null && t.success_rate < 0.95 ? "bad" : t.success_rate != null && t.success_rate < 0.98 ? "warn" : ""},
+      {k: "Tokens", v: short(t.input_tokens + t.output_tokens + t.cache_read_tokens + t.cache_write_tokens),
+       h: `in ${short(t.input_tokens)}, out ${short(t.output_tokens)}, cache read ${short(t.cache_read_tokens)}, write ${short(t.cache_write_tokens)}`},
+      {k: "Cache hit rate", v: pct(t.cache_hit_rate), h: "cache reads / (input + cache reads)"},
+      {k: "Estimated cost", v: money(t.usd), h: t.unpriced ? `lower bound: ${num(t.unpriced)} unpriced` : "API equivalent, prices below", cls: t.unpriced ? "warn" : ""},
+      {k: "Output speed", v: t.output_tokens_per_sec ? t.output_tokens_per_sec.toFixed(1) + " tok/s" : "-", h: "output over whole request time"},
+      {k: "Latency p50 / p95", v: t.latency_p50_ms ? `${num(t.latency_p50_ms)} / ${num(t.latency_p95_ms)} ms` : "-", h: "successful model requests"},
+    ];
+    $("ugTiles").innerHTML = tiles.map(x => `<div class="tile"><div class="k">${esc(x.k)}</div>
+      <div class="v"${x.cls ? ` style="color:var(--${x.cls})"` : ""}>${esc(x.v)}</div><div class="h">${esc(x.h)}</div></div>`).join("");
+    chart();
+    groups();
+    rows();
+    prices();
+    $("ugCoverage").textContent = `${stamp(r.from)} to ${stamp(r.to)}, local time. ` + (r.earliest && !r.covered
+      ? `The log only reaches back to ${stamp(r.earliest)}, so the start of this window has no data.` : `${r.files} log file(s) read.`);
+  }
+
+  function label(b) {
+    const d = new Date(b.start);
+    if (last.daily) return d.toLocaleDateString(undefined, {month: "short", day: "numeric"});
+    return d.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"});
+  }
+
+  function chart() {
+    const S = SERIES[metric], data = last.trend || [];
+    const val = (s, b) => s.v ? s.v(b) : (b[s.k] || 0);
+    $("ugLegend").innerHTML = S.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("");
+    const W = Math.max(320, $("ugChartWrap").clientWidth - 32), Hh = 180, padL = 46, padB = 22;
+    const max = Math.max(1e-9, ...data.map(b => S.reduce((a, s) => a + val(s, b), 0)));
+    const n = Math.max(1, data.length), slot = (W - padL) / n, bw = Math.max(1, slot * 0.72);
+    const y = v => (Hh - padB) * (1 - v / max);
+    const fmt = v => metric === "cost" ? "$" + (v < 10 ? v.toFixed(2) : v.toFixed(0)) : short(v);
+    let svg = `<svg viewBox="0 0 ${W} ${Hh}" height="${Hh}" role="img" aria-label="Usage trend">`;
+    for (const f of [0, 0.5, 1]) svg += `<line x1="${padL}" x2="${W}" y1="${y(max * f)}" y2="${y(max * f)}" stroke="var(--grid)"/><text x="${padL - 6}" y="${y(max * f) + 4}" text-anchor="end" font-size="10" fill="var(--faint)">${esc(fmt(max * f))}</text>`;
+    const every = Math.ceil(n / 8);
+    data.forEach((b, i) => {
+      const x = padL + i * slot + (slot - bw) / 2;
+      let base = 0;
+      for (const s of S) {
+        const v = val(s, b);
+        if (v <= 0) continue;
+        svg += `<rect x="${x.toFixed(1)}" y="${y(base + v).toFixed(1)}" width="${bw.toFixed(1)}" height="${(y(base) - y(base + v)).toFixed(1)}" fill="${s.color}"/>`;
+        base += v;
+      }
+      svg += `<rect data-i="${i}" x="${(padL + i * slot).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${Hh - padB}" fill="transparent"/>`;
+      if (i % every === 0) svg += `<text x="${(x + bw / 2).toFixed(1)}" y="${Hh - 6}" text-anchor="middle" font-size="10" fill="var(--faint)">${esc(label(b))}</text>`;
+    });
+    $("ugChart").innerHTML = svg + "</svg>";
+    const tip = $("ugTip");
+    $("ugChart").onmousemove = e => {
+      const i = e.target.dataset && e.target.dataset.i;
+      if (i === undefined) { tip.style.opacity = 0; return; }
+      const b = data[+i];
+      tip.innerHTML = `<div class="d">${esc(stamp(b.start))}</div>` +
+        `<div class="r"><span>Requests</span><b>${num(b.requests)}</b></div><div class="r"><span>Errors</span><b>${num(b.errors)}</b></div>` +
+        TOKENS.map(s => `<div class="r"><span>${s.name}</span><b>${num(b[s.k])}</b></div>`).join("") +
+        `<div class="r"><span>Cost</span><b>${money(b.usd)}</b></div>`;
+      const box = $("ugChartWrap").getBoundingClientRect();
+      tip.style.left = Math.min(e.clientX - box.left + 12, box.width - 200) + "px";
+      tip.style.top = (e.clientY - box.top + 12) + "px";
+      tip.style.opacity = 1;
+    };
+    $("ugChart").onmouseleave = () => { tip.style.opacity = 0; };
+  }
+
+  function groups() {
+    const g = (title, list, filter) => `<div><h3>${esc(title)}</h3><table><thead><tr><th></th><th class="n">Req</th><th class="n">Err</th><th class="n">Tokens</th><th class="n">Cost</th></tr></thead><tbody>${
+      (list || []).slice(0, 10).map(x => `<tr><td class="k">${filter ? `<a href="#" data-ug-f="${filter}" data-ug-v="${esc(x.key)}">${esc(x.key)}</a>` : esc(x.key)}</td>
+        <td class="n">${num(x.requests)}</td><td class="n"${x.errors ? ' style="color:var(--bad)"' : ""}>${num(x.errors)}</td>
+        <td class="n">${short(x.tokens)}</td><td class="n">${x.unpriced ? "unpriced" : money(x.usd)}</td></tr>`).join("") ||
+      `<tr><td colspan="5" class="hint">nothing in this window</td></tr>`}</tbody></table></div>`;
+    $("ugGroups").innerHTML = g("By model", last.by_model, "ugModel") + g("By provider", last.by_provider, "ugProvider") +
+      g("By repository", last.by_repo, "ugRepo") + g("By result", last.by_result, "ugResult");
+  }
+
+  function rows() {
+    const list = last.recent || [];
+    const nr = v => v ? num(v) : "-";
+    const pill = res => `<span class="pill ${res === "ok" ? "p" : res === "error" ? "bad" : "s"}">${esc(res)}</span>`;
+    $("ugRows").innerHTML = `<thead><tr><th>Time</th><th>Result</th><th>Model</th><th>Provider</th><th>Repository</th>
+      <th class="n">In</th><th class="n">Cache read</th><th class="n">Out</th><th class="n">ms</th><th class="n">Cost</th></tr></thead><tbody>` +
+      (list.map((e, i) => {
+        const id = e.request_id || String(offset + i);
+        const detail = open === id ? `<tr class="ug-detail"><td colspan="10">${[
+          ["request", e.request_id], ["session", e.session_id], ["agent", e.agent_id], ["slot", e.slot], ["route", e.route],
+          ["requested", e.requested_model], ["destination", e.destination], ["status", e.http_status],
+          ["cache write", e.cache_write_tokens], ["pruned bytes", e.pruned_bytes], ["compacted messages", e.compacted_messages],
+          ["limit", e.limit_claim], ["note", e.note], ["pricing", e.pricing_unknown ? "unpriced" : e.repriced ? "repriced at today's rates" : ""],
+        ].filter(([, v]) => v !== undefined && v !== null && v !== "" && v !== 0).map(([k, v]) => `<span><b>${esc(k)}</b> ${esc(v)}</span>`).join("")}</td></tr>` : "";
+        return `<tr class="ug-row" data-ug-open="${esc(id)}"><td class="nowrap">${esc(stamp(e.time))}</td><td>${pill(e.result)}</td>
+          <td class="mono">${esc(e.model || "-")}</td><td>${esc(e.provider || "-")}</td><td>${esc(e.repo || "-")}</td>
+          <td class="n">${nr(e.input_tokens)}</td><td class="n">${nr(e.cache_read_tokens)}</td><td class="n">${nr(e.output_tokens)}</td>
+          <td class="n">${nr(e.duration_ms)}</td><td class="n">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? money(e.api_equivalent_usd) : "-"}</td></tr>` + detail;
+      }).join("") || `<tr><td colspan="10" class="hint">No requests match.</td></tr>`) + "</tbody>";
+    $("ugPrev").disabled = offset === 0;
+    $("ugNext").disabled = list.length < LIMIT || offset + LIMIT > 10000 - LIMIT;
+    $("ugPage").textContent = list.length ? `requests ${num(offset + 1)} to ${num(offset + list.length)} of ${num(last.totals.requests)}, newest first; click one for detail` : "";
+  }
+
+  function prices() {
+    $("ugPriceSource").textContent = "Per million tokens. Source: " + (last.price_source || "");
+    const p = last.prices || [];
+    $("ugPrices").innerHTML = p.length ? `<table><thead><tr><th>Model</th><th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th><th class="n">Cache write</th></tr></thead><tbody>${
+      p.map(x => `<tr><td class="mono">${esc(x.model)}</td><td class="n">$${x.input}</td><td class="n">$${x.output}</td>
+        <td class="n">$${+x.cache_read.toFixed(4)}${x.cache_derived ? "*" : ""}</td><td class="n">$${+x.cache_write.toFixed(4)}${x.cache_derived ? "*" : ""}</td></tr>`).join("")
+    }</tbody></table><div class="hint" style="margin-top:4px">* derived from the input rate (Claude: reads 0.1x, writes 1.25x; others: full input rate). Edit prices under Failover &amp; pricing.</div>` : `<div class="hint">No prices configured.</div>`;
+  }
+
+  const refilter = () => { offset = 0; open = null; save(); load(); };
+  for (const id of F) $(id).addEventListener("change", refilter);
+  $("ugReset").onclick = () => {
+    $("ugRange").value = "24h";
+    for (const id of F.slice(1)) $(id).value = "";
+    refilter();
+  };
+  $("ugMetric").onclick = e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    metric = b.dataset.m;
+    for (const x of $("ugMetric").querySelectorAll("button")) x.classList.toggle("on", x === b);
+    chart();
+  };
+  $("ugGroups").onclick = e => {
+    const a = e.target.closest("[data-ug-f]");
+    if (!a) return;
+    e.preventDefault();
+    const el = $(a.dataset.ugF), v = a.dataset.ugV;
+    if (![...el.options].some(o => o.value === v)) el.add(new Option(v, v));
+    el.value = v;
+    refilter();
+  };
+  $("ugRows").onclick = e => {
+    const tr = e.target.closest("[data-ug-open]");
+    if (!tr) return;
+    open = open === tr.dataset.ugOpen ? null : tr.dataset.ugOpen;
+    rows();
+  };
+  $("ugPrev").onclick = () => { offset = Math.max(0, offset - LIMIT); open = null; load(); };
+  $("ugNext").onclick = () => { offset += LIMIT; open = null; load(); };
+  window.addEventListener("resize", () => { if (last) chart(); });
+  restore();
+  load();
+  // Live windows move: refresh the short ones while the tab is visible.
+  setInterval(() => { if (!document.hidden && ["1h", "24h"].includes($("ugRange").value) && offset === 0) load(); }, 60000);
+})();
 </script>
 </body>
 </html>
