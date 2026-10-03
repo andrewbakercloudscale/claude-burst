@@ -18,7 +18,7 @@ func usageFixture(t *testing.T, base time.Time) string {
 		{Time: base.Add(-50 * time.Minute), SessionID: "s2", Slot: "secondary", Route: "openai-compatible", Model: "glm", HTTPStatus: 502, DurationMS: 50, APIEquivalentUSD: 0},
 		{Time: base.Add(-40 * time.Minute), SessionID: "s2", Slot: "secondary", Route: "openai-compatible", Model: "glm", HTTPStatus: 200, DurationMS: 2000, InputTokens: 80, OutputTokens: 100, PricingUnknown: true},
 		{Time: base.Add(-20 * time.Minute), SessionID: "s1", Slot: "primary", Route: "anthropic", Model: "claude-a", HTTPStatus: StatusClientClosed, DurationMS: 400},
-		{Time: base.Add(-10 * time.Minute), Slot: "primary", Route: "anthropic", HTTPStatus: 200, DurationMS: 300},
+		{Time: base.Add(-10 * time.Minute), Slot: "primary", Route: "anthropic", Destination: "https://api.anthropic.com/v1/messages", HTTPStatus: 200, DurationMS: 300},
 		{Time: base.Add(-5 * time.Minute), SessionID: "s1", Slot: "primary", Route: "anthropic", Model: "claude-a", HTTPStatus: 0, DurationMS: 10},
 		// Outside the window on both sides.
 		{Time: base.Add(-10 * time.Hour), SessionID: "s1", Slot: "primary", Route: "anthropic", Model: "claude-a", HTTPStatus: 200, DurationMS: 1, OutputTokens: 1},
@@ -196,5 +196,38 @@ func TestUsageGroupsAndPaging(t *testing.T) {
 	r, _ = Usage(path, f, repoOfFixture)
 	if len(r.Recent) != 1 {
 		t.Fatalf("last page = %d rows, want 1", len(r.Recent))
+	}
+}
+
+// Calls that are not model requests (Remote Control heartbeats, telemetry,
+// token counts) stay out of a report unless all traffic is asked for: on
+// 3 Oct 2026 they were 46 of the newest 50 rows, every one blank.
+func TestUsageModelRequestsOnly(t *testing.T) {
+	base := time.Date(2026, 10, 3, 12, 0, 0, 0, time.Local)
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	w := New(path)
+	for _, e := range []Event{
+		{Time: base.Add(-5 * time.Minute), Route: "anthropic", Model: "claude-a", Destination: "https://api.anthropic.com/v1/messages", HTTPStatus: 200, OutputTokens: 10},
+		{Time: base.Add(-4 * time.Minute), Route: "anthropic", Destination: "https://api.anthropic.com/v1/messages", HTTPStatus: 502},
+		{Time: base.Add(-3 * time.Minute), Route: "openai-compatible", Destination: "https://api.together.xyz/v1/chat/completions", HTTPStatus: 200},
+		{Time: base.Add(-2 * time.Minute), Route: "anthropic", Destination: "https://api.anthropic.com/v1/code/sessions/cse_1/worker/heartbeat", HTTPStatus: 200},
+		{Time: base.Add(-2 * time.Minute), Route: "anthropic", Model: "claude-a", Destination: "https://api.anthropic.com/v1/messages/count_tokens", HTTPStatus: 200},
+		{Time: base.Add(-1 * time.Minute), Route: "anthropic", Destination: "https://api.anthropic.com/api/event_logging/batch", HTTPStatus: 200},
+	} {
+		if err := w.Write(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := UsageFilter{From: base.Add(-time.Hour), To: base, Bucket: time.Hour}
+	r, err := Usage(path, f, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Totals.Requests != 3 || len(r.Recent) != 3 {
+		t.Fatalf("model requests: %d totals, %d rows, want 3", r.Totals.Requests, len(r.Recent))
+	}
+	f.AllTraffic = true
+	if r, err = Usage(path, f, nil); err != nil || r.Totals.Requests != 6 {
+		t.Fatalf("all traffic: %d, %v, want 6", r.Totals.Requests, err)
 	}
 }

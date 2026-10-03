@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -49,6 +50,10 @@ type UsageFilter struct {
 	Repo     string
 	Session  string
 	Result   string
+	// AllTraffic keeps calls that are not model requests: Remote Control
+	// heartbeats, telemetry, token counts. Off, a report is model requests
+	// only, so its request count, success rate and list are about turns.
+	AllTraffic bool
 	// Bucket is the trend bucket width. Daily buckets are local calendar
 	// days whatever the width says, so a bar is the day the person at the
 	// keyboard remembers.
@@ -153,6 +158,22 @@ type UsageReport struct {
 }
 
 // providerOf is the route that served the event, falling back to its slot.
+// IsModelRequest says whether e asked a model for a reply, as opposed to
+// the other calls Claude Code makes through the gateway (Remote Control
+// heartbeats, telemetry, token counts), which carry no model or tokens.
+func IsModelRequest(e Event) bool {
+	path := e.Destination
+	if i := strings.Index(path, "://"); i >= 0 {
+		if j := strings.Index(path[i+3:], "/"); j >= 0 {
+			path = path[i+3+j:]
+		}
+	}
+	if strings.HasSuffix(path, "/count_tokens") {
+		return false
+	}
+	return e.Model != "" || strings.HasSuffix(path, "/messages") || strings.HasSuffix(path, "/chat/completions")
+}
+
 func providerOf(e Event) string {
 	if e.Route != "" {
 		return e.Route
@@ -234,6 +255,9 @@ func Usage(path string, f UsageFilter, repoOf func(session string) string) (Usag
 			}
 			if repo != "" {
 				opts["repo"][repo] = struct{}{}
+			}
+			if !f.AllTraffic && !IsModelRequest(e) {
+				return
 			}
 			if f.Model != "" && e.Model != f.Model ||
 				f.Provider != "" && f.Provider != prov && f.Provider != slotOf(e) ||

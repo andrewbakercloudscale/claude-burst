@@ -130,6 +130,14 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.Model, f.Provider, f.Repo, f.Session = q.Get("model"), q.Get("provider"), q.Get("repo"), q.Get("session")
+	switch q.Get("traffic") {
+	case "", "model":
+	case "all":
+		f.AllTraffic = true
+	default:
+		http.Error(w, "traffic must be model or all", http.StatusBadRequest)
+		return
+	}
 	switch f.Result = q.Get("result"); f.Result {
 	case "", metrics.ResultOK, metrics.ResultError, metrics.ResultCancelled, metrics.ResultUnknown:
 	default:
