@@ -1160,6 +1160,18 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
 		}
+		if np.webDown && !isClientCancellation(err) {
+			// Names resolve but nothing gets through, Anthropic or not: a
+			// phone out of data, a captive portal, a dead uplink. A reset
+			// counts here too, unlike above: the carrier sends it, not
+			// Anthropic, and the control request proves it.
+			s.notePrimaryFailure(slot, err)
+			s.alertNetworkBlocked()
+			s.logger.Printf("req=%s no_failover route=%s reason=%q (local network not passing traffic: control HTTPS failed: %v)", rid, p.Name(), "network blocked", np.webErr)
+			http.Error(w, "this Mac's network is not passing traffic (a phone out of data, a captive portal or a dead uplink) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network not passing traffic; not failed over: "+err.Error(), destination)
+			return
+		}
 		// A transport error on the primary is retried for about 30 seconds
 		// before it can count towards failing over -- and only once the local
 		// network is known to be up, so a dead network still answers fast.
@@ -1427,6 +1439,44 @@ type netProbe struct {
 	dnsOK  bool
 	dnsErr error
 	dnsDur time.Duration
+	// webDown: names resolve, but an HTTPS request to a host unrelated to
+	// any provider failed too. A phone out of data does exactly this: DNS
+	// keeps answering and every connection is reset (2026-10-04 00:23, a
+	// failover to Together, which was reset the same way). Zero value is
+	// "not known to be down", so a probe that never ran blocks nothing.
+	webDown bool
+	webErr  error
+}
+
+// controlWebURL is the HTTPS control request: Apple's captive-portal check,
+// tiny, and served by nobody Burst routes to. HTTPS, so a carrier cannot
+// answer it with a page of its own.
+var controlWebURL = "https://captive.apple.com/hotspot-detect.html"
+
+// The control request's answer is kept briefly: a burst of failures on a
+// dead network would otherwise each wait out its own timeout.
+var (
+	webProbeMu  sync.Mutex
+	webProbeAt  time.Time
+	webProbeErr error
+)
+
+const webProbeTTL = 10 * time.Second
+
+func probeWeb() error {
+	webProbeMu.Lock()
+	defer webProbeMu.Unlock()
+	if time.Since(webProbeAt) < webProbeTTL {
+		return webProbeErr
+	}
+	c := &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	resp, err := c.Get(controlWebURL)
+	if err == nil {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+	}
+	webProbeAt, webProbeErr = time.Now(), err
+	return err
 }
 
 func probeNetwork() netProbe {
@@ -1446,6 +1496,10 @@ func probeNetwork() netProbe {
 	_, p.dnsErr = net.DefaultResolver.LookupHost(ctx, "www.apple.com")
 	p.dnsDur = time.Since(start)
 	p.dnsOK = p.dnsErr == nil
+	if p.dnsOK {
+		p.webErr = probeWeb()
+		p.webDown = p.webErr != nil
+	}
 	return p
 }
 
@@ -1476,7 +1530,7 @@ func (s *Server) logSnapshot(rid, route string, triggerErr error, np netProbe) {
 // state is the snapshot without its timing, for telling a changed network
 // from the same one.
 func (p netProbe) state() string {
-	return strings.Join(p.ifaces, ",") + "|" + fmt.Sprint(p.dnsOK)
+	return strings.Join(p.ifaces, ",") + "|" + fmt.Sprint(p.dnsOK) + "|" + fmt.Sprint(p.webDown)
 }
 
 func (p netProbe) snapshot(route string, triggerErr error) string {
@@ -1488,8 +1542,14 @@ func (p netProbe) snapshot(route string, triggerErr error) string {
 	if p.dnsErr != nil {
 		dnsState = fmt.Sprintf("FAILED (%s): %v", p.dnsDur.Round(time.Millisecond), p.dnsErr)
 	}
-	return fmt.Sprintf("network-snapshot route=%s trigger_err=%q local_ifaces=%s control_dns=%s",
-		route, triggerErr, ifaceState, dnsState)
+	webState := "ok"
+	if p.webDown {
+		webState = fmt.Sprintf("FAILED: %v", p.webErr)
+	} else if !p.dnsOK {
+		webState = "not tried"
+	}
+	return fmt.Sprintf("network-snapshot route=%s trigger_err=%q local_ifaces=%s control_dns=%s control_https=%s",
+		route, triggerErr, ifaceState, dnsState, webState)
 }
 
 // peerAnswered reports whether err proves something on the far side of the

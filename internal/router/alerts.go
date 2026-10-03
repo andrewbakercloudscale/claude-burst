@@ -142,6 +142,19 @@ func (s *Server) alertNetworkDown() {
 	}
 }
 
+// alertNetworkBlocked is the network being up for names and down for
+// everything else, such as a phone hotspot out of data.
+func (s *Server) alertNetworkBlocked() {
+	s.alerts.mu.Lock()
+	first := !s.alerts.networkDown
+	s.alerts.networkDown = true
+	s.alerts.mu.Unlock()
+	if first {
+		notice.Publish(alertNetwork, notice.Error, "Network not passing traffic",
+			"Names resolve, but connections from this Mac are cut, to Anthropic and to an unrelated test site alike. A phone out of data does this. Nothing fails over: the secondary is behind the same network.")
+	}
+}
+
 func (s *Server) alertNetworkUp() {
 	s.alerts.mu.Lock()
 	was := s.alerts.networkDown
