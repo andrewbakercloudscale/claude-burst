@@ -187,6 +187,9 @@ func (s *Server) handlePermissionsCheck(w http.ResponseWriter, r *http.Request) 
 		}
 		results = append(results, res)
 	}
+	if r, ok := s.checkGitAccess(); ok {
+		results = append(results, result{Folder: r.Folder, State: r.State, Detail: r.Detail})
+	}
 	writeJSON(w, map[string]any{"results": results, "permissions": permissionsResponse{Signing: s.signing(), Folders: folderStatuses()}})
 }
 
@@ -223,4 +226,50 @@ func (s *Server) handleOpenPrivacySettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, map[string]string{"detail": "System Settings is open at Privacy & Security, Files and Folders. Find claude-burst and turn on the folders it needs."})
+}
+
+type gitAccess struct {
+	Folder, State, Detail string
+}
+
+// checkoutFolder names the protected folder the claude-burst checkout is
+// in ("Desktop"), or "" when it is in none or there is no checkout.
+func (s *Server) checkoutFolder() (dir, folder string) {
+	dir, ok := s.repoDir()
+	if !ok {
+		return "", ""
+	}
+	for _, a := range repo.Access() {
+		if strings.HasPrefix(dir, a.Path+string(filepath.Separator)) {
+			return dir, a.Folder
+		}
+	}
+	return dir, ""
+}
+
+// checkGitAccess runs git in the claude-burst checkout, the way the update
+// check does. macOS asks about git separately from claude-burst itself: on
+// 3 Oct 2026 the gateway read Desktop fine while the git it started sat
+// waiting on its own prompt, and every update check timed out as "could
+// not reach GitHub". Asking here, while someone is at the Mac, is what
+// gets that Allow clicked. Not ok when the checkout is in no protected
+// folder: there is nothing to ask.
+func (s *Server) checkGitAccess() (gitAccess, bool) {
+	dir, folder := s.checkoutFolder()
+	if folder == "" {
+		return gitAccess{}, false
+	}
+	res := gitAccess{Folder: "git in " + folder}
+	ctx, cancel := context.WithTimeout(context.Background(), permCheckWait)
+	defer cancel()
+	_, err := runGit(ctx, dir, "rev-parse", "--git-dir")
+	switch {
+	case err == nil:
+		res.State = repo.Allowed
+	case ctx.Err() != nil:
+		res.State, res.Detail = "waiting", "macOS is still asking whether git may read "+folder+": answer its prompt, then check again"
+	default:
+		res.State, res.Detail = "error", err.Error()
+	}
+	return res, true
 }

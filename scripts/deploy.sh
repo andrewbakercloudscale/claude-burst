@@ -329,6 +329,9 @@ if wait_healthy; then
     log "re-enabled proxy -- restart any Claude Code session for the change to take effect"
   fi
   log "deploy complete"
+  # shellcheck source=./folder-access.sh
+  source "$ROOT/scripts/folder-access.sh"
+  burst_folder_access "$(python3 -c "import json;print(json.load(open('$HOME/.config/claude-burst/config.json')).get('admin_listen') or '127.0.0.1:7788')" 2>/dev/null || echo 127.0.0.1:7788)" "$ROOT"
   # Only after a healthy deploy; never fails it (see update-panel.sh).
   zsh "$ROOT/scripts/update-panel.sh"
   exit 0

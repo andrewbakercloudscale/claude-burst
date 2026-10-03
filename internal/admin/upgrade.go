@@ -55,6 +55,10 @@ var runGit = func(ctx context.Context, dir string, args ...string) (string, erro
 
 const upgradeCheckEvery = 10 * time.Minute
 
+// localGitWait bounds the local git command that runs before the fetch. A
+// variable so tests need not wait it out.
+var localGitWait = 10 * time.Second
+
 type upgradeStatus struct {
 	CheckedAt      time.Time `json:"checked_at"`
 	RunningVersion string    `json:"running_version"`
@@ -118,6 +122,22 @@ func (s *Server) computeUpgrade(ctx context.Context) upgradeStatus {
 	dir, ok := s.repoDir()
 	if !ok {
 		return fail("no checkout of the claude-burst repo found next to this binary's scripts, so there is nothing to upgrade from")
+	}
+	// A local git command first: it needs no network, so when it hangs it
+	// is macOS waiting on someone to answer whether git may read the
+	// folder the checkout is in, not GitHub being slow.
+	local, cancelLocal := context.WithTimeout(ctx, localGitWait)
+	_, err := runGit(local, dir, "rev-parse", "--git-dir")
+	waited := local.Err() != nil
+	cancelLocal()
+	if waited {
+		if _, folder := s.checkoutFolder(); folder != "" {
+			return fail("macOS is asking whether git may read %s, where the claude-burst checkout is. Click Allow on the Mac, or press Check folder access under Permissions while you are at it", folder)
+		}
+		return fail("git did not answer in %s in %s", localGitWait, dir)
+	}
+	if err != nil {
+		return fail("%v", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
