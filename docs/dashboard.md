@@ -42,7 +42,7 @@ Screenshots are of a real dashboard with session ids, repository names and dolla
 - **Filters**: window (last hour, 24 hours, 7 days, 30 days, or a custom range up to 92 days), model, provider (the primary or secondary slot, or a route such as `anthropic`), repository, session, result and traffic. Traffic is model requests by default; **All traffic** adds the other calls Claude Code makes through the gateway (Remote Control heartbeats, telemetry, token counts), which have no model, tokens or cost and show their path instead of a model. Your last filter is remembered in this browser.
 - **Totals**: requests split into ok, errors and cancelled; success rate (cancelled requests, which are you pressing Esc, are left out); tokens by type; cache hit rate (cache reads as a share of everything the model read); estimated cost; output speed in tokens a second; latency p50 and p95 over successful model requests.
 - **Trend**: stacked tokens by type (input, cache read, cache write, output), or requests and errors, or cost. Bars are 5 minutes for the last hour, hourly for 24 hours and local days for 7 and 30 days. Empty bars stay in, because a gap is information.
-- **Breakdowns** by model, provider, repository and result, with errors also as a share of that row's requests. A row that used tokens but costs under a cent shows `<$0.01`. Click a name to filter by it.
+- **Breakdowns** by model, provider, repository and result: one figure per column (requests, errors, tokens, cost), and a bar with each row's share of the cost (of the requests, for the result split). Hover an error count for its rate. A row that used tokens but costs under a cent shows `<$0.01`. Click a name to filter by it.
 - **Requests**: the newest first, 25 a page. Click one for its detail: request and session ids, slot, route, requested model, destination, cache writes, pruning and compaction, limit and note.
 - **Prices used for the cost estimate**: the table the costs come from, which is `config.json`'s `pricing` over the built-in prices. Cache rates not set there are derived from the input rate and marked.
 
@@ -68,12 +68,12 @@ The usage panel floats the same notice it shows for a pauseless compaction over 
 |---|---|---|
 | Failed over to the secondary (with the reset time and why) | warning | Back on Claude, once every limit has reset |
 | A Claude limit hit with no secondary set up | warning | fades |
-| 5 or more failed replies (5xx) within 2 minutes; cancelled requests do not count | error | Requests are succeeding again, after 2 clean minutes |
+| 5 or more failed replies (5xx) within 2 minutes; cancelled requests, and failures while the network is offline, do not count | error | Requests are succeeding again, after 2 clean minutes |
 | Network offline (DNS failing on this Mac) | error | Network back |
 | A secondary key that worked can no longer be read (locked Keychain, deleted key) | warning | Secondary key available |
 | Compaction failed, or its summary was dropped | warning | fades |
 | Transparent mode: Burst CA no longer trusted, or the `/etc/hosts` redirect missing | error | Transparent mode restored |
-| The pf guard or the gateway watchdog logged a problem, or repaired it | error or ok | the repair |
+| The pf guard or the gateway watchdog logged a problem; its repair is shown only when the problem was | error | the repair |
 | Gateway restarting (replies in flight finish first), then Gateway ready | information | Gateway ready |
 | The gateway not answering at all (the panel's own check, 3 polls in a row) | error | Burst gateway back |
 | A session's context at its warn level (80% of its Compact at, the repository's own when set; never with compaction off for the repository), once per compaction window, on that session's panel | information | fades |
@@ -90,6 +90,8 @@ Information and all clear notices show for 3 seconds, warnings for 8; an error s
 - **Remove** (click twice to confirm) runs the panel's `claude-panel-uninstall.sh`, which takes all of that out and keeps backups of the files it edits. Removing it also turns off the three session options above.
 - One install or removal at a time; its output is shown on the page.
 - **Panel settings**: cost alerts in the chat (on or off), the minimum dollar amount before a session alert fires, and the context size that shows a red restart warning (0 turns it off).
+
+**In-session band** (Sessions menu): the `burst-band` Claude Code mod, a line above Claude Code's own prompt with Burst's route, the context Burst really sends, its compaction state, any problem still standing, and the usage panel's Session and Today rows; `/burst` opens a pane with the panel's whole summary. The section says whether it is installed and current (the installed copy matches `mods/burst-band`), installs, updates or removes it through `scripts/update-mod.sh`, and has **Also as toasts in the session** (off by default, saved in `~/.config/claude-burst/mod.json`). It needs Claude Code 2.1.287 or later and does not draw over Remote Control.
 
 ## Failover & pricing
 
