@@ -50,6 +50,9 @@ type Event struct {
 	At       time.Time `json:"at"`
 	TS       int64     `json:"ts"` // At in Unix seconds, for the panel's shell
 	Resolves string    `json:"resolves,omitempty"`
+	// Session is the Claude Code session the event is about, when it is
+	// about one: that session's own panel leaves it to the others.
+	Session string `json:"session,omitempty"`
 }
 
 type file struct {
@@ -87,8 +90,42 @@ func New(path string, logger *log.Logger) *Publisher {
 // RepeatAfter and nothing else of that kind was shown since. It never
 // blocks, and reports whether the event was queued.
 func (p *Publisher) Publish(kind, severity, title, detail string) bool {
+	return p.publish("", kind, severity, title, detail, false)
+}
+
+// PublishFor is Publish for an event about one Claude Code session.
+func (p *Publisher) PublishFor(session, kind, severity, title, detail string) bool {
+	return p.publish(session, kind, severity, title, detail, false)
+}
+
+// PublishOnce publishes only if no event of the same kind and title is in
+// notices.json already, so a title naming a version or a day is shown once
+// even across gateway restarts. It reads the file, so it is for the
+// notifier's rounds, not a request path.
+func (p *Publisher) PublishOnce(kind, severity, title, detail string) bool {
+	return p.publish("", kind, severity, title, detail, true)
+}
+
+// Path is the notices.json this publisher writes.
+func (p *Publisher) Path() string {
+	if p == nil {
+		return ""
+	}
+	return p.path
+}
+
+func (p *Publisher) publish(session, kind, severity, title, detail string, once bool) bool {
 	if p == nil {
 		return false
+	}
+	if once {
+		p.Flush(2 * time.Second)
+		evs, _ := Read(p.path)
+		for _, e := range evs {
+			if e.Kind == kind && e.Title == title {
+				return false
+			}
+		}
 	}
 	now := p.now()
 	key := kind + "|" + title
@@ -101,7 +138,7 @@ func (p *Publisher) Publish(kind, severity, title, detail string) bool {
 	p.lastTitle[kind] = title
 	p.seq++
 	ev := Event{ID: fmt.Sprintf("%d-%d", now.UnixNano(), p.seq), Kind: kind, Severity: severity,
-		Title: title, Detail: detail, At: now, TS: now.Unix()}
+		Title: title, Detail: detail, At: now, TS: now.Unix(), Session: session}
 	if severity == OK {
 		ev.Resolves = kind
 	}
@@ -224,6 +261,18 @@ func Default() *Publisher {
 // Publish publishes through the default publisher.
 func Publish(kind, severity, title, detail string) bool {
 	return Default().Publish(kind, severity, title, detail)
+}
+
+// PublishFor publishes an event about one session through the default
+// publisher.
+func PublishFor(session, kind, severity, title, detail string) bool {
+	return Default().PublishFor(session, kind, severity, title, detail)
+}
+
+// PublishOnce publishes through the default publisher unless the same kind
+// and title is already in notices.json.
+func PublishOnce(kind, severity, title, detail string) bool {
+	return Default().PublishOnce(kind, severity, title, detail)
 }
 
 // Flush flushes the default publisher.
