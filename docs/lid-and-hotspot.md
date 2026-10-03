@@ -49,7 +49,7 @@ With the lid shut macOS does not join a phone's hotspot by itself (Instant Hotsp
 
 - **Pick the network** from a dropdown of the networks this Mac has joined before (`networksetup -listpreferredwirelessnetworks`). Join the hotspot once by hand first, so macOS has its password.
 - **When**: only with the lid shut (default), or any time this Mac is offline.
-- **Offline means unreachable**, not "on the wrong network": a TCP connect to `1.1.1.1:443` and `8.8.8.8:443`, by address, so the `/etc/hosts` redirect does not affect it. The SSID is not checked because since macOS 14.4 `networksetup -getairportnetwork` reports "not associated" to processes without Location access even while connected.
+- **Offline means unreachable**, not "on the wrong network": a TCP connect to port 443 of Cloudflare (`1.1.1.1`), Google (`8.8.8.8`), Quad9 (`9.9.9.9`) and OpenDNS (`208.67.222.222`) at once, any one answering counts as online, by address, so the `/etc/hosts` redirect does not affect it. The SSID is not checked because since macOS 14.4 `networksetup -getairportnetwork` reports "not associated" to processes without Location access even while connected.
 - **Timing**, all on the dashboard under Timing, with a line that adds them up in words as you type:
   - **Check the internet every** 5 seconds (2 to 120).
   - **Failed checks before joining**: 2 (1 to 10), so the first try is about 10 seconds after Wi-Fi is lost.

@@ -176,3 +176,31 @@ func TestIsHotspotAddrAcceptsBothForms(t *testing.T) {
 		t.Fatal("nil is not a hotspot address")
 	}
 }
+
+// One reachable address is enough, and an unreachable one does not make
+// the answer wait for every timeout in turn.
+func TestAnyAccepts(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	closed, _ := net.Listen("tcp", "127.0.0.1:0")
+	dead := closed.Addr().String()
+	closed.Close()
+	if !anyAccepts([]string{dead, ln.Addr().String()}, time.Second) {
+		t.Fatal("one listening address is online")
+	}
+	if anyAccepts([]string{dead}, time.Second) {
+		t.Fatal("nothing listening is offline")
+	}
+}
