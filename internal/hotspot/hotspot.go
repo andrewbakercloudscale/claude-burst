@@ -72,7 +72,10 @@ func parseWiFiDevice(out string) string {
 // KnownNetworks lists the networks this Mac has joined before, in its own
 // preference order: the dropdown's choices. A hotspot has to be in this list
 // (joined once by hand) for macOS to have its password.
-func KnownNetworks() []string {
+// KnownNetworks and LidClosed are variables so other packages' tests (the
+// dashboard's settings view) can answer for them without running
+// networksetup or ioreg on the real Mac.
+var KnownNetworks = func() []string {
 	out, err := exec.Command("networksetup", "-listpreferredwirelessnetworks", WiFiDevice()).Output()
 	if err != nil {
 		return nil
@@ -92,7 +95,7 @@ func parseKnownNetworks(out string) []string {
 }
 
 // LidClosed reads AppleClamshellState from the IO registry.
-func LidClosed() bool {
+var LidClosed = func() bool {
 	out, err := exec.Command("ioreg", "-r", "-k", "AppleClamshellState", "-d", "4").Output()
 	return err == nil && parseLidClosed(string(out))
 }
