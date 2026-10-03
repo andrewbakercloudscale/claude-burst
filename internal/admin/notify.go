@@ -3,12 +3,9 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,87 +14,12 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
-// macOS notifications for events that matter while looking at something
-// else: requests moving to the paid secondary (and back), Burst compacting a
-// session, and a guard repairing or removing the redirect. Polls the same
-// state the dashboard reads, so nothing in the request path changes, and
-// re-reads config.json each round so switching a kind on or off needs no
-// restart.
-
-// notifyFunc delivers one notification; a variable so tests record instead.
-var notifyFunc = func(title, body string) error {
-	script := fmt.Sprintf("display notification %s with title %s", appleQuote(body), appleQuote(title))
-	return exec.Command("osascript", "-e", script).Run()
-}
-
-// notify delivers one notification and logs it. osascript exits 0 even
-// when macOS drops the notification (Script Editor not allowed to notify),
-// so a logged "sent" proves Burst tried, not that it appeared; the
-// dashboard's test button is how to find out.
-func (s *Server) notify(title, body string) {
-	if err := notifyFunc(title, body); err != nil {
-		s.gateway.Logf("notify FAILED title=%q err=%v", title, err)
-		return
-	}
-	s.gateway.Logf("notify sent title=%q", title)
-}
-
-// scriptEditorID is the app macOS files osascript's notifications under.
-const scriptEditorID = "com.apple.ScriptEditor2"
-
-// notifyRegistered says whether macOS has ever been asked to let Script
-// Editor notify. Until it has, Script Editor is missing from System
-// Settings > Notifications, there is nothing to turn on, and macOS drops
-// every notification without a word while osascript exits 0: on 3 Oct
-// 2026 the test button said "Sent" and nothing appeared. A variable so
-// tests never read the real preferences.
-var notifyRegistered = func() bool {
-	out, err := exec.Command("defaults", "export", "com.apple.ncprefs", "-").Output()
-	return err == nil && strings.Contains(string(out), scriptEditorID)
-}
-
-// openNotifySetup opens a one-line script in Script Editor. Running it
-// from there is what makes macOS ask whether Script Editor may send
-// notifications; nothing run in the background gets that question. A
-// variable so tests never open an app.
-var openNotifySetup = func() error {
-	dir, err := config.ConfigDir()
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(dir, "allow-notifications.applescript")
-	body := "-- Press Run (the play button above), then Allow when macOS asks.\n" +
-		"display notification \"Notifications from Claude Burst are on.\" with title \"Claude Burst\"\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return err
-	}
-	return exec.Command("open", "-a", "Script Editor", path).Run()
-}
-
-// handleNotifyTest sends one notification on demand, so someone can tell
-// whether macOS shows them at all before relying on them.
-func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
-	if err := notifyFunc("Claude Burst: test notification", "If you can see this, notifications from Burst reach you."); err != nil {
-		http.Error(w, "osascript could not send it: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.gateway.Logf("notify sent title=%q (test from the dashboard)", "Claude Burst: test notification")
-	resp := map[string]any{"ok": "sent", "registered": true}
-	if !notifyRegistered() {
-		resp["registered"] = false
-		resp["warning"] = "macOS dropped it: Script Editor has never been allowed to send notifications, so it is not even listed in System Settings > Notifications. Press Allow notifications, then Run in the Script Editor window that opens, then Allow."
-	}
-	writeJSON(w, resp)
-}
-
-// handleNotifySetup opens the script that gets macOS to ask.
-func (s *Server) handleNotifySetup(w http.ResponseWriter, r *http.Request) {
-	if err := openNotifySetup(); err != nil {
-		http.Error(w, "could not open Script Editor: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]string{"detail": "Script Editor is open on the Mac: press Run (the play button), then Allow when macOS asks. Then Send a test notification again."})
-}
+// The on-screen alerts the usage panel shows (internal/notice), for what
+// this gateway runs into. Polls the same state the dashboard reads, so
+// nothing in the request path changes. Burst used to send macOS
+// notifications through osascript as well; macOS filed them under Script
+// Editor and dropped them silently until Script Editor had been allowed to
+// notify, so they were removed on 3 Oct 2026 in favour of the alerts.
 
 // handleAlertTest publishes one on-screen alert, so someone can see what
 // they look like and that the usage panel shows them. Each press shows:
@@ -109,6 +31,34 @@ func (s *Server) handleAlertTest(w http.ResponseWriter, r *http.Request) {
 	}
 	notice.Publish("test", notice.Info, "Test alert "+time.Now().Format("15:04:05"),
 		"If you can see this over Claude Code, gateway alerts reach you.")
+	writeJSON(w, map[string]string{"ok": "sent"})
+}
+
+// handleAlertPublish puts up an alert for a helper that runs outside the
+// gateway, such as the handover writer: {"kind", "severity", "title",
+// "detail"}. Kind is prefixed "ext-" so it can never stand in for one of
+// the gateway's own kinds, which resolve each other.
+func (s *Server) handleAlertPublish(w http.ResponseWriter, r *http.Request) {
+	if notice.Default() == nil {
+		http.Error(w, "on-screen alerts are not running in this gateway", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct{ Kind, Severity, Title, Detail string }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	switch req.Severity {
+	case notice.Info, notice.OK, notice.Warn, notice.Error:
+	default:
+		http.Error(w, "severity must be info, ok, warn or error", http.StatusBadRequest)
+		return
+	}
+	if req.Title == "" || len(req.Title) > 200 || len(req.Detail) > 1000 || len(req.Kind) > 40 {
+		http.Error(w, "title is required; title at most 200 characters, detail 1000, kind 40", http.StatusBadRequest)
+		return
+	}
+	notice.Publish("ext-"+req.Kind, req.Severity, req.Title, req.Detail)
 	writeJSON(w, map[string]string{"ok": "sent"})
 }
 
@@ -137,15 +87,9 @@ func (s *Server) handleAlertSpend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]float64{"usd": *req.USD})
 }
 
-// appleQuote makes an AppleScript string literal.
-func appleQuote(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
-}
 
 type notifier struct {
 	started    bool
-	overflow   map[string]bool // models on the secondary at the last look
-	compacted  map[string]time.Time
 	pfEvents   int
 	selfEvents int
 	intercept  interceptCheck
@@ -175,70 +119,14 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 	if err != nil {
 		return
 	}
-	nc := cfg.Notify
 
-	over := map[string]bool{}
-	st := s.gateway.Status()
-	if st.OverflowUntil > now.Unix() {
-		over["all models"] = true
-	}
-	for m, until := range st.ModelOverflow {
-		if until > now.Unix() {
-			over[m] = true
-		}
-	}
-	comp := map[string]time.Time{}
-	for _, c := range s.gateway.CompactionSessions() {
-		if !c.CompactedAt.IsZero() {
-			comp[c.Session] = c.CompactedAt
-		}
-	}
 	pf := len(pfHealEvents(pfHealLog, 1000))
 	_, _, selfLog := selfHealPaths()
 	self := len(pfHealEvents(selfLog, 1000))
 	ic := readInterceptCheck(cfg)
 
 	if n.started {
-		if nc.Failover {
-			var moved, back []string
-			for m := range over {
-				if !n.overflow[m] {
-					moved = append(moved, m)
-				}
-			}
-			for m := range n.overflow {
-				if !over[m] {
-					back = append(back, m)
-				}
-			}
-			if len(moved) > 0 {
-				s.notify("Claude Burst: on the secondary", strings.Join(moved, ", ")+" now go to "+cfg.Secondary.Provider+" (paid). "+st.LastReason)
-			}
-			if len(back) > 0 && len(over) == 0 {
-				s.notify("Claude Burst: back on your subscription", "Requests go to Anthropic again.")
-			}
-		}
-		if nc.Compaction {
-			for sid, at := range comp {
-				if at.After(n.compacted[sid]) {
-					short := sid
-					if len(short) > 8 {
-						short = short[:8]
-					}
-					s.notify("Claude Burst: compacted a session", "Session "+short+" now runs on a summary of its older history.")
-				}
-			}
-		}
-		if nc.Guards {
-			if pf > n.pfEvents {
-				s.notify("Claude Burst: pf guard acted", "The redirect was repaired or removed. Details under Guards.")
-			}
-			if self > n.selfEvents {
-				s.notify("Claude Burst: gateway watchdog acted", "The gateway was restarted or the redirect removed. Details under Guards.")
-			}
-		}
-		// On screen, whatever the macOS notification settings: the usage
-		// panel has its own switch for these.
+		// The usage panel has its own switch for these.
 		if pf > n.pfEvents {
 			alertGuardLine("pf", lastLine(pfHealEvents(pfHealLog, 1000)))
 		}
@@ -248,7 +136,7 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 		alertIntercept(n.intercept, ic)
 	}
 	s.alertRound(&n.alerts, cfg, now)
-	n.started, n.overflow, n.compacted, n.pfEvents, n.selfEvents, n.intercept = true, over, comp, pf, self, ic
+	n.started, n.pfEvents, n.selfEvents, n.intercept = true, pf, self, ic
 }
 
 // interceptCheck is what transparent mode needs to work, read from disk

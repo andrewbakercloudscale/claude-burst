@@ -11,9 +11,15 @@ sid=$1 cwd=$2 root=$3
 file="$root/HANDOFF.md"
 out="$DIR/last-run.json"   # the writer's full reply, for when it goes wrong
 say() { echo "$(date '+%Y-%m-%d %H:%M:%S') $* [$sid]"; }
+# An on-screen alert in the usage panel, through the gateway's dashboard. $2
+# is the severity, ok unless given. Never fails the run: no gateway, no alert.
 notify() {  # CLAUDE_HANDOVER_NO_NOTIFY is for the tests, which run this script for real
   [[ -n "${CLAUDE_HANDOVER_NO_NOTIFY:-}" ]] && return 0
-  /usr/bin/osascript -e "display notification \"$1\" with title \"Claude handover\"" >/dev/null 2>&1 || true
+  local dash body
+  dash=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.config/claude-burst/config.json"))).get("admin_listen") or "127.0.0.1:7788")' 2>/dev/null || echo 127.0.0.1:7788)
+  [[ "$dash" == off ]] && return 0
+  body=$(python3 -c 'import json,sys;print(json.dumps({"kind":"handover","severity":sys.argv[2],"title":"Claude handover","detail":sys.argv[1]}))' "$1" "${2:-ok}") || return 0
+  curl -s -m 3 -o /dev/null -X POST -H 'X-Claude-Burst-Admin: 1' -H 'Content-Type: application/json' -d "$body" "http://$dash/api/alert" || true
 }
 
 # one writer per repo at a time: closing Ghostty ends every tab's session at once
@@ -48,7 +54,7 @@ after=$(shasum "$file" | cut -d' ' -f1)
 
 if [[ $rc -ne 0 ]]; then
   say "FAILED $root: claude exited $rc: $(tail -c 300 "$out" | tr '\n' ' ')"
-  notify "Handover FAILED for $(basename "$root"), see the claude-burst dashboard"; exit 1
+  notify "Handover FAILED for $(basename "$root"), see the claude-burst dashboard" error; exit 1
 fi
 if [[ "$before" == "$after" ]]; then
   say "none   $root: nothing worth handing over"; exit 0

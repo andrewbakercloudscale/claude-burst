@@ -33,14 +33,11 @@ func captureAlerts(t *testing.T) func() []string {
 	}
 }
 
-// Guard alerts go on screen whatever the macOS notification switches say:
-// the usage panel has its own.
+// Guard log lines become on-screen alerts.
 func TestGuardLinesBecomeOnScreenAlerts(t *testing.T) {
 	s := newTestServer(t)
-	recordNotifications(t)
 	alerts := captureAlerts(t)
 	pf := isolateGuardLogs(t)
-	saveNotify(t, config.NotifyConfig{})
 
 	n := &notifier{}
 	s.notifyRound(n, time.Now())
