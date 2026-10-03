@@ -34,7 +34,7 @@
 # shut lid (seen 2026-09-30), using power and warming the lid for nobody.
 # While the lid is shut and SleepDisabled is 1, the daemon turns the display
 # off (`pmset displaysleepnow`: display sleep only, the Mac and Claude Code
-# keep running) within about 5 seconds, and again if anything wakes it. Not
+# keep running) within about a second, and again if anything wakes it. Not
 # while an external display is connected: that is someone working in
 # clamshell mode, and display sleep would blank their monitor. The daemon
 # therefore now runs in both modes.
@@ -140,7 +140,17 @@ screen_decision() {
 }
 
 DARK_FILE="$STATE_DIR/lid-awake.dark"   # exists while the screen is off for this closing
+LID_SEEN=""   # the lid as the last check saw it, so each change is logged once
 screen_check() {
+  # Every closing is logged with what was decided, so a screen left lit
+  # behind the lid shows why. On 3 Oct 2026 a closing left no line at all
+  # and nothing could say whether it was missed or judged "leave".
+  local lid=open; lid_closed && lid=shut
+  if [[ "$lid" != "$LID_SEEN" ]]; then
+    [[ -n "$LID_SEEN" && "$lid" == shut ]] && log "lid shut seen: SleepDisabled $(current), external displays $(external_displays), screen $(screen_decision)"
+    LID_SEEN=$lid
+  fi
+  [[ "$lid" == open ]] && { rm -f "$DARK_FILE"; return 0; }
   if [[ "$(screen_decision)" == off ]]; then
     pmset displaysleepnow 2>/dev/null
     [[ -f "$DARK_FILE" ]] || { touch "$DARK_FILE"; log "lid shut: screen off, the Mac stays awake"; }
@@ -237,7 +247,7 @@ screen_line() {
   elif lid_closed; then
     echo "Screen Turned On (the Mac is not being kept awake, so the lid sleeps it as usual)"
   else
-    echo "Screen Turned On (lid open; it turns off within about 5 seconds of the lid shutting)"
+    echo "Screen Turned On (lid open; it turns off within about a second of the lid shutting)"
   fi
 }
 
@@ -270,8 +280,10 @@ do_watch() {
   # The idle window needs a clock as well as power-source events.
   ( while sleep 60; do do_reconcile; done ) &
   local clock=$!
-  # The screen, every 5 seconds: dark within moments of the lid shutting.
-  ( while sleep 5; do screen_check; done ) &
+  # The screen, every second: dark before anyone sees it lit behind the lid.
+  # Five seconds left it glowing long enough to look like no fix at all, and
+  # with the lid open each check is one ioreg call.
+  ( while sleep 1; do screen_check; done ) &
   local screen=$!
   trap "kill $clock $screen 2>/dev/null" EXIT
   # pslog prints a line on every power-source change and keeps running.
