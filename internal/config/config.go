@@ -447,6 +447,9 @@ type Config struct {
 	Hotspot HotspotConfig `json:"hotspot,omitempty"`
 }
 
+// NotifyConfig is retired: Burst no longer sends macOS notifications (the
+// usage panel's on-screen alerts replaced them on 3 Oct 2026). Kept so a
+// config.json that still has a "notify" block reads and saves unchanged.
 type NotifyConfig struct {
 	Failover   bool `json:"failover,omitempty"`   // requests move to the secondary, and back
 	Compaction bool `json:"compaction,omitempty"` // Burst compacted a session

@@ -69,12 +69,6 @@ With the lid shut macOS does not join a phone's hotspot by itself (Instant Hotsp
 
 ## Notifications
 
-macOS notifications (through `osascript`) for events worth knowing while you look elsewhere, each switched on separately in **This Mac, Notifications**:
+Burst's notifications are the pop-ups the usage panel floats over Claude Code's Ghostty window, in the same style as its loading notice: failover to the secondary and back, limits, failures, the network, guards repairing the redirect, compaction and the rest listed under [Dashboard](dashboard.md). Each stays at least 10 seconds while Ghostty is in front (warnings 15, errors until they clear); the clock stops while another app is in front. Switch them on or off under **Session options, Show gateway alerts on screen**, and use **Send a test alert** to see one.
 
-- **Failover**: requests move to the paid secondary, and again when they come back.
-- **Compaction**: Pauseless Compaction swapped a session onto its summary.
-- **Guards**: the pf guard or the gateway watchdog repaired something, or removed the redirect.
-
-Starting the gateway announces nothing already true. `config.json` is read live, so no restart.
-
-macOS files these under Script Editor, and drops them silently until Script Editor has been allowed to notify; until it has asked once, Script Editor is not even listed in System Settings, Notifications. **Send a test notification** says when that is the case. **Allow notifications** opens a one-line script in Script Editor on the Mac: press Run, then Allow.
+Burst no longer sends macOS notifications. They came from Script Editor, which macOS drops silently until it has been allowed to notify, so they looked broken for most people.

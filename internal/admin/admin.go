@@ -133,9 +133,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/handover-reveal", s.mutating(s.handleHandoverReveal))
 	mux.HandleFunc("/api/mac", s.readOnly(s.handleMac))
 	mux.HandleFunc("/api/settings", s.readOnly(s.handleSettingsGet))
-	mux.HandleFunc("/api/notify-test", s.mutating(s.handleNotifyTest))
-	mux.HandleFunc("/api/notify-setup", s.mutating(s.handleNotifySetup))
 	mux.HandleFunc("/api/alert-test", s.mutating(s.handleAlertTest))
+	mux.HandleFunc("/api/alert", s.mutating(s.handleAlertPublish))
 	mux.HandleFunc("/api/alert-spend", s.mutating(s.handleAlertSpend))
 	mux.HandleFunc("/api/statusline", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
