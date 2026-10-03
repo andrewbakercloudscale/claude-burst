@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -29,6 +30,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
@@ -240,6 +242,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 type stateResponse struct {
 	Version string `json:"version"`
+	// PID tells a restarted gateway from the old one still draining: both
+	// answer /api/state while the old one finishes its replies.
+	PID int `json:"pid"`
 	// ConfigError, when set, means config.json failed to load: every other
 	// field below is a zero value and must not be trusted for anything.
 	// Reported as a normal 200 response rather than an HTTP error status,
@@ -409,7 +414,7 @@ type interceptInfo struct {
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Load()
 	if err != nil {
-		writeJSON(w, stateResponse{Version: s.version, ConfigError: err.Error()})
+		writeJSON(w, stateResponse{Version: s.version, PID: os.Getpid(), ConfigError: err.Error()})
 		return
 	}
 	st := s.gateway.Status()
@@ -470,6 +475,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := stateResponse{
+		PID:     os.Getpid(),
 		Version: s.version, Route: route, Overflow: overflow,
 		Claim: st.LimitClaim, Reason: st.LastReason, Gateway: cfg.Listen,
 		Primary:   primary,
@@ -1189,18 +1195,30 @@ func (s *Server) handleTestSecondary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, testSecondaryResponse{OK: true, Result: res})
 }
 
-// handleRestart exits the process. launchd's KeepAlive brings it straight back
-// with the current config, which is how a config change takes effect. If the
-// gateway is not running under launchd, this simply stops it -- so the UI says
-// as much before offering the button.
+// restartSelf asks this process to stop the way a deploy does: SIGTERM,
+// which the gateway's drain handler (cmd/claude-burst/drain.go) answers by
+// exiting once nothing is streaming, at most 50s later. A variable so tests
+// can see it called without stopping the test binary.
+var restartSelf = func() error { return syscall.Kill(os.Getpid(), syscall.SIGTERM) }
+
+// handleRestart stops the process after its in-flight replies finish.
+// launchd's KeepAlive brings it straight back with the current config, which
+// is how a config change takes effect. If the gateway is not running under
+// launchd, this simply stops it -- so the UI says as much before offering
+// the button.
+//
+// Until 2026-10-03 this called os.Exit after 250ms, skipping the drain, so
+// a Restart cut every Claude Code session mid-reply.
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"ok": "restarting; if managed by launchd it will be back in a moment"})
+	writeJSON(w, map[string]string{"ok": "restarting once in-flight replies finish (at most 50s); if managed by launchd it will be back in a moment"})
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
 	go func() {
 		time.Sleep(250 * time.Millisecond)
-		os.Exit(0)
+		if err := restartSelf(); err != nil {
+			log.Printf("admin: restart: signalling self: %v", err)
+		}
 	}()
 }
 
