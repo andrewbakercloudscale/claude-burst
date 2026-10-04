@@ -468,6 +468,13 @@ PLIST
   done
   launchctl kickstart -k "gui/$UID/$LABEL"
 
+  # The gateway watchdog restarts a gateway that died or hung; nothing else
+  # does, and the dashboard showed it unarmed after every fresh install
+  # (2026-10-04, a second laptop). A user LaunchAgent: no password. Armed on
+  # every install so a change to it takes effect.
+  "$ROOT/scripts/install-selfheal-watchdog.sh" >/dev/null ||
+    echo "WARNING: could not arm the gateway watchdog; arm it under Guards on the dashboard" >&2
+
   if [[ "$intercept_mode" == transparent ]]; then
     "$TARGET" configure --intercept-mode transparent
     if ! "$ROOT/scripts/install-proxy.sh"; then
