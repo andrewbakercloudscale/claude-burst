@@ -693,7 +693,7 @@ func (s *Server) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(string(body), `"overflow"`) {
 		writeJSON(w, testConnectionResponse{
 			OK: true, Mode: "transparent",
-			Detail: fmt.Sprintf("confirmed: %s currently resolves to THIS gateway (HTTP %d) -- real Claude Code traffic is passing through it.", url, resp.StatusCode),
+			Detail: fmt.Sprintf("confirmed: %s currently resolves to THIS gateway (HTTP %d). Real Claude Code traffic is passing through it.", url, resp.StatusCode),
 		})
 		return
 	}
