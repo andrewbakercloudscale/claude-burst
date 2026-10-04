@@ -730,6 +730,16 @@
 .mac-toggles label.mac-num input { grid-column: 2; grid-row: 1 / span 2; width: 100% !important; min-width: 0; height: auto; margin: 0; box-sizing: border-box; }
 @media (max-width: 560px) { .mac-toggles label.mac-num { grid-template-columns: 1fr; } .mac-toggles label.mac-num input { grid-column: 1; grid-row: auto; } }
 .mac-toggles label.disabled { opacity: .55; cursor: not-allowed; }
+/* A toggle with controls of its own: the controls sit OUTSIDE the label, so
+   clicking them never flips the checkbox, each on its own row. */
+.mac-toggles .al-card { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 8px; }
+.mac-toggles .al-card label { border: 0; padding: 0; }
+.mac-toggles .al-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: 28px; }
+.mac-toggles .al-row span { grid-column: auto; margin: 0; }
+.mac-toggles .al-lbl { color: var(--text); font-size: 13px; }
+.mac-toggles .al-money { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-size: 13px; }
+.mac-toggles .al-money input#alSpend { width: 90px !important; min-width: 0; flex: none; height: auto; margin: 0; grid-row: auto; }
+.mac-toggles .al-hint { margin-left: 28px; color: var(--muted); font-size: 12px; }
 .mac-panel { display: grid; grid-template-columns: minmax(0, 260px) 1fr; gap: 18px; align-items: start; }
 .mac-shot img { width: 100%; border-radius: 10px; border: 1px solid var(--border); display: block; }
 .mac-log { max-height: 260px; overflow: auto; font-size: 12px; background: var(--thead-bg, rgba(0,0,0,.05)); padding: 10px; border-radius: 8px; white-space: pre-wrap; }
@@ -1452,7 +1462,12 @@
         <label><input type="checkbox" data-popt="close_button"> <b>Buttons on the usage panel</b><span>an <code>[X]</code> in the panel's top-right corner closes it, and the split it opened in; <code>[View]</code> on the Proxy State line opens this dashboard. While on, a plain drag in the panel does not select text: hold Shift to select</span></label>
         <label><input type="checkbox" data-popt="loading_notice"> <b>Show "wait to type" while the panel opens</b><span>a floating notice over Ghostty while the usage panel's split opens beside a new Claude Code session. For those few seconds typing goes nowhere; the notice goes away once focus is back on Claude Code. Needs the usage panel</span></label>
         <label><input type="checkbox" data-popt="compact_notice"> <b>Show pauseless compaction on screen</b><span>while this gateway summarises a session in the background, a floating notice over its Ghostty window reads "Async Compaction In Progress", then "Async Compaction Finished". It shows only while Ghostty is in front and never takes focus. Needs the usage panel</span></label>
-        <label><input type="checkbox" data-popt="alerts"> <b>Show gateway alerts on screen</b><span>the same floating notice for what this gateway runs into: failing over to the secondary and back, a limit hit, requests failing, the network dropping, transparent mode breaking, a restart, and the gateway not answering at all. Errors stay until they clear; the rest fade. Needs the usage panel <button id="alTest" type="button">Send a test alert</button><span id="alNote"></span><br>Also when today's spend through Burst passes $<input type="number" id="alSpend" min="0" max="100000" step="any" style="width:90px"> (API-equivalent, once a day; 0 is off) <button id="alSpendSave" type="button">Save</button><span id="alSpendNote"></span></span></label>
+        <div class="al-card">
+          <label><input type="checkbox" data-popt="alerts"> <b>Show gateway alerts on screen</b><span>the same floating notice for what this gateway runs into: failing over to the secondary and back, a limit hit, requests failing, the network dropping, transparent mode breaking, a restart, and the gateway not answering at all. Errors stay until they clear; the rest fade. Needs the usage panel.</span></label>
+          <div class="al-row"><button id="alTest" type="button">Send a test alert</button><span id="alNote"></span></div>
+          <div class="al-row"><span class="al-lbl">Also alert when today's spend through Burst passes</span><span class="al-money">$<input type="number" id="alSpend" min="0" max="100000" step="any"></span><button id="alSpendSave" type="button">Save</button><span id="alSpendNote"></span></div>
+          <div class="al-hint">API-equivalent price, checked once a day. 0 turns it off.</div>
+        </div>
         <label><input type="checkbox" data-popt="caffeinate"> <b>Keep the Mac awake while a session runs</b><span><code>caffeinate -i</code> for as long as the panel runs: stops idle sleep, not lid-close sleep (that is the setting above)</span></label>
         <label><input type="checkbox" id="macStatusLine"> <b>Show cost and model under the prompt</b><span>Claude Code's status line runs <a href="https://github.com/ryoppippi/ccusage" target="_blank" rel="noopener noreferrer">ccusage</a> to show the model, this session's cost, today's spend and the burn rate under the prompt. Uses ccusage if installed, else fetches it with npx. A status line of your own is left alone<span id="macStatusLineNote"></span></span></label>
         <label><input type="checkbox" id="macHandover"> <b>Write a handover when a session closes</b><span>updates HANDOFF.md in repos that have one; details and the texts used are in <a href="#" id="macHoLink">Session handover</a></span></label>
