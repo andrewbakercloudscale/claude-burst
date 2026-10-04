@@ -106,6 +106,7 @@ type Server struct {
 	// (compact.go, compact_run.go). Always present; off unless enabled.
 	compaction *compactor
 	automask   *masker
+	inspect    *inspectStore
 	// snapMu guards the last fully logged network snapshot (logSnapshot).
 	snapMu    sync.Mutex
 	snapState string
@@ -217,6 +218,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	s := &Server{
 		compaction:      newCompactor(cfg.PrimaryCompaction, compactionStatePath(statePath), logger),
 		automask:        newMasker(cfg.Automask),
+		inspect:         newInspectStore(),
 		repos:           repo.New(),
 		cfg:             cfg,
 		primary:         primary,
@@ -961,6 +963,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// see only the masked history.
 	body = s.applyAutomask(r, body)
 	body, r = s.applyCompaction(r, body)
+	s.captureForInspect(r.Header.Get("x-claude-code-session-id"), body)
 	reqModel := requestModel(body)
 	ladder := s.ladderFor(reqModel, now)
 
