@@ -4486,6 +4486,27 @@ window.addEventListener("scroll", () => {
 applySecProvider();
 refresh();
 
+// The checks ARE refreshed on a timer, unlike the lists: a page left open
+// read "5/7, watchdog not armed" for an hour after the watchdog was armed
+// (2026-10-04), because nothing redrew it. Only the hero is redrawn, so no
+// <details> anyone is reading collapses. A new gateway process (an upgrade
+// or a restart) reloads the whole page, since it may serve a newer page:
+// that open tab was still showing the dashboard from before the upgrade.
+let pagePid = null;
+setInterval(async () => {
+  if (document.hidden) return;
+  let s;
+  try { s = await (await fetch("/api/state")).json(); } catch { return; }
+  if (!s || !s.pid) return;
+  if (pagePid === null) pagePid = s.pid;
+  const busy = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (s.pid !== pagePid && !busy) { location.reload(); return; }
+  if (!lastState || !s.intercept) return;
+  lastState = s;
+  renderHero(s);
+  $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+}, 15000);
+
 // This Mac & sessions. Read on demand from /api/mac (pmset and defaults are
 // too slow for the state poll): on load, on Refresh, and after each change.
 let macState = null, panelPoll = null;
