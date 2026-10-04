@@ -341,6 +341,14 @@ func (i InterceptConfig) Transparent() bool {
 	return i.Mode == InterceptTransparent
 }
 
+// AutomaskConfig: Enabled is the master switch. Rules holds only the rules
+// switched away from their default (internal/automask.Rules), so a new rule
+// arrives with its own default rather than off.
+type AutomaskConfig struct {
+	Enabled bool            `json:"enabled,omitempty"`
+	Rules   map[string]bool `json:"rules,omitempty"`
+}
+
 type Config struct {
 	Listen                       string `json:"listen"`
 	ResetGraceSeconds            int    `json:"reset_grace_seconds"`
@@ -390,6 +398,10 @@ type Config struct {
 	// once and sends the summary in place of those messages from then on.
 	// Experimental and off by default; see router/compact.go.
 	PrimaryCompaction CompactionConfig `json:"primary_compaction,omitempty"`
+
+	// Automask masks personal data (card numbers, ID numbers, ...) in every
+	// request before it leaves the Mac. Off by default; see AutomaskConfig.
+	Automask AutomaskConfig `json:"automask,omitempty"`
 
 	// SessionCoordination: see CoordinationConfig.
 	SessionCoordination CoordinationConfig `json:"session_coordination,omitempty"`

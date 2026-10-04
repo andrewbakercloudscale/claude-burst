@@ -836,6 +836,10 @@ func readSSEText(r io.Reader) (text, stop string, tok tokenUsage) {
 // once that the summary waits for the turn to finish and the next prompt:
 // a long turn otherwise looked like compaction had not fired at all.
 func (s *Server) PromptNotices(sid string, midTurn bool) []string {
+	return append(s.takeAutomaskNotices(sid), s.promptNotices(sid, midTurn)...)
+}
+
+func (s *Server) promptNotices(sid string, midTurn bool) []string {
 	s.compaction.mu.Lock()
 	defer s.compaction.mu.Unlock()
 	cfg := s.compaction.cfg
