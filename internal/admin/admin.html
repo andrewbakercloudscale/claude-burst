@@ -2839,6 +2839,7 @@ function renderCompaction(s) {
       <th class="num" title="Context size of the request before the latest compaction">Before</th>
       <th class="num" title="Context size straight after the latest compaction">After</th>
       <th class="num" title="Context size of this session's latest request. Amber from the warn size, red from the compact size">Context</th>
+      <th class="num" title="Claude Code's own history, which Burst's compaction does not shrink: what this session sends, uncached, if Burst drops out. Amber from 500k: run /compact in the session while Burst is in the path">Claude Code holds</th>
       <th class="num">Saved per turn</th><th class="num">Net saved</th>
       <th>Last compaction</th>
     </tr></thead><tbody>${rows.map(r => {
@@ -2852,6 +2853,7 @@ function renderCompaction(s) {
       <td class="num">${x ? tok(x.before) : "-"}</td>
       <td class="num">${x ? tok(x.after) : "-"}</td>
       <td class="num ${limitOf(r) && r.context >= limitOf(r) ? "st-5" : limitOf(r) && r.context >= limitOf(r) * warnPct ? "st-4" : ""}">${tok(r.context)}</td>
+      <td class="num ${(r.raw || 0) >= 800000 ? "st-5" : (r.raw || 0) >= 500000 ? "st-4" : ""}" title="${r.raw ? esc(`about $${(r.raw_usd || 0).toFixed(2)} uncached if Burst drops out`) : ""}">${r.raw ? tok(r.raw) : "-"}</td>
       <td class="num">${x ? `<b style="color:var(--pc-a)">${tok(x.per_turn_tokens)}</b> <span class="hint">${esc(smallUSD(x.per_turn_usd))}</span>` : "-"}</td>
       <td class="num" title="${x ? esc(`$${x.saved_usd.toFixed(2)} of context compacted, less $${x.summary_usd.toFixed(2)} summaries and $${x.rewrite_usd.toFixed(2)} cache rewrites, over ${x.requests} turns and ${x.compactions} compaction(s)`) : ""}">${x ? `${esc(signedUSD(x.net_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
       <td class="mono">${x ? esc(stamp(x.at)) : "-"}</td>

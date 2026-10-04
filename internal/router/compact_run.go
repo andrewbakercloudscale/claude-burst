@@ -76,6 +76,11 @@ type compactState struct {
 	// only: undo holds what was in force before it, to put back on a 400.
 	midTurnUnproven bool
 	undo            *swapUndo
+	// rawContext is Claude Code's own history in tokens, estimated: what it
+	// sends when Burst is not in the path. Memory only, like exposureWarned,
+	// the rawContext at which the exposure was last announced.
+	rawContext     int64
+	exposureWarned int64
 }
 
 // swapUndo is the summary state from before a mid-turn swap.
@@ -235,6 +240,9 @@ type compactInfo struct {
 	original []byte
 	// parts: the request's make-up in bytes, for the band's context bar.
 	parts []int64
+	// rawBytes is what Claude Code sent, sentBytes what went upstream: their
+	// ratio scales the reported context to Claude Code's own history.
+	rawBytes, sentBytes int64
 }
 
 type compactInfoKey struct{}
@@ -315,6 +323,10 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 	if ci.parts != nil {
 		st.parts = scaleParts(ci.parts, ctxTokens)
 	}
+	if ci.sentBytes > 0 {
+		st.rawContext = int64(float64(ctxTokens) * float64(ci.rawBytes) / float64(ci.sentBytes))
+		s.noteExposure(ci.key, st)
+	}
 	if ci.midTurn && st.midTurnUnproven {
 		st.midTurnUnproven, st.undo = false, nil
 		s.logger.Printf("req=%s compaction mid-turn accepted session=%s: the API answered the swapped request normally", requestIDFrom(in.Context()), ci.key)
@@ -333,6 +345,42 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		s.compaction.save()
 	}
 	s.compaction.mu.Unlock()
+}
+
+// Exposure: Burst compacts what it sends, never Claude Code's own history,
+// which keeps growing. Whenever Burst drops out of the path (the gateway
+// down, the redirect removed, burst-off) the next turn sends all of that,
+// uncached: on 2026-10-04 a session Burst kept at 135k sent 994k for $7.75.
+// Past exposureWarnTokens, and again every exposureStep, the session is told
+// what that would cost and that a /compact now, while Burst is in the path,
+// shrinks Claude Code's own copy for little.
+const (
+	exposureWarnTokens = 500_000
+	exposureStep       = 200_000
+)
+
+// noteExposure announces a compacted session's exposure. Called with
+// s.compaction.mu held.
+func (s *Server) noteExposure(key string, st *compactState) {
+	if st.rawContext < exposureWarnTokens {
+		st.exposureWarned = 0
+		return
+	}
+	if st.summary == "" || (st.exposureWarned > 0 && st.rawContext < st.exposureWarned+exposureStep) {
+		return
+	}
+	st.exposureWarned = st.rawContext
+	sid, model, _ := strings.Cut(key, "|")
+	model, _, _ = strings.Cut(model, "|")
+	cost := ""
+	if usd, ok := s.PriceTokens(model, 0, 0, 0, st.rawContext); ok && usd > 0 {
+		cost = fmt.Sprintf(", about $%.2f", usd)
+	}
+	s.logger.Printf("compaction exposure session=%s: Claude Code holds %dk, Burst sends %dk", key, st.rawContext/1000, st.lastContext/1000)
+	st.notice("Claude Code's own history is %dk (Burst sends %dk). If Burst drops out, the next turn sends all of it uncached%s. Run /compact now: through Burst it costs little and shrinks Claude Code's copy", st.rawContext/1000, st.lastContext/1000, cost)
+	notice.PublishFor(sid, alertExposure, notice.Warn,
+		fmt.Sprintf("Claude Code holds %dk, Burst sends %dk", st.rawContext/1000, st.lastContext/1000),
+		fmt.Sprintf("If Burst drops out, this session's next turn sends all %dk uncached%s. Run /compact in it now: through Burst that costs little and shrinks Claude Code's own copy.", st.rawContext/1000, cost))
 }
 
 // applyCompaction returns the body to send for an inference request and the
@@ -527,6 +575,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		}
 		s.compaction.mu.Unlock()
 		ci.parts = contextBytes(top, msgs)
+		ci.rawBytes, ci.sentBytes = int64(len(body)), int64(len(body))
 		return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 	}
 	out := rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt)
@@ -546,6 +595,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	}
 	ci.applied, ci.removedMsgs, ci.removedBytes = true, len(msgs)-len(out), int64(len(body)-len(newBody))
 	ci.parts = contextBytes(top, out)
+	ci.rawBytes, ci.sentBytes = int64(len(body)), int64(len(newBody))
 	return newBody, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 }
 
@@ -914,6 +964,10 @@ type CompactionSession struct {
 	Override  bool   `json:"override,omitempty"`
 	// Parts is what the context is made of, for the band's context bar.
 	Parts []ContextPart `json:"parts,omitempty"`
+	// Raw is Claude Code's own history, estimated, when it is larger than
+	// Context: what goes if Burst drops out. RawUSD prices it uncached.
+	Raw    int64   `json:"raw,omitempty"`
+	RawUSD float64 `json:"raw_usd,omitempty"`
 }
 
 // CompactionSessions lists tracked sessions, largest context first.
@@ -964,6 +1018,10 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil, Parts: st.parts}
 		if override != nil && override.Off {
 			cs.CompactAt = 0
+		}
+		if st.rawContext > st.lastContext*11/10 {
+			cs.Raw = st.rawContext
+			cs.RawUSD, _ = s.PriceTokens(model, 0, 0, 0, st.rawContext)
 		}
 		if !st.startedAt.IsZero() {
 			cs.CompactedAt = st.startedAt

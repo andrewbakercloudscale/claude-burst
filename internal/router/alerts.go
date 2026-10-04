@@ -24,6 +24,7 @@ const (
 	alertSecondary = "secondary-key"
 	alertCompact   = "compaction"
 	alertContext   = "context"
+	alertExposure  = "exposure"
 )
 
 // Upstream failures: this many 5xx replies within upstreamWindow is an

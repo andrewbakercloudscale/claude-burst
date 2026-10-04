@@ -74,7 +74,7 @@ func TestInterceptAlertsOnlyOnChange(t *testing.T) {
 
 	got := alerts()
 	want := []string{"ok: Transparent mode restored", "error: Burst CA no longer trusted",
-		"ok: Transparent mode restored", "error: Transparent redirect missing"}
+		"ok: Transparent mode restored"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("alerts = %q, want %q", got, want)
 	}
@@ -272,5 +272,55 @@ func TestAlertTestEndpoint(t *testing.T) {
 	}
 	if got := alerts(); len(got) != 1 || !strings.HasPrefix(got[0], "info: Test alert ") {
 		t.Fatalf("alerts = %q", got)
+	}
+}
+
+// Burst out of the path is an error at once, and on the first look after a
+// start as well: the gateway is usually what was down when it happened.
+func TestBypassAlertsOnStartAndOnChange(t *testing.T) {
+	alerts := captureAlerts(t)
+	t.Setenv("HOME", t.TempDir())
+	routed := interceptCheck{on: true, hosts: true, ca: true}
+	gone := interceptCheck{on: true, ca: true, bypassed: true}
+	settings := interceptCheck{bypassed: true}
+
+	alertBypass(true, interceptCheck{}, gone) // started bypassed: says so
+	alertBypass(false, gone, gone)            // still: quiet
+	alertBypass(false, gone, routed)          // back
+	alertBypass(true, interceptCheck{}, routed)
+	alertBypass(false, routed, gone) // redirect removed while running
+	alertBypass(false, interceptCheck{}, settings)
+
+	got := alerts()
+	want := []string{"error: Burst bypassed: redirect removed", "ok: Burst back in the path",
+		"error: Burst bypassed: redirect removed", "error: Burst bypassed: settings no longer use it"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("alerts = %q, want %q", got, want)
+	}
+}
+
+// A redirect removed on purpose (rollback.sh, burst-off, disable) is no alarm.
+func TestBypassChosenIsQuiet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "claude-burst")
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"env":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Listen: "127.0.0.1:7777"}
+	if !readInterceptCheck(cfg).bypassed {
+		t.Fatal("base-url mode with no ANTHROPIC_BASE_URL should read as bypassed")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rolled-back"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if readInterceptCheck(cfg).bypassed {
+		t.Fatal("a rolled-back marker means the bypass was chosen")
 	}
 }

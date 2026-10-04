@@ -132,6 +132,13 @@ function bandSegments(Text) {
       const c = pct >= 100 ? 'red' : pct >= 80 ? 'yellow' : undefined
       const label = 'ctx ' + kTokens(s.context) + (s.compact_at > 0 ? ' of ' + kTokens(s.compact_at) : '')
       out.push(Text({ color: c, children: [label] }))
+      // Claude Code's own history, which Burst's compaction never shrinks:
+      // what goes, uncached, if Burst drops out. Amber from 500k, where the
+      // gateway starts suggesting /compact.
+      if (s.raw > 0) {
+        const rc = s.raw >= 800000 ? 'red' : s.raw >= 500000 ? 'yellow' : undefined
+        out.push(Text({ color: rc, dimColor: !rc, children: ['CC holds ' + kTokens(s.raw)] }))
+      }
       if (s.state && s.state !== 'ok') out.push(Text({ color: 'cyan', children: [s.state] }))
     }
   }
