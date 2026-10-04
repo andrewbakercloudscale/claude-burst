@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,7 @@ type CodexAlerts struct {
 	Overlay     string // the panel's claude-panel-overlay
 	ClaimsDir   string // the panels' claims, one directory per event id
 	OptionsPath string // the panel's options file (CLAUDE_PANEL_ALERTS)
+	TestPath    string // the dashboard's test request (CodexAlertTestPath)
 
 	// Front returns the frontmost app's pid; IsCodex says whether a pid is
 	// the Codex app; Show draws one alert and waits for it. Replaced in tests.
@@ -57,6 +59,7 @@ func NewCodexAlerts(configDir string) *CodexAlerts {
 		Overlay:     ov,
 		ClaimsDir:   filepath.Join(home, ".config", "claude-panel", "alerts-claimed"),
 		OptionsPath: filepath.Join(home, ".config", "claude-panel", "options"),
+		TestPath:    CodexAlertTestPath(configDir),
 		Now:         time.Now,
 	}
 	c.Front = func() int {
@@ -124,7 +127,8 @@ func (c *CodexAlerts) Run(ctx context.Context) {
 // tick shows the oldest waiting alert if Codex is in front. One at a time:
 // Show returns when the alert has gone.
 func (c *CodexAlerts) tick(seen map[string]bool) {
-	if c.alertsOff() {
+	// The test runs even with alerts switched off: it is asked for.
+	if c.testTick() || c.alertsOff() {
 		return
 	}
 	evs, err := notice.Read(c.NoticesPath)
@@ -185,4 +189,64 @@ func (c *CodexAlerts) alertsOff() bool {
 		return true
 	}
 	return false
+}
+
+// The dashboard's "Test an alert over Codex". The button is clicked in a
+// browser, so Codex is not in front then: the dashboard leaves a request
+// here and the console shows the test alert the next time the ChatGPT app
+// comes to the front, within codexAlertTestWait. Not a notice, so no panel
+// can take it over Ghostty instead.
+type CodexAlertTest struct {
+	Requested time.Time `json:"requested"`
+	Shown     time.Time `json:"shown,omitempty"`
+	Error     string    `json:"error,omitempty"`
+}
+
+const codexAlertTestWait = 2 * time.Minute
+
+func CodexAlertTestPath(configDir string) string {
+	return filepath.Join(configDir, "codex-alert-test.json")
+}
+
+func readCodexAlertTest(path string) (CodexAlertTest, bool) {
+	var t CodexAlertTest
+	b, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(b, &t) != nil {
+		return t, false
+	}
+	return t, true
+}
+
+func writeCodexAlertTest(path string, t CodexAlertTest) error {
+	b, _ := json.Marshal(t)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// testTick answers a waiting test request; true when it showed one.
+func (c *CodexAlerts) testTick() bool {
+	if c.TestPath == "" {
+		return false
+	}
+	t, ok := readCodexAlertTest(c.TestPath)
+	if !ok || t.Requested.IsZero() || !t.Shown.IsZero() || t.Error != "" {
+		return false
+	}
+	if c.Now().Sub(t.Requested) > codexAlertTestWait {
+		t.Error = "Codex did not come to the front within 2 minutes."
+		_ = writeCodexAlertTest(c.TestPath, t)
+		return false
+	}
+	pid := c.Front()
+	if !c.IsCodex(pid) {
+		return false
+	}
+	t.Shown = c.Now()
+	_ = writeCodexAlertTest(c.TestPath, t)
+	c.Show(pid, 6, notice.Info, "Test alert "+t.Shown.Format("15:04:05"),
+		"If you can see this over Codex, Burst's alerts reach you here.")
+	return true
 }
