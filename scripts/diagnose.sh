@@ -17,6 +17,12 @@ OUT="$HOME/burst-diagnose-$(date +%Y%m%d-%H%M%S).txt"
 CFG="$HOME/.config/claude-burst"
 LABEL="ninja.andrewbaker.claude-burst"
 REPO="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+# Piped from curl, $0 is "bash": look where the README's scripts put it.
+if [ ! -d "$REPO/.git" ]; then
+  for d in ~/claude-burst ~/claude-burst-repo ~/Desktop/github/claude-burst; do
+    [ -d "$d/.git" ] && REPO=$d && break
+  done
+fi
 
 redact() {
   sed -E \

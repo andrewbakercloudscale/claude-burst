@@ -1,6 +1,6 @@
 # Claude Burst: the missing control plane for Claude Code
 
-> **Broken, or out of date?** One paste fixes it: [**Update and reinstall Burst**](#update-and-reinstall-burst) · [**Bypass Burst**](#bypass-burst)
+> **Broken?** Paste one line into Terminal: [**Repair**](#repair-burst) fixes the common problems, [**Diagnose**](#diagnose-burst) copies a report to the clipboard. Also: [**Update and reinstall**](#update-and-reinstall-burst) · [**Bypass Burst**](#bypass-burst)
 
 The ops layer for running Claude Code all day on a Mac: subscription-first routing with overflow to GLM/OpenRouter/Bedrock, pauseless compaction, session coordination and handover across parallel sessions, lid-shut keep-awake with automatic hotspot join for Remote Control, and a dashboard for cost, health and guards.
 
@@ -21,6 +21,24 @@ Claude Burst is a local gateway that sits between Claude Code and Anthropic. **I
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
 
 ## Fix or update Burst: copy-paste scripts
+
+### Repair Burst
+
+One line. Syncs with GitHub, stops anything stale holding Burst's ports, reinstalls in the mode Burst was in, arms the gateway watchdog, puts the CA back into Claude Code's trust bundle, finds Claude Code sessions started before the CA changed (they time out until restarted) and offers to stop them, then checks a request gets through and opens the dashboard:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/scripts/repair.sh | bash
+```
+
+It asks before stopping any session; stopped ones resume with `claude --continue`.
+
+### Diagnose Burst
+
+One line. Changes nothing, needs no password, redacts secrets, and copies the report to the clipboard to paste wherever you are getting help:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/scripts/diagnose.sh | bash
+```
 
 Paste either block into Terminal as a whole. Each writes a script to your home folder, makes it runnable and runs it; next time just run `~/burst-update.sh` or `~/burst-bypass.sh`. Both ask for your password when they touch `/etc/hosts`.
 
