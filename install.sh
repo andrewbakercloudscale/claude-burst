@@ -449,8 +449,23 @@ install() {
 </plist>
 PLIST
 
+  # bootout returns before the job is gone: the old gateway drains its
+  # replies for up to 50s first, and a bootstrap meanwhile fails with
+  # "Bootstrap failed: 5: Input/output error", which under set -e ended the
+  # install half done (a reinstall over a running gateway, 2026-10-04). So
+  # wait for the job to leave launchd, and retry the bootstrap.
   launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$UID" "$PLIST"
+  local waited=0
+  while launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 && (( waited < 75 )); do
+    (( waited == 0 )) && echo "waiting for the running gateway to finish its replies and stop (up to a minute)..."
+    sleep 1
+    waited=$((waited + 1))
+  done
+  local tries=0
+  until launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null; do
+    (( ++tries >= 10 )) && { echo "ERROR: launchctl bootstrap gui/$UID $PLIST keeps failing; run it by hand to see why" >&2; exit 1; }
+    sleep 2
+  done
   launchctl kickstart -k "gui/$UID/$LABEL"
 
   if [[ "$intercept_mode" == transparent ]]; then
