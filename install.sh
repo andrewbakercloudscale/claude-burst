@@ -244,6 +244,7 @@ uninstall() {
   # 2. Whatever would restart the gateway. bootout before the hooks come out:
   #    a gateway that starts (KeepAlive, or the watchdog) puts them back.
   "$ROOT/scripts/install-selfheal-watchdog.sh" uninstall || echo "WARNING: failed: $ROOT/scripts/install-selfheal-watchdog.sh uninstall" >&2
+  "$ROOT/scripts/install-console.sh" uninstall >/dev/null || echo "WARNING: failed: $ROOT/scripts/install-console.sh uninstall" >&2
   launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
 
   # 3. Claude Code's settings, while the binary that removes them exists.
@@ -486,6 +487,11 @@ PLIST
   # every install so a change to it takes effect.
   "$ROOT/scripts/install-selfheal-watchdog.sh" >/dev/null ||
     echo "WARNING: could not arm the gateway watchdog; arm it under Guards on the dashboard" >&2
+
+  # The support console: audit, log and repair buttons that stay up when
+  # the gateway does not.
+  "$ROOT/scripts/install-console.sh" >/dev/null ||
+    echo "WARNING: could not start the support console; run scripts/install-console.sh" >&2
 
   if [[ "$intercept_mode" == transparent ]]; then
     "$TARGET" configure --intercept-mode transparent

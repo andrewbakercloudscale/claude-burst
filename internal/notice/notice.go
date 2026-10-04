@@ -4,6 +4,12 @@
 // turns into the same floating overlay it shows for loading and for a
 // pauseless compaction.
 //
+// Every event shown is also appended to audit.jsonl beside it, the support
+// trail the dashboard and the console show: notices.json keeps only the
+// last few for the overlay, the audit keeps weeks. Actions taken from the
+// dashboard or the console are recorded there too (Record), without being
+// shown on screen.
+//
 // Publishing never blocks the caller. Events go through a buffered channel
 // to one writer goroutine, so a request path that publishes pays for a
 // channel send and nothing else; a full channel drops the event and says
@@ -11,6 +17,7 @@
 package notice
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +60,8 @@ type Event struct {
 	// Session is the Claude Code session the event is about, when it is
 	// about one: that session's own panel leaves it to the others.
 	Session string `json:"session,omitempty"`
+	// AuditOnly marks an entry recorded for the audit and never shown.
+	AuditOnly bool `json:"audit_only,omitempty"`
 }
 
 type file struct {
@@ -152,6 +161,26 @@ func (p *Publisher) publish(session, kind, severity, title, detail string, once 
 	}
 }
 
+// Record adds an entry to the audit trail only: something done (a restart
+// from the console, a setting saved) that support needs to see later but
+// nobody needs on screen. Never deduplicated, never blocks.
+func (p *Publisher) Record(kind, severity, title, detail string) {
+	if p == nil {
+		return
+	}
+	now := p.now()
+	p.mu.Lock()
+	p.seq++
+	ev := Event{ID: fmt.Sprintf("%d-%d", now.UnixNano(), p.seq), Kind: kind, Severity: severity,
+		Title: title, Detail: detail, At: now, TS: now.Unix(), AuditOnly: true}
+	p.mu.Unlock()
+	select {
+	case p.ch <- ev:
+	default:
+		p.logOnce(errors.New("queue full, audit entry dropped: " + title))
+	}
+}
+
 // Flush waits until every queued event is on disk, or for at most d.
 func (p *Publisher) Flush(d time.Duration) {
 	if p == nil {
@@ -185,6 +214,22 @@ func (p *Publisher) run() {
 }
 
 func (p *Publisher) write(ev Event) error {
+	// The audit first: a notices.json that will not write must not cost the
+	// support trail its record of the event.
+	auditErr := appendAudit(AuditPath(p.path), ev)
+	if p.logger != nil {
+		p.logger.Printf("notice kind=%s severity=%s audit_only=%v title=%q detail=%q", ev.Kind, ev.Severity, ev.AuditOnly, ev.Title, ev.Detail)
+	}
+	if ev.AuditOnly {
+		return auditErr
+	}
+	if err := p.writeNotices(ev); err != nil {
+		return err
+	}
+	return auditErr
+}
+
+func (p *Publisher) writeNotices(ev Event) error {
 	var f file
 	b, err := os.ReadFile(p.path)
 	switch {
@@ -237,6 +282,54 @@ func Read(path string) ([]Event, error) {
 // Path is where serve writes notices.json, beside config.json.
 func Path(configDir string) string { return filepath.Join(configDir, "notices.json") }
 
+// AuditPath is the audit trail beside notices.json.
+func AuditPath(noticesPath string) string {
+	return filepath.Join(filepath.Dir(noticesPath), "audit.jsonl")
+}
+
+// AuditMax is the size at which audit.jsonl moves to audit.jsonl.1; the two
+// together hold weeks of events.
+const AuditMax = 2 << 20
+
+func appendAudit(path string, ev Event) error {
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	if st, err := os.Stat(path); err == nil && st.Size() > AuditMax {
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(append(b, '\n'))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// ReadAudit returns up to limit audit entries, newest first, across the
+// current file and the one before it.
+func ReadAudit(path string, limit int) []Event {
+	var out []Event
+	for _, p := range []string{path, path + ".1"} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		lines := bytes.Split(bytes.TrimSpace(b), []byte("\n"))
+		for i := len(lines) - 1; i >= 0 && len(out) < limit; i-- {
+			var e Event
+			if json.Unmarshal(lines[i], &e) == nil && e.Title != "" {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
 var (
 	defMu sync.RWMutex
 	def   *Publisher
@@ -274,6 +367,9 @@ func PublishFor(session, kind, severity, title, detail string) bool {
 func PublishOnce(kind, severity, title, detail string) bool {
 	return Default().PublishOnce(kind, severity, title, detail)
 }
+
+// Record adds an audit-only entry through the default publisher.
+func Record(kind, severity, title, detail string) { Default().Record(kind, severity, title, detail) }
 
 // Flush flushes the default publisher.
 func Flush(d time.Duration) { Default().Flush(d) }

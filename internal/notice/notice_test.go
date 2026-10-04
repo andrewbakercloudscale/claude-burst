@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,10 +86,10 @@ func TestWriteIsAtomicAndReplacesADamagedFile(t *testing.T) {
 	if len(evs) != 1 || evs[0].Detail != "detail" || evs[0].TS == 0 {
 		t.Fatalf("events = %+v", evs)
 	}
-	// No temporary files left beside it.
+	// No temporary files left beside it: notices.json and the audit only.
 	entries, _ := os.ReadDir(filepath.Dir(path))
-	if len(entries) != 1 {
-		t.Errorf("directory holds %d entries, want only notices.json", len(entries))
+	if len(entries) != 2 {
+		t.Errorf("directory holds %d entries, want notices.json and audit.jsonl", len(entries))
 	}
 	var raw map[string]any
 	b, _ := os.ReadFile(path)
@@ -127,4 +128,39 @@ func TestNoDefaultIsANoOp(t *testing.T) {
 		t.Fatal("published with no default publisher")
 	}
 	Flush(time.Millisecond)
+}
+
+// Every event shown lands in the audit, and a Record lands only there.
+func TestAuditKeepsShownEventsAndRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notices.json")
+	p := New(path, nil)
+	p.Publish("failover", Warn, "Failed over", "because")
+	p.Record("action", Info, "Gateway restarted from the console", "")
+	p.Flush(2 * time.Second)
+	got := ReadAudit(AuditPath(path), 10)
+	if len(got) != 2 || got[0].Title != "Gateway restarted from the console" || !got[0].AuditOnly || got[1].Title != "Failed over" {
+		t.Fatalf("audit = %+v", got)
+	}
+	evs, _ := Read(path)
+	if len(evs) != 1 || evs[0].Title != "Failed over" {
+		t.Fatalf("notices = %+v", evs)
+	}
+}
+
+// The audit rotates instead of growing without bound, and reads across both.
+func TestAuditRotates(t *testing.T) {
+	dir := t.TempDir()
+	ap := filepath.Join(dir, "audit.jsonl")
+	big := strings.Repeat("x", 1024)
+	for i := 0; i < AuditMax/1024+10; i++ {
+		if err := appendAudit(ap, Event{Title: "t", Detail: big}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(ap + ".1"); err != nil {
+		t.Fatal("no rotation")
+	}
+	if n := len(ReadAudit(ap, 1<<20)); n != AuditMax/1024+10 {
+		t.Errorf("read %d entries across the two files", n)
+	}
 }

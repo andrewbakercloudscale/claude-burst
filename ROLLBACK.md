@@ -74,7 +74,9 @@ That alone restores Anthropic access machine-wide; everything else is tidy-up.
 | The binary | `~/.local/bin/claude-burst` | `rm ~/.local/bin/claude-burst` |
 | A `PATH` line | `~/.zprofile`, the line ending `# claude-burst` | delete that line |
 | The gateway LaunchAgent | `~/Library/LaunchAgents/ninja.andrewbaker.claude-burst.plist` | `launchctl bootout gui/$UID/ninja.andrewbaker.claude-burst`, then delete the plist |
-| Configuration, state, logs, metrics, backups | `~/.config/claude-burst/` | `rm -rf ~/.config/claude-burst` (this also deletes the CA) |
+| The support console LaunchAgent (127.0.0.1:7789) | `~/Library/LaunchAgents/ninja.andrewbaker.claude-burst-console.plist` | `scripts/install-console.sh uninstall`. `burst-off` leaves it running on purpose: it is how you turn Burst back on |
+| Codex routing | Burst's marked block at the top of `~/.codex/config.toml`, only when routed | `claude-burst codex disable` (or `scripts/codex-unroute.sh`) |
+| Configuration, state, logs, metrics, the audit (`audit.jsonl`), backups | `~/.config/claude-burst/` | `rm -rf ~/.config/claude-burst` (this also deletes the CA) |
 | The secondary's API key | macOS login Keychain, service `claude-burst-<provider>` | `security delete-generic-password -s claude-burst-together` (or `-openrouter`, `-bedrock`) |
 
 ### Claude Code settings and hooks (`~/.claude/`)

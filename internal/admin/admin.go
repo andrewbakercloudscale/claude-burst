@@ -126,6 +126,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/usage", s.readOnly(s.handleUsage))
 	mux.HandleFunc("/api/test-connection", s.readOnly(s.handleTestConnection))
 	mux.HandleFunc("/api/log", s.readOnly(s.handleLog))
+	mux.HandleFunc("/api/audit", readOnly(handleAudit))
+	mux.HandleFunc("/api/audit/context", readOnly(handleAuditContext))
+	mux.HandleFunc("/audit.js", readOnly(handleAuditJS))
 	mux.HandleFunc("/api/reset", s.mutating(s.handleReset))
 	mux.HandleFunc("/api/force", s.mutating(s.handleForce))
 	mux.HandleFunc("/api/downgrade", s.mutating(s.handleDowngrade))
@@ -193,7 +196,11 @@ func (s *Server) Handler() http.Handler {
 // DNS-rebinding defence: the attacker controls DNS, not the Host header the
 // browser sends, so a page on evil.example resolving to 127.0.0.1 still
 // arrives here with Host: evil.example.
-func (s *Server) guard(next http.Handler) http.Handler {
+func (s *Server) guard(next http.Handler) http.Handler { return guard(s.extraHost, next) }
+
+// guard admits only loopback Host headers (and extraHost, when set), the
+// DNS-rebinding defence, and sets the framing and sniffing headers.
+func guard(extraHost string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
@@ -201,7 +208,7 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		}
 		host = strings.ToLower(host)
 		allowed := host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]" ||
-			(s.extraHost != "" && host == s.extraHost)
+			(extraHost != "" && host == extraHost)
 		if !allowed {
 			http.Error(w, "admin UI only accepts loopback Host headers (got "+r.Host+")", http.StatusForbidden)
 			return
@@ -220,7 +227,9 @@ func (s *Server) guard(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) readOnly(h http.HandlerFunc) http.HandlerFunc {
+func (s *Server) readOnly(h http.HandlerFunc) http.HandlerFunc { return readOnly(h) }
+
+func readOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -230,7 +239,13 @@ func (s *Server) readOnly(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// mutating also records the change in the audit: every action taken from
+// the dashboard is there for support to see.
 func (s *Server) mutating(h http.HandlerFunc) http.HandlerFunc {
+	return mutating(audited("dashboard", h))
+}
+
+func mutating(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

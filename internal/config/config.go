@@ -415,6 +415,11 @@ type Config struct {
 	// Empty disables the panel entirely.
 	AdminListen string `json:"admin_listen,omitempty"`
 
+	// ConsoleListen is the support console's address (`claude-burst
+	// console`, its own process): audit, log and repair buttons that stay
+	// up when the gateway and dashboard do not. "off" disables it.
+	Console string `json:"console_listen,omitempty"`
+
 	// KeepAwakeLidClosed keeps the Mac awake with the lid shut, so a Claude
 	// Code session in Ghostty keeps working and Remote Control stays reachable.
 	// Off by default: a closed laptop that never sleeps drains its battery and
@@ -564,6 +569,20 @@ func (c Config) CodexListen() string {
 		return DefaultCodexListen
 	}
 	return c.Codex.Listen
+}
+
+// DefaultConsoleListen is the support console's address unless configured.
+const DefaultConsoleListen = "127.0.0.1:7789"
+
+// ConsoleListen is the support console's address, "" when off.
+func (c Config) ConsoleListen() string {
+	switch c.Console {
+	case "off":
+		return ""
+	case "":
+		return DefaultConsoleListen
+	}
+	return c.Console
 }
 
 // CodexUpstream is where the Codex listener forwards to.

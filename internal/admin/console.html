@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Burst Support Console</title>
+<style>
+:root{--bg:#f8fafc;--card:#fff;--ink:#0f172a;--muted:#475569;--line:#cbd5e1;--accent:#2563eb;--ok:#15803d;--bad:#b91c1c;--code-bg:#0f172a}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1120;--card:#111827;--ink:#e5e7eb;--muted:#94a3b8;--line:#334155;--accent:#3b82f6;--ok:#22c55e;--bad:#f87171;--code-bg:#020617}}
+:root[data-theme="dark"]{--bg:#0b1120;--card:#111827;--ink:#e5e7eb;--muted:#94a3b8;--line:#334155;--accent:#3b82f6;--ok:#22c55e;--bad:#f87171;--code-bg:#020617}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:1.35rem;margin:4px 0 2px}
+.sub{color:var(--muted);margin:0 0 14px}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:0 0 14px}
+h2{font-size:1.05rem;margin:0 0 10px}
+.banner{border-radius:10px;padding:10px 14px;margin:0 0 14px;font-weight:600}
+.banner.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);border:1px solid var(--ok)}
+.banner.bad{background:color-mix(in srgb,var(--bad) 15%,transparent);border:1px solid var(--bad)}
+.banner a{color:inherit}
+.checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.checks li{display:flex;gap:10px;align-items:baseline}
+.dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--bad);transform:translateY(1px)}
+.dot.ok{background:var(--ok)}
+.checks b{min-width:9em}
+.checks span{color:var(--muted);overflow-wrap:anywhere}
+.actions{display:flex;flex-wrap:wrap;gap:8px}
+button.act{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button.act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.act:disabled{opacity:.6;cursor:wait}
+.explain{color:var(--muted);font-size:.9em;margin:8px 0 0}
+#msg{margin:10px 0 0;white-space:pre-wrap}
+#msg.bad{color:var(--bad)}
+pre.tail{margin:0;padding:10px;max-height:320px;overflow:auto;background:var(--code-bg);color:#e2e8f0;border-radius:8px;font:12px/1.45 ui-monospace,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<main>
+  <h1>Claude Burst support console</h1>
+  <p class="sub">Runs on its own, so it is here when the gateway or the dashboard is not. <span id="ver"></span></p>
+  <div id="banner" class="banner" hidden></div>
+
+  <section>
+    <h2>Where it stands</h2>
+    <ul class="checks" id="checks"><li>Checking...</li></ul>
+  </section>
+
+  <section>
+    <h2>Fix it</h2>
+    <div class="actions">
+      <button class="act primary" data-act="restart">Restart gateway</button>
+      <button class="act" data-act="repair">Repair</button>
+      <button class="act" data-act="diagnose">Diagnostic report</button>
+      <button class="act" data-act="off">Turn Burst off</button>
+    </div>
+    <p class="explain">Restart starts or restarts the gateway and turns Burst back on if it was turned off. Repair reinstalls what is broken (it asks for your password in a Terminal window). Diagnostic report writes one file with everything support needs, secrets redacted. Turn Burst off sends Claude Code straight to Anthropic.</p>
+    <div id="msg"></div>
+  </section>
+
+  <section>
+    <h2>Audit: alerts shown and actions taken</h2>
+    <div id="audit"></div>
+  </section>
+
+  <section>
+    <h2>Latest log lines</h2>
+    <pre class="tail" id="tail">Loading...</pre>
+  </section>
+</main>
+<script src="/audit.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const audit = window.BurstAudit.mount($("audit"), { limit: 300 });
+
+async function load() {
+  let s;
+  try {
+    const r = await fetch("/api/console");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    s = await r.json();
+  } catch (e) {
+    $("checks").innerHTML = "<li>Could not read the status: " + esc(e.message) + "</li>";
+    return;
+  }
+  $("ver").textContent = s.version ? "Version " + s.version + "." : "";
+  const checks = s.checks.slice();
+  if (s.config_error) checks.unshift({ name: "Config", ok: false, detail: s.config_error });
+  $("checks").innerHTML = checks.map((c) =>
+    `<li><i class="dot ${c.ok ? "ok" : ""}"></i><b>${esc(c.name)}</b><span>${esc(c.detail)}</span></li>`).join("");
+  const b = $("banner");
+  b.hidden = false;
+  if (s.dashboard_up) {
+    b.className = "banner ok";
+    b.innerHTML = `Burst is up. <a href="${esc(s.dashboard)}">Open the dashboard</a> for everything else.`;
+  } else {
+    b.className = "banner bad";
+    b.textContent = "The dashboard is not answering. The checks below say where it stops; Restart gateway is the first thing to try.";
+  }
+  $("tail").textContent = s.log_tail.length ? s.log_tail.join("\n") : "The log is empty or unreadable.";
+}
+
+document.querySelector(".actions").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  if (act === "off" && !confirm("Turn Burst off? Claude Code goes straight to Anthropic until you press Restart.")) return;
+  btn.disabled = true;
+  $("msg").className = "";
+  $("msg").textContent = "Working...";
+  try {
+    const r = await fetch("/api/console/" + act, { method: "POST", headers: { "X-Claude-Burst-Admin": "1" } });
+    const text = await r.text();
+    let detail = text;
+    try { detail = JSON.parse(text).detail || text; } catch {}
+    if (!r.ok) throw new Error(detail);
+    $("msg").textContent = detail;
+  } catch (e) {
+    $("msg").className = "bad";
+    $("msg").textContent = e.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { load(); audit.reload(); }, 3000);
+  }
+});
+
+load();
+setInterval(() => { if (!document.hidden) { load(); audit.reload(); } }, 10000);
+</script>
+</body>
+</html>
