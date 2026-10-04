@@ -164,11 +164,27 @@ rotate_log() {
 # no macOS notifications. With the dashboard down there is no panel alert
 # either, but the panel says so itself when the dashboard stops answering,
 # and the line is in this log.
-notify() { # $1 = severity (info, ok, warn, error), $2 = message
-  local sev="$1" msg="$2" body
-  body=$(printf '{"kind":"pf-heal","severity":"%s","title":"%s"}' "$sev" "${msg//\"/\\\"}")
-  curl -s -o /dev/null -m 3 -X POST -H 'X-Claude-Burst-Admin: 1' -H 'Content-Type: application/json' \
-    --data "$body" http://127.0.0.1:7788/api/alert 2>/dev/null || log "alert not delivered (dashboard not answering): $msg"
+notify() { # $1 = severity (info, ok, warn, error), $2 = title, $3 = detail
+  local sev="$1" title="$2" detail="${3:-}" body
+  body=$(printf '{"kind":"pf-heal","severity":"%s","title":"%s","detail":"%s"}' "$sev" "${title//\"/\\\"}" "${detail//\"/\\\"}")
+  $CURL -sf -o /dev/null -m 3 -X POST -H 'X-Claude-Burst-Admin: 1' -H 'Content-Type: application/json' \
+    --data "$body" http://127.0.0.1:7788/api/alert 2>/dev/null && return 0
+  notify_direct "$sev" "$title" "$detail" || log "alert not delivered (dashboard not answering, and no console user's claude-burst to write it): $title"
+}
+
+# notify_direct writes the alert to the console user's notices.json through
+# their own claude-burst, as them, so the usage panel shows it with the
+# gateway down. That is when this guard's alerts matter most, and on
+# 2026-10-04 every one of a 7-minute outage was "not delivered".
+notify_direct() {
+  local uid user home bin
+  uid=$(stat -f %u /dev/console 2>/dev/null) || return 1
+  [[ -n "$uid" && "$uid" != "0" ]] || return 1
+  user=$(id -un "$uid" 2>/dev/null) || return 1
+  home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+  bin="${CLAUDE_BURST_NOTICE_BIN:-$home/.local/bin/claude-burst}"
+  [[ -x "$bin" ]] || return 1
+  sudo -H -u "$user" "$bin" notice --kind pf-heal --severity "$1" --title "$2" --detail "$3" >/dev/null 2>&1
 }
 
 hosts_redirect_present() { grep -qF "$HOSTS_MARKER" "$HOSTS_FILE" 2>/dev/null; }
@@ -335,7 +351,7 @@ fi
 
 if [[ ! -x "$ROOT_HELPER" ]]; then
   log "FATAL: cannot repair -- no executable helper at $ROOT_HELPER"
-  notify error "claude-burst: the intercept is broken and the repair helper is missing. Run: sudo transparent-root.sh remove"
+  notify error "Burst redirect broken, cannot repair" "The guard's repair helper is missing, so Claude Code cannot reach Anthropic. Run: sudo /usr/local/libexec/claude-burst/transparent-root.sh remove"
   return 1
 fi
 
@@ -370,8 +386,11 @@ printf '%s\n' "$reload_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
 
 if intercept_path_healthy; then
   log "HEALED: $INTERCEPT_HOST answers from this gateway again"
+  # Only a break that was announced gets an all clear: a repair inside its
+  # own round (a network reconnect) was never on screen.
+  local announced; announced=$(failures)
   clear_failures
-  notify ok "Transparent proxy self-healed: the intercept was broken and has been repaired."
+  (( announced > 0 )) && notify ok "Burst redirect repaired" "Claude Code reaches Burst again."
   return 0
 fi
 
@@ -381,7 +400,7 @@ set_failures "$n"
 log "repair FAILED, consecutive failures: $n/$MAX_FAILURES"
 
 if (( n < MAX_FAILURES )); then
-  notify warn "claude-burst: the intercept is broken; repair attempt $n of $MAX_FAILURES did not fix it. Retrying."
+  notify error "Burst redirect broken: repair $n of $MAX_FAILURES failed" "Claude Code requests are failing. The guard retries; if $MAX_FAILURES repairs fail it removes the redirect so Claude reaches Anthropic directly, without Burst."
   return 1
 fi
 
@@ -397,12 +416,12 @@ printf '%s\n' "$remove_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
 if (( remove_rc == 0 )); then
   log "BAILED OUT: transparent mode removed. Claude Code now talks to Anthropic directly. Reinstall with: sudo $ROOT_HELPER install"
   clear_failures
-  notify warn "claude-burst could not repair the intercept, so it removed it. Claude works normally again; burst is no longer in the path."
+  notify warn "Burst bypassed: redirect removed after $n failed repairs" "Claude works again, straight to Anthropic, with no compaction or failover. Put Burst back: sudo $ROOT_HELPER install"
   return 0
 fi
 
 log "FATAL: bail-out itself failed (exit $remove_rc). This Mac may still be unable to reach $INTERCEPT_HOST. Run by hand: sudo $ROOT_HELPER remove"
-notify error "claude-burst: could not repair OR remove the redirect. Run: sudo transparent-root.sh remove"
+notify error "Burst redirect broken and could not be removed" "Claude Code cannot reach Anthropic. Run: sudo $ROOT_HELPER remove"
 return 1
 }
 

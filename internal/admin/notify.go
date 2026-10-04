@@ -131,9 +131,11 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 
 	if n.started {
 		// The usage panel has its own switch for these.
-		if pf > n.pfEvents {
-			n.alertGuardLine("pf", lastLine(pfHealEvents(pfHealLog, 1000)))
-		}
+		// The pf guard puts up its own alerts (pf-heal.sh notify): from its
+		// first failed repair, with the count, written straight to
+		// notices.json when this gateway is the thing that is down. Its log
+		// lines here as well were a second popup for each, and one for a
+		// break its own round repaired.
 		if self > n.selfEvents {
 			n.alertGuardLine("watchdog", lastLine(pfHealEvents(selfLog, 1000)))
 		}
