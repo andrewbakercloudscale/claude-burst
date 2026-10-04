@@ -1088,11 +1088,13 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	}
 
 	resp, err := s.clientFor(in.URL.Path).Do(req)
-	// A stale write on the FIRST attempt gets one immediate retry on a fresh
-	// connection (below), then the timed ladder; the ladder does not repeat
-	// that first retry.
-	staleWriteRetried := false
-	if err != nil && isStaleWriteFailure(err) && in.Context().Err() == nil {
+	// A dead connection on the FIRST attempt gets one immediate retry on a
+	// fresh connection (below), then the timed ladder; the ladder does not
+	// repeat that first retry. This runs with or without a secondary: it is
+	// the cheapest recovery there is, and on a Mac with nowhere to fail over
+	// it is the one retry Burst makes before Claude Code's own.
+	freshRetried := false
+	if err != nil && in.Context().Err() == nil && (isStaleWriteFailure(err) || slot == "primary" && deadConnection(err)) {
 		// The kept-alive connection died under us (a network switch), and the
 		// write onto it failed, so the server never saw the request. Drop the
 		// pooled connections and send it again on a fresh one, once, BEFORE
@@ -1104,7 +1106,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			s.logger.Printf("req=%s retry route=%s reason=%q -> one more attempt on a fresh connection", rid, p.Name(), err)
 			req = retry
 			resp, err = s.clientFor(in.URL.Path).Do(req)
-			staleWriteRetried = true
+			freshRetried = true
 			// Not counted here. If the retry also failed, the single
 			// fd.OnError after the ladder below counts this request, once.
 			// It used to be counted here AND there, so one request whose
@@ -1207,7 +1209,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			// (TestReadSideResetIsNotRetried). A stale write already had its
 			// one immediate fresh-connection retry above; the ladder then
 			// waits for the network to recover instead of hammering.
-			if err == nil || slot != "primary" || !allowFailover || in.Context().Err() != nil || staleWriteRetried || !safeToResend(err) {
+			if err == nil || slot != "primary" || !allowFailover || in.Context().Err() != nil || freshRetried || !safeToResend(err) {
 				break
 			}
 			s.logger.Printf("req=%s retry route=%s attempt=%d of %d in %s reason=%q", rid, p.Name(), i+2, len(primaryRetryDelays)+1, d, err)
@@ -1239,6 +1241,14 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 				DurationMS: time.Since(start).Milliseconds(), Headers: filterHeaders(resp.Header),
 				Destination: destination,
 			})
+		} else if in.Context().Err() != nil {
+			// The client left during the retries (Claude Code gives up on a
+			// turn after a while). Failing over now would arm a window and
+			// raise an alert for a request nobody is waiting for, as it did
+			// on 2026-10-04 at 17:16 (req=5dfd9304c61e335b).
+			s.logger.Printf("req=%s client_gone route=%s err=%v (left during retries; no failover, not replayed)", rid, p.Name(), err)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, metrics.StatusClientClosed, start, pruned, "", 0, "client cancelled during retries: "+err.Error(), destination)
+			return
 		} else {
 			s.notePrimaryFailure(slot, err)
 			if allowFailover {
@@ -1603,6 +1613,19 @@ func safeToResend(err error) bool {
 		return true
 	}
 	return strings.Contains(err.Error(), "TLS handshake timeout")
+}
+
+// deadConnection reports a primary error that most likely means the pooled
+// connection died under the request (a network switch: the local address is
+// gone, or HTTP/2 never answers on it). The request may have reached
+// Anthropic, so it is resent once on a fresh connection and never laddered:
+// one resend can at worst run a turn twice on the subscription, which costs
+// plan usage, while giving up costs a failover to a paid provider.
+func deadConnection(err error) bool {
+	if errors.Is(err, syscall.EADDRNOTAVAIL) {
+		return true
+	}
+	return strings.Contains(err.Error(), "timeout awaiting response headers")
 }
 
 // isStaleWriteFailure reports whether err is a WRITE onto a connection that

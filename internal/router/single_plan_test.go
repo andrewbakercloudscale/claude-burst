@@ -313,9 +313,10 @@ func TestSinglePlanIgnoresAStaleWindow(t *testing.T) {
 	})
 }
 
-// A network failure with nowhere to fail over to returns at once, so Claude
-// Code's own retries (which show on screen) take over, and the dashboard's
-// "Anthropic answering" check sees it.
+// A network failure with nowhere to fail over to gets one immediate resend
+// on a fresh connection (a dead pooled connection is the usual cause), then
+// returns at once, so Claude Code's own retries (which show on screen) take
+// over, and the dashboard's "Anthropic answering" check sees it.
 func TestSinglePlanTransportErrorFailsFastAndIsVisible(t *testing.T) {
 	eachSinglePlan(t, func(t *testing.T, none bool) {
 		up := newSinglePlanUpstream(t)
@@ -332,8 +333,8 @@ func TestSinglePlanTransportErrorFailsFastAndIsVisible(t *testing.T) {
 		if d := time.Since(start); d > time.Second {
 			t.Fatalf("took %v: the 30s retry ladder is for deciding a failover there is none of", d)
 		}
-		if len(ft.bodies) != 1 {
-			t.Fatalf("attempts = %d, want 1", len(ft.bodies))
+		if len(ft.bodies) != 2 {
+			t.Fatalf("attempts = %d, want 2 (the original and one fresh-connection resend)", len(ft.bodies))
 		}
 		if h := s.Health(); h.Failures != 1 {
 			t.Fatalf("health = %+v, want the failure recorded", h)
