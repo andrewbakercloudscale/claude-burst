@@ -34,7 +34,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlswatch"
 )
 
-const version = "0.11.3"
+const version = "0.12.0"
 
 // claude-burst.log had no rotation before this and grew forever for as long
 // as the gateway ran, which for a LaunchAgent means indefinitely. Not (yet)
