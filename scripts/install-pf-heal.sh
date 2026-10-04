@@ -109,11 +109,15 @@ do_uninstall() {
   need_root uninstall
   "$LAUNCHCTL" bootout "system/$LABEL" >/dev/null 2>&1 || true
   rm -f "$PLIST"
-  rm -rf "$LIBEXEC"
+  # Only its own files: the directory is shared with the lid-awake daemon,
+  # and deleting that one's script leaves a KeepAlive daemon pointing at
+  # nothing, with SleepDisabled possibly left on.
+  rm -f "$SCRIPT" "$LIBEXEC/transparent-root.sh"
+  rmdir "$LIBEXEC" 2>/dev/null || true
   # Without this, status() reads a heartbeat from a daemon that no longer
   # exists and reports RUNNING for the next ten minutes.
   rm -f "$HEARTBEAT" "$(dirname "$HEARTBEAT")/pf-heal.failures"
-  echo "Removed the pf self-heal LaunchDaemon ($LABEL) and $LIBEXEC."
+  echo "Removed the pf self-heal LaunchDaemon ($LABEL) and its scripts in $LIBEXEC."
   echo "Kept $LOG so the history of what it caught survives the uninstall."
 }
 
@@ -260,10 +264,14 @@ self_test() {
   run do_status
   printf '%s' "$out" | grep -q "RUNNING" && ok "status reads the heartbeat" || { bad "status did not report RUNNING"; printf '%s\n' "$out" | sed 's/^/      /'; }
 
+  # The lid-awake daemon's script shares the directory and must survive.
+  touch "$LIBEXEC/lid-awake-root.sh"
   run do_uninstall
   (( rc == 0 )) && ok "do_uninstall completes" || { bad "do_uninstall exited $rc"; printf '%s\n' "$out" | sed 's/^/      /'; }
   [[ -e "$PLIST" ]] && bad "uninstall left the plist behind" || ok "uninstall removed the plist"
-  [[ -e "$LIBEXEC" ]] && bad "uninstall left $LIBEXEC behind" || ok "uninstall removed the libexec copy"
+  [[ -e "$SCRIPT" || -e "$LIBEXEC/transparent-root.sh" ]] && bad "uninstall left its scripts behind" || ok "uninstall removed its own scripts"
+  [[ -e "$LIBEXEC/lid-awake-root.sh" ]] && ok "uninstall kept the lid-awake script" || bad "uninstall deleted the lid-awake daemon's script"
+  rm -f "$LIBEXEC/lid-awake-root.sh"
   [[ -e "$HEARTBEAT" ]] && bad "uninstall left the heartbeat behind" || ok "uninstall cleared the heartbeat"
 
   run do_status

@@ -74,8 +74,16 @@ KEEPALIVE=$!
 trap 'kill $KEEPALIVE 2>/dev/null' INT TERM
 
 say "reinstalling"
-MODE=$(sed -n 's/.*"mode": *"\([a-z-]*\)".*/\1/p' "$CFG/config.json" 2>/dev/null | head -1)
-[ "$MODE" = "base-url" ] || MODE=transparent
+# The mode this Mac chose, read as the gateway reads it: no "mode" key means
+# base-url (the field is omitempty), never transparent, which would edit
+# /etc/hosts and pf on a Mac that chose not to. No config at all is a fresh
+# install, which gets the default.
+if [ -f "$CFG/config.json" ]; then
+  MODE=$(/usr/bin/python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("intercept") or {}).get("mode") or "base-url")' "$CFG/config.json" 2>/dev/null)
+  [ "$MODE" = transparent ] || MODE=base-url
+else
+  MODE=transparent
+fi
 echo "mode: $MODE"
 rm -f "$CFG"/rolled-back "$CFG"/rolled-back-*
 if [ -r /dev/tty ]; then
