@@ -44,7 +44,7 @@ Paste either block into Terminal as a whole. Each writes a script to your home f
 
 ### Update and reinstall Burst
 
-Newest release, transparent mode with the `/etc/hosts` redirect and pf rule, and anything left holding Burst's ports 7777, 17777 and 7788 stopped first, then the dashboard opens. Fixes a Mac where Burst is broken, stale or half installed:
+Newest release, transparent mode with the `/etc/hosts` redirect and pf rule, and anything left holding Burst's ports 7777, 17777, 7788 and 7779 stopped first, then the dashboard opens. Fixes a Mac where Burst is broken, stale or half installed:
 
 ```sh
 cat > ~/burst-update.sh <<'EOF'
@@ -75,7 +75,7 @@ fi
 git log --oneline -1
 echo "== freeing Burst's ports"; STEP="freeing the ports"
 GW=$(launchctl print "gui/$UID/ninja.andrewbaker.claude-burst" 2>/dev/null | awk '$1 == "pid" {print $3; exit}' || true)
-for port in 7777 17777 7788; do
+for port in 7777 17777 7788 7779; do
   for pid in $(lsof -nP -t -iTCP:$port -sTCP:LISTEN 2>/dev/null); do
     [[ "$pid" == "$GW" ]] && continue
     echo "port $port: stopping pid $pid ($(ps -o comm= -p $pid))"
@@ -145,7 +145,7 @@ if url.startswith(("http://127.0.0.1:", "https://127.0.0.1:", "http://localhost:
 PY
 launchctl bootout "gui/$UID/ninja.andrewbaker.claude-burst" 2>/dev/null
 KEEP=$(cat $CFG/passthrough.pid 2>/dev/null)
-for port in 7777 17777 7788; do
+for port in 7777 17777 7788 7779; do
   for pid in $(lsof -nP -t -iTCP:$port -sTCP:LISTEN 2>/dev/null); do
     [[ "$pid" == "$KEEP" ]] && continue
     echo "port $port: stopping pid $pid ($(ps -o comm= -p $pid))"
@@ -197,6 +197,8 @@ OpenRouter, Bedrock and a metered API key are in [Providers](docs/providers.md).
 **Keep working past a limit.** Your Claude login stays the primary credential. Burst watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests elsewhere: first to other Claude models on your own plan (Fable to Opus), then to a secondary you pay for (Together AI, OpenRouter, any OpenAI-compatible endpoint, or Amazon Bedrock). It returns to the subscription when the reset time arrives. A bare 429 never triggers it, and overflow requests are pruned of old tool output before they are sent. See [Routing and failover](docs/routing.md) and [Providers](docs/providers.md).
 
 **Long sessions without the pause** (Leading Edge, off by default). Every turn resends the whole conversation, so a turn at 400k tokens uses your limits about four times as fast as one at 100k, and Claude Code only compacts near the end of its 1M window, stopping the session while it does. Burst compacts much earlier, in the background, and swaps the summary in on your next prompt; `/compact-async` does it on demand. In two days of real use (one person, long Opus sessions) it saved about $26 a day of **API-equivalent** value, net of the summaries' own cost. On a subscription that is not money back: your bill does not change, your limits last longer. See [Pauseless compaction](docs/compaction.md).
+
+**Codex too.** OpenAI's Codex, signed in with ChatGPT, can go through Burst as well: one button on the dashboard's Codex tab (or `claude-burst codex enable`). Requests reach ChatGPT unchanged; the Codex tab shows tokens, each session's context against its window, and the ChatGPT plan's limits. See [Codex](docs/codex.md).
 
 **Several sessions, one working tree** (Leading Edge, off by default). Several Claude Code sessions, and their background subagents, can edit the same repository without overwriting, sweeping up or shipping each other's uncommitted work, and nobody waits: the first editor of a file commits it, and is asked to commit other sessions' changes first. See [Session coordination](docs/coordination.md).
 

@@ -258,6 +258,10 @@ uninstall() {
     echo "WARNING: $TARGET is already gone, so Claude Code's hooks could not be removed by it" >&2
   fi
 
+  # 3b. Codex: without the gateway, Burst's provider in Codex's config is a
+  #     dead port. Only the lines between Burst's markers go.
+  "$ROOT/scripts/codex-unroute.sh" || echo "WARNING: Codex's config still routes to Burst: run scripts/codex-unroute.sh" >&2
+
   # 4. The LaunchAgent and the binary.
   rm -f "$PLIST" "$TARGET" "$INSTALL_DIR/burst-off"
   rm -rf "$OFF_DIR"

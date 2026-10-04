@@ -1,6 +1,6 @@
 # Backlog: Codex support
 
-**Status: backlog, 2026-10-03.** Nothing here is built yet.
+**Status: built 2026-10-04** as a pass-through with accounting; see [../codex.md](../codex.md). Failover for Codex is still backlog. This page is the design history.
 
 ## Where things stand
 

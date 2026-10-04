@@ -56,7 +56,7 @@ git log --oneline -1
 
 say "freeing Burst's ports"
 GW=$(launchctl print "gui/$UID/$LABEL" 2>/dev/null | awk '/^\tpid = /{print $3}' || true)
-for port in 7777 17777 7788; do
+for port in 7777 17777 7788 7779; do
   for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true); do
     [ "$pid" = "$GW" ] && continue
     echo "port $port held by pid $pid ($(ps -o comm= -p "$pid" 2>/dev/null)), stopping it"
@@ -120,6 +120,30 @@ if [ "$MODE" = transparent ]; then
   else
     echo "none"
   fi
+fi
+
+say "checking Codex"
+CODEX_TOML="${CODEX_HOME:-$HOME/.codex}/config.toml"
+if grep -q '^# BEGIN claude-burst' "$CODEX_TOML" 2>/dev/null; then
+  # Routed through Burst: the Codex port must answer, or every Codex turn
+  # fails. Any HTTP status means the gateway forwarded (401: no login sent).
+  code=000
+  for _ in $(seq 1 15); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:7779/backend-api/codex/models || true)
+    [ "$code" != 000 ] && break
+    sleep 1
+  done
+  if [ "$code" != 000 ]; then
+    echo "Codex goes through Burst and its port answers (HTTP $code)"
+  else
+    echo "Codex is routed through Burst but nothing answers on 127.0.0.1:7779"
+    if ask "Send Codex straight to ChatGPT instead?"; then
+      ./scripts/codex-unroute.sh
+      echo "done: restart Codex"
+    fi
+  fi
+else
+  echo "Codex not routed through Burst: nothing to check"
 fi
 
 say "checking keep-awake"

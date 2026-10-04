@@ -14,6 +14,8 @@ It binds loopback only and needs no login (see [the admin UI](#the-local-admin-u
 
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](screenshots/overview.png)
 
+Three tabs at the top of the menu split the page: **Claude** (Claude Code: everything below), **[Codex](codex.md)** (Codex's routing, plan limits, context per session and requests), and **General** (this Mac and Burst itself: Finder shortcuts, lid and hotspot, notifications, Guards, Actions, Advanced). A link to a section on another tab, such as a check pointing at Guards, switches to that tab. The tab you last used is remembered.
+
 The menu down the left follows you as you scroll, grouped by job:
 
 - **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in), and [Usage](#usage).

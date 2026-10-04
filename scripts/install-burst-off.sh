@@ -12,7 +12,7 @@ INSTALL_DIR="${CLAUDE_BURST_INSTALL_DIR:-$HOME/.local/bin}"
 OFF_DIR="$HOME/.local/share/claude-burst"
 
 mkdir -p "$OFF_DIR" "$INSTALL_DIR" &&
-  cp -f "$ROOT/scripts/rollback.sh" "$ROOT/scripts/transparent-root.sh" "$ROOT/scripts/untrust-ca-systemwide.sh" "$OFF_DIR/" &&
+  cp -f "$ROOT/scripts/rollback.sh" "$ROOT/scripts/transparent-root.sh" "$ROOT/scripts/untrust-ca-systemwide.sh" "$ROOT/scripts/codex-unroute.sh" "$OFF_DIR/" &&
   chmod 755 "$OFF_DIR"/*.sh &&
   printf '%s\n' '#!/bin/zsh' \
     '# Turn Claude Burst off and get Claude Code working again. Installed by claude-burst.' \
