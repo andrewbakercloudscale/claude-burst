@@ -90,3 +90,31 @@ func TestCodexAlertsHonourTheSwitch(t *testing.T) {
 		t.Fatalf("shown with alerts off: %+v", *got)
 	}
 }
+
+// The dashboard's test waits for Codex to come to the front, shows once,
+// records when, and gives up after two minutes.
+func TestCodexAlertTestRequest(t *testing.T) {
+	c, _, got := newTestCodexAlerts(t, 7)
+	c.TestPath = filepath.Join(t.TempDir(), "codex-alert-test.json")
+	os.WriteFile(c.OptionsPath, []byte("CLAUDE_PANEL_ALERTS=off\n"), 0o600) // asked for, so shown anyway
+	writeCodexAlertTest(c.TestPath, CodexAlertTest{Requested: time.Now()})
+	seen := map[string]bool{}
+	c.tick(seen)
+	if len(*got) != 0 {
+		t.Fatal("shown over another app")
+	}
+	c.Front = func() int { return 42 }
+	c.tick(seen)
+	c.tick(seen)
+	if len(*got) != 1 || (*got)[0].pid != 42 {
+		t.Fatalf("shown %+v", *got)
+	}
+	if st, _ := readCodexAlertTest(c.TestPath); st.Shown.IsZero() {
+		t.Error("shown time not recorded for the dashboard")
+	}
+	writeCodexAlertTest(c.TestPath, CodexAlertTest{Requested: time.Now().Add(-3 * time.Minute)})
+	c.tick(seen)
+	if st, _ := readCodexAlertTest(c.TestPath); st.Error == "" || len(*got) != 1 {
+		t.Errorf("expired request: %+v, shown %d", st, len(*got))
+	}
+}
