@@ -18,16 +18,26 @@ Claude Burst is a local gateway that sits between Claude Code and Anthropic. **I
 
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
 
+## Something broke? Turn it off
+
+```sh
+burst-off
+```
+
+One command, from any terminal: removes the redirect, stops the gateway, frees Burst's ports (7777, 17777, 7788) from anything still holding them, restores Claude Code's settings and checks Anthropic answers directly. It asks for your password if transparent mode is installed. Sessions already open keep working. `claude-burst enable` turns Burst back on. No `burst-off`? From a checkout: `scripts/rollback.sh`.
+
 ## Quickstart
 
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.10.0 at the time of writing)
-git clone --branch v0.10.0 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.11.0 at the time of writing)
+git clone --branch v0.11.0 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
-# 2. Build, install and start the gateway (base-url mode: no root, no certificates)
+# 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
+#    Remote Control keeps working; needs your password) or base-url (no password, RC off).
+#    CLAUDE_BURST_MODE=transparent|base-url ./install.sh skips the question.
 ./install.sh
 
 # 3. Optional: a secondary to overflow to when a limit is hit. Skip it for a single plan.
@@ -107,7 +117,7 @@ claude-burst configure --secondary none
 claude-burst keychain-set --provider together   # reads TOGETHER_API_KEY into the Keychain
 claude-burst keychain-set --provider together --service my-service   # store under a custom service name
 claude-burst enable
-claude-burst disable
+claude-burst disable                         # off; sessions already open keep working (a pass-through on the port)
 claude-burst status
 claude-burst reset                           # back to primary now
 claude-burst force-secondary --minutes 15    # route to the secondary on purpose (testing)

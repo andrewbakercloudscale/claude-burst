@@ -81,7 +81,7 @@ func (s *Server) handleRevert(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Detail = "A Terminal window is now running scripts/rollback.sh. It asks for your password (sudo) " +
 		"because /etc/hosts, the pf rule and the System-keychain CA trust are machine-wide, and it verifies " +
-		"that api.anthropic.com is reachable directly before it says it is done. Watch it to the end, then restart Claude Code."
+		"that api.anthropic.com is reachable directly before it says it is done. Watch it to the end. Claude Code sessions already open keep working, through a pass-through that stops itself after an hour unused."
 	writeJSON(w, resp)
 }
 
@@ -107,7 +107,8 @@ echo "widest blast radius first:"
 echo "  1. /etc/hosts redirect + the pf rdr rule            (needs sudo)"
 echo "  2. the local CA's trust in the System keychain      (needs sudo)"
 echo "  3. ~/.claude/settings.json and config.json, from the last backup"
-echo "  4. stops the gateway LaunchAgent"
+echo "  4. stops the gateway LaunchAgent; sessions already open keep working"
+echo "     through a pass-through to Anthropic that stops itself after an hour unused"
 echo "  5. verifies api.anthropic.com is reachable DIRECTLY before saying done"
 echo
 echo "Step 3 restores settings.json wholesale from the most recent backup, so"
@@ -125,7 +126,7 @@ fi
 rc=$?
 echo
 if (( rc == 0 )); then
-  echo "== revert complete -- restart Claude Code =="
+  echo "== revert complete: sessions already open keep working =="
 else
   echo "== rollback.sh exited $rc: something is STILL in the way ==" >&2
   echo "Read its output above; it names the exact checks to run." >&2

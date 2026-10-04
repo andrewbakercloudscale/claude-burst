@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Instant manual rollback: removes Claude Burst's own entries from
+# Instant manual rollback (installed on the PATH as burst-off): removes Claude Burst's own entries from
 # ~/.claude/settings.json and the CA bundle (everything else in them is kept),
 # restores ~/.config/claude-burst/config.json from the most recent snapshot,
 # and stops the gateway LaunchAgent. Safe to run any time, more
@@ -39,6 +39,29 @@ elif [[ -t 0 ]]; then
   sudo -v && HAVE_ROOT=1
 fi
 
+# STEP 0: keep the Claude Code sessions already open working. In base-url
+# mode each one sends to the gateway's port for its whole life, so stopping
+# the gateway below would cut every one of them. A pass-through takes the port
+# the moment the gateway lets go and forwards straight to Anthropic (or the
+# adopted corporate gateway); it stops itself after an hour unused. Started
+# now, before config.json is restored, so it reads the live listen address.
+# The binary decides: transparent mode needs none.
+BIN="${CLAUDE_BURST_BIN:-$HOME/.local/bin/claude-burst}"
+# Burst's ports, read now: config.json may be restored to a snapshot below.
+# The defaults too (gateway 7777, transparent 17777, dashboard 7788), so a
+# leftover from an older setup is caught as well.
+PORTS=(7777 17777 7788)
+if [[ -f "$CONFIG" ]]; then
+  PORTS+=($(python3 -c 'import json,sys
+c=json.load(open(sys.argv[1]))
+for k in ("listen","admin_listen"):
+    v=c.get(k) or ""
+    if ":" in v: print(v.rsplit(":",1)[1])' "$CONFIG" 2>/dev/null))
+fi
+if [[ -x "$BIN" ]]; then
+  "$BIN" passthrough --detach || echo "could not start the pass-through: sessions already open need restarting (claude --resume keeps their history)" >&2
+fi
+
 # STEP 1, BEFORE ANYTHING ELSE: undo the machine-wide transparent-mode changes.
 #
 # While /etc/hosts redirects api.anthropic.com at a port with nothing behind
@@ -46,6 +69,9 @@ fi
 # session. That is the widest-blast-radius state the tool can create, so it is
 # the first thing undone, before any step that could itself fail.
 ROOT_HELPER="$DIR/transparent-root.sh"
+# burst-off runs a copy of this script; prefer the installed root helper if
+# the copy beside it is missing.
+[[ -x "$ROOT_HELPER" ]] || ROOT_HELPER="/usr/local/libexec/claude-burst/transparent-root.sh"
 if [[ -x "$ROOT_HELPER" ]]; then
   if [[ $EUID -eq 0 ]]; then
     "$ROOT_HELPER" remove
@@ -148,6 +174,22 @@ date '+%Y-%m-%d %H:%M:%S rolled back by scripts/rollback.sh' > "$ROLLED_BACK_MAR
 launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
 pkill -f '/claude-burst serve' >/dev/null 2>&1 || true
 echo "stopped claude-burst gateway (if it was running)"
+
+# STEP 1c: nothing else may hold Burst's ports. A stuck gateway, a leftover
+# from a test run or an older install answers on them and fails every
+# session sent there (2026-10-04: test leftovers held 17777 for 20 minutes).
+# The pass-through from STEP 0 is the one thing kept: it is what keeps open
+# sessions working, and it is waiting for exactly this port.
+KEEP="$(cat "$HOME/.config/claude-burst/passthrough.pid" 2>/dev/null)"
+for port in ${(u)PORTS}; do
+  for pid in $(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null); do
+    [[ "$pid" == "$KEEP" ]] && continue
+    echo "port $port: stopping pid $pid ($(ps -o comm= -p "$pid" 2>/dev/null))"
+    kill "$pid" 2>/dev/null
+    for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  done
+done
 echo "  marked $ROLLED_BACK_MARKER so the self-heal watchdog leaves it stopped"
 
 # STEP 2: belt-and-suspenders cleanup for routing overrides that would
@@ -246,7 +288,7 @@ REMOTE="${RESULT#*|}"
 
 if [[ "$HTTP" != "000" && -n "$REMOTE" && "$REMOTE" != 127.* ]]; then
   echo "verified: api.anthropic.com reachable directly (HTTP $HTTP via $REMOTE)"
-  echo "rollback complete -- restart Claude Code"
+  echo "rollback complete: sessions already open keep working, new ones go straight to Anthropic"
 else
   echo "WARNING: could not verify direct connectivity (HTTP ${HTTP:-000}, remote ${REMOTE:-none})" >&2
   echo "  settings/gateway were rolled back, but something is still in the way. Check:" >&2

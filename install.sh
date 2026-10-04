@@ -28,6 +28,7 @@ LABEL="ninja.andrewbaker.claude-burst"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 INSTALL_DIR="$HOME/.local/bin"
 TARGET="$INSTALL_DIR/claude-burst"
+OFF_DIR="$HOME/.local/share/claude-burst"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "claude-burst is Mac-only in this MVP." >&2
@@ -85,6 +86,42 @@ appnap_restore_original() {
     *) defaults delete com.mitchellh.ghostty NSAppSleepDisabled >/dev/null 2>&1 || true ;;
   esac
   rm -f "$APPNAP_ORIGINAL"
+}
+
+# Which intercept mode a fresh install gets. Transparent is the default: it
+# keeps Remote Control, which base-url turns off. Base-url is the second
+# choice, taken only when asked for, when Claude Code already goes through
+# another gateway (enable adopts it, and transparent would see nothing), or
+# when there is no terminal to ask for the password on. A reinstall keeps the
+# mode config.json already names. CLAUDE_BURST_MODE=transparent|base-url
+# skips the question. Prompts go to stderr: the answer is the only stdout.
+choose_intercept_mode() {
+  local cfgjson="$1" set cur answer
+  if [[ -n "${CLAUDE_BURST_MODE:-}" ]]; then echo "$CLAUDE_BURST_MODE"; return; fi
+  set="$(python3 -c "import json;print((json.load(open('$cfgjson')).get('intercept') or {}).get('mode') or '')" 2>/dev/null || true)"
+  if [[ -n "$set" ]]; then echo "$set"; return; fi
+  cur="$(python3 -c "import json;print((json.load(open('$HOME/.claude/settings.json')).get('env') or {}).get('ANTHROPIC_BASE_URL') or '')" 2>/dev/null || true)"
+  if [[ -n "$cur" && "$cur" != http://127.0.0.1:* ]]; then
+    echo "Intercept mode: base-url, because Claude Code already goes through $cur (Burst sits in front of it)." >&2
+    echo base-url; return
+  fi
+  if [[ ! -t 0 ]]; then
+    echo "Intercept mode: base-url for now (no terminal to ask for the password transparent mode needs)." >&2
+    echo "  Switch later from the dashboard: Install, transparent proxy." >&2
+    echo base-url; return
+  fi
+  echo >&2
+  echo "Intercept mode:" >&2
+  echo "  transparent (recommended): Remote Control keeps working; asks for your password" >&2
+  echo "      once, for /etc/hosts, a pf rule and trusting the local CA." >&2
+  echo "  base-url: no password, but Claude Code turns Remote Control off while it is on." >&2
+  read -r "answer?Use transparent mode? [Y/n] " || answer=n
+  if [[ "$answer" == [nN]* ]]; then
+    "$TARGET" configure --intercept-mode base-url >/dev/null
+    echo base-url
+  else
+    echo transparent
+  fi
 }
 
 apply_keep_awake() {
@@ -222,7 +259,8 @@ uninstall() {
   fi
 
   # 4. The LaunchAgent and the binary.
-  rm -f "$PLIST" "$TARGET"
+  rm -f "$PLIST" "$TARGET" "$INSTALL_DIR/burst-off"
+  rm -rf "$OFF_DIR"
   zsh "$ROOT/scripts/update-mod.sh" uninstall
   appnap_restore_original
   if (( purge )); then
@@ -343,6 +381,20 @@ install() {
   mv -f "$staged" "$TARGET"
   printf '%s\n' "$sha" > "$(dirname "$TARGET")/.claude-burst.build-sha"
 
+  # burst-off: one command, on the PATH, that turns Burst off and gets Claude
+  # Code working again, for whoever is stuck and has no idea where the repo
+  # went. It is scripts/rollback.sh, copied with the two helpers it calls so
+  # a moved or deleted checkout cannot take it away. claude-burst enable
+  # turns Burst back on.
+  mkdir -p "$OFF_DIR"
+  cp -f "$ROOT/scripts/rollback.sh" "$ROOT/scripts/transparent-root.sh" "$ROOT/scripts/untrust-ca-systemwide.sh" "$OFF_DIR/"
+  chmod 755 "$OFF_DIR"/*.sh
+  printf '%s\n' '#!/bin/zsh' \
+    '# Turn Claude Burst off and get Claude Code working again. Installed by claude-burst install.sh.' \
+    '# Undo with: claude-burst enable' \
+    'exec /bin/zsh "$HOME/.local/share/claude-burst/rollback.sh" "$@"' > "$INSTALL_DIR/burst-off"
+  chmod 755 "$INSTALL_DIR/burst-off"
+
   ZPROFILE="$HOME/.zprofile"
   PATH_LINE='export PATH="$HOME/.local/bin:$PATH" # claude-burst'
   if ! grep -Fq '# claude-burst' "$ZPROFILE" 2>/dev/null; then
@@ -371,7 +423,13 @@ install() {
     echo "(Routing, Secondary) or see docs/providers.md."
   fi
 
-  "$TARGET" enable
+  local intercept_mode
+  intercept_mode="$(choose_intercept_mode "$cfgjson")"
+  # Transparent mode is enabled by install-proxy.sh below, once the gateway is
+  # up: it backs up, starts the gateway in that mode, then redirects.
+  if [[ "$intercept_mode" != transparent ]]; then
+    "$TARGET" enable
+  fi
 
   apply_keep_awake
 
@@ -405,6 +463,26 @@ PLIST
   launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$UID" "$PLIST"
   launchctl kickstart -k "gui/$UID/$LABEL"
+
+  if [[ "$intercept_mode" == transparent ]]; then
+    "$TARGET" configure --intercept-mode transparent
+    if ! "$ROOT/scripts/install-proxy.sh"; then
+      # Base-url is only safe while nothing redirects api.anthropic.com here:
+      # a redirect left by a half-finished run sends TLS to a plain HTTP port.
+      if grep -q '^# BEGIN claude-burst hosts$' /etc/hosts 2>/dev/null; then
+        echo "Transparent mode did not finish and its /etc/hosts redirect is in place. Undo it with:" >&2
+        echo "  $ROOT/scripts/rollback.sh" >&2
+        exit 1
+      fi
+      echo >&2
+      echo "Transparent mode did not finish (see above); using base-url instead, so Burst works now." >&2
+      echo "Retry transparent later: claude-burst configure --intercept-mode transparent && $ROOT/scripts/install-proxy.sh" >&2
+      echo "  (or the dashboard: Install, transparent proxy)" >&2
+      "$TARGET" configure --intercept-mode base-url
+      "$TARGET" enable
+      launchctl kickstart -k "gui/$UID/$LABEL"
+    fi
+  fi
 
   # Read the port back rather than printing a literal: the default moved off
   # 7777 (see internal/config's Default), and a summary naming a port nothing

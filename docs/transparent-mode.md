@@ -4,7 +4,7 @@
 
 Claude Code disables **Remote Control** whenever `ANTHROPIC_BASE_URL` names a host other
 than `api.anthropic.com` - a check on the literal variable value, not on where the traffic
-ends up ([docs](https://code.claude.com/docs/en/remote-control.md)). The default `base-url`
+ends up ([docs](https://code.claude.com/docs/en/remote-control.md)). The `base-url`
 mode sets exactly that variable, so enabling the gateway costs you that feature.
 
 `transparent` mode leaves the variable unset and gets into the path at the DNS layer
@@ -48,10 +48,10 @@ base-url when you cannot or would rather not touch system files.
 | blast radius | every process on the machine | this user's Claude Code |
 | guards needed | gateway watchdog + pf redirect guard | gateway watchdog |
 
-Note that the code's own default is still `base-url`: it is what an unconfigured install falls back to,
-because it is the only mode that needs no privileges and cannot half-install. That is a safe starting
-point, not a recommendation, pick transparent deliberately, from the dashboard or with
-`claude-burst configure --intercept-mode transparent`.
+`install.sh` sets up transparent mode unless you answer no, Claude Code already goes through another
+gateway (base-url adopts it), or there is no terminal to ask for the password on. If the transparent
+steps cannot finish and nothing was redirected, it falls back to base-url so Burst still works. The
+code's own default for an unset mode is still `base-url`, since it needs no privileges.
 
 The last row is the real trade. While the `/etc/hosts` entry exists, *everything* on the
 Mac that talks to that hostname goes through the gateway, so if the gateway is down,
