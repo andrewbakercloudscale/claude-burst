@@ -64,12 +64,25 @@ for port in 7777 17777 7788; do
   done
 done
 
+# Piped from curl, stdin is this script, so sudo inside install.sh finds no
+# terminal and gives up: ask for the password here, on the terminal, first.
+# install.sh runs with the terminal as its stdin for the same reason.
+say "asking for your password (for /etc/hosts and the pf redirect)"
+if [ -r /dev/tty ]; then sudo -v </dev/tty || exit 1; else sudo -v || exit 1; fi
+( while sleep 50; do kill -0 $$ 2>/dev/null && sudo -n true 2>/dev/null || exit; done ) &
+KEEPALIVE=$!
+trap 'kill $KEEPALIVE 2>/dev/null' INT TERM
+
 say "reinstalling"
 MODE=$(sed -n 's/.*"mode": *"\([a-z-]*\)".*/\1/p' "$CFG/config.json" 2>/dev/null | head -1)
 [ "$MODE" = "base-url" ] || MODE=transparent
 echo "mode: $MODE"
 rm -f "$CFG"/rolled-back "$CFG"/rolled-back-*
-CLAUDE_BURST_MODE=$MODE CLAUDE_BURST_FORCE=1 ./install.sh || exit 1
+if [ -r /dev/tty ]; then
+  CLAUDE_BURST_MODE=$MODE CLAUDE_BURST_FORCE=1 ./install.sh </dev/tty || exit 1
+else
+  CLAUDE_BURST_MODE=$MODE CLAUDE_BURST_FORCE=1 ./install.sh || exit 1
+fi
 
 say "checking the gateway watchdog"
 if launchctl print "gui/$UID/$LABEL-selfheal" >/dev/null 2>&1; then echo "armed"
@@ -112,7 +125,7 @@ fi
 say "checking keep-awake"
 if pmset -g 2>/dev/null | grep -q 'SleepDisabled *1' && grep -q '"keep_awake_lid_closed": *false' "$CFG/config.json" 2>/dev/null; then
   echo "SleepDisabled is on although keep-awake is off: this Mac will never sleep"
-  ask "Turn it off (asks for your password)?" && sudo ./scripts/lid-awake-root.sh remove
+  ask "Turn it off?" && sudo ./scripts/lid-awake-root.sh remove </dev/tty
 else
   echo "OK"
 fi
@@ -133,4 +146,5 @@ else echo "$URL did not answer: run scripts/diagnose.sh and paste the report"; e
 for _ in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:7788/ && break; sleep 1; done
 open "http://127.0.0.1:7788/" 2>/dev/null
 echo
+kill "$KEEPALIVE" 2>/dev/null
 echo "Repaired. Any Claude Code session that still times out: quit it and run claude --continue."
