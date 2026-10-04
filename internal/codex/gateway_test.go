@@ -221,3 +221,64 @@ func TestReadingsSurviveRestart(t *testing.T) {
 		t.Error("the opaque turn-state token was kept")
 	}
 }
+
+// An error reply longer than what is inspected reaches Codex whole.
+func TestLargeErrorBodyForwardedWhole(t *testing.T) {
+	big := strings.Repeat("x", 96<<10)
+	_, _, gw := newTestGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, big)
+	}))
+	resp, err := http.Post(gw.URL+"/backend-api/codex/responses", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || len(b) != len(big) {
+		t.Fatalf("got %d bytes, err %v; want %d", len(b), err, len(big))
+	}
+}
+
+// A completed event bigger than the line limit still yields its usage and
+// model, and the stream reaches Codex unchanged.
+func TestOversizedCompletedEventUsage(t *testing.T) {
+	huge := strings.Repeat("y", maxLine+(1<<20))
+	stream := `data: {"type":"response.completed","response":{"model":"gpt-big","output":[{"text":"` + huge +
+		`"}],"usage":{"input_tokens":5000,"input_tokens_details":{"cached_tokens":1000},"output_tokens":7}}}` + "\n\n"
+	_, mp, gw := newTestGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, stream)
+	}))
+	resp, err := http.Post(gw.URL+"/backend-api/codex/responses", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if len(b) != len(stream) {
+		t.Fatalf("stream %d bytes, want %d", len(b), len(stream))
+	}
+	e := waitEvents(t, mp, 1)[0]
+	if e.Model != "gpt-big" || e.InputTokens != 4000 || e.CacheReadTokens != 1000 || e.OutputTokens != 7 || e.Note != "" {
+		t.Errorf("recorded %+v", e)
+	}
+}
+
+// When a huge completed event's usage cannot be found it is marked unknown,
+// never recorded as a free turn.
+func TestOversizedCompletedEventWithoutUsageIsUnknown(t *testing.T) {
+	huge := strings.Repeat("y", maxLine+(1<<20))
+	stream := `data: {"type":"response.completed","response":{"model":"gpt-big","output":"` + huge + `"}}` + "\n\n"
+	_, mp, gw := newTestGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, stream)
+	}))
+	resp, err := http.Post(gw.URL+"/backend-api/codex/responses", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if e := waitEvents(t, mp, 1)[0]; !strings.Contains(e.Note, "tokens unknown") {
+		t.Errorf("recorded %+v", e)
+	}
+}

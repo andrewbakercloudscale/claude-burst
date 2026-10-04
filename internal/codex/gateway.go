@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,9 +201,7 @@ func (g *Gateway) observe(resp *http.Response) error {
 	if resp.StatusCode >= 400 {
 		// An error body is small and read whole: it says why, and the
 		// usage-limit refusal is told apart by it.
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(b))
+		b := peekBody(resp, 64<<10)
 		g.noteRefusal(resp.StatusCode, resp.Header, b)
 		g.record(r, resp.StatusCode, usage{}, snippet(b))
 		return nil
@@ -216,12 +215,7 @@ func (g *Gateway) observe(resp *http.Response) error {
 // list is a few hundred KB of instructions and is read whole, then handed
 // on to Codex unchanged.
 func (g *Gateway) noteModels(resp *http.Response) {
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	resp.Body.Close()
-	resp.Body = io.NopCloser(bytes.NewReader(b))
-	if err != nil {
-		return
-	}
+	b := peekBody(resp, 16<<20)
 	if w := ParseWindows(b); len(w) > 0 {
 		g.mu.Lock()
 		g.windows = w
@@ -338,10 +332,12 @@ func snippet(b []byte) string {
 
 // usage is what a finished turn reports in its response.completed event.
 type usage struct {
-	Model  string
-	Input  int64 // including cached, as OpenAI counts it
-	Cached int64
-	Output int64
+	// Unknown: the turn completed but its usage could not be read.
+	Unknown bool
+	Model   string
+	Input   int64 // including cached, as OpenAI counts it
+	Cached  int64
+	Output  int64
 }
 
 func (g *Gateway) record(r *http.Request, status int, u usage, note string) {
@@ -371,6 +367,9 @@ func (g *Gateway) record(r *http.Request, status int, u usage, note string) {
 		CacheReadTokens: u.Cached,
 		Note:            note,
 	}
+	if u.Unknown && e.Note == "" {
+		e.Note = "tokens unknown: the completed event was too large to read whole and its usage was not found"
+	}
 	// One line per turn, metadata only, so the gateway log (and with it
 	// scripts/diagnose.sh) shows Codex's traffic beside Claude Code's.
 	g.logger.Printf("codex: turn status=%d model=%q in=%d cached=%d out=%d ms=%d session=%s", status, u.Model, uncached, u.Cached, u.Output, e.DurationMS, e.SessionID)
@@ -391,9 +390,16 @@ type sseTap struct {
 	got  bool
 	done func(usage)
 	once sync.Once
+	// An oversized line (a completed event carrying a huge output) is not
+	// held whole: its start (with the model) is kept in line, its last
+	// tailMax bytes in tail, and usage is decoded from whichever holds it.
+	tail []byte
 }
 
-const maxLine = 4 << 20
+const (
+	maxLine = 4 << 20
+	tailMax = 256 << 10
+)
 
 func (t *sseTap) Read(p []byte) (int, error) {
 	n, err := t.rc.Read(p)
@@ -425,19 +431,63 @@ func (t *sseTap) scan(b []byte) {
 }
 
 func (t *sseTap) add(b []byte) {
-	if t.skip {
+	if !t.skip && len(t.line)+len(b) > maxLine {
+		t.skip = true
+		t.tail = t.tail[:0]
+	}
+	if !t.skip {
+		t.line = append(t.line, b...)
 		return
 	}
-	if len(t.line)+len(b) > maxLine {
-		t.skip, t.line = true, t.line[:0]
+	t.tail = append(t.tail, b...)
+	if len(t.tail) > 2*tailMax {
+		t.tail = append(t.tail[:0], t.tail[len(t.tail)-tailMax:]...)
+	}
+}
+
+var (
+	usageKey = []byte(`"usage":`)
+	modelRe  = regexp.MustCompile(`"model"\s*:\s*"([^"]+)"`)
+)
+
+// endBigLine reads an oversized completed event from its kept start and end.
+func (t *sseTap) endBigLine() {
+	head, tail := t.line, t.tail
+	t.line, t.tail, t.skip = t.line[:0], t.tail[:0], false
+	if !bytes.Contains(head, []byte(`"response.completed"`)) {
 		return
 	}
-	t.line = append(t.line, b...)
+	t.got = true // a completed turn, whether or not its usage is found
+	if m := modelRe.FindSubmatch(head); m != nil {
+		t.u.Model = string(m[1])
+	}
+	for _, part := range [][]byte{tail, head} {
+		i := bytes.LastIndex(part, usageKey)
+		if i < 0 {
+			continue
+		}
+		var u struct {
+			InputTokens        int64 `json:"input_tokens"`
+			OutputTokens       int64 `json:"output_tokens"`
+			InputTokensDetails struct {
+				CachedTokens int64 `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		}
+		if json.NewDecoder(bytes.NewReader(part[i+len(usageKey):])).Decode(&u) == nil {
+			t.u.Input, t.u.Output, t.u.Cached = u.InputTokens, u.OutputTokens, u.InputTokensDetails.CachedTokens
+			return
+		}
+	}
+	t.u.Unknown = true
 }
 
 func (t *sseTap) endLine() {
+	if t.skip {
+		t.endBigLine()
+		return
+	}
 	line := t.line
-	t.line, t.skip = t.line[:0], false
+	t.line = t.line[:0]
 	data, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data: "))
 	if !ok || !bytes.Contains(data, []byte(`"response.completed"`)) {
 		return
@@ -465,4 +515,16 @@ func (t *sseTap) endLine() {
 		Output: ev.Response.Usage.OutputTokens,
 	}
 	t.got = true
+}
+
+// peekBody returns up to n bytes of a reply for inspection and puts them
+// back in front of the rest, so the client still gets the whole body,
+// however long, at the length its Content-Length promised.
+func peekBody(resp *http.Response, n int64) []byte {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, n))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(b), resp.Body), resp.Body}
+	return b
 }

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1464,5 +1465,35 @@ func TestStatusReturnsMapsTheCallerOwns(t *testing.T) {
 	st.ModelClaim["m"] = "changed"
 	if s.state.ModelOverflow["m"] != 1 || s.state.ModelClaim["m"] != "c" {
 		t.Fatal("Status returned the server's own maps")
+	}
+}
+
+// A redirect from upstream goes back to the client unfollowed: the request,
+// with its x-api-key, never reaches the host the Location names.
+func TestRedirectIsNotFollowedWithTheKey(t *testing.T) {
+	var leaked atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key") != "" {
+			leaked.Add(1)
+		}
+		w.WriteHeader(200)
+	}))
+	defer other.Close()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer up.Close()
+	s, _ := newTestServer(t, up.URL, "")
+	for _, path := range []string{"/v1/messages", "/v1/models"} {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+path, strings.NewReader(`{"model":"claude-opus-5-5","messages":[]}`))
+		req.Header.Set("X-Api-Key", "synthetic-secret")
+		rr := httptest.NewRecorder()
+		s.ServeHTTP(rr, req)
+		if rr.Code != http.StatusTemporaryRedirect {
+			t.Errorf("%s: got %d, want the 307 passed back", path, rr.Code)
+		}
+	}
+	if leaked.Load() != 0 {
+		t.Fatalf("the key reached the redirect target %d time(s)", leaked.Load())
 	}
 }

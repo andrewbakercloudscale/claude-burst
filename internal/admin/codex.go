@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -90,6 +91,23 @@ func (s *Server) handleCodexRoute(enable bool) http.HandlerFunc {
 			if cfg.CodexListen() == "" {
 				http.Error(w, `the Codex gateway is off (codex.listen is "off" in config.json)`, http.StatusConflict)
 				return
+			}
+			// Never point Codex at a port nothing answers: every turn
+			// would fail. The listener this process started is the one
+			// wanted, and it must still accept a connection now.
+			if s.codex == nil {
+				why := "it is not running"
+				if s.codexErr != "" {
+					why = s.codexErr
+				}
+				http.Error(w, "the Codex gateway is not listening ("+why+"), so Codex was left going straight to ChatGPT. Fix that first: see Trace the path.", http.StatusConflict)
+				return
+			}
+			if c, derr := net.DialTimeout("tcp", cfg.CodexListen(), 2*time.Second); derr != nil {
+				http.Error(w, "nothing answers on "+cfg.CodexListen()+" ("+derr.Error()+"), so Codex was left going straight to ChatGPT.", http.StatusConflict)
+				return
+			} else {
+				c.Close()
 			}
 			err = codex.Enable(path, cfg.CodexListen(), backups)
 		} else {

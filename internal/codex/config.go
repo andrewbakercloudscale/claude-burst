@@ -49,9 +49,13 @@ type Status struct {
 }
 
 var (
-	providerLine = regexp.MustCompile(`^\s*model_provider\s*=\s*"([^"]*)"`)
+	// model_provider as a bare or quoted key, with a basic or literal
+	// string value: TOML allows all four, and missing one writes the key a
+	// second time, which Codex refuses to start with.
+	providerLine = regexp.MustCompile(`^\s*(?:model_provider|"model_provider"|'model_provider')\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))`)
 	baseURLRe    = regexp.MustCompile(`base_url\s*=\s*"([^"]*)"`)
 	tableLine    = regexp.MustCompile(`^\s*\[`)
+	ownTable     = regexp.MustCompile(`(?m)^\s*\[?\s*model_providers\.(?:claude-burst|"claude-burst"|'claude-burst')\s*(?:\]|=|\.|$)`)
 )
 
 // ReadStatus reports Codex's routing from its config file.
@@ -95,16 +99,36 @@ func split(s string) (ours, rest string) {
 }
 
 // topLevelProvider is a model_provider set before the first [table].
+// Lines inside a multi-line string are skipped: a "[x]" or a
+// "model_provider =" in one is text, not TOML.
 func topLevelProvider(s string) string {
 	sc := bufio.NewScanner(strings.NewReader(s))
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
+	inMulti := ""
 	for sc.Scan() {
 		line := sc.Text()
+		if inMulti != "" {
+			if strings.Count(line, inMulti)%2 == 1 {
+				inMulti = ""
+			}
+			continue
+		}
 		if tableLine.MatchString(line) {
 			return ""
 		}
 		if m := providerLine.FindStringSubmatch(line); m != nil {
-			return m[1]
+			for _, v := range m[1:] {
+				if v != "" {
+					return v
+				}
+			}
+			return "(empty)"
+		}
+		for _, q := range []string{`"""`, "'''"} {
+			if strings.Count(line, q)%2 == 1 {
+				inMulti = q
+				break
+			}
 		}
 	}
 	return ""
@@ -133,6 +157,11 @@ func Enable(path, listen, backupDir string) error {
 	_, rest := split(string(b))
 	if p := topLevelProvider(rest); p != "" {
 		return fmt.Errorf("%w (model_provider = %q in %s): remove that line to route Codex through Burst", ErrConflict, p, path)
+	}
+	// The block defines model_providers.claude-burst; the same table defined
+	// elsewhere would be a second definition, which TOML refuses.
+	if ownTable.MatchString(rest) {
+		return fmt.Errorf("%w (%s already defines a %q provider of its own)", ErrConflict, path, ProviderID)
 	}
 	if len(b) > 0 {
 		if err := backup(path, b, backupDir); err != nil {

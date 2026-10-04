@@ -3,6 +3,9 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"github.com/andrewbakercloudscale/claude-burst/internal/codex"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +17,53 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
+
+// withCodexGateway gives s a running Codex gateway on a free port, named in
+// this test's config.json, so nothing touches the real 7779.
+func withCodexGateway(t *testing.T, s *Server) string {
+	t.Helper()
+	g, err := codex.New("http://127.0.0.1:1", filepath.Join(t.TempDir(), "codex-metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(g)
+	t.Cleanup(gw.Close)
+	addr := strings.TrimPrefix(gw.URL, "http://")
+	setCodexListen(t, addr)
+	s.SetCodex(g, "")
+	return addr
+}
+
+func setCodexListen(t *testing.T, addr string) {
+	t.Helper()
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".config", "claude-burst")
+	os.MkdirAll(dir, 0o700)
+	cfg := config.Default()
+	cfg.Codex.Listen = addr
+	b, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A listener that failed to start is never routed to: 409, file untouched.
+func TestCodexEnableRefusedWhenListenerFailed(t *testing.T) {
+	s := newTestServer(t)
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	orig := "notify = 1\n"
+	os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(orig), 0o600)
+	setCodexListen(t, "127.0.0.1:1")
+	s.SetCodex(nil, "bind 127.0.0.1:1: address already in use")
+	rr := mutate(t, s, "/api/codex/enable", "")
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "address already in use") {
+		t.Fatalf("got %d %s", rr.Code, rr.Body)
+	}
+	if b, _ := os.ReadFile(filepath.Join(codexHome, "config.toml")); string(b) != orig {
+		t.Errorf("config.toml changed: %q", b)
+	}
+}
 
 func codexStateOf(t *testing.T, s *Server) codexState {
 	t.Helper()
@@ -38,15 +88,16 @@ func TestCodexEnableDisableFromDashboard(t *testing.T) {
 	t.Setenv("CODEX_HOME", codexHome)
 	orig := "notify = 1\n"
 	os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(orig), 0o600)
+	addr := withCodexGateway(t, s)
 
-	if st := codexStateOf(t, s); st.Status.Enabled || st.Listen != config.DefaultCodexListen {
+	if st := codexStateOf(t, s); st.Status.Enabled || st.Listen != addr {
 		t.Fatalf("before: %+v", st)
 	}
 	if rr := mutate(t, s, "/api/codex/enable", ""); rr.Code != http.StatusOK {
 		t.Fatalf("enable: %d %s", rr.Code, rr.Body)
 	}
 	st := codexStateOf(t, s)
-	if !st.Status.Enabled || st.Status.BaseURL != "http://127.0.0.1:7779/backend-api/codex" {
+	if !st.Status.Enabled || st.Status.BaseURL != "http://"+addr+"/backend-api/codex" {
 		t.Errorf("after enable: %+v", st.Status)
 	}
 	if rr := mutate(t, s, "/api/codex/disable", ""); rr.Code != http.StatusOK {
@@ -63,6 +114,7 @@ func TestCodexEnableConflictIsReported(t *testing.T) {
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
 	os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("model_provider = \"ollama\"\n"), 0o600)
+	withCodexGateway(t, s)
 	rr := mutate(t, s, "/api/codex/enable", "")
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "ollama") {
 		t.Fatalf("got %d %s", rr.Code, rr.Body)
