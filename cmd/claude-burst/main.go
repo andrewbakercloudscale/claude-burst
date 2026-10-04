@@ -73,6 +73,8 @@ func main() {
 		disable(os.Args[2:])
 	case "passthrough":
 		passthroughCmd(os.Args[2:])
+	case "notice":
+		noticeCmd(os.Args[2:])
 	case "uninstall-hooks":
 		uninstallHooks(os.Args[2:])
 	case "ca-rotate":

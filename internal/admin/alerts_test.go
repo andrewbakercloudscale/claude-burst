@@ -33,8 +33,9 @@ func captureAlerts(t *testing.T) func() []string {
 	}
 }
 
-// Guard log lines become on-screen alerts.
-func TestGuardLinesBecomeOnScreenAlerts(t *testing.T) {
+// pf guard log lines are not alerts: pf-heal.sh puts up its own, from the
+// first failed repair, so these would be a second popup for each.
+func TestPfGuardLinesAreNotAlerts(t *testing.T) {
 	s := newTestServer(t)
 	alerts := captureAlerts(t)
 	pf := isolateGuardLogs(t)
@@ -52,8 +53,7 @@ func TestGuardLinesBecomeOnScreenAlerts(t *testing.T) {
 	appendLine(t, pf, "2026-10-03 10:02:05 HEALED: anchor reloaded")
 	s.notifyRound(n, time.Now())
 
-	got := alerts()
-	if len(got) != 2 || got[0] != "error: pf guard hit a problem" || got[1] != "ok: pf guard repaired the redirect" {
+	if got := alerts(); len(got) != 0 {
 		t.Fatalf("alerts = %q", got)
 	}
 }
