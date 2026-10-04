@@ -212,8 +212,11 @@ bash "$ROOT/scripts/backup-config.sh"
 # is built once at startup, so the two can drift apart) compiled fine, built
 # fine, and passed both packages' own unit tests -- it only shows up when
 # admin and router are driven together over the wire.
+# Offline and bounded: CLAUDE_BURST_LIVE is unset so no test reaches the
+# internet (a slow Together once failed a deploy of unrelated code), and a
+# hung test fails the deploy in 5 minutes rather than holding it open.
 log "running test suite..."
-if ! (cd "$ROOT" && go test ./... -race); then
+if ! (cd "$ROOT" && env -u CLAUDE_BURST_LIVE go test ./... -race -timeout 5m); then
   fail "test suite failed -- nothing was built, gateway untouched, still enabled"
 fi
 log "tests passed"

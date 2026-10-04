@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 )
 
 // Every unit test in provider_openai_test.go asserts on JSON that this
@@ -15,14 +16,20 @@ import (
 // "correct" against our own assumption for months while Together answered
 // 400 Invalid JSON data: missing field `parameters` to the real thing.
 //
-// This one asks the endpoint. It needs a key, so it cannot run in an
-// ordinary `go test ./...`:
+// This one asks the endpoint, over the internet, so it never runs unasked:
+// it needs CLAUDE_BURST_LIVE=1 as well as a key. A key alone used to be
+// enough, and one exported in a shell profile put a network call in every
+// `go test ./...`, deploy.sh's included: a slow Together failed a deploy of
+// unrelated code (2026-10-04).
 //
-//	TOGETHER_API_KEY=$(security find-generic-password -s claude-burst-together -w) \
+//	CLAUDE_BURST_LIVE=1 TOGETHER_API_KEY=$(security find-generic-password -s claude-burst-together -w) \
 //	  go test ./internal/router/ -run TestLiveSecondary -v
 //
 // Run it after any change to translateAnthropicRequest.
 func TestLiveSecondaryAcceptsTranslatedRequest(t *testing.T) {
+	if os.Getenv("CLAUDE_BURST_LIVE") != "1" {
+		t.Skip("live test: set CLAUDE_BURST_LIVE=1 (and TOGETHER_API_KEY) to run it")
+	}
 	key := os.Getenv("TOGETHER_API_KEY")
 	if key == "" {
 		t.Skip("TOGETHER_API_KEY not set -- see the comment above for how to run this")
@@ -50,7 +57,7 @@ func TestLiveSecondaryAcceptsTranslatedRequest(t *testing.T) {
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
