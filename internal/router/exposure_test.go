@@ -34,7 +34,7 @@ func TestExposureAnnouncedOncePerStep(t *testing.T) {
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("exposure alerts = %q, want %q", got, want)
 	}
-	if len(st.notices) != 3 || !strings.Contains(st.notices[0], "If Burst drops out, the next turn sends all of it uncached") {
+	if len(st.notices) != 3 || !strings.Contains(st.notices[0], "without Burst it all goes uncached") {
 		t.Fatalf("session lines = %q", st.notices)
 	}
 }
