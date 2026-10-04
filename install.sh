@@ -396,16 +396,24 @@ install() {
   # Which secondary config.json names, if any. Read rather than assumed: a
   # reinstall keeps a Together or OpenRouter secondary chosen earlier, and
   # telling that user they have none would be wrong.
-  local cfgjson="$HOME/.config/claude-burst/config.json" secondary
+  local cfgjson="$HOME/.config/claude-burst/config.json" secondary seckc
   secondary="$(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('provider') or '')" 2>/dev/null || true)"
+  seckc="$(python3 -c "import json;s=json.load(open('$cfgjson')).get('secondary') or {};print(s.get('keychain_service') or '')" 2>/dev/null || true)"
 
   if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
     "$TARGET" keychain-set
-  elif [[ "$secondary" == openai-compatible ]]; then
-    echo "Secondary: kept the OpenAI-compatible secondary already in config.json."
+  elif [[ "$secondary" == openai-compatible ]] && security find-generic-password -s "${seckc:-claude-burst-together}" >/dev/null 2>&1; then
+    echo "Secondary: kept the OpenAI-compatible secondary already in config.json, with its key in the Keychain."
   elif [[ "$secondary" == bedrock ]] && security find-generic-password -s claude-burst-bedrock >/dev/null 2>&1; then
     echo "Secondary: kept Amazon Bedrock, with the key already in the Keychain."
   else
+    # A secondary named in config.json with no key in the Keychain is not a
+    # secondary: every overflow to it would fail. So no key means none, set
+    # explicitly, and the dashboard shows "not set up" instead of a broken one.
+    if [[ -n "$secondary" && "$secondary" != none ]]; then
+      echo "Secondary: $secondary was named but has no key in the Keychain, so it is switched off."
+    fi
+    "$TARGET" configure --secondary none >/dev/null
     echo "NOTE: no secondary chosen, so Claude Burst runs on your single plan (Claude Enterprise, Pro or Max)."
     echo "Everything but overflow works, and Anthropic's own limits reach Claude Code unchanged."
     echo "To overflow to Together AI, OpenRouter or Amazon Bedrock later, pick one on the dashboard"
