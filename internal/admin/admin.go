@@ -119,6 +119,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/codex", s.readOnly(s.handleCodex))
 	mux.HandleFunc("/api/codex/enable", s.mutating(s.handleCodexRoute(true)))
 	mux.HandleFunc("/api/codex/disable", s.mutating(s.handleCodexRoute(false)))
+	mux.HandleFunc("/api/codex/trace", s.mutating(s.handleCodexTrace))
+	mux.HandleFunc("/api/codex/test-turn", s.mutating(s.handleCodexTestTurn))
 	mux.HandleFunc("/api/responses", s.readOnly(s.handleResponses))
 	mux.HandleFunc("/api/history", s.readOnly(s.handleHistory))
 	mux.HandleFunc("/api/usage", s.readOnly(s.handleUsage))

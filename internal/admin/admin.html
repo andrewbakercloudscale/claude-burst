@@ -1833,8 +1833,11 @@
       <div class="row" style="margin-top:10px">
         <button class="success" id="codexEnable" type="button">Route Codex through Burst</button>
         <button id="codexDisable" type="button">Send Codex straight to ChatGPT</button>
+        <button id="codexTrace" type="button" title="Checks every hop of Codex's path: config, Burst's port, the ChatGPT sign-in, DNS, chatgpt.com, a signed-in call through Burst, and the network path (mtr). No plan usage.">&#x21CC; Trace the path</button>
+        <button id="codexTestTurn" type="button" title="Runs the Codex CLI once, forced through Burst, and checks the turn was recorded. Uses a few thousand tokens of the ChatGPT plan.">&#x25B6; Send a test turn</button>
       </div>
       <div id="codexNote"></div>
+      <div id="codexTraceOut"></div>
       <div class="kpis cx-kpis" id="codexKpis"></div>
       <h3 class="cx-h3">ChatGPT plan limits <span class="hint">as ChatGPT reported them on Codex's last turn</span></h3>
       <div id="codexLimits"><div class="empty">No Codex turn has passed through yet.</div></div>
@@ -4738,6 +4741,23 @@ $("codexDisable").onclick = async () => {
   finally { $("codexDisable").disabled = false; loadCodex(); }
 };
 setInterval(() => { if (!document.hidden && currentTab === "codex") loadCodex(); }, 15000);
+
+// Both tests draw into the same place; the trace reuses Claude Code's
+// trace drawing (traceHTML).
+async function codexTest(btn, path, waiting, draw) {
+  const out = $("codexTraceOut");
+  ["codexTrace", "codexTestTurn"].forEach(id => $(id).disabled = true);
+  out.innerHTML = `<div class="note warn">${esc(waiting)}</div>`;
+  try { out.innerHTML = draw(await post(path)); }
+  catch (e) { note(out, "bad", e.message); }
+  finally { ["codexTrace", "codexTestTurn"].forEach(id => $(id).disabled = false); loadCodex(); }
+}
+$("codexTrace").onclick = () => codexTest($("codexTrace"), "/api/codex/trace",
+  "Tracing Codex's path. With the network path this takes up to about 20 seconds...", traceHTML);
+$("codexTestTurn").onclick = () => codexTest($("codexTestTurn"), "/api/codex/test-turn",
+  "Running Codex once through Burst (about 10 seconds)...",
+  r => `<div class="note ${r.ok ? "ok" : "bad"}">${esc(r.detail)}</div>` +
+    (r.output ? `<details style="margin-top:6px"><summary class="hint">Codex's output</summary><pre class="mono" style="white-space:pre-wrap;font-size:11.5px">${esc(r.output)}</pre></details>` : ""));
 
 // The checks ARE refreshed on a timer, unlike the lists: a page left open
 // read "5/7, watchdog not armed" for an hour after the watchdog was armed

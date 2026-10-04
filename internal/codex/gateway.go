@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -130,6 +131,12 @@ func New(upstream, metricsPath string, logger *log.Logger) (*Gateway, error) {
 		FlushInterval:  -1,
 		ModifyResponse: g.observe,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// Codex hung up first (it cancels a model list it no longer
+			// needs): nothing failed, and nobody is left to answer.
+			if errors.Is(err, context.Canceled) && r.Context().Err() != nil {
+				g.record(r, metrics.StatusClientClosed, usage{}, "Codex closed the request")
+				return
+			}
 			logger.Printf("codex: %s %s failed: %v", r.Method, r.URL.Path, err)
 			g.record(r, http.StatusBadGateway, usage{}, "upstream unreachable: "+err.Error())
 			http.Error(w, "Claude Burst could not reach "+u.Host+": "+err.Error(), http.StatusBadGateway)
@@ -165,6 +172,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.last = time.Now()
 	g.mu.Unlock()
+	// A WebSocket is passed through but its turns are not read: logged, so
+	// diagnose shows when Codex uses one and the counts would be short.
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		g.logger.Printf("codex: websocket %s (passed through; its turns are not counted)", r.URL.Path)
+	}
 	r = r.WithContext(context.WithValue(r.Context(), startKey{}, time.Now()))
 	g.proxy.ServeHTTP(w, r)
 }

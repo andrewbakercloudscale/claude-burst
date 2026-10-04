@@ -111,6 +111,7 @@ type traceDeps struct {
 	dial       func(ctx context.Context, network, addr string) (net.Conn, error)
 	findNode   func() string
 	findMtr    func() string
+	findCodex  func() string
 	run        func(ctx context.Context, env []string, name string, args ...string) (stdout, stderr []byte, err error)
 	// keychainLogin returns Claude Code's stored login (JSON).
 	keychainLogin func() (string, error)
@@ -136,6 +137,9 @@ func (s *Server) traceDeps() traceDeps {
 		d.findMtr = func() string {
 			return findBinary("mtr", "/opt/homebrew/sbin/mtr", "/usr/local/sbin/mtr", "/opt/homebrew/bin/mtr", "/usr/local/bin/mtr")
 		}
+	}
+	if d.findCodex == nil {
+		d.findCodex = func() string { return findBinary("codex", codexCLIPaths...) }
 	}
 	if d.run == nil {
 		d.run = runCommand
@@ -872,10 +876,17 @@ func (s *Server) upstreamPath(ctx context.Context, d traceDeps, cfg config.Confi
 	}
 	ip := addrs[0]
 	leg.Name = fmt.Sprintf("gateway to %s (%s)", host, ip)
+	mtrLeg(ctx, d, &leg, ip)
+	return leg
+}
+
+// mtrLeg fills leg with the network path to ip as mtr sees it, or a note
+// saying why it could not. Shared by the Claude Code and Codex traces.
+func mtrLeg(ctx context.Context, d traceDeps, leg *traceLeg, ip string) {
 	mtr := d.findMtr()
 	if mtr == "" {
 		leg.Note = "mtr not available: install it with `brew install mtr` to see the network path here"
-		return leg
+		return
 	}
 	mctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -902,7 +913,6 @@ func (s *Server) upstreamPath(ctx context.Context, d traceDeps, cfg config.Confi
 		leg.Hops = hops
 		leg.Note = fmt.Sprintf("mtr, 3 cycles, %d hops", len(hops))
 	}
-	return leg
 }
 
 func mtrPacket(mtr string) string {
