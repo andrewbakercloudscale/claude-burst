@@ -67,6 +67,8 @@ func main() {
 		configure(os.Args[2:])
 	case "codex":
 		codexCmd(os.Args[2:])
+	case "console":
+		consoleCmd(os.Args[2:])
 	case "keychain-set":
 		keychainSet(os.Args[2:])
 	case "enable":
@@ -122,6 +124,7 @@ Commands:
   shunt disable     Remove the hook and skill of token shunting (removed), if an earlier install left them
   coord             Session coordination: status, send, release (see: coord help)
   codex             Codex through Burst: enable, disable, status (gateway on 127.0.0.1:7779)
+  console           support console: audit, log, restart and repair, up when the gateway is not (127.0.0.1:7789)
   version           Print version
 
 Admin UI:

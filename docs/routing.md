@@ -18,7 +18,7 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 2. Claude Burst forwards the request to `https://api.anthropic.com` unchanged, including the user's saved Claude subscription OAuth credential and required beta headers.
 3. Successful responses stream straight back to Claude Code.
 4. Generic `429` responses do **not** trigger overflow.
-5. Overflow activates only when Anthropic's subscription headers indicate a rejected unified limit, for example `anthropic-ratelimit-unified-status: rejected`, or when an explicit subscription-limit error is returned.
+5. Overflow activates only on a `429` whose subscription headers indicate a rejected unified limit (a `400` or `529` sent while a window shows rejected, as on overage, is that error and never fails over), for example `anthropic-ratelimit-unified-status: rejected`, or when an explicit subscription-limit error is returned.
 6. Claude Burst reads Anthropic's reset timestamp and persists it against **the model that was refused**, not the account.
 7. The rejected request is replayed down that model's `fallback_chain` first, another Claude model, still on the subscription, still free.
 8. Only when every rung has a rejection window of its own does the request go to the configured secondary, Together AI, OpenRouter, any other OpenAI-compatible endpoint, or Amazon Bedrock, using a credential stored in macOS Keychain.
@@ -28,14 +28,24 @@ Anthropic's Claude Code gateway documentation explicitly supports `ANTHROPIC_BAS
 ## When the network itself is the problem
 
 A laptop changing WiFi looks like an Anthropic outage from the inside, and failing over does
-not help: the secondary is behind the same network. Four rules keep it from being treated as
+not help: the secondary is behind the same network. These rules keep it from being treated as
 one (the first three from the 2026-09-21 evening, when a hotspot-to-LAN switch put a healthy primary's
 traffic behind a secondary that could not answer for five minutes):
 
-- **A dead pooled connection is retried once, on a fresh one.** A `write: broken pipe` means
-  the kept-alive connection died and the server never saw the request, so it is safe to resend
-  and is not counted as a failure. Read-side resets are *not* retried: the server may already
-  have run the request.
+- **A dead pooled connection is retried once, on a fresh one, with or without a secondary.** A
+  `write: broken pipe` means the kept-alive connection died and the server never saw the
+  request. An HTTP/2 connection that never sends headers back (`timeout awaiting response
+  headers`) or a local address that vanished (`can't assign requested address`) is the same
+  network switch seen from the other side; the request may have run, so it is resent once and
+  never more (at worst one turn twice on the subscription, against a paid failover). Read-side
+  resets are *not* retried. With no secondary configured this one resend is all Burst does
+  before handing the error to Claude Code, whose own retries show on screen.
+- **Anthropic gets about 30 seconds before anything fails over.** Errors that prove nothing was
+  sent (a connect or TLS handshake timeout, a failed lookup) are retried at 2, 4, 8 and 16
+  seconds; then the request goes down the model's `fallback_chain` on the subscription; only
+  then to the secondary.
+- **A request nobody is waiting for never fails over.** If Claude Code gave up while the retries
+  ran, the request ends there: no window, no alert, nothing sent to a paid provider.
 - **Silence while DNS is down does not fail over.** If the far side did not answer (a timeout,
   not a refused or reset connection) *and* the control lookup of `www.apple.com` fails, the
   request gets a fast, explicit 502 instead of waiting on a second dead host.

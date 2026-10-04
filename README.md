@@ -1,15 +1,18 @@
-# Claude Burst: the missing control plane for Claude Code
+# Claude Burst: the missing control plane for Claude Code (and Codex)
 
-> **Broken?** Paste one line into Terminal: [**Repair**](#repair-burst) fixes the common problems, [**Diagnose**](#diagnose-burst) copies a report to the clipboard. Also: [**Update and reinstall**](#update-and-reinstall-burst) · [**Bypass Burst**](#bypass-burst)
+> **Broken?** Open the [**support console**](#support-console) at http://127.0.0.1:7789/: what happened, the log around it, and Restart and Repair buttons, up even when the gateway is not. Or paste one line into Terminal: [**Repair**](#repair-burst) fixes the common problems, [**Diagnose**](#diagnose-burst) copies a report to the clipboard. Also: [**Update and reinstall**](#update-and-reinstall-burst) · [**Bypass Burst**](#bypass-burst)
 
-The ops layer for running Claude Code all day on a Mac: subscription-first routing with overflow to GLM/OpenRouter/Bedrock, pauseless compaction, session coordination and handover across parallel sessions, lid-shut keep-awake with automatic hotspot join for Remote Control, and a dashboard for cost, health and guards.
+The ops layer for running Claude Code all day on a Mac, and now OpenAI's Codex too: subscription-first routing with overflow to GLM/OpenRouter/Bedrock, pauseless compaction, session coordination and handover across parallel sessions, lid-shut keep-awake with automatic hotspot join for Remote Control, a dashboard for cost, health and guards, and an audit of every alert and action.
+
+**Now supports Codex.** Codex (the CLI and the ChatGPT desktop app, signed in with ChatGPT) can route through Burst with one click on the dashboard's Codex tab or `claude-burst codex enable`: tokens per turn, each session's context against its window, the ChatGPT plan's limits, a path trace and a test turn. Requests reach ChatGPT unchanged. See [Codex](docs/codex.md).
 
 > **What it changes on your Mac**
 >
 > | Change | When | Undo |
 > |---|---|---|
 > | Entries in `~/.claude/settings.json`: hooks for the features you switch on, and `ANTHROPIC_BASE_URL` in base-url mode | always (hooks only for features you turn on) | [Claude Code settings and hooks](ROLLBACK.md#claude-code-settings-and-hooks-claude) |
-> | A LaunchAgent that runs the gateway, plus the binary in `~/.local/bin` | always | [Always installed](ROLLBACK.md#always-installed) |
+> | A LaunchAgent that runs the gateway, one for the support console, plus the binary in `~/.local/bin` | always | [Always installed](ROLLBACK.md#always-installed) |
+> | Burst's block at the top of `~/.codex/config.toml` | only when you route Codex through Burst | `claude-burst codex disable` |
 > | An `/etc/hosts` entry, a pf redirect and a trusted root CA (name-constrained to `api.anthropic.com`, in the System keychain) | transparent mode only, which you choose | [Transparent mode](ROLLBACK.md#transparent-mode-machine-wide-root) |
 > | `pmset disablesleep` and a root LaunchDaemon | lid keep-awake only, off by default | [Lid shut and hotspot](ROLLBACK.md#lid-shut-and-hotspot) |
 > | Root LaunchDaemon and user LaunchAgent guards | when you arm them | [Guards](ROLLBACK.md#guards) |
@@ -21,6 +24,10 @@ Claude Burst is a local gateway that sits between Claude Code and Anthropic. **I
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
 
 ## Fix or update Burst: copy-paste scripts
+
+### Support console
+
+http://127.0.0.1:7789/ is a small page served by its own process, so it answers when the gateway and its dashboard do not: which part is down, the latest log lines, the audit (every on-screen alert and every action taken from the dashboard or the console, each with the log lines around it), and buttons to Restart the gateway, Repair, write a Diagnostic report or Turn Burst off. Turning Burst off leaves it running, so it is also where you turn Burst back on. The same audit is under General, Audit on the dashboard.
 
 ### Repair Burst
 

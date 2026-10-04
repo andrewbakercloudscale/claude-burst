@@ -14,7 +14,7 @@ It binds loopback only and needs no login (see [the admin UI](#the-local-admin-u
 
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](screenshots/overview.png)
 
-Three tabs at the top of the menu split the page: **Claude** (Claude Code: everything below), **[Codex](codex.md)** (Codex's routing, plan limits, context per session and requests), and **General** (this Mac and Burst itself: Finder shortcuts, lid and hotspot, notifications, Guards, Actions, Advanced). A link to a section on another tab, such as a check pointing at Guards, switches to that tab. The tab you last used is remembered.
+Three tabs at the top of the menu split the page: **Claude** (Claude Code: everything below), **[Codex](codex.md)** (Codex's routing, plan limits, context per session and requests), and **General** (this Mac and Burst itself: Finder shortcuts, lid and hotspot, notifications, Guards, Audit, Actions, Advanced). A link to a section on another tab, such as a check pointing at Guards, switches to that tab. The tab you last used is remembered.
 
 The menu down the left follows you as you scroll, grouped by job:
 
@@ -23,7 +23,7 @@ The menu down the left follows you as you scroll, grouped by job:
 - **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
 - **Sessions**: [Session handover](handover.md), [Session coordination](coordination.md), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
 - **This Mac**: [lid closed and hotspot](lid-and-hotspot.md), [Notifications](lid-and-hotspot.md#notifications).
-- **Health**: Guards, Actions, Advanced (timeouts and limits).
+- **Health**: Guards, [Audit](#audit-and-the-support-console), Actions, Advanced (timeouts and limits).
 - **Requests**: Responses and Requests, the audit trail of recent traffic.
 - **Setup**: Install (shown when Burst is not in use, or from **Reinstall**).
 
@@ -84,7 +84,13 @@ The usage panel floats the same notice it shows for a pauseless compaction over 
 | Another session finished, or had its handover written (not shown on that session's own panel) | information | fades |
 | A newer Claude Burst release than the one running, once per version | information | fades |
 
-Information and all clear notices show for 3 seconds, warnings for 8; an error stays until what clears it arrives, or 10 minutes. The same alert repeats at most once in 5 minutes. The gateway writes them to `~/.config/claude-burst/notices.json` (newest 20); the panel shows only those newer than when it started, and with several panels open each alert shows once, on one of them.
+Information and all clear notices show for 3 seconds, warnings for 8; an error stays until what clears it arrives, or 10 minutes. The same alert repeats at most once in 5 minutes. The gateway writes them to `~/.config/claude-burst/notices.json` (newest 20); the panel shows only those newer than when it started, and with several panels open each alert shows once, on one of them. Every alert shown is also kept in the [audit](#audit-and-the-support-console), in full, with the log around it.
+
+### Audit and the support console
+
+**Audit** (General tab) lists every alert shown on screen and every action taken from the dashboard or the support console (each POST, with whether it worked), newest first, filtered by Problems, Alerts shown or Actions taken. **Log around this** on any entry shows the gateway log from 3 minutes before it to 30 seconds after, without the per-request start and done lines, credentials redacted: for a failover, that is the timeout, the retries and the decision. Kept in `~/.config/claude-burst/audit.jsonl` (rotated at 2 MB, the previous file kept).
+
+The **support console** at http://127.0.0.1:7789/ (`claude-burst console`, its own LaunchAgent) has the same audit, plus which part of Burst is down (the gateway service, its port, the dashboard, the Codex port, a config that does not load), the latest log lines, and **Restart gateway**, **Repair**, **Diagnostic report** and **Turn Burst off**. It loads no provider and survives a broken config, so it answers when the gateway does not. Repair and the report run in a Terminal window, where macOS can ask for your password. Change its address with `console_listen` in `config.json` (`"off"` turns it off).
 
 **Usage panel** (Sessions menu): a live panel in a Ghostty split beside Claude Code, showing the session's cost and burn rate, context used, a row per turn with its context, cache hit rate and cost, and where Burst compacted. The section explains what it installs and shows a masked screenshot.
 

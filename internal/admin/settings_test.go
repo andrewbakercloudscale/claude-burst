@@ -204,7 +204,6 @@ func TestSettingsSaveNothingIsANoOp(t *testing.T) {
 	}
 }
 
-func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 func TestSettingsPricingSetDeleteAndRestartNeeded(t *testing.T) {
 	s := newTestServer(t)

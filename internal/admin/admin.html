@@ -846,6 +846,7 @@
   <div class="navgroup">Health</div>
   <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
   <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
+  <a class="navlink" data-target="sec-audit"><span class="nd"></span><span class="label">Audit</span></a>
   <a class="navlink" data-target="sec-advanced"><span class="nd"></span><span class="label">Advanced</span></a>
 
   <div class="navgroup">Requests</div>
@@ -1745,6 +1746,14 @@
         The watchdog runs every 30 seconds, the guard every 30 seconds to 2 minutes, and both write nothing while things are fine. The <b>watchdog</b> checks that the gateway program is really running (macOS can report a background job as loaded after its program has died) and restarts it if not, and restarts one that is running but has answered nothing for two checks in a row (never during a planned restart, when an upgrade may be draining). The <b>pf guard</b> looks after the redirect. pf is the packet filter, the firewall built into macOS; Burst adds one pf rule that sends Claude Code's traffic for <code>api.anthropic.com</code> to this gateway instead of straight to Anthropic, and other software (VPNs, security tools, a network change) can remove it. The guard checks that requests to <code>api.anthropic.com</code> really arrive at this gateway, and repairs the redirect if they do not. Neither does anything after you have reverted to normal Claude, so a revert stays reverted. If the guard cannot repair the redirect after three tries (about 5 minutes), it removes it, so Claude Code talks to Anthropic directly: working without Burst is better than not working at all.
       </div>
       <div id="pfHealNote"></div>
+    </div>
+  </section>
+
+  <section id="sec-audit" style="scroll-margin-top:70px">
+    <h2>Audit <span class="hint">every alert shown and every action taken, with the log around each</span></h2>
+    <div class="body">
+      <div class="hint">The same list is on the <a id="consoleLink" href="http://127.0.0.1:7789/" target="_blank" rel="noopener">support console</a>, which runs on its own: when this dashboard is not answering, open it there for the log and the Restart and Repair buttons.</div>
+      <div id="auditList" style="margin-top:10px"></div>
     </div>
   </section>
 
@@ -4569,7 +4578,7 @@ refresh();
 // where everything lived before Codex. The rail's entries and the page's
 // group headings follow their sections, so a tab never shows an empty
 // heading or an entry that scrolls nowhere.
-const TAB_GENERAL = ["sec-finder", "sec-mac", "sec-notify", "guardsSection", "sec-actions", "sec-advanced"];
+const TAB_GENERAL = ["sec-finder", "sec-mac", "sec-notify", "guardsSection", "sec-audit", "sec-actions", "sec-advanced"];
 const TAB_CODEX = ["sec-codex", "sec-codex-context", "sec-codex-requests"];
 function tabOf(id) {
   if (TAB_CODEX.includes(id)) return "codex";
@@ -6178,6 +6187,16 @@ loadBand();
   load();
   // Live windows move: refresh the short ones while the tab is visible.
   setInterval(() => { if (!document.hidden && ["1h", "24h"].includes($("ugRange").value) && offset === 0) load(); }, 60000);
+})();
+</script>
+<script src="/audit.js"></script>
+<script>
+// The audit list: mounted once, refreshed while the General tab is open.
+(() => {
+  const el = document.getElementById("auditList");
+  if (!el || !window.BurstAudit) return;
+  const a = window.BurstAudit.mount(el, { limit: 200 });
+  setInterval(() => { if (!document.hidden && currentTab === "general") a.reload(); }, 20000);
 })();
 </script>
 </body>
