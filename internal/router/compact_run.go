@@ -489,7 +489,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// classifier, a recap) on another model, with the session's id. There
 	// is nothing to summarise and no session to warn about: on 2026-10-04
 	// one at 410k said "compaction soon" four times and never compacted.
-	oneShot := len(bounds) <= 1
+	// The one seen live on 2026-10-04 was 2 user messages and no reply
+	// ("2 messages, 2 prompts"), so a history no turn has answered yet
+	// counts as one prompt too.
+	oneShot := len(bounds) <= 1 || !hasAssistant(msgs)
 	if !oneShot && st.lastContext >= cfg.WarnAtTokens && (st.warnedAt.IsZero() || now.Sub(st.warnedAt) >= window) {
 		st.warnedAt = now
 		_, canCut := compactionBoundary(view, bounds, offset)
@@ -1130,4 +1133,17 @@ func divergence(msgs []json.RawMessage, p0 int, marks []string) string {
 		}
 	}
 	return "no single message differs"
+}
+
+// hasAssistant: some turn in the history has been answered.
+func hasAssistant(msgs []json.RawMessage) bool {
+	for _, m := range msgs {
+		var msg struct {
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(m, &msg) == nil && msg.Role == "assistant" {
+			return true
+		}
+	}
+	return false
 }

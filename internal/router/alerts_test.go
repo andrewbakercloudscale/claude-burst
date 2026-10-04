@@ -189,6 +189,10 @@ func TestNoContextAlertForAOneShotRequest(t *testing.T) {
 	one := msgs(t, `[{"role":"user","content":"`+strings.Repeat("transcript ", 2000)+`"}]`)
 	send(t, s, "S", one)
 	send(t, s, "S", one)
+	// As seen live: the transcript, then the question, both user messages.
+	two := msgs(t, `[{"role":"user","content":"`+strings.Repeat("transcript ", 2000)+`"},{"role":"user","content":"allow?"}]`)
+	send(t, s, "S", two)
+	send(t, s, "S", two)
 	s.compaction.running.Wait()
 	notice.Flush(2 * time.Second)
 	if got := titles(events()); len(got) != 0 || f.summaryCount() != 0 {
