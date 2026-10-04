@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -169,7 +170,13 @@ func (timeoutErr) Temporary() bool { return true }
 
 // dialTimeout is a timeout while connecting: nothing was sent, so it is safe
 // to resend, unlike timeoutErr (awaiting headers: the request went out).
-func dialTimeout() error { return &net.OpError{Op: "dial", Net: "tcp", Err: timeoutErr{}} }
+func dialTimeout() error { return &net.OpError{Op: "dial", Net: "tcp", Err: ioTimeout{}} }
+
+type ioTimeout struct{}
+
+func (ioTimeout) Error() string   { return "i/o timeout" }
+func (ioTimeout) Timeout() bool   { return true }
+func (ioTimeout) Temporary() bool { return true }
 
 func chainServerWithSecondary(t *testing.T, primaryURL string, probe func() netProbe) *Server {
 	t.Helper()
@@ -448,20 +455,47 @@ func TestNetworkNotPassingTrafficDoesNotFailOver(t *testing.T) {
 	}
 }
 
-// A timeout awaiting the response headers comes after the whole request was
-// sent: the model may be generating it, so it is never resent (each resend
-// could run and charge it again).
-func TestHeaderTimeoutIsNotResent(t *testing.T) {
-	old := primaryRetryDelays
-	primaryRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
-	t.Cleanup(func() { primaryRetryDelays = old })
+// A dead HTTP/2 connection (headers never come) gets exactly one resend on a
+// fresh connection, with or without a secondary, and that resend can work.
+func TestHeaderTimeoutGetsOneFreshRetry(t *testing.T) {
 	up := newRecordingUpstream(t)
 	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
 	s.probe = func() netProbe { return netProbe{dnsOK: true} }
-	ft := &flakyTransport{neverRecover: true, err: timeoutErr{}, next: s.client.Transport}
+	ft := &flakyTransport{fail: 1, err: timeoutErr{}, next: s.client.Transport}
+	s.client.Transport = ft
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, messagesRequest("claude-sonnet-5"))
+	if rec.Code != http.StatusOK || ft.primaryAttempts("127.0.0.1:1") != 2 {
+		t.Fatalf("status %d after %d attempts, want 200 after 2", rec.Code, ft.primaryAttempts("127.0.0.1:1"))
+	}
+	// Never laddered: the request may have run, so one resend is the limit.
+	ft = &flakyTransport{neverRecover: true, err: timeoutErr{}, next: ft.next}
 	s.client.Transport = ft
 	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
-	if n := ft.primaryAttempts("127.0.0.1:1"); n != 1 {
-		t.Fatalf("primary sent %d times, want once", n)
+	if n := ft.primaryAttempts("127.0.0.1:1"); n != 2 {
+		t.Fatalf("a header timeout was sent %d times, want 2", n)
+	}
+}
+
+// A client that left while the retries ran is never failed over: no window,
+// no alert, nothing replayed to a paid provider.
+func TestNoFailoverAfterTheClientLeft(t *testing.T) {
+	old := primaryRetryDelays
+	primaryRetryDelays = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
+	t.Cleanup(func() { primaryRetryDelays = old })
+	up := newRecordingUpstream(t)
+	s, logBuf := newChainServerWithSecondary(t, up.srv.URL, nil)
+	s.probe = func() netProbe { return netProbe{dnsOK: true} }
+	s.primaryDetector = newMeteredFailureDetector(60, 1, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	ft := &flakyTransport{neverRecover: true, err: dialTimeout(), next: s.client.Transport}
+	s.client.Transport = ft
+	time.AfterFunc(20*time.Millisecond, cancel)
+	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5").WithContext(ctx))
+	if s.modelInOverflow("claude-sonnet-5", time.Now()) {
+		t.Fatal("a window opened for a request nobody was waiting for")
+	}
+	if strings.Contains(logBuf.String(), "-> replaying") {
+		t.Fatal("replayed after the client left")
 	}
 }
