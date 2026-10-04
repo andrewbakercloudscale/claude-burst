@@ -311,6 +311,8 @@
   .initem .tk { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
   .initem .pv { font-size: 12.5px; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
   .initem pre { max-height: 420px; overflow: auto; white-space: pre-wrap; font: 11.5px var(--mono); background: var(--panel-2); padding: 8px; border-radius: 6px; }
+  .initem .in-rm { font-size: 11.5px; padding: 2px 8px; }
+  .initem.removed .nm { text-decoration: line-through; color: var(--muted); }
   .inflag { font: 11px var(--mono); padding: 1px 6px; border-radius: 5px; color: var(--warn); background: var(--warn-bg); margin-right: 4px; display: inline-block; }
   details.resp { border-bottom: 1px solid var(--border); }
   details.resp:last-child { border-bottom: none; }
@@ -806,6 +808,7 @@
   <div class="navgroup" data-tab="codex">Codex</div>
   <a class="navlink" data-target="sec-codex"><span class="nd" id="nd-codex"></span><span class="label">Overview</span></a>
   <a class="navlink" data-target="sec-codex-context"><span class="nd" id="nd-codex-context"></span><span class="label">Context</span><span class="count" id="nc-codex-context"></span></a>
+  <a class="navlink" data-target="sec-codex-inspect"><span class="nd" id="nd-cx-inspect"></span><span class="label">Context inspector</span></a>
   <a class="navlink" data-target="sec-codex-requests"><span class="nd"></span><span class="label">Requests</span><span class="count" id="nc-codex-requests"></span></a>
 
   <div class="navgroup">Setup</div>
@@ -1578,7 +1581,7 @@
   <section id="sec-inspect" style="scroll-margin-top:70px">
     <h2>Context inspector <span class="hint">what a session's context is made of, item by item</span></h2>
     <div class="body">
-      <div class="hint" style="margin-bottom:10px">Everything Claude Code sends with each request, as Burst last sent it (after Burst's own compaction and automask): instruction files, skills, tools, your prompts, Claude's replies and every tool result, with what each costs. Flagged items are worth a look: large output from many prompts ago, a file read again later (the old copy is out of date), a file that no longer exists, an instruction file from outside the repository, personal data. The latest request of each session is kept <b>in memory only</b>: never written to disk, gone when the gateway restarts, and shown only here on this Mac. View only for now.</div>
+      <div class="hint" style="margin-bottom:10px">Everything Claude Code sends with each request, as Burst last sent it (after Burst's own compaction and automask): instruction files, skills, tools, your prompts, Claude's replies and every tool result, with what each costs. Flagged items are worth a look: large output from many prompts ago, a file read again later (the old copy is out of date), a file that no longer exists, an instruction file from outside the repository, personal data. <b>Remove</b> leaves an instruction file, skills, a reminder or a tool result out of every later request of that session, a one-line note in its place; Claude Code keeps its own copy, so <b>Restore</b> puts it back. The next request after either re-reads the context from that point (a one-off cache write). The latest request of each session is kept <b>in memory only</b>: never written to disk, gone when the gateway restarts, and shown only here on this Mac.</div>
       <div class="row" style="align-items:center;gap:10px">
         <select id="inSession" style="max-width:520px"></select>
         <button id="inReload">Reload</button>
@@ -1876,6 +1879,19 @@
   <section id="sec-codex-context" style="scroll-margin-top:70px">
     <h2>Codex context <span class="hint">how full each session's context window is after its latest turn; Codex compacts on its own as it nears the limit</span></h2>
     <div class="scroll" id="codexSessions"><div class="empty">No Codex sessions yet.</div></div>
+  </section>
+
+  <section id="sec-codex-inspect" style="scroll-margin-top:70px">
+    <h2>Codex context inspector <span class="hint">what a Codex session's context is made of, item by item</span></h2>
+    <div class="body">
+      <div class="hint" style="margin-bottom:10px">Everything Codex sends with each turn, as Burst last forwarded it: Codex's instructions, skills, AGENTS.md, your prompts, Codex's replies and every tool output, with what each costs. Reasoning is encrypted by OpenAI, so only its size shows. <b>Remove</b> leaves an instruction file, skills, a reminder or a tool output out of every later turn of that session, a one-line note in its place; Codex keeps its own copy, so <b>Restore</b> puts it back. The next turn after either re-reads the context from that point (one uncached turn). The latest turn of each session is kept <b>in memory only</b>.</div>
+      <div class="row" style="align-items:center;gap:10px">
+        <select id="cxInSession" style="max-width:520px"></select>
+        <button id="cxInReload">Reload</button>
+      </div>
+      <div id="cxInSummary" style="margin:12px 0"></div>
+      <div id="cxInBody"></div>
+    </div>
   </section>
 
   <section id="sec-codex-requests" style="scroll-margin-top:70px">
@@ -4623,7 +4639,7 @@ refresh();
 // group headings follow their sections, so a tab never shows an empty
 // heading or an entry that scrolls nowhere.
 const TAB_GENERAL = ["sec-finder", "sec-mac", "sec-notify", "guardsSection", "sec-audit", "sec-actions", "sec-advanced"];
-const TAB_CODEX = ["sec-codex", "sec-codex-context", "sec-codex-requests"];
+const TAB_CODEX = ["sec-codex", "sec-codex-context", "sec-codex-inspect", "sec-codex-requests"];
 function tabOf(id) {
   if (TAB_CODEX.includes(id)) return "codex";
   if (TAB_GENERAL.includes(id)) return "general";
@@ -4667,7 +4683,7 @@ function setTab(tab) {
     const el = $(id);
     if (el) el.classList.toggle("tab-off", tab !== "claude");
   });
-  if (tab === "codex") loadCodex();
+  if (tab === "codex") { loadCodex(); if (window.cxInspector) cxInspector.loadSessions(); }
   window.scrollTo(0, 0);
 }
 document.querySelectorAll("#tabs .tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
@@ -5961,76 +5977,114 @@ setInterval(loadAutomask, 30000);
 
 // Context inspector: the sessions with a captured request, then one
 // session's context item by item. Groups start closed except flagged items.
-let inData = null;
-async function loadInspectSessions() {
-  let list = [];
-  try { list = await (await fetch("/api/inspect")).json(); } catch (e) { return; }
-  const sel = $("inSession"), keep = sel.value;
-  if (!list.length) {
-    sel.innerHTML = `<option value="">no session yet: one appears after its next request</option>`;
-    $("inSummary").innerHTML = ""; $("inBody").innerHTML = "";
-    return;
-  }
-  sel.innerHTML = list.map(x => `<option value="${esc(x.session)}">${esc(x.repo || "?")} &middot; ${esc(x.model)} &middot; ${x.messages} messages &middot; ${esc(stamp(x.at))} &middot; ${esc(x.session.slice(0, 8))}</option>`).join("");
-  if (keep && list.some(x => x.session === keep)) sel.value = keep;
-  loadInspect();
-}
-async function loadInspect() {
-  const sid = $("inSession").value;
-  if (!sid) return;
-  try {
-    const r = await fetch("/api/inspect?session=" + encodeURIComponent(sid));
-    if (!r.ok) throw new Error(await r.text());
-    inData = await r.json();
-  } catch (e) {
-    $("inSummary").innerHTML = `<span class="hint">${esc(String(e.message || e))}</span>`;
-    return;
-  }
-  drawInspect();
-}
+// One inspector, drawn twice: Claude Code's (engine "claude") and Codex's.
+// Remove and Restore keep the groups you had open and your place.
 function inTok(n) { return n >= 1000 ? Math.round(n / 1000) + "k" : String(n); }
 function inItem(it, i) {
   const when = it.turn ? `prompt ${it.turn}${it.turns_ago ? `, ${it.turns_ago} ago` : ", latest"}` : "every request";
-  return `<div class="initem" data-i="${i}"><div class="top"><span class="nm">${esc(it.name)}</span><span class="tk">${esc(when)}</span><span class="tk">${inTok(it.tokens)}</span></div>` +
+  const btn = it.removable ? (it.removed
+      ? `<button class="in-rm" data-act="restore" data-id="${esc(it.id)}" title="Send it again from the next request on">Restore</button>`
+      : `<button class="in-rm" data-act="remove" data-id="${esc(it.id)}" title="Leave it out of every later request of this session, a one-line note in its place">Remove</button>`) : "";
+  return `<div class="initem${it.removed ? " removed" : ""}" data-i="${i}"><div class="top"><span class="nm">${esc(it.name)}</span><span class="tk">${esc(when)}</span><span class="tk">${it.removed ? "removed" : inTok(it.tokens)}</span>${btn}</div>` +
     (it.flags && it.flags.length ? `<div>${it.flags.map(f => `<span class="inflag">${esc(f)}</span>`).join("")}</div>` : "") +
     `<div class="pv">${esc(it.preview)}</div></div>`;
 }
-function drawInspect() {
-  const d = inData;
-  const total = d.items.reduce((a, x) => a + x.tokens, 0);
-  $("inSummary").innerHTML = `<b>${esc(d.repo || "?")}</b> <span class="hint">&middot; ${esc(d.model)} &middot; ${d.prompts} prompts &middot; ${inTok(d.context || total)} tokens${d.estimate ? " (estimated: no reply reported the size yet)" : ""} &middot; as sent at ${esc(stamp(d.at))}</span> ` +
-    (d.flagged ? `<span class="pill s">${d.flagged} worth a look</span>` : `<span class="pill p">nothing flagged</span>`);
-  setDot("nd-inspect", d.flagged ? "warn" : "ok");
-  const idx = d.items.map((it, i) => [it, i]);
-  const flagged = idx.filter(([it]) => it.flags && it.flags.length);
-  const groups = [];
-  for (const [it, i] of idx) {
-    let g = groups.find(x => x.name === it.group);
-    if (!g) groups.push(g = {name: it.group, rows: [], tokens: 0});
-    g.rows.push([it, i]); g.tokens += it.tokens;
+function makeInspector(o) {
+  let data = null;
+  const q = o.engine === "codex" ? "engine=codex&" : "";
+  async function loadSessions() {
+    let list = [];
+    try { list = await (await fetch(`/api/inspect?${q}`)).json(); } catch (e) { return; }
+    const sel = $(o.sel), keep = sel.value;
+    if (!list.length) {
+      sel.innerHTML = `<option value="">${esc(o.none)}</option>`;
+      $(o.summary).innerHTML = ""; $(o.body).innerHTML = "";
+      return;
+    }
+    sel.innerHTML = list.map(x => `<option value="${esc(x.session)}">${esc(x.repo || "?")} &middot; ${esc(x.model)} &middot; ${x.messages} ${o.unit} &middot; ${esc(stamp(x.at))} &middot; ${esc(x.session.slice(0, 8))}</option>`).join("");
+    if (keep && list.some(x => x.session === keep)) sel.value = keep;
+    load();
   }
-  const block = (title, rows, tokens, open) => `<details class="ingrp"${open ? " open" : ""}><summary>${esc(title)} <span class="hint">${rows.length}</span><span class="spacer"></span><span class="tk">${inTok(tokens)}</span></summary>` +
-    rows.map(([it, i]) => inItem(it, i)).join("") + `</details>`;
-  $("inBody").innerHTML = (flagged.length ? block("Worth a look", flagged, flagged.reduce((a, [it]) => a + it.tokens, 0), true) : "") +
-    groups.map(g => block(g.name, g.rows, g.tokens, false)).join("");
+  async function load() {
+    const sid = $(o.sel).value;
+    if (!sid) return;
+    try {
+      const r = await fetch(`/api/inspect?${q}session=` + encodeURIComponent(sid));
+      if (!r.ok) throw new Error(await r.text());
+      data = await r.json();
+    } catch (e) {
+      $(o.summary).innerHTML = `<span class="hint">${esc(String(e.message || e))}</span>`;
+      return;
+    }
+    draw();
+  }
+  function draw() {
+    const d = data;
+    const live = d.items.filter(x => !x.removed);
+    const total = live.reduce((a, x) => a + x.tokens, 0);
+    const removed = d.items.length - live.length;
+    $(o.summary).innerHTML = `<b>${esc(d.repo || "?")}</b> <span class="hint">&middot; ${esc(d.model)} &middot; ${d.prompts} prompts &middot; ${inTok(d.context || total)} tokens${d.estimate ? " (estimated: no reply reported the size yet)" : ""} &middot; as sent at ${esc(stamp(d.at))}</span> ` +
+      (d.flagged ? `<span class="pill s">${d.flagged} worth a look</span>` : `<span class="pill p">nothing flagged</span>`) +
+      (removed ? ` <span class="pill">${removed} removed by you</span>` : "");
+    setDot(o.dot, d.flagged ? "warn" : "ok");
+    // Groups open now stay open: a redraw after Remove must not fold the
+    // list you were working through.
+    const open = new Set([...$(o.body).querySelectorAll("details.ingrp[open]")].map(x => x.dataset.g));
+    const first = !$(o.body).querySelector("details.ingrp");
+    const idx = d.items.map((it, i) => [it, i]);
+    const flagged = idx.filter(([it]) => it.flags && it.flags.length);
+    const gone = idx.filter(([it]) => it.removed);
+    const groups = [];
+    for (const [it, i] of idx) {
+      let g = groups.find(x => x.name === it.group);
+      if (!g) groups.push(g = {name: it.group, rows: [], tokens: 0});
+      g.rows.push([it, i]); g.tokens += it.removed ? 0 : it.tokens;
+    }
+    const block = (key, title, rows, tokens, dflt) => `<details class="ingrp" data-g="${esc(key)}"${(first ? dflt : open.has(key)) ? " open" : ""}><summary>${esc(title)} <span class="hint">${rows.length}</span><span class="spacer"></span><span class="tk">${inTok(tokens)}</span></summary>` +
+      rows.map(([it, i]) => inItem(it, i)).join("") + `</details>`;
+    $(o.body).innerHTML = (flagged.length ? block("~flagged", "Worth a look", flagged, flagged.reduce((a, [it]) => a + it.tokens, 0), true) : "") +
+      (gone.length ? block("~removed", "Removed by you", gone, 0, true) : "") +
+      groups.map(g => block(g.name, g.name, g.rows, g.tokens, false)).join("");
+  }
+  $(o.body).addEventListener("click", async e => {
+    const btn = e.target.closest("button.in-rm");
+    if (btn) {
+      e.stopPropagation();
+      const it = data.items.find(x => x.id === btn.dataset.id);
+      const restore = btn.dataset.act === "restore";
+      if (!restore && !confirm(`Remove "${it ? it.name : "this item"}" from this session's context?\n\n` +
+        `${o.who} keeps its own copy. Burst leaves it out of every later request of this session, with a one-line note in its place, so the model no longer sees it and can ask for it.\n\n` +
+        `The next request re-reads the context after it from scratch (a one-off cache write). Restore puts it back.`)) return;
+      btn.disabled = true;
+      try {
+        await post("/api/inspect/remove", {engine: o.engine, session: data.session, id: btn.dataset.id, restore});
+        btn.textContent = restore ? "Restoring in the next request" : "Removed from the next request";
+      } catch (err) { btn.disabled = false; btn.textContent = "Failed: " + err.message; }
+      return;
+    }
+    const top = e.target.closest(".initem .top, .initem .pv");
+    if (!top) return;
+    const row = top.closest(".initem");
+    const pre = row.querySelector("pre");
+    if (pre) { pre.remove(); return; }
+    const p = document.createElement("pre");
+    p.textContent = "loading...";
+    row.appendChild(p);
+    try {
+      const r = await fetch(`/api/inspect-item?${q}session=${encodeURIComponent(data.session)}&i=${row.dataset.i}`);
+      p.textContent = await r.text();
+    } catch (err) { p.textContent = String(err); }
+  });
+  $(o.sel).onchange = load;
+  $(o.reload).onclick = loadSessions;
+  loadSessions();
+  return {loadSessions};
 }
-$("inBody").addEventListener("click", async e => {
-  const top = e.target.closest(".initem .top, .initem .pv");
-  if (!top) return;
-  const row = top.closest(".initem");
-  const open = row.querySelector("pre");
-  if (open) { open.remove(); return; }
-  const pre = document.createElement("pre");
-  pre.textContent = "loading...";
-  row.appendChild(pre);
-  try {
-    const r = await fetch(`/api/inspect-item?session=${encodeURIComponent(inData.session)}&i=${row.dataset.i}`);
-    pre.textContent = await r.text();
-  } catch (err) { pre.textContent = String(err); }
-});
-$("inSession").onchange = loadInspect;
-$("inReload").onclick = loadInspectSessions;
-loadInspectSessions();
+makeInspector({engine: "claude", sel: "inSession", reload: "inReload", summary: "inSummary", body: "inBody", dot: "nd-inspect",
+  who: "Claude Code", unit: "messages", none: "no session yet: one appears after its next request"});
+// var, not const: setTab runs before this line on a page opened on Codex.
+var cxInspector = makeInspector({engine: "codex", sel: "cxInSession", reload: "cxInReload", summary: "cxInSummary", body: "cxInBody", dot: "nd-cx-inspect",
+  who: "Codex", unit: "items", none: "no Codex session yet: one appears after its next turn through Burst"});
 
 // The in-session band: /api/mod-status asks Claude Code itself (a second or
 // two), so it loads on its own and never holds up the page.
