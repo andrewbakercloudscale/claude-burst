@@ -517,6 +517,9 @@
   .hero-fix .hf.bad  { background: var(--bad-bg);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
   .hero-fix .todo { color: var(--text); }
   .hero-fix a { color: inherit; font-weight: 600; white-space: nowrap; }
+  .hero-fix .hf-fix { margin: 4px 8px 0 0; padding: 4px 12px; font-size: 13px; font-weight: 600; border-radius: 6px; cursor: pointer;
+    border: 1px solid currentColor; background: color-mix(in srgb, currentColor 18%, transparent); color: inherit; }
+  .hero-fix .hf-fix:hover { background: color-mix(in srgb, currentColor 30%, transparent); }
   .check.bad  { background: var(--bad-bg);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
 
   /* ===================================================================== *
@@ -606,7 +609,15 @@
     table.stbl th, table.stbl td { padding-left: 8px; padding-right: 8px; }
   }
 
-  @media (max-width: 900px) {
+  /* The side menu stays at laptop widths, a half-screen window included:
+     only a phone-sized window gets the menu as rows across the top, which
+     at 600-900px wrapped into five rows above the page (2026-10-04). */
+  @media (max-width: 1100px) and (min-width: 641px) {
+    .app { grid-template-columns: 184px minmax(0, 1fr); }
+    .navlink { padding-left: 12px; padding-right: 8px; font-size: 13px; }
+    .brand { padding-left: 12px; padding-right: 10px; }
+  }
+  @media (max-width: 640px) {
     .app { grid-template-columns: minmax(0, 1fr); }
     .side {
       position: static; height: auto; flex-direction: row; flex-wrap: wrap;
@@ -3622,7 +3633,34 @@ const CHECK_FIX = {
   errors: "open Activity to see which requests failed and why. A burst of limit errors is normal; a steady stream is not.",
 };
 
+// The button on each failing check that fixes it, or does the one step a
+// person has to take: anything short of every check passing comes with a
+// button, not only advice. Each runs the same code as its button elsewhere
+// on the page (Guards, Setup, Install), confirmations and all.
+const CHECK_ACTION = {
+  path: { label: "Reinstall", run: b => runInstall(heroMode === "transparent" ? "transparent" : "base-url", b) },
+  // Nothing on this page can restart someone's Claude Code sessions, which
+  // is the usual fix; the trace shows whether a NEW session is accepted.
+  clienttls: { label: "Send test message", run: () => $("setupTrace").click() },
+  watchdog: { label: "Arm the watchdog", run: () => $("armSelfHeal").click() },
+  pfguard: { label: "Arm the guard", run: () => $("armPfHeal").click() },
+  secondary: { label: "Add the key", run: () => { setSecondaryOpen(true); scrollToEl($("secondarySection"), "start"); } },
+  primary: { label: "Test now", run: b => runTestConnection(b, $("actNote")) },
+  errors: { label: "Show the failures", run: () => scrollToEl($("sec-activity"), "start") },
+};
+let heroMode = "";
+
+$("heroFix").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-fix]");
+  if (!b) return;
+  const a = CHECK_ACTION[b.dataset.fix];
+  if (!a) return;
+  b.disabled = true;
+  try { await a.run(b); } finally { b.disabled = false; refresh(); }
+});
+
 function renderHero(s) {
+  heroMode = s.intercept.mode;
   const checks = readinessChecks(s, liveVerdict);
   const meter = $("meter");
   meter.classList.remove("ok", "warn", "bad");
@@ -3654,6 +3692,7 @@ function renderHero(s) {
     $("heroFix").innerHTML = failing.length ? `<div class="hero-fix">` + failing.map(c =>
       `<div class="hf ${c.critical ? "bad" : "warn"}"><b>${esc(c.label)}:</b> ${esc(c.detail)}.` +
       (CHECK_FIX[c.key] ? ` <span class="todo">What to do: ${esc(CHECK_FIX[c.key])}</span>` : "") +
+      (CHECK_ACTION[c.key] ? ` <button class="hf-fix" data-fix="${esc(c.key)}">${esc(CHECK_ACTION[c.key].label)}</button>` : "") +
       ` <a href="#" data-target="${esc(c.target)}">Go there &rarr;</a></div>`).join("") + `</div>` : "";
   }
 
