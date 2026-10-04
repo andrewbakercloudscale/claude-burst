@@ -26,7 +26,7 @@ Paste either block into Terminal as a whole. Each writes a script to your home f
 
 ### Update and reinstall Burst
 
-Newest release, transparent mode with the `/etc/hosts` redirect and pf rule, and anything left holding Burst's ports 7777, 17777 and 7788 stopped first. Fixes a Mac where Burst is broken, stale or half installed:
+Newest release, transparent mode with the `/etc/hosts` redirect and pf rule, and anything left holding Burst's ports 7777, 17777 and 7788 stopped first, then the dashboard opens. Fixes a Mac where Burst is broken, stale or half installed:
 
 ```sh
 cat > ~/burst-update.sh <<'EOF'
@@ -35,8 +35,9 @@ cat > ~/burst-update.sh <<'EOF'
 set -euo pipefail
 REPO="${CLAUDE_BURST_REPO:-}"
 if [[ -z "$REPO" ]]; then
-  for d in ~/claude-burst ~/Desktop/github/claude-burst ~/Desktop/claude-burst ~/github/claude-burst ~/src/claude-burst ~/code/claude-burst; do
-    if [[ -d "$d/.git" ]]; then REPO="$d"; break; fi
+  # Any checkout up to three folders down whose remote is Claude Burst.
+  for d in $(find ~ -maxdepth 4 -type d -name .git -not -path '*/Library/*' 2>/dev/null); do
+    if git -C "${d%/.git}" remote -v 2>/dev/null | grep -q 'claude-burst'; then REPO="${d%/.git}"; break; fi
   done
 fi
 if [[ -z "$REPO" ]]; then
@@ -70,6 +71,10 @@ echo
 ~/.local/bin/claude-burst status | head -20
 echo
 echo "Done. A Claude Code session open from before that now fails: restart it with claude --resume (keeps its history)."
+# The dashboard, once it answers.
+ADMIN=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.config/claude-burst/config.json"))).get("admin_listen") or "127.0.0.1:7788")' 2>/dev/null || echo 127.0.0.1:7788)
+for i in {1..30}; do curl -s -m 2 -o /dev/null "http://$ADMIN/" && break; sleep 1; done
+open "http://$ADMIN/"
 EOF
 chmod +x ~/burst-update.sh && ~/burst-update.sh
 ```
@@ -139,8 +144,8 @@ With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass scri
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.11.0 at the time of writing)
-git clone --branch v0.11.0 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.11.1 at the time of writing)
+git clone --branch v0.11.1 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 # 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
