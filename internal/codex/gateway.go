@@ -71,6 +71,25 @@ type Gateway struct {
 	windows map[string]int64
 
 	statePath string
+
+	// Listener state, set by whoever serves the gateway: bound, or why not.
+	// "starting" until the first report.
+	listening bool
+	listenErr string
+}
+
+// SetListenState records whether the gateway's port is bound, and why not.
+func (g *Gateway) SetListenState(bound bool, why string) {
+	g.mu.Lock()
+	g.listening, g.listenErr = bound, why
+	g.mu.Unlock()
+}
+
+// ListenState reports whether the port is bound; why is "" while starting.
+func (g *Gateway) ListenState() (bound bool, why string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.listening, g.listenErr
 }
 
 // persist saves the limits and windows; called with g.mu held. A failure
@@ -207,7 +226,18 @@ func (g *Gateway) observe(resp *http.Response) error {
 		return nil
 	}
 	g.noteBackWithin()
-	resp.Body = &sseTap{rc: resp.Body, done: func(u usage) { g.record(r, resp.StatusCode, u, "") }}
+	resp.Body = &sseTap{rc: resp.Body, done: func(u usage, completed bool) {
+		// A stream that ended without response.completed is a turn that did
+		// not finish (Esc in Codex, a dropped connection), never a success.
+		switch {
+		case completed:
+			g.record(r, resp.StatusCode, u, "")
+		case r.Context().Err() != nil:
+			g.record(r, metrics.StatusClientClosed, u, "Codex closed the turn before it finished")
+		default:
+			g.record(r, http.StatusBadGateway, u, "the stream ended before the turn finished")
+		}
+	}}
 	return nil
 }
 
@@ -388,7 +418,7 @@ type sseTap struct {
 	skip bool
 	u    usage
 	got  bool
-	done func(usage)
+	done func(u usage, completed bool)
 	once sync.Once
 	// An oversized line (a completed event carrying a huge output) is not
 	// held whole: its start (with the model) is kept in line, its last
@@ -415,7 +445,7 @@ func (t *sseTap) Close() error {
 	return t.rc.Close()
 }
 
-func (t *sseTap) finish() { t.once.Do(func() { t.done(t.u) }) }
+func (t *sseTap) finish() { t.once.Do(func() { t.done(t.u, t.got) }) }
 
 func (t *sseTap) scan(b []byte) {
 	for len(b) > 0 {

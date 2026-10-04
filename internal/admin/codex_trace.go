@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -370,12 +371,18 @@ func (s *Server) runCodexTestTurn(ctx context.Context, cfg config.Config) codexT
 		tail = "..." + tail[len(tail)-1500:]
 	}
 
-	// The turn, as the gateway recorded it.
+	// The turn, as the gateway recorded it: this run's own, by the session
+	// id Codex prints, so a real session busy at the same time is never
+	// taken for it.
+	sid := ""
+	if m := codexSessionLine.FindStringSubmatch(string(errOut) + "\n" + string(out)); m != nil {
+		sid = m[1]
+	}
 	var turn *metrics.Event
 	if mp, err := config.CodexMetricsPath(); err == nil {
 		if evs, err := metrics.Recent(mp, 20); err == nil {
 			for i := range evs {
-				if !evs[i].Time.Before(start.Add(-time.Second)) {
+				if sid != "" && evs[i].SessionID == sid || sid == "" && !evs[i].Time.Before(start.Add(-time.Second)) {
 					turn = &evs[i]
 					break
 				}
@@ -400,7 +407,6 @@ func (s *Server) runCodexTestTurn(ctx context.Context, cfg config.Config) codexT
 	return res
 }
 
-
 func fmtThousands(n int64) string {
 	s := fmt.Sprint(n)
 	for i := len(s) - 3; i > 0; i -= 3 {
@@ -408,3 +414,5 @@ func fmtThousands(n int64) string {
 	}
 	return s
 }
+
+var codexSessionLine = regexp.MustCompile(`(?m)^session id:\s*(\S+)`)

@@ -295,7 +295,7 @@ func serve(args []string) {
 	if cfg.AdminListen != "" {
 		a := admin.New(srv, metricsPath, version, cfg.AdminHostname, rootHelperPath())
 		a.SetHandshakes(handshakes)
-		a.SetCodex(codexGateway, codexStartErr)
+		a.SetCodex(codexGW, codexStartErr)
 		go a.StartNotifier(context.Background())
 		if err := admin.SyncPromptNoticeHook(cfg); err != nil {
 			logger.Printf("error stage=prompt_notice_hook err=%v", err)

@@ -30,6 +30,7 @@ func withCodexGateway(t *testing.T, s *Server) string {
 	t.Cleanup(gw.Close)
 	addr := strings.TrimPrefix(gw.URL, "http://")
 	setCodexListen(t, addr)
+	g.SetListenState(true, "")
 	s.SetCodex(g, "")
 	return addr
 }
@@ -247,5 +248,24 @@ func TestCodexTestTurnMustPassThroughBurst(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(args, " "), `base_url="http://127.0.0.1:7779/backend-api/codex"`) || !strings.Contains(strings.Join(args, " "), "--ignore-user-config") {
 		t.Errorf("args %q", args)
+	}
+}
+
+// The test turn is matched by the session id Codex prints: another session's
+// turn recorded meanwhile is not taken for it.
+func TestCodexTestTurnMatchesItsOwnSession(t *testing.T) {
+	s := newTestServer(t)
+	s.trace.findCodex = func() string { return "/fake/codex" }
+	mp, _ := config.CodexMetricsPath()
+	os.MkdirAll(filepath.Dir(mp), 0o700)
+	w := metrics.New(mp)
+	s.trace.run = func(ctx context.Context, env []string, name string, a ...string) ([]byte, []byte, error) {
+		// A busy real session's turn lands while the test runs; the test's own never does.
+		w.Write(metrics.Event{Time: time.Now(), SessionID: "someone-else", Model: "gpt-x", HTTPStatus: 200, InputTokens: 9})
+		return []byte("pong"), []byte("session id: test-session\n"), nil
+	}
+	res := s.runCodexTestTurn(context.Background(), config.Default())
+	if res.OK || !strings.Contains(res.Detail, "no turn reached Burst") {
+		t.Errorf("%+v", res)
 	}
 }

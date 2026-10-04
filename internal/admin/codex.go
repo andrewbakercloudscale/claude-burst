@@ -39,15 +39,19 @@ func (s *Server) handleCodex(w http.ResponseWriter, r *http.Request) {
 	}
 	path, _ := codex.ConfigPath()
 	st := codexState{
-		Status:      codex.ReadStatus(path),
-		Listen:      cfg.CodexListen(),
-		Upstream:    cfg.CodexUpstream(),
-		Listening:   s.codex != nil,
+		Status:   codex.ReadStatus(path),
+		Listen:   cfg.CodexListen(),
+		Upstream: cfg.CodexUpstream(),
+
 		ListenError: s.codexErr,
 		Recent:      []metrics.Event{},
 		Sessions:    []codexSession{},
 	}
 	if s.codex != nil {
+		st.Listening, st.ListenError = s.codex.ListenState()
+		if !st.Listening && st.ListenError == "" {
+			st.ListenError = "still starting"
+		}
 		if t := s.codex.LastRequest(); !t.IsZero() {
 			st.LastRequest = &t
 		}
@@ -95,10 +99,13 @@ func (s *Server) handleCodexRoute(enable bool) http.HandlerFunc {
 			// Never point Codex at a port nothing answers: every turn
 			// would fail. The listener this process started is the one
 			// wanted, and it must still accept a connection now.
-			if s.codex == nil {
-				why := "it is not running"
-				if s.codexErr != "" {
-					why = s.codexErr
+			bound, why := false, s.codexErr
+			if s.codex != nil {
+				bound, why = s.codex.ListenState()
+			}
+			if !bound {
+				if why == "" {
+					why = "it is not running yet"
 				}
 				http.Error(w, "the Codex gateway is not listening ("+why+"), so Codex was left going straight to ChatGPT. Fix that first: see Trace the path.", http.StatusConflict)
 				return

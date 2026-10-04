@@ -115,8 +115,7 @@ func TestEnableCreatesFile(t *testing.T) {
 }
 
 // Every TOML spelling of a top-level model_provider counts as the user's
-// own; a "[table]" or the key inside a multi-line string does not end or
-// start anything.
+// own; text inside a multi-line string and keys inside a table do not.
 func TestProviderSpellings(t *testing.T) {
 	for in, want := range map[string]string{
 		"model_provider = 'openai'\n":                                       "openai",
@@ -129,7 +128,11 @@ func TestProviderSpellings(t *testing.T) {
 		"[desktop]\nmodel_provider = 'in-table'\n":                          "",
 		"model_providers.x = { name = \"x\" }\n":                            "",
 	} {
-		if got := topLevelProvider(in); got != want {
+		doc, err := parse(in)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if got := topLevelProvider(doc); got != want {
 			t.Errorf("%q: got %q, want %q", in, got, want)
 		}
 	}
@@ -157,5 +160,48 @@ func TestEnableRefusesExistingBurstTable(t *testing.T) {
 		if err := Enable(path, "127.0.0.1:7779", ""); !errors.Is(err, ErrConflict) {
 			t.Errorf("%q: err = %v", orig, err)
 		}
+	}
+}
+
+// A config.toml that does not parse is never rewritten, and says why.
+func TestEnableRefusesInvalidTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	orig := "notify = [\n"
+	os.WriteFile(path, []byte(orig), 0o600)
+	err := Enable(path, "127.0.0.1:7779", "")
+	if err == nil || !strings.Contains(err.Error(), "not valid TOML") {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != orig {
+		t.Errorf("file changed: %q", b)
+	}
+	if st := ReadStatus(path); st.Invalid == "" {
+		t.Error("status does not say the file is invalid")
+	}
+}
+
+// A config.toml that is a symlink stays one; its target gets the block.
+func TestEnableWritesThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "dotfiles-config.toml")
+	os.WriteFile(target, []byte("notify = 1\n"), 0o600)
+	link := filepath.Join(dir, "config.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := Enable(link, "127.0.0.1:7779", ""); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Lstat(link); fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the symlink was replaced by a file")
+	}
+	if b, _ := os.ReadFile(target); !strings.HasPrefix(string(b), beginMark) {
+		t.Errorf("target not updated: %q", b)
+	}
+	if err := Disable(link, ""); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "notify = 1\n" {
+		t.Errorf("after disable: %q", b)
 	}
 }
