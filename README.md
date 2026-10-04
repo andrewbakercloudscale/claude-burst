@@ -1,5 +1,7 @@
 # Claude Burst: the missing control plane for Claude Code
 
+> **Broken, or out of date?** One paste fixes it: [**Update and reinstall Burst**](#update-and-reinstall-burst) · [**Bypass Burst**](#bypass-burst)
+
 The ops layer for running Claude Code all day on a Mac: subscription-first routing with overflow to GLM/OpenRouter/Bedrock, pauseless compaction, session coordination and handover across parallel sessions, lid-shut keep-awake with automatic hotspot join for Remote Control, and a dashboard for cost, health and guards.
 
 > **What it changes on your Mac**
@@ -18,11 +20,13 @@ Claude Burst is a local gateway that sits between Claude Code and Anthropic. **I
 
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
 
-## Update, or get unstuck: two copy-paste scripts
+## Fix or update Burst: copy-paste scripts
 
 Paste either block into Terminal as a whole. Each writes a script to your home folder, makes it runnable and runs it; next time just run `~/burst-update.sh` or `~/burst-bypass.sh`. Both ask for your password when they touch `/etc/hosts`.
 
-**Update Burst and reinstall it** (newest release, transparent mode with the `/etc/hosts` redirect and pf rule, and anything left holding Burst's ports 7777, 17777 and 7788 stopped first):
+### Update and reinstall Burst
+
+Newest release, transparent mode with the `/etc/hosts` redirect and pf rule, and anything left holding Burst's ports 7777, 17777 and 7788 stopped first. Fixes a Mac where Burst is broken, stale or half installed:
 
 ```sh
 cat > ~/burst-update.sh <<'EOF'
@@ -70,7 +74,9 @@ EOF
 chmod +x ~/burst-update.sh && ~/burst-update.sh
 ```
 
-**Bypass Burst** (Claude Code talks to Anthropic directly; sessions already open keep working):
+### Bypass Burst
+
+Claude Code talks to Anthropic directly; sessions already open keep working:
 
 ```sh
 cat > ~/burst-bypass.sh <<'EOF'
