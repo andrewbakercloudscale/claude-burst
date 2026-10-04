@@ -295,6 +295,9 @@ else
 fi
 
 # --- 4. Atomic install ---
+# The installed build's hash goes back with the old binary on a rollback:
+# left at the new one, a retry of the same build says "nothing to deploy".
+OLD_SHA="$(cat "$SHA_FILE" 2>/dev/null || :)"
 mv "$TMPBIN" "$TARGET"
 printf '%s\n' "$BUILD_SHA" > "$SHA_FILE"
 chmod 755 "$TARGET"
@@ -352,16 +355,20 @@ fi
 echo "[deploy] FAILED: new gateway did not become healthy within ${HEALTH_TIMEOUT}s -- rolling back" >&2
 dump_health_diagnostics "new binary, after kickstart"
 if [[ -f "$BACKUP_DIR/claude-burst-bin.latest.bak" ]]; then
-  cp "$BACKUP_DIR/claude-burst-bin.latest.bak" "$TARGET"
-  chmod 755 "$TARGET"
+  # A copy beside it and a rename, as the install above: cp onto a binary
+  # that may still be running is what macOS's code signing kills.
+  cp "$BACKUP_DIR/claude-burst-bin.latest.bak" "$TARGET.rollback.tmp" &&
+    chmod 755 "$TARGET.rollback.tmp" && mv -f "$TARGET.rollback.tmp" "$TARGET"
+  if [[ -n "$OLD_SHA" ]]; then printf '%s\n' "$OLD_SHA" > "$SHA_FILE"; else rm -f "$SHA_FILE"; fi
   ensure_launchagent_loaded || true
   restart_gateway
   if wait_healthy; then
     if [[ "$DISABLED_FOR_SWAP" -eq 1 ]]; then
       "$TARGET" enable
     fi
-    echo "[deploy] rolled back to previous binary, it is healthy, proxy re-enabled" >&2
-    exit 0
+    # Recovered, but the requested build is not what runs: not a success.
+    echo "[deploy] FAILED: the new build did not come up. Rolled back to the previous binary, which is healthy; proxy re-enabled" >&2
+    exit 1
   fi
   dump_health_diagnostics "rollback binary, after kickstart"
 fi
