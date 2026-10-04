@@ -110,14 +110,14 @@ HEARTBEAT_FILE="$STATE_DIR/pf-heal.heartbeat"
 LOG_MAX_BYTES=1048576
 
 # Consecutive failed repair cycles before giving up and removing the redirect.
-# Each cycle, probe budget and repair included, takes about 1m40s, so two is
-# about 3.5 minutes of a broken Mac. It was four until 2026-10-04, when those
+# Each cycle, probe budget and repair included, takes about 1m40s, so three
+# is about 5 minutes of a broken Mac. It was four until 2026-10-04, when those
 # were 7 minutes with every session cut off. A gateway restart or a
-# wake-from-sleep race is over well inside two; the gateway now clears a
+# wake-from-sleep race is over well inside three; the gateway now clears a
 # leftover on its port itself (portclaim.go) and the self-heal watchdog
-# restarts a hung one within a minute, so what is left after two is not
+# restarts a hung one within a minute, so what is left after three is not
 # coming back by waiting.
-MAX_FAILURES="${CLAUDE_BURST_PF_HEAL_MAX_FAILURES:-2}"
+MAX_FAILURES="${CLAUDE_BURST_PF_HEAL_MAX_FAILURES:-3}"
 
 # Network-change settle window. On 2026-09-28 the redirect broke on six
 # reconnects in 50 minutes (a phone hotspot dropping and returning), always
