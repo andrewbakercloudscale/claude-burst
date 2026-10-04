@@ -133,6 +133,7 @@ func TestLogAround(t *testing.T) {
 		f(-10*time.Minute, "too early")+
 			f(-90*time.Second, `req=a start method="POST" path="/v1/messages"`)+
 			f(-89*time.Second, "req=a retry route=anthropic attempt=2 Authorization: Bearer sk-secret")+
+			f(-6*time.Second, `req=c ok route=anthropic model="" status=200 dur_ms=371 in_tok=0 out_tok=0 note=""`)+
 			f(-5*time.Second, `req=b client_gone route=anthropic err=Post "https://api.anthropic.com/api/event_logging/v2/batch"`)+
 			f(0, "req=a failover route=anthropic")+
 			f(10*time.Minute, "too late")), 0o600)
