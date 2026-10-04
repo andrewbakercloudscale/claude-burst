@@ -296,6 +296,16 @@
   .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, transparent); background: var(--bad-bg); }
   .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); } .st-wait { color: var(--muted); }
 
+  details.ingrp { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; }
+  details.ingrp > summary { cursor: pointer; padding: 9px 12px; display: flex; gap: 10px; align-items: baseline; font-weight: 600; }
+  details.ingrp > summary .spacer { flex: 1; }
+  .initem { border-top: 1px solid var(--border); padding: 7px 12px; }
+  .initem .top { display: flex; gap: 10px; align-items: baseline; cursor: pointer; }
+  .initem .nm { font: 12px var(--mono); flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .initem .tk { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
+  .initem .pv { font-size: 12.5px; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
+  .initem pre { max-height: 420px; overflow: auto; white-space: pre-wrap; font: 11.5px var(--mono); background: var(--panel-2); padding: 8px; border-radius: 6px; }
+  .inflag { font: 11px var(--mono); padding: 1px 6px; border-radius: 5px; color: var(--warn); background: var(--warn-bg); margin-right: 4px; display: inline-block; }
   details.resp { border-bottom: 1px solid var(--border); }
   details.resp:last-child { border-bottom: none; }
   details.resp > summary {
@@ -762,6 +772,7 @@
   <a class="navlink" data-target="sec-sessions"><span class="nd" id="nd-sessions"></span><span class="label">Session options</span></a>
   <a class="navlink" data-target="sec-panel"><span class="nd" id="nd-panel"></span><span class="label">Usage panel</span></a>
   <a class="navlink" data-target="sec-band"><span class="nd" id="nd-band"></span><span class="label">In-session band</span></a>
+  <a class="navlink" data-target="sec-inspect"><span class="nd" id="nd-inspect"></span><span class="label">Context inspector</span></a>
   <a class="navlink" data-target="sec-finder"><span class="nd" id="nd-finder"></span><span class="label">Finder shortcuts</span></a>
 
   <div class="navgroup">This Mac</div>
@@ -1491,6 +1502,19 @@
       <div class="mac-toggles">
         <label><input type="checkbox" id="bandToasts"> <b>Also as toasts in the session</b><span>Burst's warnings and errors pop up at the top right of Claude Code, from the band. Off by default: the Ghostty pop-ups (<a href="#" data-target="sec-sessions">Session options</a>, <b>Show gateway alerts on screen</b>) already show every alert, and the band shows a standing problem as a line whether this is on or not. Turn the pop-ups off and this on to have alerts only inside the session.</span></label>
       </div>
+    </div>
+  </section>
+
+  <section id="sec-inspect" style="scroll-margin-top:70px">
+    <h2>Context inspector <span class="hint">what a session's context is made of, item by item</span></h2>
+    <div class="body">
+      <div class="hint" style="margin-bottom:10px">Everything Claude Code sends with each request, as Burst last sent it (after Burst's own compaction and automask): instruction files, skills, tools, your prompts, Claude's replies and every tool result, with what each costs. Flagged items are worth a look: large output from many prompts ago, a file read again later (the old copy is out of date), a file that no longer exists, an instruction file from outside the repository, personal data. The latest request of each session is kept <b>in memory only</b>: never written to disk, gone when the gateway restarts, and shown only here on this Mac. View only for now.</div>
+      <div class="row" style="align-items:center;gap:10px">
+        <select id="inSession" style="max-width:520px"></select>
+        <button id="inReload">Reload</button>
+      </div>
+      <div id="inSummary" style="margin:12px 0"></div>
+      <div id="inBody"></div>
     </div>
   </section>
 
@@ -5404,6 +5428,79 @@ $("amSave").onclick = async () => {
 };
 loadAutomask();
 setInterval(loadAutomask, 30000);
+
+// Context inspector: the sessions with a captured request, then one
+// session's context item by item. Groups start closed except flagged items.
+let inData = null;
+async function loadInspectSessions() {
+  let list = [];
+  try { list = await (await fetch("/api/inspect")).json(); } catch (e) { return; }
+  const sel = $("inSession"), keep = sel.value;
+  if (!list.length) {
+    sel.innerHTML = `<option value="">no session yet: one appears after its next request</option>`;
+    $("inSummary").innerHTML = ""; $("inBody").innerHTML = "";
+    return;
+  }
+  sel.innerHTML = list.map(x => `<option value="${esc(x.session)}">${esc(x.repo || "?")} &middot; ${esc(x.model)} &middot; ${x.messages} messages &middot; ${esc(stamp(x.at))} &middot; ${esc(x.session.slice(0, 8))}</option>`).join("");
+  if (keep && list.some(x => x.session === keep)) sel.value = keep;
+  loadInspect();
+}
+async function loadInspect() {
+  const sid = $("inSession").value;
+  if (!sid) return;
+  try {
+    const r = await fetch("/api/inspect?session=" + encodeURIComponent(sid));
+    if (!r.ok) throw new Error(await r.text());
+    inData = await r.json();
+  } catch (e) {
+    $("inSummary").innerHTML = `<span class="hint">${esc(String(e.message || e))}</span>`;
+    return;
+  }
+  drawInspect();
+}
+function inTok(n) { return n >= 1000 ? Math.round(n / 1000) + "k" : String(n); }
+function inItem(it, i) {
+  const when = it.turn ? `prompt ${it.turn}${it.turns_ago ? `, ${it.turns_ago} ago` : ", latest"}` : "every request";
+  return `<div class="initem" data-i="${i}"><div class="top"><span class="nm">${esc(it.name)}</span><span class="tk">${esc(when)}</span><span class="tk">${inTok(it.tokens)}</span></div>` +
+    (it.flags && it.flags.length ? `<div>${it.flags.map(f => `<span class="inflag">${esc(f)}</span>`).join("")}</div>` : "") +
+    `<div class="pv">${esc(it.preview)}</div></div>`;
+}
+function drawInspect() {
+  const d = inData;
+  const total = d.items.reduce((a, x) => a + x.tokens, 0);
+  $("inSummary").innerHTML = `<b>${esc(d.repo || "?")}</b> <span class="hint">&middot; ${esc(d.model)} &middot; ${d.prompts} prompts &middot; ${inTok(d.context || total)} tokens${d.estimate ? " (estimated: no reply reported the size yet)" : ""} &middot; as sent at ${esc(stamp(d.at))}</span> ` +
+    (d.flagged ? `<span class="pill s">${d.flagged} worth a look</span>` : `<span class="pill p">nothing flagged</span>`);
+  setDot("nd-inspect", d.flagged ? "warn" : "ok");
+  const idx = d.items.map((it, i) => [it, i]);
+  const flagged = idx.filter(([it]) => it.flags && it.flags.length);
+  const groups = [];
+  for (const [it, i] of idx) {
+    let g = groups.find(x => x.name === it.group);
+    if (!g) groups.push(g = {name: it.group, rows: [], tokens: 0});
+    g.rows.push([it, i]); g.tokens += it.tokens;
+  }
+  const block = (title, rows, tokens, open) => `<details class="ingrp"${open ? " open" : ""}><summary>${esc(title)} <span class="hint">${rows.length}</span><span class="spacer"></span><span class="tk">${inTok(tokens)}</span></summary>` +
+    rows.map(([it, i]) => inItem(it, i)).join("") + `</details>`;
+  $("inBody").innerHTML = (flagged.length ? block("Worth a look", flagged, flagged.reduce((a, [it]) => a + it.tokens, 0), true) : "") +
+    groups.map(g => block(g.name, g.rows, g.tokens, false)).join("");
+}
+$("inBody").addEventListener("click", async e => {
+  const top = e.target.closest(".initem .top, .initem .pv");
+  if (!top) return;
+  const row = top.closest(".initem");
+  const open = row.querySelector("pre");
+  if (open) { open.remove(); return; }
+  const pre = document.createElement("pre");
+  pre.textContent = "loading...";
+  row.appendChild(pre);
+  try {
+    const r = await fetch(`/api/inspect-item?session=${encodeURIComponent(inData.session)}&i=${row.dataset.i}`);
+    pre.textContent = await r.text();
+  } catch (err) { pre.textContent = String(err); }
+});
+$("inSession").onchange = loadInspect;
+$("inReload").onclick = loadInspectSessions;
+loadInspectSessions();
 
 // The in-session band: /api/mod-status asks Claude Code itself (a second or
 // two), so it loads on its own and never holds up the page.
