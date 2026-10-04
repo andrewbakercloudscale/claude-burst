@@ -119,6 +119,17 @@ is armed, when it last checked and what it has caught**, with a button to instal
 
 Both are needed in transparent mode; base-url mode needs only the watchdog.
 
+Recovery when the gateway breaks while traffic still goes to it, fastest first:
+
+- **A leftover on the port** (an old gateway, a pass-through, a test's binary): the gateway that
+  launchd starts clears it itself. A pass-through is stopped at once; any other Burst process gets
+  75 seconds first, longer than any drain, so an upgrade's old gateway finishes its replies. Something
+  that is not Burst is never touched: the gateway names it and exits.
+- **Hung** (running, answering nothing): the watchdog, every 30 seconds, kills it on the second check
+  in a row and launchd starts a fresh one. Never within 3 minutes of a planned restart (`deploy.sh`).
+- **Still broken:** the pf guard removes the redirect after two failed repairs (about 3.5 minutes),
+  so Claude Code reaches Anthropic directly, and the gateway shows **Burst bypassed** once it is back.
+
 ## Guarding the pf rule
 
 The rdr rule is the one part of this that something else on your Mac can take away.

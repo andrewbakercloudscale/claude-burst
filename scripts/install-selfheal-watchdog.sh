@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Installs (or removes) the self-heal watchdog LaunchAgent: a small,
 # separate background job that runs scripts/self-heal-watchdog.sh every
-# ~2 minutes to reload the gateway's LaunchAgent if it gets killed (e.g. by
+# 30 seconds to reload the gateway's LaunchAgent if it gets killed (e.g. by
 # a critical-battery event -- see self-heal-watchdog.sh's own comment for
 # the 2026-09-04 incident this exists to catch), and to notify if the
 # /etc/hosts redirect goes missing.
@@ -64,7 +64,7 @@ install() {
     <string>/bin/zsh</string>
     <string>$SCRIPT</string>
   </array>
-  <key>StartInterval</key><integer>120</integer>
+  <key>StartInterval</key><integer>30</integer>
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>/dev/null</string>
@@ -79,7 +79,7 @@ PLIST
   cat <<OUT
 
 Installed self-heal watchdog LaunchAgent: $LABEL
-Runs every 2 minutes, checking:
+Runs every 30 seconds, checking:
   - is the gateway's own LaunchAgent loaded? reload it if not (no root needed)
   - is real traffic reaching the gateway? notify (macOS notification) if not,
     at most once per hour
