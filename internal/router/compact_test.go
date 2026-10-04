@@ -704,6 +704,11 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	if !strings.Contains(got, "Claude Burst, pauseless compaction: done. Context down 87%, 450k → 60k: 4 earlier messages now go as a summary") {
 		t.Fatalf("want the result of the swap, got:\n%s", got)
 	}
+	// Claude Code still holds the whole history: the session shows it, larger
+	// than what Burst sends, for the band and the dashboard.
+	if cs := s.CompactionSessions(); len(cs) == 0 || cs[0].Raw <= cs[0].Context*11/10 {
+		t.Fatalf("want Raw above the 60k sent, got %+v", cs)
+	}
 
 	// Turned off: nothing, and nothing queued is shown later either.
 	s.SetCompaction(config.CompactionConfig{Enabled: true, NoPromptNotice: true})

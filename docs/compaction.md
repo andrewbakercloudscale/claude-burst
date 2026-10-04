@@ -48,6 +48,24 @@ Good to know:
 - **Only your prompt triggers it.** The marker inside a file Claude reads, or any other tool output, is ignored.
 - **Cost:** one summary request on your subscription, read from cache, typically about $0.20 API-equivalent (see [the savings](#how-the-savings-are-calculated)).
 
+## Claude Code's own history, and what a bypass costs
+
+Burst compacts what it **sends**. Claude Code's own copy of the conversation is never
+shortened, and Claude Code only learns its size from Burst's replies, so its own
+auto-compaction never fires while Burst is in the path. Whenever Burst drops out
+(the gateway down, the redirect removed by the pf guard, `burst-off`), the next turn
+sends all of it, uncached: on 2026-10-04 a session Burst kept at 135k sent 994k for $7.75.
+
+- The band shows `CC holds 994k` beside the context, amber from 500k, red from 800k.
+  The dashboard's compaction table has the same figure under **Claude Code holds**,
+  with its uncached price on hover.
+- From 500k, and again every further 200k, the session gets a line and an alert:
+  what a bypass would cost, and to run `/compact` now. Through Burst that costs little
+  (the summary is in force) and shrinks Claude Code's own copy.
+- Burst out of the path is an error alert, **Burst bypassed**, as soon as it happens
+  and on the first look after the gateway starts, since the gateway is usually what
+  was down. A bypass chosen with `burst-off`, `rollback.sh` or `disable` is quiet.
+
 ## A different limit for some repositories
 
 *Compact at* is the default for every session. Under **Repository overrides** in the dashboard, a repository can have its own size (a big monorepo that needs more context, say 500k) or **Never compact**, which leaves its sessions alone unless you run `/compact-async`. *Warn when at* and the delay between compactions apply to the repository's own size.

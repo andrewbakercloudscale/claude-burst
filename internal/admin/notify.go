@@ -6,9 +6,11 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
@@ -137,6 +139,7 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 		}
 		alertIntercept(n.intercept, ic)
 	}
+	alertBypass(!n.started, n.intercept, ic)
 	s.alertRound(&n.alerts, cfg, now)
 	n.started, n.pfEvents, n.selfEvents, n.intercept = true, pf, self, ic
 }
@@ -147,27 +150,72 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 type interceptCheck struct {
 	on        bool // transparent mode configured
 	hosts, ca bool
+	// bypassed: Burst is set up but Claude Code is not sent through it, and
+	// nobody chose that (no rolled-back marker): in transparent mode the CA
+	// is trusted but the redirect is gone, in base-url mode settings.json no
+	// longer names the gateway.
+	bypassed bool
 }
 
 func readInterceptCheck(cfg config.Config) interceptCheck {
+	var ic interceptCheck
 	if !cfg.Intercept.Transparent() {
-		return interceptCheck{}
+		// No settings.json at all is a Mac Burst never set up, not a bypass.
+		if p, err := claudesettings.Path(); err == nil && statOK(p) {
+			if root, err := claudesettings.Read(p); err == nil {
+				ic.bypassed = !claudesettings.OwnBaseURL(claudesettings.BaseURL(root), cfg.Listen)
+			}
+		}
+	} else {
+		ic.on = true
+		if b, err := os.ReadFile(cfg.Intercept.CABundle); err == nil {
+			ic.ca = tlsca.HasBlock(string(b))
+		}
+		if h, err := os.ReadFile(hostsFile); err == nil {
+			ic.hosts = config.HostsRedirectActive(h, cfg.Intercept.Host)
+		}
+		ic.bypassed = ic.ca && !ic.hosts
 	}
-	ic := interceptCheck{on: true}
-	if b, err := os.ReadFile(cfg.Intercept.CABundle); err == nil {
-		ic.ca = tlsca.HasBlock(string(b))
-	}
-	if h, err := os.ReadFile(hostsFile); err == nil {
-		ic.hosts = config.HostsRedirectActive(h, cfg.Intercept.Host)
+	if ic.bypassed {
+		if dir, err := config.ConfigDir(); err == nil {
+			if _, err := os.Stat(filepath.Join(dir, "rolled-back")); err == nil {
+				ic.bypassed = false
+			}
+		}
 	}
 	return ic
 }
+
+// alertBypass says, as an error that stays on screen until it is fixed,
+// when Claude Code stops going through Burst: at once on a change, and on
+// the first look after a start too. The gateway is often what was down when
+// the redirect came out (the pf guard removes it after four failed repairs),
+// so the change itself happens while nothing can announce it: on 2026-10-04
+// the redirect went at 09:02, the gateway came back to a quiet baseline, and
+// the first sign was a 994k turn costing $7.75. A bypassed session sends
+// Claude Code's whole uncompacted history, which Anthropic has not cached.
+func alertBypass(first bool, was, now interceptCheck) {
+	switch {
+	case now.bypassed && (first || !was.bypassed):
+		if now.on {
+			notice.Publish(alertBypassKind, notice.Error, "Burst bypassed: redirect removed",
+				"/etc/hosts no longer sends Claude Code to Burst, so sessions go straight to Anthropic: no compaction, failover or masking, and a long session's next turn sends its whole uncompacted history. Put it back: sudo /usr/local/libexec/claude-burst/transparent-root.sh install")
+		} else {
+			notice.Publish(alertBypassKind, notice.Error, "Burst bypassed: settings no longer use it",
+				"~/.claude/settings.json no longer points ANTHROPIC_BASE_URL at Burst, so new sessions go straight to Anthropic: no compaction, failover or masking. Put it back: claude-burst enable")
+		}
+	case !first && was.bypassed && !now.bypassed:
+		notice.Publish(alertBypassKind, notice.OK, "Burst back in the path", "Claude Code is routed through Burst again.")
+	}
+}
+
+const alertBypassKind = "bypass"
 
 // hostsFile is /etc/hosts; a variable for tests.
 var hostsFile = "/etc/hosts"
 
 // alertIntercept puts a change in transparent mode's two prerequisites on
-// screen. Only changes: a Mac set up without them says so on the
+// screen (the redirect alone going is alertBypass's). Only changes: a Mac set up without them says so on the
 // dashboard, not in a popup every ten seconds.
 func alertIntercept(was, now interceptCheck) {
 	if !was.on || !now.on {
@@ -177,9 +225,6 @@ func alertIntercept(was, now interceptCheck) {
 	case was.ca && !now.ca:
 		notice.Publish("intercept", notice.Error, "Burst CA no longer trusted",
 			"Claude Code's certificate bundle lost the Burst CA, so its requests fail TLS. Reinstall transparent mode from the dashboard.")
-	case was.hosts && !now.hosts:
-		notice.Publish("intercept", notice.Error, "Transparent redirect missing",
-			"/etc/hosts no longer sends Claude Code to Burst, so it talks to Anthropic directly. Reinstall transparent mode from the dashboard.")
 	case now.ca && now.hosts && !(was.ca && was.hosts):
 		notice.Publish("intercept", notice.OK, "Transparent mode restored", "Claude Code is routed through Burst again.")
 	}
@@ -217,3 +262,5 @@ func lastLine(lines []string) string {
 	}
 	return lines[len(lines)-1]
 }
+
+func statOK(p string) bool { _, err := os.Stat(p); return err == nil }
