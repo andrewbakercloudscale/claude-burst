@@ -281,6 +281,13 @@ if [[ -x "$TARGET" ]]; then
     TRANSPARENT=1
   fi
 fi
+# The outcome, not only the binary's word: status exits before printing its
+# intercept line when the config does not load (a broken secondary), and a
+# disable then strips the CA while /etc/hosts still sends api.anthropic.com
+# here, so new sessions fail TLS. A redirect in place means transparent.
+if grep -q '^# BEGIN claude-burst hosts$' /etc/hosts 2>/dev/null; then
+  TRANSPARENT=1
+fi
 
 # --- 3. Fail-safe: point Claude Code straight at Anthropic before the risky part ---
 # Base-url mode only -- see the top-of-file note on why this is actively

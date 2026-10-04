@@ -24,11 +24,24 @@ if [ ! -d "$REPO/.git" ]; then
   done
 fi
 
+# Python, not sed: BSD sed has no escapes inside a bracket expression, and a
+# redactor that misses a case is worse than none. Order matters: Bearer and
+# Basic values first, so "Authorization: Bearer x" loses x, not the word.
+# "token(?!s)": input_tokens counts are the point of the report.
 redact() {
-  sed -E \
-    -e 's/(sk-[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+/\1...REDACTED/g' \
-    -e 's/((api_?key|token|secret|password|authorization|bearer)"?[[:space:]]*[:=][[:space:]]*"?)[^", ]+/\1REDACTED/Ig' \
-    -e 's/(Bearer )[A-Za-z0-9._-]+/\1REDACTED/g'
+  /usr/bin/python3 -c '
+import re, sys
+V = r"[^\s\"\x27,;]+"
+rules = [
+  (r"(sk-[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+", r"\1...REDACTED"),
+  (r"(?i)\b((?:bearer|basic)\s+)" + V, r"\1REDACTED"),
+  (r"(?i)([\w-]*(?:api[_-]?key|token(?!s)|secret|password|passwd|cookie|authorization)[\w-]*[\"\x27]?\s*[:=]\s*[\"\x27]?)(?!REDACTED|(?i:bearer|basic)\s)" + V, r"\1REDACTED"),
+]
+for line in sys.stdin:
+  for pat, rep in rules:
+    line = re.sub(pat, rep, line)
+  sys.stdout.write(line)
+'
 }
 section() { printf '\n===== %s =====\n' "$1"; }
 run() { # label, command...
@@ -154,7 +167,7 @@ run "Codex gateway forwards (expect 401 without a login)" bash -c 'curl -s -o /d
 run "Codex processes" bash -c 'ps -axo pid,lstart,command | grep -E "MacOS/[c]odex |bin/[c]odex( |$)" | cut -c1-160 | head -8'
 if [ -f "$CFG/codex-metrics.jsonl" ]; then
   printf '\n--- codex-metrics.jsonl (last 8 turns, metadata only) ---\n'
-  tail -8 "$CFG/codex-metrics.jsonl"
+  tail -8 "$CFG/codex-metrics.jsonl" | redact
 fi
 
 section "Power"
@@ -172,7 +185,7 @@ for f in claude-burst.log launchd.err.log launchd.out.log watchdog.log self-heal
   fi
 done
 for f in /var/log/claude-burst-pf.log /var/log/claude-burst-lidawake.log; do
-  [ -r "$f" ] && { printf '\n--- %s (last 15) ---\n' "$f"; tail -15 "$f"; }
+  [ -r "$f" ] && { printf '\n--- %s (last 15) ---\n' "$f"; tail -15 "$f" | redact; }
 done
 [ -f "$CFG/notices.json" ] && { printf '\n--- notices.json (last 10 events) ---\n'; /usr/bin/python3 -c '
 import json,sys

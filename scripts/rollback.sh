@@ -90,6 +90,13 @@ if [[ -x "$ROOT_HELPER" ]]; then
   fi
 fi
 
+# Still redirected (no root, or the remove failed): api.anthropic.com points
+# at this Mac, and the gateway is the only thing answering there. Stopping
+# it would cut every app on the Mac off from Anthropic, so it is left
+# running, and the step that stops it below is skipped.
+REDIRECT_LEFT=0
+grep -q '^# BEGIN claude-burst hosts$' /etc/hosts 2>/dev/null && REDIRECT_LEFT=1
+
 # STEP 1b: undo the System keychain CA trust added by
 # trust-ca-systemwide.sh (see docs/history/investigation-tls-storm.md for why that
 # exists -- without it, the redirect above breaks TLS for every OTHER app
@@ -133,7 +140,11 @@ if [[ -f "$BACKUP_DIR/config.json.latest.bak" ]]; then
   restored=1
 fi
 CA_BUNDLE="${NODE_EXTRA_CA_CERTS:-$HOME/.claude/certs/node-extra-ca-certs.pem}"
-if [[ -f "$CA_BUNDLE" ]] && grep -q '^# BEGIN claude-burst CA' "$CA_BUNDLE"; then
+# Kept while the redirect is: Claude Code reaches the gateway in its place
+# and needs the CA to trust it.
+if (( REDIRECT_LEFT )); then
+  echo "kept claude-burst's CA in $CA_BUNDLE: the redirect is still in place"
+elif [[ -f "$CA_BUNDLE" ]] && grep -q '^# BEGIN claude-burst CA' "$CA_BUNDLE"; then
   cp "$CA_BUNDLE" "$BACKUP_DIR/$(basename "$CA_BUNDLE").before-rollback-$TS.bak"
   # Same rule as tlsca.StripBlock: remove only a complete marked block.
   python3 - "$CA_BUNDLE" <<'PY'
@@ -174,6 +185,11 @@ fi
 # routed to it), but a rollback that an unattended watchdog silently undoes
 # is not a rollback. The marker says "a human chose this state"; the watchdog
 # honours it, and install-proxy.sh clears it when the gateway is wanted again.
+if (( REDIRECT_LEFT )); then
+  echo "WARNING: left the gateway RUNNING: /etc/hosts still sends api.anthropic.com to it," >&2
+  echo "         and stopping it would cut every app on this Mac off from Anthropic." >&2
+  echo "         Run: sudo $ROOT_HELPER remove, then run this rollback again." >&2
+else
 mkdir -p "$(dirname "$ROLLED_BACK_MARKER")" 2>/dev/null
 date '+%Y-%m-%d %H:%M:%S rolled back by scripts/rollback.sh' > "$ROLLED_BACK_MARKER"
 
@@ -197,6 +213,7 @@ for port in ${(u)PORTS}; do
   done
 done
 echo "  marked $ROLLED_BACK_MARKER so the self-heal watchdog leaves it stopped"
+fi
 
 # STEP 2: belt-and-suspenders cleanup for routing overrides that would
 # survive the settings.json restore above if this machine was never backed
