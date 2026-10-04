@@ -30,6 +30,13 @@ Checked against codex-cli 0.159.2. The other route, `chatgpt_base_url`, was reje
 
 ## The Codex tab
 
+- **Checks**: Codex's own meter, as the Claude tab's is Claude Code's, with the same rule (the worst failing check sets the colour) and a fix button on each failing check:
+  - **Codex goes through Burst**: Burst's block is in `~/.codex/config.toml` (red if that file does not parse; amber if Codex goes straight to ChatGPT).
+  - **Burst's Codex port answering**: red when Codex is routed to a port nothing answers on.
+  - **ChatGPT answering**: the newest turn ChatGPT answered, while under 10 minutes old; red on a 5xx, no answer, a refused sign-in (401/403) or the plan's limit (429). A 499 is Codex hanging up and does not count.
+  - **ChatGPT plan headroom**: amber at 90% of any plan window.
+  - **Gateway watchdog**: one gateway serves Codex and Claude Code.
+  - **Error rate**: amber at 2% of Codex turns over 14 days.
 - **Overview**: whether Codex goes through Burst, the gateway's listener (with the reason if it is not listening), the last request, 14-day turns, sessions, tokens and errors, and the **ChatGPT plan limits** as bars (for example the weekly window, percent used, when it resets).
 - **Context**: each recent session's context after its latest turn against its model's window, as a bar: green, amber from 60%, red from 85%. Codex compacts on its own as it nears the limit.
 - **Requests**: the recent model calls, with uncached input, cached input and output apart.
