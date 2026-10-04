@@ -1,6 +1,6 @@
-# Automask (backlog)
+# Automask
 
-Status: backlog, not started. Asked for 2026-10-03.
+Status: built 2026-10-04 (`internal/automask`, `internal/router/automask.go`, the dashboard's Automask section). Off by default. Asked for 2026-10-03.
 
 ## What it does
 
@@ -57,6 +57,5 @@ redaction covers logs only.
 - Does the reply get unmasked for display? Proposal: no. Claude only ever
   sees masks, and Burst never stores the originals.
 - Custom rules: a `rules` list in config.json (name, regex, validator, mask
-  prefix), editable on the dashboard.
-- Cost: regex over the whole conversation on every request. Cache the scan
-  per message hash so only new messages are scanned.
+  prefix), editable on the dashboard. Not built: `automask.rules` holds only on/off overrides of the built-in rules.
+- Cost: built as proposed. Each message is cached by its hash per session, so only new messages are scanned.

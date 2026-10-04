@@ -105,6 +105,7 @@ type Server struct {
 	// compaction is proxy-side compaction of long primary sessions
 	// (compact.go, compact_run.go). Always present; off unless enabled.
 	compaction *compactor
+	automask   *masker
 	// snapMu guards the last fully logged network snapshot (logSnapshot).
 	snapMu    sync.Mutex
 	snapState string
@@ -215,6 +216,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 
 	s := &Server{
 		compaction:      newCompactor(cfg.PrimaryCompaction, compactionStatePath(statePath), logger),
+		automask:        newMasker(cfg.Automask),
 		repos:           repo.New(),
 		cfg:             cfg,
 		primary:         primary,
@@ -955,6 +957,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	// Before routing, so a compacted history goes wherever the request
 	// goes. count_tokens returned above: it must see what Claude Code sent.
+	// Masked first: a summary, the compaction hash and the secondary all
+	// see only the masked history.
+	body = s.applyAutomask(r, body)
 	body, r = s.applyCompaction(r, body)
 	reqModel := requestModel(body)
 	ladder := s.ladderFor(reqModel, now)
