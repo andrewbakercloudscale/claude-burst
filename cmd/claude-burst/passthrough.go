@@ -187,10 +187,19 @@ func runningPassthrough() int {
 	// A pid file outlives a crash, and the pid can be reused: only a process
 	// that is still this binary's pass-through counts.
 	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil || !strings.Contains(string(out), "passthrough") {
+	if err != nil || !isPassthroughCommand(string(out)) {
 		return 0
 	}
 	return pid
+}
+
+// isPassthroughCommand reports whether a ps command line is this binary
+// running its passthrough subcommand: the executable named claude-burst and
+// "passthrough" as its first argument. Containing the word is not enough;
+// stopPassthrough signals whatever this accepts.
+func isPassthroughCommand(cmdline string) bool {
+	f := strings.Fields(cmdline)
+	return len(f) >= 2 && filepath.Base(f[0]) == "claude-burst" && f[1] == "passthrough"
 }
 
 // stopPassthrough asks a running pass-through to give the port back and waits

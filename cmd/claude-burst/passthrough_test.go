@@ -96,3 +96,21 @@ func TestTempHomeLeavesTheMacAlone(t *testing.T) {
 		t.Fatalf("startPassthrough under a temp HOME: started=%v why=%q err=%v", started, why, err)
 	}
 }
+
+// A reused pid running something else that merely mentions "passthrough"
+// is never taken for the pass-through, so it is never signalled.
+func TestIsPassthroughCommand(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"/Users/x/.local/bin/claude-burst passthrough --listen 127.0.0.1:7777 --target https://api.anthropic.com": true,
+		"claude-burst passthrough":                     true,
+		"/usr/bin/vim notes-on-passthrough.txt":        false,
+		"/bin/zsh -c claude-burst passthrough":         false,
+		"/Users/x/.local/bin/claude-burst serve":       false,
+		"/opt/other/passthrough-daemon --claude-burst": false,
+		"": false,
+	} {
+		if got := isPassthroughCommand(cmd); got != want {
+			t.Errorf("%q: got %v, want %v", cmd, got, want)
+		}
+	}
+}
