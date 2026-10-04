@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Persistent self-heal watchdog for the claude-burst gateway. Runs every
-# ~2 minutes from its own LaunchAgent (ninja.andrewbaker.claude-burst-selfheal),
+# 30 seconds from its own LaunchAgent (ninja.andrewbaker.claude-burst-selfheal),
 # separate from the gateway's own LaunchAgent -- so it keeps checking even
 # when THAT one gets killed, which is exactly the failure mode this exists
 # to catch.
@@ -79,7 +79,7 @@ notify() {
 # rollback. install-proxy.sh removes this marker, so a reinstall re-arms this
 # watchdog without anyone having to remember it exists.
 if [[ -f "$ROLLED_BACK_MARKER" ]]; then
-  # Logged only on the cycle that first sees it: this runs every ~2 minutes
+  # Logged only on the cycle that first sees it: this runs every 30 seconds
   # and a machine left rolled back for a week must not write 5,000 lines.
   if [[ ! -f "$ROLLED_BACK_MARKER.noted" ]]; then
     log "rolled back by hand ($(cat "$ROLLED_BACK_MARKER" 2>/dev/null)) -- standing down until reinstall"
@@ -112,6 +112,36 @@ if ! launchagent_running; then
   # Give the freshly-reloaded process a moment to bind before testing it
   # below, so this doesn't misreport a reload-in-progress as still broken.
   sleep 3
+fi
+
+# --- 1b. Running but not answering? Restart it. ---
+# Step 1 only sees a process that is gone. A gateway that is there but hung
+# passed it, and step 2's check then timed out and said nothing, so traffic
+# kept going to a process that answered nobody. Two cycles in a row (30s
+# apart) with neither the gateway nor its dashboard answering, and launchd
+# gets a fresh one: KeepAlive restarts the job the moment its process dies.
+# Never during a planned restart: an upgrade's old process may be draining.
+HANG_FILE="$HOME/.config/claude-burst/self-heal-hang"
+HANG_LIMIT="${CLAUDE_BURST_HANG_LIMIT:-2}"
+KILL="${CLAUDE_BURST_KILL:-kill}"
+planned="$HOME/.config/claude-burst/planned-restart"
+if [[ -f "$planned" ]] && (( $(date +%s) - $(stat -f %m "$planned" 2>/dev/null || echo 0) < 180 )); then
+  rm -f "$HANG_FILE"
+elif launchagent_running; then
+  if gateway_healthy || curl -s -m 5 -o /dev/null "$ADMIN_URL/api/mod-status" 2>/dev/null; then
+    rm -f "$HANG_FILE"
+  else
+    hung=$(( $(cat "$HANG_FILE" 2>/dev/null || echo 0) + 1 ))
+    echo "$hung" > "$HANG_FILE"
+    pid="$(launchagent_pid)"
+    log "gateway (pid $pid) is running but not answering: check $hung of $HANG_LIMIT"
+    if (( hung >= HANG_LIMIT )) && [[ -n "$pid" ]]; then
+      log "gateway (pid $pid) hung for $hung checks -- killing it; launchd starts a fresh one"
+      "$KILL" -9 "$pid" 2>/dev/null
+      rm -f "$HANG_FILE"
+      exit 0
+    fi
+  fi
 fi
 
 # --- 2. Is real traffic actually reaching it? (transparent mode only) ---

@@ -241,6 +241,19 @@ func serve(args []string) {
 	// A pass-through left by disable or rollback holds this port; Burst being
 	// started again means it is wanted back in front.
 	stopPassthrough(logger)
+	// A leftover holding either port (portclaim.go). The dashboard's port
+	// is not worth refusing to start over: its server says why it stopped.
+	if launchedByAgent() {
+		if err := claimPort(cfg.Listen, logger); err != nil {
+			logger.Printf("FATAL: %v", err)
+			fatal(err)
+		}
+		if cfg.AdminListen != "" {
+			if err := claimPort(cfg.AdminListen, logger); err != nil {
+				logger.Printf("port claim: %v", err)
+			}
+		}
+	}
 	bindStart := time.Now()
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
