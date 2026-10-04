@@ -130,6 +130,10 @@ func logNoise(line []byte) bool {
 	if bytes.Contains(line, []byte(" start method=")) || bytes.Contains(line, []byte(" done method=")) {
 		return true
 	}
+	// A successful control-plane call (heartbeats, events: no model).
+	if bytes.Contains(line, []byte(` ok route=`)) && bytes.Contains(line, []byte(` model="" `)) {
+		return true
+	}
 	// A background poll cancelled by its own client is routine; a cancelled
 	// turn is not.
 	return bytes.Contains(line, []byte(" client_gone ")) && !bytes.Contains(line, []byte("/v1/messages"))
