@@ -224,10 +224,20 @@ func (s *Server) alertSecondaryKey(err error) {
 // same place, and on the same schedule, as the warn line in the log. A
 // repository with compaction off never gets here, its warn level being
 // NeverTokens.
-func alertContextNear(sid, root string, context, compactAt int64) {
+//
+// canCompact is false when no prompt yet leaves enough older history to
+// summarise (one long turn): the alert says so rather than promise a
+// compaction that will not start.
+func alertContextNear(sid, root string, context, compactAt int64, canCompact bool) {
 	where := "this session"
 	if root != "" {
 		where = filepath.Base(root)
+	}
+	if !canCompact {
+		notice.PublishFor(sid, alertContext, notice.Warn,
+			fmt.Sprintf("Context at %dk of %dk, cannot summarise yet", context/1000, compactAt/1000),
+			"In "+where+". Almost all of it is the current turn, and Burst only summarises history before a prompt. It will after your next prompt, once enough older history is behind it; /compact frees it now.")
+		return
 	}
 	notice.PublishFor(sid, alertContext, notice.Info,
 		fmt.Sprintf("Context at %dk of %dk, compaction soon", context/1000, compactAt/1000),

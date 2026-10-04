@@ -473,13 +473,6 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		dirty = true
 	}
 
-	if st.lastContext >= cfg.WarnAtTokens && (st.warnedAt.IsZero() || now.Sub(st.warnedAt) >= window) {
-		st.warnedAt = now
-		s.logger.Printf("req=%s warn stage=compaction session=%s context=%dk (warn at %dk, %s)",
-			rid, key, st.lastContext/1000, cfg.WarnAtTokens/1000, limit)
-		alertContextNear(sid, root, st.lastContext, cfg.CompactAtTokens)
-	}
-
 	bounds := promptBoundaries(msgs)
 	fresh := endsInPrompt(msgs)
 
@@ -491,6 +484,20 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		view, offset = rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt), st.p0
 	}
 
+	// A one-shot request carries a whole conversation in a single prompt
+	// and is never continued: Claude Code's side calls (auto mode's
+	// classifier, a recap) on another model, with the session's id. There
+	// is nothing to summarise and no session to warn about: on 2026-10-04
+	// one at 410k said "compaction soon" four times and never compacted.
+	oneShot := len(bounds) <= 1
+	if !oneShot && st.lastContext >= cfg.WarnAtTokens && (st.warnedAt.IsZero() || now.Sub(st.warnedAt) >= window) {
+		st.warnedAt = now
+		_, canCut := compactionBoundary(view, bounds, offset)
+		s.logger.Printf("req=%s warn stage=compaction session=%s context=%dk (warn at %dk, %s)%s",
+			rid, key, st.lastContext/1000, cfg.WarnAtTokens/1000, limit, map[bool]string{true: "", false: " cannot summarise yet: the current turn is most of it"}[canCut > 0])
+		alertContextNear(sid, root, st.lastContext, cfg.CompactAtTokens, canCut > 0)
+	}
+
 	// /compact-async asks for a summary now, whatever the context size and
 	// the window: the user chose the moment.
 	forced := fresh && RequestsCompaction(msgs[len(msgs)-1])
@@ -499,7 +506,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	} else if forced && st.next != "" {
 		st.notice("/compact-async: summary ready, swaps in next prompt")
 	}
-	auto := st.lastContext >= cfg.CompactAtTokens && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window)
+	auto := !oneShot && st.lastContext >= cfg.CompactAtTokens && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window)
 	if (auto || forced) && !st.pending && st.next == "" {
 		// Only a compaction that actually starts opens the window. A skip
 		// (no boundary yet, typically one long prompt) must leave the next
@@ -536,8 +543,8 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			st.notice("/compact-async: too little to summarise yet")
 		} else if st.skippedAt.IsZero() || now.Sub(st.skippedAt) >= window {
 			st.skippedAt = now
-			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no prompt boundary leaves at least %.0f%% to summarise",
-				rid, key, st.lastContext/1000, minSummarisedShare*100)
+			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no prompt boundary leaves at least %.0f%% to summarise (%d messages, %d prompts)",
+				rid, key, st.lastContext/1000, minSummarisedShare*100, len(msgs), len(bounds))
 		}
 	}
 
