@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/andrewbakercloudscale/claude-burst/internal/ctxview"
 	"io"
 	"log"
 	"net/http"
@@ -71,6 +72,9 @@ type Gateway struct {
 	windows map[string]int64
 
 	statePath string
+
+	inspect  inspectStore
+	removals *ctxview.Store
 
 	// Listener state, set by whoever serves the gateway: bound, or why not.
 	// "starting" until the first report.
@@ -126,7 +130,8 @@ func New(upstream, metricsPath string, logger *log.Logger) (*Gateway, error) {
 		return nil, fmt.Errorf("codex upstream %q is not a URL", upstream)
 	}
 	g := &Gateway{upstream: u, metrics: metrics.New(metricsPath), logger: logger,
-		statePath: filepath.Join(filepath.Dir(metricsPath), "codex-state.json")}
+		statePath: filepath.Join(filepath.Dir(metricsPath), "codex-state.json"),
+		removals:  ctxview.Shared(ctxview.RemovalsPath(filepath.Dir(metricsPath)))}
 	if b, err := os.ReadFile(g.statePath); err == nil {
 		var sv saved
 		if json.Unmarshal(b, &sv) == nil {
@@ -198,6 +203,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.logger.Printf("codex: websocket %s (passed through; its turns are not counted)", r.URL.Path)
 	}
 	r = r.WithContext(context.WithValue(r.Context(), startKey{}, time.Now()))
+	if isTurn(r) {
+		g.prepareTurn(r)
+	}
 	g.proxy.ServeHTTP(w, r)
 }
 

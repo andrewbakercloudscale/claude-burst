@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/andrewbakercloudscale/claude-burst/internal/ctxview"
 	"io"
 	"log"
 	"net"
@@ -107,6 +108,7 @@ type Server struct {
 	compaction *compactor
 	automask   *masker
 	inspect    *inspectStore
+	removals   *ctxview.Store
 	// snapMu guards the last fully logged network snapshot (logSnapshot).
 	snapMu    sync.Mutex
 	snapState string
@@ -219,6 +221,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		compaction:      newCompactor(cfg.PrimaryCompaction, compactionStatePath(statePath), logger),
 		automask:        newMasker(cfg.Automask),
 		inspect:         newInspectStore(),
+		removals:        ctxview.Shared(removalsPath(statePath)),
 		repos:           repo.New(),
 		cfg:             cfg,
 		primary:         primary,
@@ -951,6 +954,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		// Masked like the turn it measures: /context sends the whole
 		// conversation, and automask promises nothing personal leaves.
 		body = s.applyAutomask(r, body)
+		body = s.applyRemovals(r.Header.Get("x-claude-code-session-id"), body)
 		s.forward(w, r, body, "primary", s.primary, nil, false, "", nil)
 		return
 	}
@@ -973,6 +977,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// see only the masked history.
 	body = s.applyAutomask(r, body)
 	body, r = s.applyCompaction(r, body)
+	// After compaction, so a removal never changes the history compaction
+	// hashes: it only changes what is sent.
+	body = s.applyRemovals(r.Header.Get("x-claude-code-session-id"), body)
 	s.captureForInspect(r.Header.Get("x-claude-code-session-id"), body)
 	reqModel := requestModel(body)
 	ladder := s.ladderFor(reqModel, now)

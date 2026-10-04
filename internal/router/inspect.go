@@ -3,15 +3,13 @@ package router
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/andrewbakercloudscale/claude-burst/internal/automask"
+	"github.com/andrewbakercloudscale/claude-burst/internal/ctxview"
 )
 
 // The context inspector: what a session's context is made of, item by item,
@@ -104,17 +102,7 @@ func (s *Server) InspectSessions() []InspectSession {
 }
 
 // ContextItem is one thing in the context.
-type ContextItem struct {
-	Group    string   `json:"group"`
-	Name     string   `json:"name"`
-	Turn     int      `json:"turn,omitempty"`      // the prompt it arrived with; 0 for what every request carries
-	TurnsAgo int      `json:"turns_ago,omitempty"` // prompts since
-	Bytes    int      `json:"bytes"`
-	Tokens   int64    `json:"tokens"`
-	Flags    []string `json:"flags,omitempty"`
-	Preview  string   `json:"preview"`
-	full     string
-}
+type ContextItem = ctxview.Item
 
 // ContextReport is a session's context, item by item.
 type ContextReport struct {
@@ -132,15 +120,15 @@ type ContextReport struct {
 
 // Groups, in the order the dashboard shows them.
 const (
-	grpInstructions = "Instruction files"
-	grpSkills       = "Skills"
-	grpReminders    = "Other reminders"
-	grpSystem       = "System prompt"
-	grpTools        = "Built-in tools"
-	grpMCP          = "MCP tools"
-	grpPrompts      = "Your prompts"
+	grpInstructions = ctxview.GrpInstructions
+	grpSkills       = ctxview.GrpSkills
+	grpReminders    = ctxview.GrpReminders
+	grpSystem       = ctxview.GrpSystem
+	grpTools        = ctxview.GrpTools
+	grpMCP          = ctxview.GrpMCP
+	grpPrompts      = ctxview.GrpPrompts
 	grpReplies      = "Claude's replies"
-	grpResults      = "Tool results"
+	grpResults      = ctxview.GrpResults
 )
 
 var contentsOf = regexp.MustCompile(`(?m)^Contents of (\S+?)(?: \(([^)\n]*)\))?:\s*$`)
@@ -167,29 +155,8 @@ func (s *Server) InspectContext(sid string) *ContextReport {
 		}
 	}
 	rep.Items, rep.Prompts = contextItems(c.body)
-
-	total := 0
-	for _, it := range rep.Items {
-		total += it.Bytes
-	}
-	rep.Estimate = rep.Context <= 0
-	for i := range rep.Items {
-		it := &rep.Items[i]
-		if rep.Estimate || total == 0 {
-			it.Tokens = int64(it.Bytes / 4)
-		} else {
-			it.Tokens = rep.Context * int64(it.Bytes) / int64(total)
-		}
-		if it.Turn > 0 {
-			it.TurnsAgo = rep.Prompts - it.Turn
-		}
-	}
-	flagItems(rep.Items, root)
-	for _, it := range rep.Items {
-		if len(it.Flags) > 0 {
-			rep.Flagged++
-		}
-	}
+	rep.Estimate = ctxview.Scale(rep.Items, rep.Context, rep.Prompts)
+	rep.Flagged = ctxview.Flag(rep.Items, root, "Read ")
 	return rep
 }
 
@@ -199,7 +166,7 @@ func (s *Server) InspectItem(sid string, i int) (string, bool) {
 	if rep == nil || i < 0 || i >= len(rep.Items) {
 		return "", false
 	}
-	return rep.Items[i].full, true
+	return rep.Items[i].Full, true
 }
 
 // contextItems splits a request into items, and counts the prompts in it.
@@ -214,7 +181,7 @@ func contextItems(body []byte) ([]ContextItem, int) {
 	}
 	var items []ContextItem
 	add := func(group, name string, turn int, text string) {
-		items = append(items, ContextItem{Group: group, Name: name, Turn: turn, Bytes: len(text), Preview: preview(text), full: text})
+		items = append(items, ctxview.NewItem(group, name, turn, text))
 	}
 
 	for i, t := range textsOf(top.System) {
@@ -240,7 +207,7 @@ func contextItems(body []byte) ([]ContextItem, int) {
 	}
 	if len(builtin) > 0 {
 		items = append(items, ContextItem{Group: grpTools, Name: fmt.Sprintf("%d tools", len(builtin)), Bytes: builtinBytes,
-			Preview: strings.Join(builtin, ", "), full: strings.Join(builtin, "\n")})
+			Preview: strings.Join(builtin, ", "), Full: strings.Join(builtin, "\n")})
 	}
 	servers := make([]string, 0, len(mcp))
 	for k := range mcp {
@@ -249,7 +216,7 @@ func contextItems(body []byte) ([]ContextItem, int) {
 	sort.Strings(servers)
 	for _, k := range servers {
 		items = append(items, ContextItem{Group: grpMCP, Name: fmt.Sprintf("%s: %d tools", k, len(mcp[k])), Bytes: mcpBytes[k],
-			Preview: strings.Join(mcp[k], ", "), full: strings.Join(mcp[k], "\n")})
+			Preview: strings.Join(mcp[k], ", "), Full: strings.Join(mcp[k], "\n")})
 	}
 
 	calls := map[string]string{} // tool_use id -> "Read /path"
@@ -350,7 +317,7 @@ func addUserText(items *[]ContextItem, turn int, text string, add func(group, na
 func addReminder(r string, turn int, add func(group, name string, turn int, text string)) {
 	locs := contentsOf.FindAllStringSubmatchIndex(r, -1)
 	if len(locs) > 0 {
-		if head := strings.TrimSpace(r[:locs[0][0]]); len(head) > 200 {
+		if head := strings.TrimSpace(r[:locs[0][0]]); len(head) > 200 || isStub(head) {
 			add(grpReminders, firstLine(head), turn, head)
 		}
 		for k, m := range locs {
@@ -367,47 +334,6 @@ func addReminder(r string, turn int, add func(group, name string, turn int, text
 		return
 	}
 	add(grpReminders, firstLine(r), turn, strings.TrimSpace(r))
-}
-
-// flagItems marks what is worth a look. Each flag says why in a few words.
-func flagItems(items []ContextItem, root string) {
-	home, _ := os.UserHomeDir()
-	lastRead := map[string]int{} // path -> index of its newest read
-	for i, it := range items {
-		if p, ok := strings.CutPrefix(it.Name, "Read "); ok && it.Group == grpResults {
-			lastRead[p] = i
-		}
-	}
-	scan := automask.NewSession()
-	defaults := func(r *automask.Rule) bool { return r.Default }
-	for i := range items {
-		it := &items[i]
-		if it.Group == grpResults && it.Bytes > 20_000 && it.TurnsAgo >= 10 {
-			it.Flags = append(it.Flags, fmt.Sprintf("large and %d prompts old", it.TurnsAgo))
-		}
-		if p, ok := strings.CutPrefix(it.Name, "Read "); ok && it.Group == grpResults {
-			if lastRead[p] != i {
-				it.Flags = append(it.Flags, "read again later: this copy is out of date")
-			}
-			if _, err := os.Stat(p); err != nil && filepath.IsAbs(p) {
-				it.Flags = append(it.Flags, "file no longer exists")
-			}
-		}
-		if it.Group == grpInstructions {
-			p := it.Name
-			inRepo := root != "" && strings.HasPrefix(p, root+string(os.PathSeparator))
-			inClaude := home != "" && strings.HasPrefix(p, filepath.Join(home, ".claude")+string(os.PathSeparator))
-			if !inRepo && !inClaude {
-				it.Flags = append(it.Flags, "from outside this repository")
-			}
-			if _, err := os.Stat(p); err != nil && filepath.IsAbs(p) {
-				it.Flags = append(it.Flags, "file no longer exists")
-			}
-		}
-		if _, hits, _ := scan.Mask(it.full, "", defaults); len(hits) > 0 {
-			it.Flags = append(it.Flags, "personal data: "+automask.Summary(hits))
-		}
-	}
 }
 
 // describeCall names a tool call by what it touched: "Read /x/y.go",
@@ -454,19 +380,8 @@ func textsOf(c json.RawMessage) []string {
 	return out
 }
 
-func preview(s string) string { return clip(strings.Join(strings.Fields(s), " "), 240) }
+func firstLine(s string) string { return ctxview.FirstLine(s) }
 
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	return clip(s, 100)
-}
+func clip(s string, n int) string { return ctxview.Clip(s, n) }
 
-func clip(s string, n int) string {
-	if len([]rune(s)) <= n {
-		return s
-	}
-	return string([]rune(s)[:n]) + "..."
-}
+func isStub(t string) bool { _, ok := ctxview.StubID(t); return ok }
