@@ -127,7 +127,7 @@ Recovery when the gateway breaks while traffic still goes to it, fastest first:
   that is not Burst is never touched: the gateway names it and exits.
 - **Hung** (running, answering nothing): the watchdog, every 30 seconds, kills it on the second check
   in a row and launchd starts a fresh one. Never within 3 minutes of a planned restart (`deploy.sh`).
-- **Still broken:** the pf guard removes the redirect after two failed repairs (about 3.5 minutes),
+- **Still broken:** the pf guard removes the redirect after three failed repairs (about 5 minutes),
   so Claude Code reaches Anthropic directly, and the gateway shows **Burst bypassed** once it is back.
 
 ## Guarding the pf rule
