@@ -244,6 +244,8 @@ if [[ -x "$TARGET" ]] && { [[ "$(cat "$SHA_FILE" 2>/dev/null)" == "$BUILD_SHA" ]
   zsh "$ROOT/scripts/update-panel.sh"
   # So is the mod: it reads the panel's files and the dashboard, not the binary.
   zsh "$ROOT/scripts/update-mod.sh"
+  # burst-off is a copy of rollback.sh: refresh it with every deploy.
+  zsh "$ROOT/scripts/install-burst-off.sh"
   exit 0
 fi
 
@@ -341,6 +343,8 @@ if wait_healthy; then
   # Only after a healthy deploy; never fails it (see update-panel.sh).
   zsh "$ROOT/scripts/update-panel.sh"
   zsh "$ROOT/scripts/update-mod.sh"
+  # burst-off is a copy of rollback.sh: refresh it with every deploy.
+  zsh "$ROOT/scripts/install-burst-off.sh"
   exit 0
 fi
 

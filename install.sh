@@ -381,19 +381,8 @@ install() {
   mv -f "$staged" "$TARGET"
   printf '%s\n' "$sha" > "$(dirname "$TARGET")/.claude-burst.build-sha"
 
-  # burst-off: one command, on the PATH, that turns Burst off and gets Claude
-  # Code working again, for whoever is stuck and has no idea where the repo
-  # went. It is scripts/rollback.sh, copied with the two helpers it calls so
-  # a moved or deleted checkout cannot take it away. claude-burst enable
-  # turns Burst back on.
-  mkdir -p "$OFF_DIR"
-  cp -f "$ROOT/scripts/rollback.sh" "$ROOT/scripts/transparent-root.sh" "$ROOT/scripts/untrust-ca-systemwide.sh" "$OFF_DIR/"
-  chmod 755 "$OFF_DIR"/*.sh
-  printf '%s\n' '#!/bin/zsh' \
-    '# Turn Claude Burst off and get Claude Code working again. Installed by claude-burst install.sh.' \
-    '# Undo with: claude-burst enable' \
-    'exec /bin/zsh "$HOME/.local/share/claude-burst/rollback.sh" "$@"' > "$INSTALL_DIR/burst-off"
-  chmod 755 "$INSTALL_DIR/burst-off"
+  # burst-off: the one-command off switch, on the PATH (see the script).
+  zsh "$ROOT/scripts/install-burst-off.sh"
 
   ZPROFILE="$HOME/.zprofile"
   PATH_LINE='export PATH="$HOME/.local/bin:$PATH" # claude-burst'
