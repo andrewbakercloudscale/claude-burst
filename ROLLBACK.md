@@ -4,6 +4,10 @@ Every change Claude Burst can make, where it lives, and the command that undoes 
 can be removed on its own. To remove everything at once, use `./install.sh uninstall` (normal
 case) or `scripts/rollback.sh` (emergency case, below).
 
+**Stuck right now?** Run `burst-off` in any terminal. install.sh puts it on the PATH as a
+copy of `scripts/rollback.sh`, so it works even if the checkout has moved. It also stops
+anything holding Burst's ports. `claude-burst enable` turns Burst back on.
+
 ## Remove everything
 
 ```sh

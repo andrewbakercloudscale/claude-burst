@@ -54,6 +54,29 @@ var passthroughTick = 15 * time.Second
 // covers a person typing a password as well as the gateway's 50s drain.
 const passthroughBindWait = 10 * time.Minute
 
+// homeIsThisUsers reports whether HOME is the account's real home directory.
+// The steps below act on the Mac rather than on HOME: a detached process on
+// the configured port, and launchctl on the gui/<uid> gateway agent. Tests
+// run disable and install.sh with a temporary HOME, which does not stop
+// either, and on 2026-10-04 a test run left pass-throughs on this Mac's
+// gateway port and booted out its live gateway: an outage until they were
+// killed. A temporary HOME is not this user's Burst, so leave the Mac alone.
+// Asked of Directory Services, because os/user falls back to $HOME itself.
+var homeIsThisUsers = func() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command("dscl", ".", "-read", "/Users/"+os.Getenv("USER"), "NFSHomeDirectory").Output()
+	if err != nil {
+		return false
+	}
+	real := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(out)), "NFSHomeDirectory:"))
+	return real != "" && filepath.Clean(real) == filepath.Clean(home)
+}
+
+const notThisMac = "HOME is not this account's home directory (a test?): leaving this Mac's gateway alone"
+
 func passthroughPidPath() (string, error) {
 	dir, err := config.ConfigDir()
 	if err != nil {
@@ -115,6 +138,9 @@ func passthroughCmd(args []string) {
 func startPassthrough(cfg config.Config, listen, target string, idle time.Duration) (bool, string, error) {
 	if cfg.Intercept.Transparent() {
 		return false, "transparent mode: once the redirect is removed, sessions reach " + cfg.Intercept.Host + " directly", nil
+	}
+	if !homeIsThisUsers() {
+		return false, notThisMac, nil
 	}
 	if pid := runningPassthrough(); pid > 0 {
 		return false, fmt.Sprintf("one is already waiting (pid %d)", pid), nil
@@ -313,6 +339,10 @@ func rolledBackMarker() string {
 // keeps the self-heal watchdog from starting the gateway again (as after
 // rollback.sh); enable clears it.
 func handOverToPassthrough(cfg config.Config) {
+	if !homeIsThisUsers() {
+		fmt.Println("pass-through:", notThisMac)
+		return
+	}
 	started, why, err := startPassthrough(cfg, cfg.Listen, passthroughTarget(cfg), passthroughIdle)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not start the pass-through (%v): sessions already open need restarting (claude --resume keeps their history)\n", err)
@@ -346,6 +376,9 @@ func handOverToPassthrough(cfg config.Config) {
 // startGatewayAgent loads the gateway LaunchAgent if it is not running (after
 // disable or rollback.sh), and clears the marker that kept the watchdog off.
 func startGatewayAgent() {
+	if !homeIsThisUsers() {
+		return
+	}
 	m := rolledBackMarker()
 	os.Remove(m)
 	os.Remove(m + ".noted")

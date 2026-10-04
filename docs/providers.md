@@ -27,7 +27,7 @@ On a company machine Claude Code often already goes through a gateway:
 `ANTHROPIC_CUSTOM_HEADERS` carries its routing headers. Such a machine usually
 has no secondary, and needs none: the secondary is optional.
 
-- Use base-url mode (the default). `enable` adopts the gateway: its URL becomes
+- Use base-url mode (`install.sh` picks it for you here). `enable` adopts the gateway: its URL becomes
   `primary.base_url`, Claude Code is pointed at Claude Burst, and every header
   Claude Code sends, its credential and the custom headers included, is passed
   to the gateway unchanged.

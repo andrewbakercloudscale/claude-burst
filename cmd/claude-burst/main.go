@@ -34,7 +34,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlswatch"
 )
 
-const version = "0.10.0"
+const version = "0.11.0"
 
 // claude-burst.log had no rotation before this and grew forever for as long
 // as the gateway ran, which for a LaunchAgent means indefinitely. Not (yet)
@@ -71,6 +71,8 @@ func main() {
 		enable(os.Args[2:])
 	case "disable":
 		disable(os.Args[2:])
+	case "passthrough":
+		passthroughCmd(os.Args[2:])
 	case "uninstall-hooks":
 		uninstallHooks(os.Args[2:])
 	case "ca-rotate":
@@ -236,6 +238,9 @@ func serve(args []string) {
 	// alone (2026-08-31). The log line below now means what it says: the
 	// listener is bound and the kernel will accept connections on this
 	// socket from this timestamp on, not "about to try."
+	// A pass-through left by disable or rollback holds this port; Burst being
+	// started again means it is wanted back in front.
+	stopPassthrough(logger)
 	bindStart := time.Now()
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -334,7 +339,7 @@ func configure(args []string) {
 	secondaryKeychainService := fs.String("secondary-keychain-service", "", "keychain service name for an openai-compatible secondary, e.g. claude-burst-openrouter (default claude-burst-together, for backward compatibility) -- also fixes the API-key env var keychain-set reads, e.g. claude-burst-openrouter -> OPENROUTER_API_KEY")
 	minFailures := fs.Int("metered-min-failures", 0, "consecutive-window failures before failing over in anthropic-api-key mode")
 	windowSeconds := fs.Int("metered-window-seconds", 0, "sliding window in seconds for metered failover")
-	interceptMode := fs.String("intercept-mode", "", "how Claude Code reaches the gateway: base-url (default) | transparent")
+	interceptMode := fs.String("intercept-mode", "", "how Claude Code reaches the gateway: transparent (what install.sh sets up) | base-url")
 	interceptHost := fs.String("intercept-host", "", "hostname to intercept in transparent mode (default api.anthropic.com)")
 	keepAwake := fs.String("keep-awake-lid-closed", "", "true | false: keep the Mac (and Claude Code in Ghostty, and Remote Control) running with the lid shut")
 	keepAwakePower := fs.String("keep-awake-power", "", "when --keep-awake-lid-closed applies: ac (default, only while plugged in) | always")
@@ -582,6 +587,9 @@ func status() {
 	srv, err := router.New(cfg, statePath, metricsPath, log.New(os.Stderr, "", 0))
 	if err != nil {
 		fatal(err)
+	}
+	if pid := runningPassthrough(); pid > 0 {
+		fmt.Printf("pass-through: running (pid %d): Burst is off, and sessions started while it was on go straight to %s\n", pid, passthroughTarget(cfg))
 	}
 	st := srv.Status()
 	now := time.Now().Unix()
@@ -939,7 +947,9 @@ Then restart Claude Code. Verify with: claude-burst status
 	if err := claudesettings.Write(p, root); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("enabled Claude Burst in %s\nRestart Claude Code.\n", p)
+	fmt.Printf("enabled Claude Burst in %s\n", p)
+	startGatewayAgent()
+	fmt.Println("Claude Code sessions started from now on go through Burst; sessions already open keep their direct route until restarted.")
 }
 
 func disable(args []string) {
@@ -991,7 +1001,8 @@ Until you run this, traffic to %s on this Mac still goes to the gateway:
 `, cfg.Intercept.Host, helper)
 		return
 	}
-	fmt.Println("disabled Claude Burst; restart Claude Code")
+	fmt.Println("disabled Claude Burst: Claude Code sessions started from now on go straight to " + passthroughTarget(cfg))
+	handOverToPassthrough(cfg)
 }
 
 // uninstallHooks removes everything Burst installed in ~/.claude, through

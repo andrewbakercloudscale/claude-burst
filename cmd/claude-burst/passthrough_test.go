@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 // The pass-through waits for the gateway to give up the port, then forwards
@@ -78,3 +80,19 @@ func TestPassthroughTakesOverThePortAndForwards(t *testing.T) {
 }
 
 var gatewayAddrForTest = "127.0.0.1:0"
+
+// A temporary HOME (every test, install.sh's included) must not reach the
+// real Mac: no detached pass-through, no launchctl on the live gateway agent.
+// On 2026-10-04 one test run did both and took this Mac's gateway down.
+func TestTempHomeLeavesTheMacAlone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if homeIsThisUsers() {
+		t.Fatal("a temporary HOME passed for this account's home")
+	}
+	var cfg config.Config
+	cfg.Listen = "127.0.0.1:1"
+	started, why, err := startPassthrough(cfg, cfg.Listen, "https://example.invalid", time.Minute)
+	if started || err != nil || why != notThisMac {
+		t.Fatalf("startPassthrough under a temp HOME: started=%v why=%q err=%v", started, why, err)
+	}
+}

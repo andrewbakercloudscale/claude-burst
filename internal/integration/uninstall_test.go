@@ -200,6 +200,18 @@ func TestInstallScriptUninstallRemovesEveryHook(t *testing.T) {
 		t.Fatalf("precondition: the skill should be installed: %v", err)
 	}
 
+	// What install.sh puts on the PATH as the one-command off switch.
+	off := filepath.Join(filepath.Dir(u.target), "burst-off")
+	offDir := filepath.Join(u.home, ".local", "share", "claude-burst")
+	if err := os.MkdirAll(offDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{off, filepath.Join(offDir, "rollback.sh")} {
+		if err := os.WriteFile(f, []byte("#!/bin/zsh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	out, code := u.uninstall()
 	if code != 0 {
 		t.Fatalf("uninstall failed (%d):\n%s", code, out)
@@ -207,6 +219,11 @@ func TestInstallScriptUninstallRemovesEveryHook(t *testing.T) {
 
 	if _, err := os.Stat(u.target); err == nil {
 		t.Errorf("the binary should be gone")
+	}
+	for _, f := range []string{off, offDir} {
+		if _, err := os.Stat(f); err == nil {
+			t.Errorf("%s should be gone", f)
+		}
 	}
 	raw, _ := os.ReadFile(u.settingsPath())
 	if strings.Contains(string(raw), "claude-burst") {

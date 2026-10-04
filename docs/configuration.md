@@ -94,7 +94,7 @@ An Amazon Bedrock secondary instead has `"provider": "bedrock"`, the `bedrock-ru
 
 ### The `intercept` block
 
-- `mode`: `base-url` (the default: sets `ANTHROPIC_BASE_URL` in `~/.claude/settings.json`, no root, but Claude Code turns Remote Control off) or `transparent` (redirects at `/etc/hosts` and terminates TLS locally, so Remote Control keeps working). See [Transparent mode](transparent-mode.md).
+- `mode`: `transparent` is what `install.sh` sets up unless you choose otherwise; `base-url` (the code's fallback when unset: sets `ANTHROPIC_BASE_URL` in `~/.claude/settings.json`, no root, but Claude Code turns Remote Control off) or `transparent` (redirects at `/etc/hosts` and terminates TLS locally, so Remote Control keeps working). See [Transparent mode](transparent-mode.md).
 - `host` (`api.anthropic.com`): the one hostname intercepted. The local CA is limited to this name.
 - `tls_port` (`443`): the port Claude Code connects to.
 - `ca_dir` (`~/.config/claude-burst/ca`): where the local CA and its key live.

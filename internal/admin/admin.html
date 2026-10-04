@@ -4389,7 +4389,7 @@ $("installTop").onclick = async () => {
 // escalated from an unauthenticated loopback page would be worse than one that
 // asks. So this click only generates the script and asks macOS to open it.
 async function runRevert(btn) {
-  if (!confirm("Revert to normal Claude?\n\nA Terminal window will open and run scripts/rollback.sh. It asks for your password, because it removes the /etc/hosts redirect, the pf rule and the System-keychain CA trust, all machine-wide.\n\nIt also restores ~/.claude/settings.json and config.json from the most recent backup, so changes made to settings.json since then are rolled back too.\n\nIt verifies api.anthropic.com is reachable directly before reporting success. Restart Claude Code afterwards.")) return;
+  if (!confirm("Revert to normal Claude?\n\nA Terminal window will open and run scripts/rollback.sh. It asks for your password, because it removes the /etc/hosts redirect, the pf rule and the System-keychain CA trust, all machine-wide.\n\nIt also restores ~/.claude/settings.json and config.json from the most recent backup, so changes made to settings.json since then are rolled back too.\n\nIt verifies api.anthropic.com is reachable directly before reporting success. Claude Code sessions already open keep working; nothing needs restarting.")) return;
   delete $("actNote").dataset.overflowClaim;
   const prev = btn.disabled;
   btn.disabled = true;
