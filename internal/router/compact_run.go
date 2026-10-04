@@ -96,7 +96,7 @@ const maxNotices = 5
 
 // notice queues a line for the session's next prompt. Caller holds mu.
 func (st *compactState) notice(format string, a ...any) {
-	st.notices = append(st.notices, "\u26a1 Claude Burst, pauseless compaction: "+fmt.Sprintf(format, a...))
+	st.notices = append(st.notices, "\u26a1 Burst compaction: "+fmt.Sprintf(format, a...))
 	if len(st.notices) > maxNotices {
 		st.notices = st.notices[len(st.notices)-maxNotices:]
 	}
@@ -291,7 +291,7 @@ func (s *Server) rejectMidTurn(in *http.Request, reason string) bool {
 	st.swappedFrom, st.swappedMsgs = 0, 0
 	s.logger.Printf("req=%s compaction mid-turn REJECTED session=%s: the API answered 400 (%s); swap undone, request resent without it, the summary waits for the next plain prompt, and mid-turn swaps are off until the compaction settings are saved again",
 		requestIDFrom(in.Context()), ci.key, reason)
-	st.notice("the API refused the summary mid-turn, so this turn carries on unchanged; the summary swaps in with your next prompt instead")
+	st.notice("summary refused mid-turn; swaps in next prompt")
 	s.compaction.save()
 	return true
 }
@@ -336,7 +336,7 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		if st.swappedFrom > 0 && ctxTokens < st.swappedFrom {
 			cut = int(math.Round(100 * float64(st.swappedFrom-ctxTokens) / float64(st.swappedFrom)))
 		}
-		st.notice("done. Context down %d%%, %dk \u2192 %dk: %d earlier messages now go as a summary", cut, st.swappedFrom/1000, ctxTokens/1000, st.swappedMsgs)
+		st.notice("done, %d%% smaller: %dk \u2192 %dk (%d messages summarised)", cut, st.swappedFrom/1000, ctxTokens/1000, st.swappedMsgs)
 		st.swappedFrom, st.swappedMsgs = 0, 0
 		// Saved, with the new context: the swap itself saved the context
 		// from BEFORE it, and a restart that reloaded that figure started a
@@ -377,7 +377,7 @@ func (s *Server) noteExposure(key string, st *compactState) {
 		cost = fmt.Sprintf(", about $%.2f", usd)
 	}
 	s.logger.Printf("compaction exposure session=%s: Claude Code holds %dk, Burst sends %dk", key, st.rawContext/1000, st.lastContext/1000)
-	st.notice("Claude Code's own history is %dk (Burst sends %dk). If Burst drops out, the next turn sends all of it uncached%s. Run /compact now: through Burst it costs little and shrinks Claude Code's copy", st.rawContext/1000, st.lastContext/1000, cost)
+	st.notice("Claude Code holds %dk, Burst sends %dk; without Burst it all goes uncached%s. Run /compact", st.rawContext/1000, st.lastContext/1000, cost)
 	notice.PublishFor(sid, alertExposure, notice.Warn,
 		fmt.Sprintf("Claude Code holds %dk, Burst sends %dk", st.rawContext/1000, st.lastContext/1000),
 		fmt.Sprintf("If Burst drops out, this session's next turn sends all %dk uncached%s. Run /compact in it now: through Burst that costs little and shrinks Claude Code's own copy.", st.rawContext/1000, cost))
@@ -439,7 +439,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches (cleared, compacted or rewound; %s); window reopened", rid, key, divergence(msgs, st.p0, st.marks))
 		st.summary, st.hash, st.p0, st.swapAt, st.marks = "", "", 0, 0, nil
 		st.startedAt = time.Time{}
-		st.notice("the summary no longer fits (history cleared, compacted or rewound), so the full history goes again; a new summary can start at once")
+		st.notice("summary dropped (history changed); full history sent")
 		notice.Publish(alertCompact, notice.Warn, "Compaction summary dropped",
 			"The history was cleared, compacted or rewound, so the summary no longer fits. The full history goes again; a new summary can start at once.")
 		dirty = true
@@ -477,9 +477,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// the window: the user chose the moment.
 	forced := fresh && RequestsCompaction(msgs[len(msgs)-1])
 	if forced && st.pending {
-		st.notice("/compact-async: a summary is already being written; it swaps in at a later prompt")
+		st.notice("/compact-async: already summarising")
 	} else if forced && st.next != "" {
-		st.notice("/compact-async: a summary is already ready; it swaps in with your next prompt")
+		st.notice("/compact-async: summary ready, swaps in next prompt")
 	}
 	auto := st.lastContext >= cfg.CompactAtTokens && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window)
 	if (auto || forced) && !st.pending && st.next == "" {
@@ -500,9 +500,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			}
 			s.logger.Printf("req=%s compaction start session=%s context=%dk (%s) summarising %d of %d messages%s", rid, key, st.lastContext/1000, limit, p, len(msgs), why)
 			if forced {
-				st.notice("/compact-async: %d earlier messages (context %dk) are being summarised in the background. Keep working: it swaps in with your next prompt once ready, with no pause", p, st.lastContext/1000)
+				st.notice("/compact-async: summarising %d messages (%dk) in the background", p, st.lastContext/1000)
 			} else if !quietStart {
-				st.notice("context is %dk, so %d earlier messages are being summarised in the background. Keep working: it swaps in at a later prompt, with no pause", st.lastContext/1000, p)
+				st.notice("%dk context: summarising %d messages in the background", st.lastContext/1000, p)
 			}
 			s.compaction.running.Add(1)
 			// Its own copy of top: this same request may still be rewritten
@@ -515,7 +515,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			go s.summarise(in.Clone(context.Background()), own, history, cut, key, p, hash)
 		} else if forced {
 			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: /compact-async with too little before this prompt to summarise", rid, key, st.lastContext/1000)
-			st.notice("/compact-async: nothing to compact yet; there is too little conversation before this prompt to summarise")
+			st.notice("/compact-async: too little to summarise yet")
 		} else if st.skippedAt.IsZero() || now.Sub(st.skippedAt) >= window {
 			st.skippedAt = now
 			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no prompt boundary leaves at least %.0f%% to summarise",
@@ -717,7 +717,7 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 		}
 		notice.Publish(alertCompact, notice.Warn, "Compaction failed",
 			fmt.Sprintf("The summary could not be written (%s). The full history keeps going; the next attempt is in %s.", reason, retryAfterFailure))
-		st.notice("the summary failed (%s); the next attempt is in %s", reason, retryAfterFailure)
+		st.notice("summary failed (%s); retry in %s", reason, retryAfterFailure)
 		return
 	}
 	st.next, st.nextP0, st.nextHash, st.nextMarks = summary, p0, hash, st.pendingMarks
@@ -922,7 +922,7 @@ func (s *Server) promptNotices(sid string, midTurn bool) []string {
 		if st.next != "" && midTurn && !(cfg.MidTurn && !s.compaction.midTurnOff) {
 			if !st.waitShown {
 				st.waitShown = true
-				out = append(out, fmt.Sprintf("\u26a1 Claude Burst, pauseless compaction: the summary is ready (%d earlier messages, context %dk now). It swaps in when this turn finishes and you send your next prompt; nothing to do meanwhile", st.nextP0, st.lastContext/1000))
+				out = append(out, fmt.Sprintf("\u26a1 Burst compaction: summary ready (%d messages, %dk), swaps in next prompt", st.nextP0, st.lastContext/1000))
 			}
 			continue
 		}
@@ -942,7 +942,7 @@ func (s *Server) QueueTestNotice(sid string) int {
 			continue
 		}
 		seen[id] = true
-		st.notice("test line from the dashboard. Real ones appear here when a summary starts, swaps in, or fails")
+		st.notice("test line from the dashboard")
 	}
 	return len(seen)
 }

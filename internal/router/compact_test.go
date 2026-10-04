@@ -682,7 +682,7 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	waitFor(t, func() bool { return s.compactionReady("S") })
 
 	got := strings.Join(s.PromptNotices("S", false), "\n")
-	if !strings.Contains(got, "450k, so 4 earlier messages are being summarised") {
+	if !strings.Contains(got, "450k context: summarising 4 messages") {
 		t.Fatalf("want the start line, got:\n%s", got)
 	}
 	// Ready gets no line of its own: "done" follows on the next request.
@@ -701,7 +701,7 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	f.mu.Unlock()
 	send(t, s, "S", all[:9])
 	got = strings.Join(s.PromptNotices("S", false), "\n")
-	if !strings.Contains(got, "Claude Burst, pauseless compaction: done. Context down 87%, 450k → 60k: 4 earlier messages now go as a summary") {
+	if !strings.Contains(got, "Burst compaction: done, 87% smaller: 450k → 60k (4 messages summarised)") {
 		t.Fatalf("want the result of the swap, got:\n%s", got)
 	}
 	// Claude Code still holds the whole history: the session shows it, larger
@@ -729,7 +729,7 @@ func TestPromptNoticesMidTurnSayItWaitsForTheNextPrompt(t *testing.T) {
 	waitFor(t, func() bool { return s.compactionReady("S") })
 
 	got := strings.Join(s.PromptNotices("S", true), "\n")
-	if !strings.Contains(got, "being summarised") || !strings.Contains(got, "swaps in when this turn finishes and you send your next prompt") {
+	if !strings.Contains(got, "summarising") || !strings.Contains(got, "summary ready (") {
 		t.Fatalf("mid-turn: want the start and the waiting line, got:\n%s", got)
 	}
 	if strings.Contains(got, "swaps in with this message") {
@@ -748,7 +748,7 @@ func TestPromptNoticesMidTurnSayItWaitsForTheNextPrompt(t *testing.T) {
 	f.mu.Unlock()
 	send(t, s, "S", all[:9])
 	got = strings.Join(s.PromptNotices("S", true), "\n")
-	if !strings.Contains(got, "done. Context down") || strings.Contains(got, "swaps in") {
+	if !strings.Contains(got, "done, ") || strings.Contains(got, "swaps in") {
 		t.Fatalf("after the swap, want only the done line, got:\n%s", got)
 	}
 }
@@ -803,7 +803,7 @@ func TestCompactAsyncStartsASummaryNow(t *testing.T) {
 	withCmd := append(append([]json.RawMessage(nil), all[:8]...), cmd)
 	send(t, s, "S", withCmd)
 	waitFor(t, func() bool { return s.compactionReady("S") })
-	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "/compact-async: 8 earlier messages") {
+	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "/compact-async: summarising 8 messages") {
 		t.Fatalf("want the /compact-async start line, got:\n%s", got)
 	}
 
@@ -813,7 +813,7 @@ func TestCompactAsyncStartsASummaryNow(t *testing.T) {
 	if f.summaryCount() != n {
 		t.Fatal("a second /compact-async must not start another summary")
 	}
-	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "already ready") {
+	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "summary ready, swaps in next prompt") {
 		t.Fatalf("want already ready, got:\n%s", got)
 	}
 
@@ -933,7 +933,7 @@ func TestMidTurnSwapRejectedIsUndoneAndResent(t *testing.T) {
 	if !waiting || !off {
 		t.Fatalf("summary must wait again and mid-turn go off: waiting=%v off=%v", waiting, off)
 	}
-	if !strings.Contains(notes, "refused the summary mid-turn") {
+	if !strings.Contains(notes, "summary refused mid-turn") {
 		t.Fatalf("the user is told, got:\n%s", notes)
 	}
 	// Later requests in the turn are not swapped again.
@@ -1039,7 +1039,7 @@ func TestSwapNoticeAndContextSurviveARestart(t *testing.T) {
 	send(t, s, "S", all[:9])
 
 	s2 := start()
-	if got := strings.Join(s2.PromptNotices("S", false), "\n"); !strings.Contains(got, "done. Context down 87%") {
+	if got := strings.Join(s2.PromptNotices("S", false), "\n"); !strings.Contains(got, "done, 87% smaller") {
 		t.Fatalf("the swap's result line must survive a restart, got:\n%s", got)
 	}
 	if again := start().PromptNotices("S", false); len(again) != 0 {
