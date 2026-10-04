@@ -311,3 +311,33 @@ func TestCombinedDetector_ClientCancellationNeverFailsOver(t *testing.T) {
 		t.Fatalf("combined detector must not fail over on client cancellation: %+v", dec)
 	}
 }
+
+// The unified headers ride on every answer: only a 429 is the plan refusing.
+// A 400 or 529 while a window shows rejected (overage) never fails over.
+func TestRejectedWindowFailsOverOnlyOn429(t *testing.T) {
+	h := http.Header{}
+	h.Set("anthropic-ratelimit-unified-5h-status", "rejected")
+	for _, st := range []int{400, 500, 529} {
+		if ok, _, _, _ := subscriptionLimit(st, h, nil); ok {
+			t.Errorf("%d with a rejected 5h window failed over", st)
+		}
+	}
+	if ok, claim, _, _ := subscriptionLimit(429, h, nil); !ok || claim != "five_hour" {
+		t.Errorf("429: ok=%v claim=%q", ok, claim)
+	}
+}
+
+// A forced test window is never released as an outage, even when an old
+// outage claim for the model is still in state.
+func TestForcedWindowIsNotReleasedAsAnOutage(t *testing.T) {
+	up := newRecordingUpstream(t)
+	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
+	s.mu.Lock()
+	s.state.ModelClaim = map[string]string{"claude-sonnet-5": "metered_transport"}
+	s.mu.Unlock()
+	s.ForceModelOverflow("claude-sonnet-5", time.Minute, "test")
+	s.releaseOutageWindow("claude-sonnet-5")
+	if !s.modelInOverflow("claude-sonnet-5", time.Now()) {
+		t.Fatal("the forced window was released")
+	}
+}

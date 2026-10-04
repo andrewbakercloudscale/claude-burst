@@ -238,6 +238,13 @@ func (s *Server) ProbeSecondary(ctx context.Context) (ProbeResult, error) {
 	}
 	res.DurationMS = time.Since(start).Milliseconds()
 
+	// Real spend on a metered provider, so it belongs in the totals, pass or
+	// not: an empty reply that used every output token still cost them.
+	// Leaving it out would make the dashboard's cost figure quietly
+	// understate what this Mac actually spent.
+	s.writeMetric(in, "secondary", p.Name(), res.ServeModel, model, resp.StatusCode, start,
+		tokenUsage{input: res.InputTokens, output: res.OutputTokens}, "", 0, "connection test from the admin UI", res.Destination)
+
 	// A 200 with no text is not a pass. A provider that returns a
 	// well-formed empty message would otherwise render as a tick over an
 	// empty reply box, which reads as success.
@@ -254,12 +261,6 @@ func (s *Server) ProbeSecondary(ctx context.Context) (ProbeResult, error) {
 		}
 		return res, fmt.Errorf("%s answered HTTP 200 but with no text content", p.Name())
 	}
-
-	// Real spend on a metered provider, so it belongs in the totals. Leaving
-	// it out would make the dashboard's cost figure quietly understate what
-	// this Mac actually spent.
-	s.writeMetric(in, "secondary", p.Name(), res.ServeModel, model, resp.StatusCode, start,
-		tokenUsage{input: res.InputTokens, output: res.OutputTokens}, "", 0, "connection test from the admin UI", res.Destination)
 
 	return res, nil
 }

@@ -167,6 +167,10 @@ func (timeoutErr) Error() string   { return "net/http: timeout awaiting response
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
 
+// dialTimeout is a timeout while connecting: nothing was sent, so it is safe
+// to resend, unlike timeoutErr (awaiting headers: the request went out).
+func dialTimeout() error { return &net.OpError{Op: "dial", Net: "tcp", Err: timeoutErr{}} }
+
 func chainServerWithSecondary(t *testing.T, primaryURL string, probe func() netProbe) *Server {
 	t.Helper()
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-key")
@@ -302,7 +306,7 @@ func TestFailingSecondaryDoesNotReleaseARateLimitWindow(t *testing.T) {
 }
 
 // The 30s ladder: a primary transport error that is NOT a stale write (a
-// timeout on a live connection) is retried over about 30 seconds, and only
+// connect timeout) is retried over about 30 seconds, and only
 // then counted once towards failover. On 2026-09-30 one reset DoH
 // connection, with no Anthropic involvement, opened the paid window in a
 // second.
@@ -313,7 +317,7 @@ func TestPrimaryTransportErrorsAreRetriedBeforeFailover(t *testing.T) {
 	up := newRecordingUpstream(t)
 	s, logBuf := newChainServerWithSecondary(t, up.srv.URL, nil)
 	s.probe = func() netProbe { return netProbe{dnsOK: true} }
-	ft := &flakyTransport{fail: 5, err: timeoutErr{}, next: s.client.Transport}
+	ft := &flakyTransport{fail: 5, err: dialTimeout(), next: s.client.Transport}
 	s.client.Transport = ft
 	// The metered strategy, the one whose transport_error_min_failures is 1.
 	s.primaryDetector = newMeteredFailureDetector(60, 3, 1)
@@ -355,7 +359,7 @@ func TestLadderRecoveryServesTheResponse(t *testing.T) {
 	up := newRecordingUpstream(t)
 	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
 	s.probe = func() netProbe { return netProbe{dnsOK: true} }
-	s.client.Transport = &flakyTransport{fail: 1, err: timeoutErr{}, next: s.client.Transport}
+	s.client.Transport = &flakyTransport{fail: 1, err: dialTimeout(), next: s.client.Transport}
 
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, messagesRequest("claude-sonnet-5"))
@@ -441,5 +445,23 @@ func TestNetworkNotPassingTrafficDoesNotFailOver(t *testing.T) {
 	defer mu.Unlock()
 	if secondaryHits != 0 {
 		t.Fatalf("failed over %d times on a network that passes nothing", secondaryHits)
+	}
+}
+
+// A timeout awaiting the response headers comes after the whole request was
+// sent: the model may be generating it, so it is never resent (each resend
+// could run and charge it again).
+func TestHeaderTimeoutIsNotResent(t *testing.T) {
+	old := primaryRetryDelays
+	primaryRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+	t.Cleanup(func() { primaryRetryDelays = old })
+	up := newRecordingUpstream(t)
+	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
+	s.probe = func() netProbe { return netProbe{dnsOK: true} }
+	ft := &flakyTransport{neverRecover: true, err: timeoutErr{}, next: s.client.Transport}
+	s.client.Transport = ft
+	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
+	if n := ft.primaryAttempts("127.0.0.1:1"); n != 1 {
+		t.Fatalf("primary sent %d times, want once", n)
 	}
 }

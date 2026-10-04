@@ -724,6 +724,13 @@ func (s *Server) ForceModelOverflow(model string, d time.Duration, reason string
 		s.state.ModelOverflow = map[string]int64{}
 	}
 	s.state.ModelOverflow[model] = until.Unix()
+	// A forced window is the user's, never an outage's: a stale metered_*
+	// claim left from an expired outage window would let one secondary
+	// transport failure release it mid-test.
+	if s.state.ModelClaim == nil {
+		s.state.ModelClaim = map[string]string{}
+	}
+	s.state.ModelClaim[model] = "forced"
 	s.saveStateLocked()
 	s.mu.Unlock()
 	s.logger.Printf("FORCED model=%q to secondary until %s reason=%s", model, until.Format(time.RFC3339), reason)
@@ -941,6 +948,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// "how many tokens is this" -- and then hang until the response-header
 	// timeout before 502ing, since the reply never resembles a count.
 	if r.URL.Path == "/v1/messages/count_tokens" {
+		// Masked like the turn it measures: /context sends the whole
+		// conversation, and automask promises nothing personal leaves.
+		body = s.applyAutomask(r, body)
 		s.forward(w, r, body, "primary", s.primary, nil, false, "", nil)
 		return
 	}
@@ -958,8 +968,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	// Before routing, so a compacted history goes wherever the request
-	// goes. count_tokens returned above: it must see what Claude Code sent.
-	// Masked first: a summary, the compaction hash and the secondary all
+	// goes. count_tokens returned above, uncompacted: it must count what
+	// Claude Code sent. Masked first: a summary, the compaction hash and the secondary all
 	// see only the masked history.
 	body = s.applyAutomask(r, body)
 	body, r = s.applyCompaction(r, body)
@@ -1477,7 +1487,10 @@ func probeWeb() error {
 	if time.Since(webProbeAt) < webProbeTTL {
 		return webProbeErr
 	}
-	c := &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	// Through the same proxy as Anthropic traffic: on a network where only
+	// the corporate proxy gets out, a direct check always fails and every
+	// error would be blamed on this Mac's network.
+	c := &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{Proxy: upstreamProxy}}
 	resp, err := c.Get(controlWebURL)
 	if err == nil {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
@@ -1570,9 +1583,12 @@ func peerAnswered(err error) bool {
 
 // safeToResend says whether a transport error left the request certainly
 // unrun on the server, so replaying it cannot double-charge or double-run:
-// a write-side failure (nothing was sent), or a timeout or EOF with no
-// response bytes read. A read-side reset is NOT safe: the request may have
-// run.
+// a write-side failure, a failed lookup, or a timeout before the request
+// was sent (connecting, or the TLS handshake). A timeout waiting for the
+// response headers is NOT safe: the whole request was sent and the model
+// may be generating it, so a resend runs (and charges) it again, and five
+// of them turned one slow reply into minutes. A read-side reset is not safe
+// either.
 func safeToResend(err error) bool {
 	if isStaleWriteFailure(err) {
 		return true
@@ -1582,11 +1598,11 @@ func safeToResend(err error) bool {
 	if errors.As(err, &lookupErr) {
 		return true
 	}
-	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
 		return true
 	}
-	return false
+	return strings.Contains(err.Error(), "TLS handshake timeout")
 }
 
 // isStaleWriteFailure reports whether err is a WRITE onto a connection that

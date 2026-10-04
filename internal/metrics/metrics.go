@@ -176,54 +176,50 @@ type Summary struct {
 	UnpricedModels   map[string]int
 }
 
+// Summarize totals every event since since, across the rotated files too:
+// "today" read from the current file alone loses whatever came before a
+// rotation, and the daily-spend alert with it.
 func Summarize(path string, since time.Time) (Summary, error) {
 	var s Summary
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return s, nil
-	}
-	if err != nil {
-		return s, err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	buf := make([]byte, 64*1024)
-	sc.Buffer(buf, 2*1024*1024)
-	for sc.Scan() {
-		var e Event
-		if !decodeEvent(sc.Bytes(), &e) {
-			continue
-		}
-		if !since.IsZero() && e.Time.Before(since) {
-			continue
-		}
-		s.Requests++
-		switch {
-		case e.Slot == "primary":
-			s.PrimaryRequests++
-		case e.Slot == "secondary":
-			s.SecondaryRequests++
-		case e.Slot == "" && e.Route == "anthropic":
-			// Legacy events written before the Slot field existed.
-			s.PrimaryRequests++
-		case e.Slot == "" && e.Route == "bedrock":
-			s.SecondaryRequests++
-		}
-		s.InputTokens += e.InputTokens
-		s.OutputTokens += e.OutputTokens
-		s.CacheReadTokens += e.CacheReadTokens
-		s.CacheWriteTokens += e.CacheWriteTokens
-		s.PrunedBytes += e.PrunedBytes
-		s.APIEquivalentUSD += e.APIEquivalentUSD
-		if e.PricingUnknown {
-			s.UnpricedRequests++
-			if s.UnpricedModels == nil {
-				s.UnpricedModels = map[string]int{}
+	for _, p := range historyFiles(path, since) {
+		if err := scanEvents(p, func(e Event) {
+			if !since.IsZero() && e.Time.Before(since) {
+				return
 			}
-			s.UnpricedModels[e.Model]++
+			s.add(e)
+		}); err != nil {
+			return s, err
 		}
 	}
-	return s, sc.Err()
+	return s, nil
+}
+
+func (s *Summary) add(e Event) {
+	s.Requests++
+	switch {
+	case e.Slot == "primary":
+		s.PrimaryRequests++
+	case e.Slot == "secondary":
+		s.SecondaryRequests++
+	case e.Slot == "" && e.Route == "anthropic":
+		// Legacy events written before the Slot field existed.
+		s.PrimaryRequests++
+	case e.Slot == "" && e.Route == "bedrock":
+		s.SecondaryRequests++
+	}
+	s.InputTokens += e.InputTokens
+	s.OutputTokens += e.OutputTokens
+	s.CacheReadTokens += e.CacheReadTokens
+	s.CacheWriteTokens += e.CacheWriteTokens
+	s.PrunedBytes += e.PrunedBytes
+	s.APIEquivalentUSD += e.APIEquivalentUSD
+	if e.PricingUnknown {
+		s.UnpricedRequests++
+		if s.UnpricedModels == nil {
+			s.UnpricedModels = map[string]int{}
+		}
+		s.UnpricedModels[e.Model]++
+	}
 }
 
 func (s Summary) String() string {
