@@ -167,10 +167,22 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
+// notAnAction are POSTs that hooks and scripts make on every prompt or
+// event, not a person choosing something: auditing them would bury the
+// actions. /api/alert publishes a notice, which the audit has already.
+var notAnAction = map[string]bool{
+	"/api/prompt-notice": true,
+	"/api/alert":         true,
+}
+
 // audited records every change made from a page: who did what is half of
 // supporting it. where is "dashboard" or "console".
 func audited(where string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if notAnAction[r.URL.Path] {
+			h(w, r)
+			return
+		}
 		rec := &statusRecorder{ResponseWriter: w}
 		h(rec, r)
 		if rec.status == 0 {

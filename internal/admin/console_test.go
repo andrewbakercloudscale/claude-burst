@@ -126,7 +126,9 @@ func TestConsoleGuards(t *testing.T) {
 func TestLogAround(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "claude-burst.log")
 	at := time.Date(2026, 10, 4, 17, 16, 18, 0, time.Local)
-	f := func(d time.Duration, s string) string { return at.Add(d).Format("2006/01/02 15:04:05") + " " + s + "\n" }
+	f := func(d time.Duration, s string) string {
+		return at.Add(d).Format("2006/01/02 15:04:05") + " " + s + "\n"
+	}
 	os.WriteFile(p, []byte(
 		f(-10*time.Minute, "too early")+
 			f(-90*time.Second, `req=a start method="POST" path="/v1/messages"`)+
@@ -141,5 +143,20 @@ func TestLogAround(t *testing.T) {
 	got := strings.Join(lines, "\n")
 	if len(lines) != 2 || !strings.Contains(got, "failover") || strings.Contains(got, "sk-secret") || !strings.Contains(got, "REDACTED") {
 		t.Fatalf("lines:\n%s", got)
+	}
+}
+
+// Hook traffic is not an action: a prompt-notice POST on every prompt would
+// bury the clicks.
+func TestHookPostsAreNotAudited(t *testing.T) {
+	newTestConsole(t)
+	dir, _ := config.ConfigDir()
+	h := audited("dashboard", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	h(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/prompt-notice", nil))
+	h(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/force", nil))
+	notice.Flush(2 * time.Second)
+	evs := notice.ReadAudit(notice.AuditPath(notice.Path(dir)), 5)
+	if len(evs) != 1 || evs[0].Title != "Dashboard: /api/force" {
+		t.Fatalf("audit = %+v", evs)
 	}
 }
