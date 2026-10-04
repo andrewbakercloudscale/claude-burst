@@ -212,11 +212,24 @@ func TestInstallScriptUninstallRemovesEveryHook(t *testing.T) {
 		}
 	}
 
+	// Codex routed through Burst: only Burst's block may go.
+	codexToml := filepath.Join(u.home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(codexToml), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const codexUser = "notify = 1\n\n[desktop]\nx = 1\n"
+	if err := os.WriteFile(codexToml, []byte("# BEGIN claude-burst (Codex)\nmodel_provider = \"claude-burst\"\n# END claude-burst\n"+codexUser), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	out, code := u.uninstall()
 	if code != 0 {
 		t.Fatalf("uninstall failed (%d):\n%s", code, out)
 	}
 
+	if b, _ := os.ReadFile(codexToml); string(b) != codexUser {
+		t.Errorf("Codex config after uninstall:\n%s", b)
+	}
 	if _, err := os.Stat(u.target); err == nil {
 		t.Errorf("the binary should be gone")
 	}

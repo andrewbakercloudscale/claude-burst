@@ -93,7 +93,7 @@ done
 run "burst processes" bash -c 'ps -axo pid,lstart,command | grep -i "[c]laude-burst" | grep -v -e shell-snapshots -e diagnose.sh | cut -c1-200'
 
 section "Listening ports"
-run "lsof 7777 7788 17777 443" bash -c 'lsof -nP -iTCP:7777 -iTCP:7788 -iTCP:17777 -iTCP:443 -sTCP:LISTEN'
+run "lsof 7777 7788 17777 7779 443" bash -c 'lsof -nP -iTCP:7777 -iTCP:7788 -iTCP:17777 -iTCP:7779 -iTCP:443 -sTCP:LISTEN'
 
 section "Gateway health"
 # The ports config.json names; the defaults when it names none.
@@ -142,10 +142,29 @@ printf '%-36s ' "https://api.anthropic.com/healthz"; probe https://api.anthropic
 printf '%-36s ' "control: captive.apple.com"; probe https://captive.apple.com/hotspot-detect.html
 run "system proxy" bash -c 'scutil --proxy | grep -E "Enable|Proxy :|Port" | head -10'
 
+section "Codex"
+CODEX_TOML="${CODEX_HOME:-$HOME/.codex}/config.toml"
+run "claude-burst codex status" "$HOME/.local/bin/claude-burst" codex status
+run "Burst's block in $CODEX_TOML" bash -c "sed -n '/^# BEGIN claude-burst/,/^# END claude-burst/p' '$CODEX_TOML'"
+run "top-level model_provider lines" bash -c "grep -n '^[[:space:]]*model_provider[[:space:]]*=' '$CODEX_TOML'"
+run "Codex gateway port 7779" bash -c 'lsof -nP -iTCP:7779 -sTCP:LISTEN'
+# No credential is sent, so ChatGPT answers 401: any HTTP status proves the
+# gateway forwards; 000 means nothing answered the port.
+run "Codex gateway forwards (expect 401 without a login)" bash -c 'curl -s -o /dev/null -w "HTTP %{http_code}, total %{time_total}s\n" -m 10 http://127.0.0.1:7779/backend-api/codex/models'
+run "Codex processes" bash -c 'ps -axo pid,lstart,command | grep -E "MacOS/[c]odex |bin/[c]odex( |$)" | cut -c1-160 | head -8'
+if [ -f "$CFG/codex-metrics.jsonl" ]; then
+  printf '\n--- codex-metrics.jsonl (last 8 turns, metadata only) ---\n'
+  tail -8 "$CFG/codex-metrics.jsonl"
+fi
+
 section "Power"
 run "pmset SleepDisabled" bash -c 'pmset -g | grep -i -E "sleepdisabled|^ sleep"'
 
 section "Logs (newest last)"
+if [ -f "$CFG/claude-burst.log" ]; then
+  printf '\n--- claude-burst.log, Codex lines (last 20) ---\n'
+  grep 'codex:' "$CFG/claude-burst.log" | tail -20 | redact
+fi
 for f in claude-burst.log launchd.err.log launchd.out.log watchdog.log self-heal.log; do
   if [ -f "$CFG/$f" ]; then
     printf '\n--- %s (last 60 lines) ---\n' "$f"

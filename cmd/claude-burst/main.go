@@ -65,6 +65,8 @@ func main() {
 		serve(os.Args[2:])
 	case "configure":
 		configure(os.Args[2:])
+	case "codex":
+		codexCmd(os.Args[2:])
 	case "keychain-set":
 		keychainSet(os.Args[2:])
 	case "enable":
@@ -119,6 +121,7 @@ Commands:
   stats             Summarize local routing/token metrics
   shunt disable     Remove the hook and skill of token shunting (removed), if an earlier install left them
   coord             Session coordination: status, send, release (see: coord help)
+  codex             Codex through Burst: enable, disable, status (gateway on 127.0.0.1:7779)
   version           Print version
 
 Admin UI:
@@ -286,9 +289,13 @@ func serve(args []string) {
 		handshakes = tlswatch.New(os.Stderr)
 	}
 
+	// Before the dashboard, which reports on it.
+	codexGW := startCodexGateway(cfg, logger)
+
 	if cfg.AdminListen != "" {
 		a := admin.New(srv, metricsPath, version, cfg.AdminHostname, rootHelperPath())
 		a.SetHandshakes(handshakes)
+		a.SetCodex(codexGateway, codexStartErr)
 		go a.StartNotifier(context.Background())
 		if err := admin.SyncPromptNoticeHook(cfg); err != nil {
 			logger.Printf("error stage=prompt_notice_hook err=%v", err)
@@ -328,7 +335,11 @@ func serve(args []string) {
 		server.ErrorLog = log.New(handshakes, "", log.LstdFlags)
 		server.ConnState = handshakes.ConnState
 	}
-	go exitWhenIdleOnSignal(srv.InFlight, logger)
+	inflight := srv.InFlight
+	if codexGW != nil {
+		inflight = func() int64 { return srv.InFlight() + codexGW.InFlight() }
+	}
+	go exitWhenIdleOnSignal(inflight, logger)
 	if tlsConfig != nil {
 		err = server.ServeTLS(ln, "", "") // certificates come from TLSConfig; ln is already bound above
 	} else {

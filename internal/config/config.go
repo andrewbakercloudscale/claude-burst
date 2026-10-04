@@ -406,6 +406,9 @@ type Config struct {
 	// SessionCoordination: see CoordinationConfig.
 	SessionCoordination CoordinationConfig `json:"session_coordination,omitempty"`
 
+	// Codex: see CodexConfig.
+	Codex CodexConfig `json:"codex,omitempty"`
+
 	// AdminListen is the local control panel's address. Deliberately a
 	// separate listener from Listen: in transparent mode the gateway serves
 	// the intercepted hostname, and admin routes must not be reachable there.
@@ -530,6 +533,55 @@ func (h HotspotConfig) GiveUp() time.Duration {
 		return DefaultHotspotGiveUpMinutes * time.Minute
 	}
 	return time.Duration(h.GiveUpMinutes) * time.Minute
+}
+
+// CodexConfig is the Codex gateway: a second listener, plain HTTP on
+// loopback, that Codex reaches through a model provider in
+// ~/.codex/config.toml (see internal/codex). Whether Codex USES it is decided
+// in that file, not here, so the listener runs whenever Burst does: a Codex
+// session started while it was on keeps sending here until it exits.
+type CodexConfig struct {
+	// Listen is the Codex listener's address; "off" turns it off.
+	Listen string `json:"listen,omitempty"`
+	// Upstream is where Codex's requests go on to: the ChatGPT backend
+	// that a ChatGPT login talks to.
+	Upstream string `json:"upstream,omitempty"`
+}
+
+// DefaultCodexListen and DefaultCodexUpstream apply when config.json names
+// none, which is every config written before the Codex gateway existed.
+const (
+	DefaultCodexListen   = "127.0.0.1:7779"
+	DefaultCodexUpstream = "https://chatgpt.com"
+)
+
+// CodexListen is the Codex listener's address, "" when it is off.
+func (c Config) CodexListen() string {
+	switch c.Codex.Listen {
+	case "off":
+		return ""
+	case "":
+		return DefaultCodexListen
+	}
+	return c.Codex.Listen
+}
+
+// CodexUpstream is where the Codex listener forwards to.
+func (c Config) CodexUpstream() string {
+	if c.Codex.Upstream == "" {
+		return DefaultCodexUpstream
+	}
+	return strings.TrimRight(c.Codex.Upstream, "/")
+}
+
+// CodexMetricsPath is the Codex gateway's request log: kept apart from
+// metrics.jsonl so no Claude Code total ever includes a Codex request.
+func CodexMetricsPath() (string, error) {
+	d, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "codex-metrics.jsonl"), nil
 }
 
 func Default() Config {

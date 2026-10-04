@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/andrewbakercloudscale/claude-burst/internal/codex"
 	"io"
 	"log"
 	"net"
@@ -87,6 +88,10 @@ type Server struct {
 	// base-url mode, where the listener speaks plain HTTP.
 	handshakes *tlswatch.Watcher
 
+	// codex is the Codex gateway, nil when its listener is not running.
+	codex    *codex.Gateway
+	codexErr string
+
 	// trace holds the Send test message hops' outside dependencies, empty
 	// in production (traceDeps fills the defaults); see trace.go.
 	trace traceDeps
@@ -111,6 +116,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/mod-status", s.readOnly(s.handleModStatus))
 	mux.HandleFunc("/api/mod-action", s.mutating(s.handleModAction))
 	mux.HandleFunc("/api/requests", s.readOnly(s.handleRequests))
+	mux.HandleFunc("/api/codex", s.readOnly(s.handleCodex))
+	mux.HandleFunc("/api/codex/enable", s.mutating(s.handleCodexRoute(true)))
+	mux.HandleFunc("/api/codex/disable", s.mutating(s.handleCodexRoute(false)))
 	mux.HandleFunc("/api/responses", s.readOnly(s.handleResponses))
 	mux.HandleFunc("/api/history", s.readOnly(s.handleHistory))
 	mux.HandleFunc("/api/usage", s.readOnly(s.handleUsage))

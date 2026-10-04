@@ -50,7 +50,7 @@ BIN="${CLAUDE_BURST_BIN:-$HOME/.local/bin/claude-burst}"
 # Burst's ports, read now: config.json may be restored to a snapshot below.
 # The defaults too (gateway 7777, transparent 17777, dashboard 7788), so a
 # leftover from an older setup is caught as well.
-PORTS=(7777 17777 7788)
+PORTS=(7777 17777 7788 7779)
 if [[ -f "$CONFIG" ]]; then
   PORTS+=($(python3 -c 'import json,sys
 c=json.load(open(sys.argv[1]))
@@ -159,6 +159,12 @@ fi
 if [[ "$restored" -eq 0 ]]; then
   echo "no backups found in $BACKUP_DIR -- run scripts/backup-config.sh before making changes next time" >&2
 fi
+
+# STEP 1d: Codex. Burst's block at the top of ~/.codex/config.toml sends
+# Codex to the gateway's Codex port; without the gateway that port is dead.
+# Only the lines between Burst's own markers are removed. Codex sessions
+# already open keep sending to the port until restarted.
+"$(dirname "$0")/codex-unroute.sh" || true
 
 # Written BEFORE the gateway is stopped, not after. self-heal-watchdog.sh
 # runs every ~2 minutes and reloads the gateway LaunchAgent the instant it
