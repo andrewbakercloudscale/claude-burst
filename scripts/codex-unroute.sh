@@ -10,6 +10,9 @@
 set -u
 TOML="${CODEX_HOME:-$HOME/.codex}/config.toml"
 [ -f "$TOML" ] || exit 0
+# A symlinked config (a dotfiles repo) is edited at its target: sed -i would
+# otherwise replace the link with a plain file.
+[ -L "$TOML" ] && TOML="$(readlink -f "$TOML")"
 grep -q '^# BEGIN claude-burst' "$TOML" || exit 0
 # A begin with no end: leave the file alone rather than delete to its end.
 if ! grep -q '^# END claude-burst' "$TOML"; then

@@ -282,3 +282,23 @@ func TestOversizedCompletedEventWithoutUsageIsUnknown(t *testing.T) {
 		t.Errorf("recorded %+v", e)
 	}
 }
+
+// A stream that stops before response.completed is recorded as failed,
+// never as a 200 with no tokens.
+func TestInterruptedTurnIsNotASuccess(t *testing.T) {
+	_, mp, gw := newTestGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\"}\n\n")
+		w.(http.Flusher).Flush()
+		hj, _, _ := w.(http.Hijacker).Hijack()
+		hj.Close()
+	}))
+	resp, err := http.Post(gw.URL+"/backend-api/codex/responses", "application/json", strings.NewReader("{}"))
+	if err == nil {
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+	e := waitEvents(t, mp, 1)[0]
+	if e.HTTPStatus < 400 || e.Note == "" {
+		t.Errorf("recorded %+v", e)
+	}
+}

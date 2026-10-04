@@ -1,12 +1,11 @@
 package codex
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
+	"github.com/BurntSushi/toml"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -46,17 +45,9 @@ type Status struct {
 	// Conflict names a model_provider the user set themselves, which the
 	// block would collide with (TOML refuses a key set twice).
 	Conflict string `json:"conflict,omitempty"`
+	// Invalid is why config.toml does not parse: Codex cannot start either.
+	Invalid string `json:"invalid,omitempty"`
 }
-
-var (
-	// model_provider as a bare or quoted key, with a basic or literal
-	// string value: TOML allows all four, and missing one writes the key a
-	// second time, which Codex refuses to start with.
-	providerLine = regexp.MustCompile(`^\s*(?:model_provider|"model_provider"|'model_provider')\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))`)
-	baseURLRe    = regexp.MustCompile(`base_url\s*=\s*"([^"]*)"`)
-	tableLine    = regexp.MustCompile(`^\s*\[`)
-	ownTable     = regexp.MustCompile(`(?m)^\s*\[?\s*model_providers\.(?:claude-burst|"claude-burst"|'claude-burst')\s*(?:\]|=|\.|$)`)
-)
 
 // ReadStatus reports Codex's routing from its config file.
 func ReadStatus(path string) Status {
@@ -69,13 +60,17 @@ func ReadStatus(path string) Status {
 		return st
 	}
 	ours, rest := split(string(b))
-	if ours != "" {
-		st.Enabled = true
-		if m := baseURLRe.FindStringSubmatch(ours); m != nil {
-			st.BaseURL = m[1]
-		}
+	st.Enabled = ours != ""
+	if doc, err := parse(string(b)); err != nil {
+		st.Invalid = err.Error()
+	} else if st.Enabled {
+		m, _ := doc["model_providers"].(map[string]any)
+		p, _ := m[ProviderID].(map[string]any)
+		st.BaseURL, _ = p["base_url"].(string)
 	}
-	st.Conflict = topLevelProvider(rest)
+	if doc, err := parse(rest); err == nil {
+		st.Conflict = topLevelProvider(doc)
+	}
 	return st
 }
 
@@ -98,40 +93,32 @@ func split(s string) (ours, rest string) {
 	return s[i:j], s[:i] + s[j:]
 }
 
-// topLevelProvider is a model_provider set before the first [table].
-// Lines inside a multi-line string are skipped: a "[x]" or a
-// "model_provider =" in one is text, not TOML.
-func topLevelProvider(s string) string {
-	sc := bufio.NewScanner(strings.NewReader(s))
-	sc.Buffer(make([]byte, 64<<10), 4<<20)
-	inMulti := ""
-	for sc.Scan() {
-		line := sc.Text()
-		if inMulti != "" {
-			if strings.Count(line, inMulti)%2 == 1 {
-				inMulti = ""
-			}
-			continue
+// parse reads a config.toml. What Codex itself would refuse is refused
+// here too, before anything is written.
+func parse(s string) (map[string]any, error) {
+	var doc map[string]any
+	if _, err := toml.Decode(s, &doc); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+// topLevelProvider is the document's own model_provider, "" when unset.
+func topLevelProvider(doc map[string]any) string {
+	if v, ok := doc["model_provider"]; ok {
+		if p := fmt.Sprint(v); p != "" {
+			return p
 		}
-		if tableLine.MatchString(line) {
-			return ""
-		}
-		if m := providerLine.FindStringSubmatch(line); m != nil {
-			for _, v := range m[1:] {
-				if v != "" {
-					return v
-				}
-			}
-			return "(empty)"
-		}
-		for _, q := range []string{`"""`, "'''"} {
-			if strings.Count(line, q)%2 == 1 {
-				inMulti = q
-				break
-			}
-		}
+		return "(empty)"
 	}
 	return ""
+}
+
+// hasOwnProvider reports whether the document defines model_providers.claude-burst.
+func hasOwnProvider(doc map[string]any) bool {
+	m, _ := doc["model_providers"].(map[string]any)
+	_, ok := m[ProviderID]
+	return ok
 }
 
 // Block is what Enable writes for a gateway listening on listen.
@@ -155,20 +142,27 @@ func Enable(path, listen, backupDir string) error {
 		return err
 	}
 	_, rest := split(string(b))
-	if p := topLevelProvider(rest); p != "" {
+	doc, err := parse(rest)
+	if err != nil {
+		return fmt.Errorf("%s is not valid TOML, so Codex cannot read it either; fix it first: %v", path, err)
+	}
+	if p := topLevelProvider(doc); p != "" {
 		return fmt.Errorf("%w (model_provider = %q in %s): remove that line to route Codex through Burst", ErrConflict, p, path)
 	}
-	// The block defines model_providers.claude-burst; the same table defined
-	// elsewhere would be a second definition, which TOML refuses.
-	if ownTable.MatchString(rest) {
+	if hasOwnProvider(doc) {
 		return fmt.Errorf("%w (%s already defines a %q provider of its own)", ErrConflict, path, ProviderID)
+	}
+	out := Block(listen) + rest
+	// The result must parse too: nothing Codex would refuse is ever written.
+	if _, err := parse(out); err != nil {
+		return fmt.Errorf("routing Codex through Burst would leave %s invalid (%v); nothing was changed", path, err)
 	}
 	if len(b) > 0 {
 		if err := backup(path, b, backupDir); err != nil {
 			return err
 		}
 	}
-	return write(path, Block(listen)+rest)
+	return write(path, out)
 }
 
 // Disable removes Burst's block, leaving the rest of the file as it is.
@@ -201,8 +195,13 @@ func backup(path string, b []byte, dir string) error {
 	return os.WriteFile(filepath.Join(dir, name), b, 0o600)
 }
 
-// write replaces the file atomically, keeping its permissions.
+// write replaces the file atomically, keeping its permissions. A symlinked
+// config.toml (a dotfiles repo) is written through: the link stays, and the
+// file it points at gets the change.
 func write(path, s string) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	mode := os.FileMode(0o600)
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()

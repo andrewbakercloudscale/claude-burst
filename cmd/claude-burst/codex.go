@@ -14,36 +14,39 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
-// codexGateway is the running Codex listener, for the dashboard; nil when
-// it is off or failed to start.
-var codexGateway *codex.Gateway
-
-// codexStartErr says why the Codex listener is not running, for the
-// dashboard: a dead port Codex is routed to must say why, not just "off".
+// codexStartErr says why there is no Codex gateway at all (a broken
+// config), for the dashboard. A port problem is the gateway's own listen
+// state (codex.Gateway.ListenState).
 var codexStartErr string
 
 // startCodexGateway runs the Codex listener beside the Claude one. It runs
 // whether or not Codex is routed here: a Codex session reads its config at
 // startup and keeps sending to this port until it exits, so the port has to
-// answer for as long as Burst does. A bind failure is logged, never fatal:
-// Claude Code's gateway must not go down over Codex.
+// answer for as long as Burst does.
+//
+// Claiming and binding the port happen in the background: claimPort can wait
+// over a minute for another Burst process to let go of it, and Claude Code's
+// gateway must never wait on Codex's. A bind failure is logged and shown on
+// the dashboard, never fatal.
 func startCodexGateway(cfg config.Config, logger *log.Logger) *codex.Gateway {
 	addr := cfg.CodexListen()
 	if addr == "" {
 		return nil
 	}
 	mp, err := config.CodexMetricsPath()
-	if err != nil {
-		codexStartErr = err.Error()
-		logger.Printf("codex: %v", err)
-		return nil
+	if err == nil {
+		var g *codex.Gateway
+		if g, err = codex.New(cfg.CodexUpstream(), mp, logger); err == nil {
+			go serveCodex(g, addr, cfg.CodexUpstream(), logger)
+			return g
+		}
 	}
-	g, err := codex.New(cfg.CodexUpstream(), mp, logger)
-	if err != nil {
-		codexStartErr = err.Error()
-		logger.Printf("codex: %v", err)
-		return nil
-	}
+	codexStartErr = err.Error()
+	logger.Printf("codex: %v", err)
+	return nil
+}
+
+func serveCodex(g *codex.Gateway, addr, upstream string, logger *log.Logger) {
 	if launchedByAgent() {
 		if err := claimPort(addr, logger); err != nil {
 			logger.Printf("codex: port claim: %v", err)
@@ -51,20 +54,17 @@ func startCodexGateway(cfg config.Config, logger *log.Logger) *codex.Gateway {
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		codexStartErr = fmt.Sprintf("bind %s: %v", addr, err)
-		logger.Printf("codex: not listening, %s", codexStartErr)
-		return nil
+		g.SetListenState(false, fmt.Sprintf("bind %s: %v", addr, err))
+		logger.Printf("codex: not listening, bind %s: %v", addr, err)
+		return
 	}
-	logger.Printf("codex: gateway listening on http://%s, forwarding to %s", addr, cfg.CodexUpstream())
-	fmt.Printf("codex:  http://%s -> %s\n", addr, cfg.CodexUpstream())
-	codexGateway = g
-	go func() {
-		srv := &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second}
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Printf("codex: server stopped: %v", err)
-		}
-	}()
-	return g
+	g.SetListenState(true, "")
+	logger.Printf("codex: gateway listening on http://%s, forwarding to %s", addr, upstream)
+	srv := &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second}
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		g.SetListenState(false, "stopped: "+err.Error())
+		logger.Printf("codex: server stopped: %v", err)
+	}
 }
 
 func codexBackupDir() string {
