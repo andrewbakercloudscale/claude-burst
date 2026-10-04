@@ -4911,7 +4911,35 @@ $("codexTestTurn").onclick = () => codexTest($("codexTestTurn"), "/api/codex/tes
 // <details> anyone is reading collapses. A new gateway process (an upgrade
 // or a restart) reloads the whole page, since it may serve a newer page:
 // that open tab was still showing the dashboard from before the upgrade.
-let pagePid = null;
+//
+// The reload waits until you have not touched the page for 30 seconds, and
+// puts you back where you were: on 2026-10-04 a deploy reloaded the page
+// mid-scroll through the context inspector and dropped the reader at the
+// top, since the browser restores the position before the sections have
+// loaded and the page is still short.
+let pagePid = null, lastTouch = 0;
+for (const ev of ["wheel", "touchmove", "keydown", "pointerdown", "scroll"]) window.addEventListener(ev, () => { lastTouch = Date.now(); }, {passive: true});
+function reloadInPlace() {
+  try { sessionStorage.setItem("burst-scroll", JSON.stringify({y: scrollY, at: Date.now()})); } catch {}
+  location.reload();
+}
+// After such a reload, scroll back once the page is tall enough, unless you
+// scroll first. Gives up after 8 seconds.
+(function restoreScroll() {
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem("burst-scroll") || "null"); sessionStorage.removeItem("burst-scroll"); } catch {}
+  if (!saved || Date.now() - saved.at > 60000 || !(saved.y > 0)) return;
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+  const started = Date.now();
+  let moved = false;
+  const stop = () => { moved = true; };
+  for (const ev of ["wheel", "touchmove", "keydown", "pointerdown"]) window.addEventListener(ev, stop, {once: true, passive: true});
+  (function tryIt() {
+    if (moved || Date.now() - started > 8000) return;
+    if (document.documentElement.scrollHeight >= saved.y + innerHeight) window.scrollTo(0, saved.y);
+    if (Math.abs(scrollY - saved.y) > 2 || Date.now() - started < 2500) setTimeout(tryIt, 200);
+  })();
+})();
 setInterval(async () => {
   if (document.hidden) return;
   let s;
@@ -4919,7 +4947,7 @@ setInterval(async () => {
   if (!s || !s.pid) return;
   if (pagePid === null) pagePid = s.pid;
   const busy = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
-  if (s.pid !== pagePid && !busy) { location.reload(); return; }
+  if (s.pid !== pagePid && !busy && Date.now() - lastTouch > 30000) { reloadInPlace(); return; }
   if (!lastState || !s.intercept) return;
   lastState = s;
   renderHero(s);
