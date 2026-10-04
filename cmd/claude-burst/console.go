@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -32,6 +33,11 @@ func consoleCmd(args []string) {
 	logger := log.New(os.Stderr, "console: ", log.LstdFlags)
 	if dir, err := config.ConfigDir(); err == nil {
 		notice.SetDefault(notice.New(notice.Path(dir), logger))
+		// Burst's alerts over the Codex window too: the usage panel only
+		// draws over Ghostty.
+		if ca := admin.NewCodexAlerts(dir); ca != nil {
+			go ca.Run(context.Background())
+		}
 	}
 	ln, err := listenRetry(addr, logger)
 	if err != nil {
