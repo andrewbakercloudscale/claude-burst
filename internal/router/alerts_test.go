@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,5 +175,46 @@ func TestFailoverEndedAfterRestart(t *testing.T) {
 	evs := got()
 	if last := evs[len(evs)-1]; last.Kind != alertFailover || last.Severity != notice.OK {
 		t.Fatalf("want Back on Claude last, got %q", titles(evs))
+	}
+}
+
+// Claude Code's side calls (auto mode's classifier, a recap) carry a whole
+// conversation in one prompt, with the session's id, and are never
+// continued: no alert, no summary. On 2026-10-04 one at 410k said
+// "compaction soon" four times and never compacted.
+func TestNoContextAlertForAOneShotRequest(t *testing.T) {
+	events := captureNotices(t)
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 300_000, WarnAtPercent: 80, WindowMinutes: 60})
+	one := msgs(t, `[{"role":"user","content":"`+strings.Repeat("transcript ", 2000)+`"}]`)
+	send(t, s, "S", one)
+	send(t, s, "S", one)
+	s.compaction.running.Wait()
+	notice.Flush(2 * time.Second)
+	if got := titles(events()); len(got) != 0 || f.summaryCount() != 0 {
+		t.Fatalf("one-shot: alerts %q, summaries %d", got, f.summaryCount())
+	}
+}
+
+// Two prompts, but the current turn is nearly all of it: no boundary
+// leaves 30% to summarise, so the alert says it cannot summarise yet
+// instead of promising a compaction.
+func TestContextAlertSaysWhenItCannotSummarise(t *testing.T) {
+	events := captureNotices(t)
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 300_000, WarnAtPercent: 80, WindowMinutes: 60})
+	h := msgs(t, `[
+ {"role":"user","content":"hi"},
+ {"role":"assistant","content":[{"type":"text","text":"hello"}]},
+ {"role":"user","content":"big task"},
+ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"`+strings.Repeat("x", 20000)+`"}]}]`)
+	send(t, s, "S", h[:3])
+	send(t, s, "S", h)
+	s.compaction.running.Wait()
+	notice.Flush(2 * time.Second)
+	got := titles(events())
+	if len(got) != 1 || got[0] != "warn: Context at 450k of 300k, cannot summarise yet" || f.summaryCount() != 0 {
+		t.Fatalf("alerts %q, summaries %d", got, f.summaryCount())
 	}
 }

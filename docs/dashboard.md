@@ -78,9 +78,9 @@ The usage panel floats the same notice it shows for a pauseless compaction over 
 | The pf guard or the gateway watchdog logged a problem; its repair is shown only when the problem was | error | the repair |
 | Gateway restarting (replies in flight finish first), then Gateway ready; not shown for a restart `scripts/deploy.sh` makes | information | Gateway ready |
 | The gateway not answering at all (the panel's own check, 3 polls in a row) | error | Burst gateway back |
-| A session's context at its warn level (80% of its Compact at, the repository's own when set; never with compaction off for the repository), once per compaction window, on that session's panel | information | fades |
+| A session's context at its warn level (80% of its Compact at, the repository's own when set; never with compaction off for the repository), once per compaction window, on that session's panel. When no prompt yet leaves enough older history to summarise, it says so (a warning) instead of promising a compaction. Never for Claude Code's one-shot side calls (auto mode's classifier, a recap), which carry a whole conversation in one prompt | information | fades |
 | Today's API-equivalent spend through Burst passed the level set beside the switch (0 is off), once a day per level | warning | fades |
-| Keep-awake turned itself off (the idle time limit, on battery in plugged-in mode, or a problem), or back on | warning | Keep-awake back on |
+| Keep-awake turned itself off (the idle time limit, on battery in plugged-in mode, or a problem); back on is in the audit only, since it follows your own use | warning | fades |
 | Another session finished, or had its handover written (not shown on that session's own panel) | information | fades |
 | A newer Claude Burst release than the one running, once per version | information | fades |
 

@@ -160,7 +160,7 @@ func TestAlertKeepAwakeTurnsOffAndBack(t *testing.T) {
 	s.alertKeepAwake(a, cfg, now.Add(90*time.Second))
 
 	got := alerts()
-	want := []string{"warn: Keep-awake turned off", "ok: Keep-awake back on", "warn: Keep-awake problem"}
+	want := []string{"warn: Keep-awake turned off", "warn: Keep-awake problem"} // back on: audit only
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("alerts = %q, want %q", got, want)
 	}

@@ -148,7 +148,9 @@ func (s *Server) alertKeepAwake(a *alertRounds, cfg config.Config, now time.Time
 		case a.awakeOn && !on:
 			notice.Publish("keep-awake", notice.Warn, "Keep-awake turned off", keepAwakeOffReason(st, cfg, now, cause))
 		case !a.awakeOn && on:
-			notice.Publish("keep-awake", notice.OK, "Keep-awake back on", "The Mac stays awake with the lid shut again.")
+			// In the audit, not on screen: it comes back because you used
+			// Claude Code again, which you know, so the alert told nothing.
+			notice.Record("keep-awake", notice.OK, "Keep-awake back on", "The Mac stays awake with the lid shut again.")
 		case problem != "" && problem != a.awakeProblem:
 			notice.Publish("keep-awake", notice.Warn, "Keep-awake problem", problem+". Details under Lid and power on the dashboard.")
 		}
