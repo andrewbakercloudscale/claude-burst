@@ -250,6 +250,7 @@ func serve(args []string) {
 	logger.Printf("claude-burst %s bound %s (%s) in %s -- accepting connections now", version, cfg.Listen, scheme, time.Since(bindStart))
 	if dir, err := config.ConfigDir(); err == nil {
 		notice.SetDefault(notice.New(notice.Path(dir), logger))
+		srv.ResumeAlerts()
 		announceReady(version)
 	}
 	if os.Getenv("CLAUDE_BURST_LOG_TLS_PEERS") != "" {

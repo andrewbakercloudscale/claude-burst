@@ -159,3 +159,20 @@ func TestNetworkOutageDoesNotAlsoAlertUpstream(t *testing.T) {
 		t.Fatalf("events = %q", got)
 	}
 }
+
+// A failover the previous process announced and never ended is ended by
+// the next primary success after a restart, not left standing for a day.
+func TestFailoverEndedAfterRestart(t *testing.T) {
+	got := captureNotices(t)
+	notice.Publish(alertFailover, notice.Warn, "Failed over to together", "until 10:20")
+	notice.Flush(2 * time.Second)
+
+	s, _ := newTestServer(t, "", "") // the restarted gateway
+	s.ResumeAlerts()
+	s.alertOutcome("primary", http.StatusOK)
+
+	evs := got()
+	if last := evs[len(evs)-1]; last.Kind != alertFailover || last.Severity != notice.OK {
+		t.Fatalf("want Back on Claude last, got %q", titles(evs))
+	}
+}
