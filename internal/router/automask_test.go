@@ -1,7 +1,10 @@
 package router
 
 import (
+	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -57,5 +60,22 @@ func TestAutomaskMasksWhatIsSentAndSaysSo(t *testing.T) {
 	send(t, s, "S1", history)
 	if !strings.Contains(f.last(), "4111 1111 1111 1111") || strings.Contains(f.last(), "8001015009087") {
 		t.Errorf("rule switch not applied: %s", f.last())
+	}
+}
+
+// count_tokens carries the whole conversation too (/context): it is masked
+// like the turn it measures.
+func TestAutomaskMasksCountTokens(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5",
+		"messages": []any{map[string]any{"role": "user", "content": "my card is 4111 1111 1111 1111"}}})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages/count_tokens", bytes.NewReader(b))
+	req.Header.Set("x-claude-code-session-id", "S1")
+	req.Header.Set("authorization", "Bearer oauth")
+	s.ServeHTTP(httptest.NewRecorder(), req)
+	if got := f.last(); strings.Contains(got, "4111 1111") || !strings.Contains(got, "[CARD-1 ...1111]") {
+		t.Fatalf("count_tokens sent %s", got)
 	}
 }

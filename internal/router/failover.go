@@ -36,6 +36,13 @@ func (subscriptionLimitDetector) OnError(error) FailoverDecision { return Failov
 func (subscriptionLimitDetector) OnSuccess()                     {}
 
 func subscriptionLimit(status int, h http.Header, body []byte) (bool, string, int64, string) {
+	// Only a 429 is the plan refusing. The unified headers ride on every
+	// answer, so a 400 "prompt is too long" or a 529 overloaded sent while a
+	// window shows rejected (running on overage) is that error, not the
+	// plan: failing it over would replay it to the paid secondary.
+	if status != http.StatusTooManyRequests {
+		return false, "", 0, ""
+	}
 	statusVal := strings.ToLower(h.Get("anthropic-ratelimit-unified-status"))
 	claim := h.Get("anthropic-ratelimit-unified-representative-claim")
 	if isRejected(statusVal) {
@@ -52,13 +59,10 @@ func subscriptionLimit(status int, h http.Header, body []byte) (bool, string, in
 		}
 	}
 	// Conservative fallback: generic 429s are NOT treated as plan exhaustion.
-	if status == http.StatusTooManyRequests {
-		b := strings.ToLower(string(body))
-		phrases := []string{"hit your session limit", "hit your weekly limit", "usage limit", "plan limit"}
-		for _, p := range phrases {
-			if strings.Contains(b, p) {
-				return true, claim, resetFromHeaders(h, claim), "429 body matched subscription limit"
-			}
+	b := strings.ToLower(string(body))
+	for _, p := range []string{"hit your session limit", "hit your weekly limit", "usage limit", "plan limit"} {
+		if strings.Contains(b, p) {
+			return true, claim, resetFromHeaders(h, claim), "429 body matched subscription limit"
 		}
 	}
 	return false, "", 0, ""

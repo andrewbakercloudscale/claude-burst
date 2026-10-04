@@ -502,3 +502,19 @@ func TestReadersRepriceEventsRecordedUnpriced(t *testing.T) {
 		t.Fatalf("repriced %d recent events, want 1", repriced)
 	}
 }
+
+// Today's total survives a rotation: events before it live in metrics.jsonl.1.
+func TestSummarizeReadsRotatedFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	w := New(path)
+	w.Write(Event{Time: time.Now(), Slot: "secondary", APIEquivalentUSD: 50})
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	w.Write(Event{Time: time.Now(), Slot: "secondary", APIEquivalentUSD: 1})
+	y, mo, d := time.Now().Date()
+	s, err := Summarize(path, time.Date(y, mo, d, 0, 0, 0, 0, time.Local))
+	if err != nil || s.APIEquivalentUSD != 51 || s.Requests != 2 {
+		t.Fatalf("got $%.2f over %d requests, err %v", s.APIEquivalentUSD, s.Requests, err)
+	}
+}
