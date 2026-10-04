@@ -59,6 +59,29 @@ func (s *Server) alertFailedOver(what string, until time.Time, why string) {
 		fmt.Sprintf("%s are refused until %s, because %s. No secondary is set up, so the refusal goes to Claude Code.", what, until.Format("15:04"), why))
 }
 
+// ResumeAlerts picks up, after a restart, a failover the last process
+// announced and never ended. failedOver lives in memory, so a gateway that
+// restarted mid-failover never said "Back on Claude", and the warning stood
+// on the band for a day (2026-10-04: failed over 10:19, restarted 10:20).
+// The next primary success now ends it as usual. Call after notice's
+// default publisher is set.
+func (s *Server) ResumeAlerts() {
+	evs, err := notice.Read(notice.Default().Path())
+	if err != nil {
+		return
+	}
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i].Kind == alertFailover {
+			if evs[i].Severity == notice.Warn {
+				s.alerts.mu.Lock()
+				s.alerts.failedOver = true
+				s.alerts.mu.Unlock()
+			}
+			return
+		}
+	}
+}
+
 // alertBackOnPrimary is called when an outage window is released early.
 func (s *Server) alertBackOnPrimary(detail string) {
 	s.alerts.mu.Lock()
