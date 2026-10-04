@@ -3971,6 +3971,12 @@ document.addEventListener("click", e => {
 // Scroll-spy. Marks the entry whose section is nearest the top of the
 // viewport, so the rail says where you are rather than only where you can go.
 const NAV_TARGETS = [...document.querySelectorAll(".navlink")].map(a => a.dataset.target);
+// shown: on the page now. A section on another tab is display:none, not
+// hidden, and measures as a zero box at the top of the window, which made it
+// the marked section whenever the real one started above the window: the
+// rail then scrolled to the top looking for that tab's hidden entry
+// (2026-10-04, scrolling up a little in Requests).
+function shown(el) { return !!el && !el.hidden && el.getClientRects().length > 0; }
 function syncNavActive() {
   // The line is a third of the way down, not at the top edge: otherwise the
   // tail of a long section kept its entry marked while the next section
@@ -3979,7 +3985,7 @@ function syncNavActive() {
   let best = null, bestTop = -Infinity, lastVisible = null, lastTop = -Infinity;
   for (const id of NAV_TARGETS) {
     const el = $(id);
-    if (!el || el.hidden) continue;
+    if (!shown(el)) continue;
     const r = el.getBoundingClientRect(), top = r.top - line;
     if (top <= 0 && top > bestTop) { bestTop = top; best = id; }
     if (r.top < innerHeight && r.bottom > 0 && r.top > lastTop) { lastTop = r.top; lastVisible = id; }
@@ -3987,7 +3993,7 @@ function syncNavActive() {
   // At the very bottom the last sections can never reach the line.
   if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4 && lastVisible) best = lastVisible;
   // Above the first section's line (the top of the page): the first one shown.
-  if (!best) best = NAV_TARGETS.find(id => { const el = $(id); return el && !el.hidden; }) || null;
+  if (!best) best = NAV_TARGETS.find(id => shown($(id))) || null;
   document.querySelectorAll(".navlink").forEach(a =>
     a.classList.toggle("on", a.dataset.target === best));
   // The menu is taller than the window: keep the marked entry in view by
