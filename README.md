@@ -18,15 +18,117 @@ Claude Burst is a local gateway that sits between Claude Code and Anthropic. **I
 
 ![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
 
-## Something broke? Turn it off
+## Update, or get unstuck: two copy-paste scripts
+
+Paste either block into Terminal as a whole. Each writes a script to your home folder, makes it runnable and runs it; next time just run `~/burst-update.sh` or `~/burst-bypass.sh`. Both ask for your password when they touch `/etc/hosts`.
+
+**Update Burst and reinstall it** (newest release, transparent mode with the `/etc/hosts` redirect and pf rule, and anything left holding Burst's ports 7777, 17777 and 7788 stopped first):
 
 ```sh
-burst-off
+cat > ~/burst-update.sh <<'EOF'
+#!/bin/zsh
+# Update Claude Burst and reinstall it in transparent mode. Safe to rerun.
+set -euo pipefail
+REPO="${CLAUDE_BURST_REPO:-}"
+if [[ -z "$REPO" ]]; then
+  for d in ~/claude-burst ~/Desktop/github/claude-burst ~/Desktop/claude-burst ~/github/claude-burst ~/src/claude-burst ~/code/claude-burst; do
+    if [[ -d "$d/.git" ]]; then REPO="$d"; break; fi
+  done
+fi
+if [[ -z "$REPO" ]]; then
+  REPO=~/claude-burst
+  git clone https://github.com/andrewbakercloudscale/claude-burst.git "$REPO"
+fi
+cd "$REPO"
+echo "== updating $REPO"
+git fetch --tags --quiet origin
+if git symbolic-ref -q HEAD >/dev/null; then
+  git pull --ff-only --quiet
+else
+  git -c advice.detachedHead=false checkout --quiet "$(git tag --sort=-v:refname | grep '^v' | head -1)"
+fi
+git log --oneline -1
+echo "== freeing Burst's ports"
+GW=$(launchctl print "gui/$UID/ninja.andrewbaker.claude-burst" 2>/dev/null | awk '$1 == "pid" {print $3; exit}')
+for port in 7777 17777 7788; do
+  for pid in $(lsof -nP -t -iTCP:$port -sTCP:LISTEN 2>/dev/null); do
+    [[ "$pid" == "$GW" ]] && continue
+    echo "port $port: stopping pid $pid ($(ps -o comm= -p $pid))"
+    kill $pid 2>/dev/null || sudo kill $pid
+    sleep 1
+    kill -0 $pid 2>/dev/null && { kill -9 $pid 2>/dev/null || sudo kill -9 $pid; }
+  done
+done
+rm -f ~/.config/claude-burst/rolled-back ~/.config/claude-burst/rolled-back.noted
+echo "== installing"
+CLAUDE_BURST_MODE=transparent CLAUDE_BURST_FORCE=1 ./install.sh
+echo
+~/.local/bin/claude-burst status | head -20
+echo
+echo "Done. A Claude Code session open from before that now fails: restart it with claude --resume (keeps its history)."
+EOF
+chmod +x ~/burst-update.sh && ~/burst-update.sh
 ```
 
-One command, from any terminal: removes the redirect, stops the gateway, frees Burst's ports (7777, 17777, 7788) from anything still holding them, restores Claude Code's settings and checks Anthropic answers directly. It asks for your password if transparent mode is installed. Sessions already open keep working. `claude-burst enable` turns Burst back on. No `burst-off`? From a checkout: `scripts/rollback.sh`.
+**Bypass Burst** (Claude Code talks to Anthropic directly; sessions already open keep working):
 
-## Quickstart
+```sh
+cat > ~/burst-bypass.sh <<'EOF'
+#!/bin/zsh
+# Take Claude Burst out of the path. Undo with ~/burst-update.sh or: claude-burst enable
+if [[ -x ~/.local/bin/burst-off ]]; then exec ~/.local/bin/burst-off; fi
+# Installs older than v0.11 have no burst-off: the same steps by hand.
+BIN=~/.local/bin/claude-burst
+CFG=~/.config/claude-burst
+mkdir -p $CFG && date > $CFG/rolled-back   # the watchdog leaves a stopped gateway alone
+[[ -x $BIN ]] && $BIN passthrough --detach 2>/dev/null
+if grep -q '# BEGIN claude-burst' /etc/hosts; then   # the redirect first: it affects every app
+  if [[ -x /usr/local/libexec/claude-burst/transparent-root.sh ]]; then
+    sudo /usr/local/libexec/claude-burst/transparent-root.sh remove
+  else
+    sudo sed -i '' '/# BEGIN claude-burst/,/# END claude-burst/d' /etc/hosts
+    sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder
+  fi
+fi
+python3 - <<'PY'
+import json, os
+p = os.path.expanduser("~/.claude/settings.json")
+c = os.path.expanduser("~/.config/claude-burst/config.json")
+try:
+    s = json.load(open(p))
+except Exception:
+    raise SystemExit
+env = s.get("env", {})
+url = env.get("ANTHROPIC_BASE_URL", "")
+if url.startswith(("http://127.0.0.1:", "https://127.0.0.1:", "http://localhost:")):
+    try:
+        adopted = json.load(open(c)).get("adopted_base_url", "")
+    except Exception:
+        adopted = ""
+    if adopted:
+        env["ANTHROPIC_BASE_URL"] = adopted
+    else:
+        env.pop("ANTHROPIC_BASE_URL")
+    json.dump(s, open(p, "w"), indent=2)
+    print("settings.json: ANTHROPIC_BASE_URL no longer points at Burst")
+PY
+launchctl bootout "gui/$UID/ninja.andrewbaker.claude-burst" 2>/dev/null
+KEEP=$(cat $CFG/passthrough.pid 2>/dev/null)
+for port in 7777 17777 7788; do
+  for pid in $(lsof -nP -t -iTCP:$port -sTCP:LISTEN 2>/dev/null); do
+    [[ "$pid" == "$KEEP" ]] && continue
+    echo "port $port: stopping pid $pid ($(ps -o comm= -p $pid))"
+    kill $pid 2>/dev/null || sudo kill $pid
+  done
+done
+code=$(curl -s -m 8 -o /dev/null -w '%{http_code} %{remote_ip}' https://api.anthropic.com/)
+echo "api.anthropic.com answers directly: $code"
+echo "Burst is off. A Claude Code session that still fails: restart it with claude --resume (keeps its history)."
+EOF
+chmod +x ~/burst-bypass.sh && ~/burst-bypass.sh
+```
+
+With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass script, and `scripts/rollback.sh` does it from a checkout.## Quickstart
 
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
