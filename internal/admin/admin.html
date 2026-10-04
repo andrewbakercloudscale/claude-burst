@@ -468,6 +468,7 @@
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
     box-shadow: var(--shadow); padding: 18px 20px; margin-bottom: 18px;
   }
+  .cx-hero { box-shadow: none; margin: 0 0 12px; padding: 14px 16px; }
   .hero-top { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
   .hero-id { min-width: 0; flex: 1 1 260px; }
   .hero-id h2 { margin: 0; font-size: 20px; font-weight: 660; letter-spacing: -.02em; }
@@ -1838,6 +1839,24 @@
   <section id="sec-codex" style="scroll-margin-top:70px">
     <h2>Codex through Burst <span class="hint">Codex signed in with ChatGPT; its model calls pass through this Mac's gateway on the way to chatgpt.com</span></h2>
     <div class="body">
+      <!-- Codex's own checks, as the Overview's are Claude Code's: same
+           meter, same rule (the worst failing check sets the colour), same
+           fix buttons. -->
+      <div class="hero cx-hero" id="codexHero">
+        <div class="hero-top">
+          <div class="meter" id="codexMeter">
+            <svg width="84" height="84" viewBox="0 0 84 84" aria-hidden="true">
+              <circle class="track" cx="42" cy="42" r="36" fill="none" stroke-width="8"></circle>
+              <circle class="fill" id="codexMeterFill" cx="42" cy="42" r="36" fill="none" stroke-width="8"
+                      stroke-dasharray="226.19" stroke-dashoffset="226.19"></circle>
+            </svg>
+            <div class="mid"><span class="n" id="codexMeterNum">-</span><span class="of" id="codexMeterOf">checks</span></div>
+          </div>
+          <div class="hero-id"><h2>Codex</h2><div class="sub" id="codexHeroSub"></div></div>
+        </div>
+        <div class="checks" id="codexChecks"></div>
+        <div id="codexFix"></div>
+      </div>
       <div id="codexRoute"><div class="empty">Loading...</div></div>
       <div class="row" style="margin-top:10px">
         <button class="success" id="codexEnable" type="button">Route Codex through Burst</button>
@@ -2574,6 +2593,8 @@ async function refresh() {
     }
 
     lastState = s;
+    // Codex's checks read the watchdog from here.
+    if (codexState) renderCodex(codexState);
     renderCards(s);
     renderAttention();
     // Not awaited on purpose -- see liveCheck's comment. The page below is
@@ -3730,6 +3751,11 @@ const CHECK_FIX = {
   secondary: "add the secondary's API key under Secondary, then press Test secondary.",
   primary: "Anthropic is refusing or failing requests, usually a usage limit or an outage (status.anthropic.com). With a secondary set up, requests already go there.",
   errors: "open Activity to see which requests failed and why. A burst of limit errors is normal; a steady stream is not.",
+  cxroute: "route Codex through Burst with the button, then quit and reopen the Codex app (it reads its config when a session starts).",
+  cxport: "Codex is routed to a port nothing answers on, so it cannot work. Send Codex straight to ChatGPT below (or run burst-off), then restart the gateway from the support console.",
+  cxchatgpt: "trace Codex's path: it checks the ChatGPT sign-in, DNS and chatgpt.com hop by hop. A 401 means sign in to the Codex app again; a 429 means the plan's limit, which resets at the time shown under plan limits.",
+  cxlimits: "the plan resets at the time shown under ChatGPT plan limits. Until then, use Claude Code, or a smaller model in Codex.",
+  cxerrors: "look at the recent Codex turns below to see which failed and why.",
 };
 
 // The button on each failing check that fixes it, or does the one step a
@@ -3746,54 +3772,65 @@ const CHECK_ACTION = {
   secondary: { label: "Add the key", run: () => { setSecondaryOpen(true); scrollToEl($("secondarySection"), "start"); } },
   primary: { label: "Test now", run: b => runTestConnection(b, $("actNote")) },
   errors: { label: "Show the failures", run: () => scrollToEl($("sec-activity"), "start") },
+  cxroute: { label: "Route Codex through Burst", run: () => $("codexEnable").click() },
+  cxport: { label: "Open the support console", run: () => window.open("http://127.0.0.1:7789/", "_blank") },
+  cxchatgpt: { label: "Trace the path", run: () => $("codexTrace").click() },
+  cxwatchdog: { label: "Arm the watchdog", run: () => $("armSelfHeal").click() },
 };
 let heroMode = "";
 
-$("heroFix").addEventListener("click", async e => {
+["heroFix", "codexFix"].forEach(id => $(id).addEventListener("click", async e => {
   const b = e.target.closest("button[data-fix]");
   if (!b) return;
   const a = CHECK_ACTION[b.dataset.fix];
   if (!a) return;
   b.disabled = true;
-  try { await a.run(b); } finally { b.disabled = false; refresh(); }
-});
+  try { await a.run(b); } finally { b.disabled = false; refresh(); loadCodex(); }
+}));
+
+// drawChecks fills a meter, its chips and its fix list: Overview's hero
+// (ids meter*, heroChecks, heroFix) and Codex's (codexMeter*, codexChecks,
+// codexFix). Null checks draw "checking".
+function drawChecks(ids, checks) {
+  const meter = $(ids.meter);
+  meter.classList.remove("ok", "warn", "bad");
+  if (!checks) {
+    $(ids.num).textContent = "…";
+    $(ids.of).textContent = "checking";
+    $(ids.fill).setAttribute("stroke-dashoffset", C);
+    $(ids.checks).innerHTML = "";
+    $(ids.fix).innerHTML = "";
+    return "";
+  }
+  const passed = checks.filter(c => c.ok).length;
+  // The ring's colour comes from the WORST failing check, never from the
+  // proportion. Four passes beside one dead intercept is a red ring, not
+  // an encouraging amber one -- averaging an outage into a score is how a
+  // dashboard ends up looking healthy during an outage.
+  const state = checksState(checks);
+  meter.classList.add(state);
+  $(ids.num).textContent = `${passed}/${checks.length}`;
+  $(ids.of).textContent = "checks";
+  $(ids.fill).setAttribute("stroke-dashoffset", C * (1 - passed / Math.max(1, checks.length)));
+  $(ids.checks).innerHTML = checks.map(c =>
+    `<a class="check ${c.ok ? "ok" : c.critical ? "bad" : "warn"}" data-target="${esc(c.target)}"
+        title="${esc(c.detail)}"><span class="g">${c.ok ? "&#10003;" : "&#9888;"}</span>${esc(c.label)}</a>`
+  ).join("");
+  // A failing check spells out what is wrong and what to do, on the page:
+  // the chip alone only said so in a tooltip.
+  const failing = checks.filter(c => !c.ok);
+  $(ids.fix).innerHTML = failing.length ? `<div class="hero-fix">` + failing.map(c =>
+    `<div class="hf ${c.critical ? "bad" : "warn"}"><b>${esc(c.label)}:</b> ${esc(c.detail)}.` +
+    (CHECK_FIX[c.key] ? ` <span class="todo">What to do: ${esc(CHECK_FIX[c.key])}</span>` : "") +
+    (CHECK_ACTION[c.key] ? ` <button class="hf-fix" data-fix="${esc(c.key)}">${esc(CHECK_ACTION[c.key].label)}</button>` : "") +
+    ` <a href="#" data-target="${esc(c.target)}">Go there &rarr;</a></div>`).join("") + `</div>` : "";
+  return state;
+}
 
 function renderHero(s) {
   heroMode = s.intercept.mode;
-  const checks = readinessChecks(s, liveVerdict);
-  const meter = $("meter");
-  meter.classList.remove("ok", "warn", "bad");
-
-  if (!checks) {
-    $("meterNum").textContent = "…";
-    $("meterOf").textContent = "checking";
-    $("meterFill").setAttribute("stroke-dashoffset", C);
-    $("heroChecks").innerHTML = "";
-    $("heroFix").innerHTML = "";
-  } else {
-    const passed = checks.filter(c => c.ok).length;
-    // The ring's colour comes from the WORST failing check, never from the
-    // proportion. Four passes beside one dead intercept is a red ring, not
-    // an encouraging amber one -- averaging an outage into a score is how a
-    // dashboard ends up looking healthy during an outage.
-    const state = checksState(checks);
-    meter.classList.add(state);
-    $("meterNum").textContent = `${passed}/${checks.length}`;
-    $("meterOf").textContent = "checks";
-    $("meterFill").setAttribute("stroke-dashoffset", C * (1 - passed / checks.length));
-    $("heroChecks").innerHTML = checks.map(c =>
-      `<a class="check ${c.ok ? "ok" : c.critical ? "bad" : "warn"}" data-target="${esc(c.target)}"
-          title="${esc(c.detail)}"><span class="g">${c.ok ? "&#10003;" : "&#9888;"}</span>${esc(c.label)}</a>`
-    ).join("");
-    // A failing check spells out what is wrong and what to do, on the page:
-    // the chip alone only said so in a tooltip.
-    const failing = checks.filter(c => !c.ok);
-    $("heroFix").innerHTML = failing.length ? `<div class="hero-fix">` + failing.map(c =>
-      `<div class="hf ${c.critical ? "bad" : "warn"}"><b>${esc(c.label)}:</b> ${esc(c.detail)}.` +
-      (CHECK_FIX[c.key] ? ` <span class="todo">What to do: ${esc(CHECK_FIX[c.key])}</span>` : "") +
-      (CHECK_ACTION[c.key] ? ` <button class="hf-fix" data-fix="${esc(c.key)}">${esc(CHECK_ACTION[c.key].label)}</button>` : "") +
-      ` <a href="#" data-target="${esc(c.target)}">Go there &rarr;</a></div>`).join("") + `</div>` : "";
-  }
+  drawChecks({meter: "meter", fill: "meterFill", num: "meterNum", of: "meterOf", checks: "heroChecks", fix: "heroFix"},
+    readinessChecks(s, liveVerdict));
 
   const modeLabel = s.intercept.mode === "transparent" ? "transparent proxy" : "base-url";
   $("heroSub").innerHTML = `${esc(modeLabel)} &middot; routing to <b>${esc(
@@ -4651,6 +4688,82 @@ async function loadCodex() {
   }
 }
 
+// codexChecks is Codex's equivalent of readinessChecks: is Codex going
+// through Burst, is Burst's Codex port answering, is ChatGPT answering, is
+// there plan left, is the watchdog armed (one gateway serves both), and the
+// error rate. c is /api/codex, s is /api/state (null before it loads).
+// Null when Codex has never run on this Mac: nothing to check. Pure, for
+// page_script_test.go.
+function codexChecks(c, s, now) {
+  if (!c || c.error) return null;
+  const st = c.status || {};
+  if (!st.installed) return null;
+  const out = [];
+  out.push({
+    key: "cxroute", label: "Codex goes through Burst", target: "sec-codex", critical: !!st.invalid,
+    ok: !!st.enabled && !st.invalid,
+    detail: st.invalid ? `${st.path} does not parse, so Codex cannot start either: ${st.invalid}`
+      : st.enabled ? `${st.path} sends Codex to ${st.base_url}`
+      : st.conflict ? `Codex uses its own model provider "${st.conflict}", so Burst leaves it alone`
+      : "Codex goes straight to ChatGPT, so Burst sees none of its turns",
+  });
+  if (st.enabled || c.listen) {
+    out.push({
+      key: "cxport", label: "Burst's Codex port answering", target: "sec-codex",
+      ok: !!c.listening, critical: !!st.enabled,
+      detail: c.listening ? `listening on ${c.listen}`
+        : !c.listen ? "the Codex gateway is off in config.json"
+        : `not listening on ${c.listen}${c.listen_error ? ` (${c.listen_error})` : ""}`,
+    });
+  }
+  // The newest turn that ended on ChatGPT's answer (a 499 is Codex hanging
+  // up, not ChatGPT failing) decides, while it is under 10 minutes old.
+  const last = (c.recent || []).find(e => e.http_status !== 499);
+  const t = v => new Date(Date.parse(v)).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  const fresh = last && now - Date.parse(last.time) < 10 * 60 * 1000;
+  const bad = fresh && (last.http_status >= 500 || last.http_status === 0 ||
+    last.http_status === 401 || last.http_status === 403 || last.http_status === 429);
+  const why = !last ? "" : last.http_status === 401 || last.http_status === 403 ? "the ChatGPT sign-in was refused"
+    : last.http_status === 429 ? "the plan's usage limit" : last.http_status ? `HTTP ${last.http_status}` : "no answer";
+  out.push({
+    key: "cxchatgpt", label: "ChatGPT answering", target: "sec-codex", ok: !bad, critical: true,
+    detail: !last ? "no Codex turn yet through Burst"
+      : bad ? `the last turn, at ${t(last.time)}, failed: ${why}${last.note ? `: ${String(last.note).slice(0, 200)}` : ""}`
+      : `last turn ${t(last.time)}, HTTP ${last.http_status}`,
+  });
+  const hd = (c.limits || {}).headers;
+  if (hd) {
+    const used = Object.keys(hd).map(k => (k.match(/^x-codex-(.+)-used-percent$/) || [])[1]).filter(Boolean)
+      .filter(n => +hd[`x-codex-${n}-window-minutes`] > 0)
+      .map(n => ({n, pct: Math.min(100, +hd[`x-codex-${n}-used-percent`] || 0), mins: +hd[`x-codex-${n}-window-minutes`]}));
+    if (used.length) {
+      const worst = used.reduce((a, b) => b.pct > a.pct ? b : a);
+      const span = worst.mins >= 10080 ? "weekly" : worst.mins >= 60 ? `${+(worst.mins / 60).toFixed(1)}-hour` : `${worst.mins}-minute`;
+      out.push({
+        key: "cxlimits", label: "ChatGPT plan headroom", target: "sec-codex", ok: worst.pct < 90, critical: false,
+        detail: `${worst.pct}% of the ${span} window used`,
+      });
+    }
+  }
+  const sh = s && s.intercept && s.intercept.self_heal;
+  if (sh) {
+    out.push({
+      key: "cxwatchdog", label: "Gateway watchdog", target: "guardsSection", ok: !!sh.running, critical: false,
+      detail: sh.running ? "armed (one gateway serves Codex and Claude Code)" : "not armed, nothing restarts the gateway, and Codex with it, if it dies",
+    });
+  }
+  const h = c.history || {}, reqs = (h.window || {}).Requests || 0;
+  if (reqs > 0) {
+    const errs = (h.days || []).reduce((a, d) => a + (d.errors || 0), 0);
+    const pct = errs / reqs * 100;
+    out.push({
+      key: "cxerrors", label: "Error rate", target: "sec-codex", ok: pct < 2, critical: false,
+      detail: `${pct.toFixed(1)}% of ${reqs} Codex turns in the last 14 days failed`,
+    });
+  }
+  return out;
+}
+
 // codexRouteState says, in one place, what the route line, the rail dot and
 // the buttons all show.
 function codexRouteState(c) {
@@ -4670,7 +4783,13 @@ function renderCodex(c) {
   const st = c.status || {};
   $("codexRoute").innerHTML = `<div class="note ${rs.cls === "ok" ? "ok" : rs.cls || "info"}">${esc(rs.text)}` +
     (c.last_request ? `\nLast Codex request: ${esc(stamp(c.last_request))}.` : "") + `</div>`;
-  setDot("nd-codex", rs.cls === "ok" ? "ok" : rs.cls);
+  const cks = codexChecks(c, lastState, Date.now());
+  $("codexHero").hidden = !cks;
+  const state = cks ? drawChecks({meter: "codexMeter", fill: "codexMeterFill", num: "codexMeterNum", of: "codexMeterOf",
+    checks: "codexChecks", fix: "codexFix"}, cks) : "";
+  $("codexHeroSub").innerHTML = (st.enabled ? "through Burst" : "straight to ChatGPT") +
+    (c.last_request ? ` &middot; last turn ${esc(stamp(c.last_request))}` : "");
+  setDot("nd-codex", state || (rs.cls === "ok" ? "ok" : rs.cls));
   $("codexEnable").hidden = !!st.enabled;
   $("codexEnable").disabled = !c.listening || !!st.conflict;
   $("codexDisable").hidden = !st.enabled;
