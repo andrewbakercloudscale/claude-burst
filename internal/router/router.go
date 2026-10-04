@@ -224,7 +224,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		primary:         primary,
 		primaryDetector: primaryDetector,
 		secondary:       secondary,
-		client:          &http.Client{Timeout: 0, Transport: newTransport(timeout)},
+		client:          &http.Client{Timeout: 0, Transport: newTransport(timeout), CheckRedirect: neverFollow},
 		probe:           probeNetwork,
 		// Control-plane traffic (notably Claude Code's Remote Control, which
 		// registers and then long-polls for work) can legitimately hold a
@@ -234,7 +234,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		// non-inference paths get a client without it. Inference keeps the
 		// bounded client, where the timeout is load-bearing for the
 		// metered-failures failover strategy.
-		passthroughClient: &http.Client{Timeout: 0, Transport: newTransport(0)},
+		passthroughClient: &http.Client{Timeout: 0, Transport: newTransport(0), CheckRedirect: neverFollow},
 		metrics:           metrics.New(metricsPath),
 		statePath:         statePath,
 		logger:            logger,
@@ -1896,3 +1896,10 @@ func upstreamRoots(bundle string, logger *log.Logger) *x509.CertPool {
 	}
 	return pool
 }
+
+// neverFollow hands a redirect back to the client as it came, the way the
+// upstream sent it. Following it here would replay the request, headers and
+// all, to whatever host the Location names: Go strips Authorization on a
+// cross-host redirect but not x-api-key, so an API key would go with it.
+// Claude Code follows (or refuses) redirects itself.
+func neverFollow(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

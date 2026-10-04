@@ -1058,3 +1058,22 @@ func TestSwapNoticeAndContextSurviveARestart(t *testing.T) {
 		t.Fatal("a compacted session at 60k must not start another summary")
 	}
 }
+
+// Only a stream that ended with message_stop yields a summary: an error event
+// or a cut-off stream leaves text that reads like one and is only its start.
+func TestReadSSETextNeedsACompletedStream(t *testing.T) {
+	delta := `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Only the first half"}}` + "\n\n"
+	for name, tc := range map[string]struct {
+		body string
+		ok   bool
+	}{
+		"complete":    {delta + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}` + "\n\n" + `data: {"type":"message_stop"}` + "\n\n", true},
+		"error event": {delta + `data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}` + "\n\n", false},
+		"cut off":     {delta, false},
+	} {
+		text, _, _, err := readSSEText(strings.NewReader(tc.body))
+		if (err == nil) != tc.ok || text != "Only the first half" {
+			t.Errorf("%s: text %q err %v", name, text, err)
+		}
+	}
+}

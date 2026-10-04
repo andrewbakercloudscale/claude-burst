@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -139,6 +140,9 @@ type savedCompaction struct {
 	NextP0      int       `json:"next_p0,omitempty"`
 	NextHash    string    `json:"next_hash,omitempty"`
 	Seen        time.Time `json:"seen"`
+	// ExposureWarned: the session was told once (noteExposure); kept so a
+	// restart does not tell it again.
+	ExposureWarned int64 `json:"exposure_warned,omitempty"`
 	// The prompt notice's unshown lines and the context before the latest
 	// swap. Memory only until 2026-10-01, when a deploy landed between a
 	// swap and the next prompt (gateway restarts are routine: six in that
@@ -170,7 +174,7 @@ func (c *compactor) load() {
 		st := &compactState{lastContext: v.LastContext, warnedAt: v.WarnedAt, startedAt: v.StartedAt,
 			summary: v.Summary, p0: v.P0, hash: v.Hash, swapAt: v.SwapAt,
 			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, seen: v.Seen,
-			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs}
+			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs, exposureWarned: v.ExposureWarned}
 		// Saved before summaries waited as next: an unapplied summary.
 		if st.summary != "" && st.swapAt == 0 && st.next == "" {
 			st.next, st.nextP0, st.nextHash = st.summary, st.p0, st.hash
@@ -203,7 +207,7 @@ func (c *compactor) save() {
 		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
 			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt,
 			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, Seen: st.seen,
-			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs}
+			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned}
 	}
 	b, err := json.Marshal(out)
 	if err == nil {
@@ -351,26 +355,29 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 // which keeps growing. Whenever Burst drops out of the path (the gateway
 // down, the redirect removed, burst-off) the next turn sends all of that,
 // uncached: on 2026-10-04 a session Burst kept at 135k sent 994k for $7.75.
-// Past exposureWarnTokens, and again every exposureStep, the session is told
-// what that would cost and that a /compact now, while Burst is in the path,
-// shrinks Claude Code's own copy for little.
-const (
-	exposureWarnTokens = 500_000
-	exposureStep       = 200_000
+// Past exposureWarnTokens a compacted session is told, once, what Claude
+// Code's own copy would cost uncached and that a /compact now, while Burst
+// is in the path, shrinks it for little.
+const exposureWarnTokens = 500_000
+
+var (
+	exposureMu sync.Mutex
+	exposureWG sync.WaitGroup // for tests
 )
 
 // noteExposure announces a compacted session's exposure. Called with
 // s.compaction.mu held.
 func (s *Server) noteExposure(key string, st *compactState) {
 	if st.rawContext < exposureWarnTokens {
-		st.exposureWarned = 0
 		return
 	}
-	if st.summary == "" || (st.exposureWarned > 0 && st.rawContext < st.exposureWarned+exposureStep) {
+	// Once per session: the advice does not change as the history grows,
+	// and repeating it every 200k (and after every restart) was noise.
+	if st.summary == "" || st.exposureWarned > 0 {
 		return
 	}
 	st.exposureWarned = st.rawContext
-	sid, model, _ := strings.Cut(key, "|")
+	_, model, _ := strings.Cut(key, "|")
 	model, _, _ = strings.Cut(model, "|")
 	cost := ""
 	if usd, ok := s.PriceTokens(model, 0, 0, 0, st.rawContext); ok && usd > 0 {
@@ -378,9 +385,20 @@ func (s *Server) noteExposure(key string, st *compactState) {
 	}
 	s.logger.Printf("compaction exposure session=%s: Claude Code holds %dk, Burst sends %dk", key, st.rawContext/1000, st.lastContext/1000)
 	st.notice("Claude Code holds %dk, Burst sends %dk; without Burst it all goes uncached%s. Run /compact", st.rawContext/1000, st.lastContext/1000, cost)
-	notice.PublishFor(sid, alertExposure, notice.Warn,
-		fmt.Sprintf("Claude Code holds %dk, Burst sends %dk", st.rawContext/1000, st.lastContext/1000),
-		fmt.Sprintf("If Burst drops out, this session's next turn sends all %dk uncached%s. Run /compact in it now: through Burst that costs little and shrinks Claude Code's own copy.", st.rawContext/1000, cost))
+	// The on-screen alert once a day across all sessions; each session still
+	// gets its own line above. PublishOnce reads notices.json, so off the
+	// request path and outside mu.
+	title := "Claude Code holds far more than Burst sends (" + time.Now().Format("Mon 2 Jan") + ")"
+	detail := fmt.Sprintf("A session holds %dk, Burst sends %dk. If Burst drops out it all goes uncached%s. Run /compact in long sessions.", st.rawContext/1000, st.lastContext/1000, cost)
+	exposureWG.Add(1)
+	go func() {
+		defer exposureWG.Done()
+		// Serialised so two sessions crossing together cannot both pass
+		// PublishOnce's check before either is written.
+		exposureMu.Lock()
+		defer exposureMu.Unlock()
+		notice.PublishOnce(alertExposure, notice.Warn, title, detail)
+	}()
 }
 
 // applyCompaction returns the body to send for an inference request and the
@@ -761,10 +779,16 @@ func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage
 		s.writeMetric(in, "primary", s.primary.Name(), model, model, resp.StatusCode, start, tokenUsage{}, "", 0, "compaction summary rejected: "+errorExcerpt(b), dest)
 		return "", fmt.Errorf("summary request: status %d: %s", resp.StatusCode, errorExcerpt(b))
 	}
-	text, stop, tok := readSSEText(resp.Body)
-	s.writeMetric(in, "primary", s.primary.Name(), model, model, resp.StatusCode, start, tok, "", 0, "compaction summary", dest)
+	text, stop, tok, rerr := readSSEText(resp.Body)
+	note := "compaction summary"
+	if rerr != nil {
+		note = "compaction summary incomplete: " + rerr.Error()
+	}
+	s.writeMetric(in, "primary", s.primary.Name(), model, model, resp.StatusCode, start, tok, "", 0, note, dest)
 	summary := summaryFromText(text)
 	switch {
+	case rerr != nil:
+		return "", rerr
 	case stop == "tool_use":
 		return "", fmt.Errorf("the model called a tool instead of writing the summary")
 	case stop == "max_tokens":
@@ -843,8 +867,12 @@ func promptExcerpt(m json.RawMessage) string {
 
 // readSSEText collects a streamed Messages response's text, stop reason and
 // usage.
-func readSSEText(r io.Reader) (text, stop string, tok tokenUsage) {
+// readSSEText also returns an error unless the stream ended properly with
+// message_stop: an error event or a broken connection mid-summary leaves
+// text that reads like a summary and is only the first part of one.
+func readSSEText(r io.Reader) (text, stop string, tok tokenUsage, err error) {
 	var sb strings.Builder
+	done := false
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -856,6 +884,10 @@ func readSSEText(r io.Reader) (text, stop string, tok tokenUsage) {
 		}
 		var ev struct {
 			Type  string `json:"type"`
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
 			Delta struct {
 				Type       string `json:"type"`
 				Text       string `json:"text"`
@@ -870,9 +902,19 @@ func readSSEText(r io.Reader) (text, stop string, tok tokenUsage) {
 			sb.WriteString(ev.Delta.Text)
 		case ev.Type == "message_delta" && ev.Delta.StopReason != "":
 			stop = ev.Delta.StopReason
+		case ev.Type == "message_stop":
+			done = true
+		case ev.Type == "error":
+			return sb.String(), stop, tok, fmt.Errorf("the stream ended with an error: %s %s", ev.Error.Type, ev.Error.Message)
 		}
 	}
-	return sb.String(), stop, tok
+	if err := sc.Err(); err != nil {
+		return sb.String(), stop, tok, fmt.Errorf("the stream broke off: %w", err)
+	}
+	if !done {
+		return sb.String(), stop, tok, errors.New("the stream ended before the summary was finished")
+	}
+	return sb.String(), stop, tok, nil
 }
 
 // PromptNotices returns, and forgets, the lines to show under the prompt

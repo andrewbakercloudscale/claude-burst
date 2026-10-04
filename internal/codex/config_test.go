@@ -113,3 +113,49 @@ func TestEnableCreatesFile(t *testing.T) {
 		t.Error("not enabled")
 	}
 }
+
+// Every TOML spelling of a top-level model_provider counts as the user's
+// own; a "[table]" or the key inside a multi-line string does not end or
+// start anything.
+func TestProviderSpellings(t *testing.T) {
+	for in, want := range map[string]string{
+		"model_provider = 'openai'\n":                                       "openai",
+		"model_provider=\"openai\"\n":                                       "openai",
+		"\"model_provider\" = \"x\"\n":                                      "x",
+		"'model_provider' = 'y'\n":                                          "y",
+		"  model_provider   =   \"z\"   # mine\n":                           "z",
+		"notes = \"\"\"\n[not a table]\n\"\"\"\nmodel_provider = 'after'\n": "after",
+		"notes = '''\nmodel_provider = \"inside\"\n'''\n":                   "",
+		"[desktop]\nmodel_provider = 'in-table'\n":                          "",
+		"model_providers.x = { name = \"x\" }\n":                            "",
+	} {
+		if got := topLevelProvider(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The case the review found: a single-quoted provider is refused, not
+// duplicated.
+func TestEnableRefusesSingleQuotedProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	orig := "model_provider = 'openai'\n"
+	os.WriteFile(path, []byte(orig), 0o600)
+	if err := Enable(path, "127.0.0.1:7779", ""); !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != orig {
+		t.Errorf("file changed: %q", b)
+	}
+}
+
+// A claude-burst provider the user defined is never defined twice.
+func TestEnableRefusesExistingBurstTable(t *testing.T) {
+	for _, orig := range []string{"[model_providers.claude-burst]\nname = \"mine\"\n", "[desktop]\n\n[model_providers.\"claude-burst\"]\n"} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		os.WriteFile(path, []byte(orig), 0o600)
+		if err := Enable(path, "127.0.0.1:7779", ""); !errors.Is(err, ErrConflict) {
+			t.Errorf("%q: err = %v", orig, err)
+		}
+	}
+}
