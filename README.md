@@ -33,6 +33,8 @@ cat > ~/burst-update.sh <<'EOF'
 #!/bin/zsh
 # Update Claude Burst and reinstall it in transparent mode. Safe to rerun.
 set -euo pipefail
+STEP="finding the checkout"
+trap 'rc=$?; (( rc )) && print -u2 "burst-update FAILED (exit $rc) while $STEP. Paste everything above when asking for help."' EXIT
 REPO="${CLAUDE_BURST_REPO:-}"
 if [[ -z "$REPO" ]]; then
   # Any checkout up to three folders down whose remote is Claude Burst.
@@ -45,7 +47,7 @@ if [[ -z "$REPO" ]]; then
   git clone https://github.com/andrewbakercloudscale/claude-burst.git "$REPO"
 fi
 cd "$REPO"
-echo "== updating $REPO"
+echo "== updating $REPO"; STEP="updating $REPO"
 git fetch --tags --quiet origin
 if git symbolic-ref -q HEAD >/dev/null; then
   git pull --ff-only --quiet
@@ -53,8 +55,8 @@ else
   git -c advice.detachedHead=false checkout --quiet "$(git tag --sort=-v:refname | grep '^v' | head -1)"
 fi
 git log --oneline -1
-echo "== freeing Burst's ports"
-GW=$(launchctl print "gui/$UID/ninja.andrewbaker.claude-burst" 2>/dev/null | awk '$1 == "pid" {print $3; exit}')
+echo "== freeing Burst's ports"; STEP="freeing the ports"
+GW=$(launchctl print "gui/$UID/ninja.andrewbaker.claude-burst" 2>/dev/null | awk '$1 == "pid" {print $3; exit}' || true)
 for port in 7777 17777 7788; do
   for pid in $(lsof -nP -t -iTCP:$port -sTCP:LISTEN 2>/dev/null); do
     [[ "$pid" == "$GW" ]] && continue
@@ -65,10 +67,10 @@ for port in 7777 17777 7788; do
   done
 done
 rm -f ~/.config/claude-burst/rolled-back ~/.config/claude-burst/rolled-back.noted
-echo "== installing"
+echo "== installing"; STEP="installing (install.sh)"
 CLAUDE_BURST_MODE=transparent CLAUDE_BURST_FORCE=1 ./install.sh
 echo
-~/.local/bin/claude-burst status | head -20
+~/.local/bin/claude-burst status 2>&1 | head -20 || true
 echo
 echo "Done. A Claude Code session open from before that now fails: restart it with claude --resume (keeps its history)."
 # The dashboard, once it answers.
