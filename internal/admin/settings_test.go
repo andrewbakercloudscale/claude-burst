@@ -204,7 +204,6 @@ func TestSettingsSaveNothingIsANoOp(t *testing.T) {
 	}
 }
 
-
 func TestSettingsPricingSetDeleteAndRestartNeeded(t *testing.T) {
 	s := newTestServer(t)
 	if rn := restartNeeded(s.gateway.StartupConfig(), loadCfg(t)); slices.Contains(rn, "pricing") {

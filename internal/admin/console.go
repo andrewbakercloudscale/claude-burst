@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -128,7 +129,11 @@ func (c *Console) handleStatus(w http.ResponseWriter, r *http.Request) {
 				"Burst was turned off on purpose (" + strings.TrimSpace(string(b)) + "). Restart turns it back on."})
 		}
 	}
-	st.Checks = append(st.Checks, dialCheck("Gateway port", cfg.Listen))
+	if cfg.Intercept.Mode == config.InterceptTransparent {
+		st.Checks = append(st.Checks, redirectCheck(ctx, cfg.Intercept.Host))
+	} else {
+		st.Checks = append(st.Checks, dialCheck("Gateway port", cfg.Listen))
+	}
 	if a := cfg.AdminListen; a != "" && a != "off" {
 		st.Dashboard = "http://" + a + "/"
 		chk := httpCheck(ctx, "Dashboard", st.Dashboard+"api/state")
@@ -163,6 +168,32 @@ func dialCheck(name, addr string) consoleCheck {
 	}
 	conn.Close()
 	return consoleCheck{name, true, addr + " is answering"}
+}
+
+// redirectCheck follows the path Claude Code takes in transparent mode:
+// the intercepted host resolves here (/etc/hosts), pf sends it to the
+// gateway, and TLS completes against Burst's CA. A direct dial of the
+// gateway's own port proves nothing here: pf answers for that port
+// differently than for the redirect. The gateway stamps "overflow" into its
+// /healthz, which the real Anthropic never sends, so the body says whose
+// answer it is.
+func redirectCheck(ctx context.Context, host string) consoleCheck {
+	if host == "" {
+		host = "api.anthropic.com"
+	}
+	const name = "Redirect to the gateway"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+"/healthz", nil)
+	resp, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
+	if err != nil {
+		return consoleCheck{name, false, host + " did not reach Burst: " + err.Error()}
+	}
+	defer resp.Body.Close()
+	b := make([]byte, 4096)
+	n, _ := io.ReadFull(resp.Body, b)
+	if !strings.Contains(string(b[:n]), `"overflow"`) {
+		return consoleCheck{name, false, fmt.Sprintf("%s answered HTTP %d, but not as Burst: the redirect is missing and Claude Code goes straight to Anthropic", host, resp.StatusCode)}
+	}
+	return consoleCheck{name, true, host + " reaches the gateway"}
 }
 
 func httpCheck(ctx context.Context, name, url string) consoleCheck {
