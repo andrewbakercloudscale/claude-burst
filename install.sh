@@ -569,7 +569,7 @@ To remove everything later:
 OUT
 
   offer_panel
-  # Burst inside Claude Code sessions (mods/burst). CLAUDE_BURST_MOD=no skips it.
+  # Burst inside Claude Code sessions (mods/burst-session). CLAUDE_BURST_MOD=no skips it.
   echo
   zsh "$ROOT/scripts/update-mod.sh"
 }

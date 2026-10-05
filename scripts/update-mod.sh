@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Installs, updates or removes Burst's Claude Code mod (mods/burst):
+# Installs, updates or removes Burst's Claude Code mod (mods/burst-session):
 # Burst and the usage panel inside the session. Called by install.sh and
 # deploy.sh, so updating Burst updates the mod too.
 #
@@ -22,14 +22,15 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$ROOT/mods/burst"
+SRC="$ROOT/mods/burst-session"
 MARKET="$HOME/.local/share/claude-burst/marketplace"
-PLUGIN="burst@burst"
-# The mod's earlier names: burst-band until Burst 0.19.1, then claude-burst
-# until 0.20.2, a name Claude Code reserves for Anthropic's own plugins.
+PLUGIN="burst-session@burst"
+# The mod's earlier names: burst-band until Burst 0.19.1, claude-burst until
+# 0.20.2 (a name Claude Code reserves for Anthropic's own plugins), and
+# burst in 0.20.2 alone.
 # Removed wherever they are found, or a session would load two and draw the
 # band twice.
-OLD_PLUGINS=("burst-band@burst" "claude-burst@burst")
+OLD_PLUGINS=("burst-band@burst" "claude-burst@burst" "burst@burst")
 MIN_VERSION="2.1.287" # the first Claude Code that loads mods
 CLAUDE="${CLAUDE_BIN:-$(command -v claude 2>/dev/null)}"
 
@@ -103,9 +104,9 @@ fi
 # The marketplace: a fresh copy of what Claude Code loads, at a path that
 # stays put. One registered anywhere else is moved here.
 rm -rf "$MARKET" &&
-  mkdir -p "$MARKET/.claude-plugin" "$MARKET/mods/burst" &&
+  mkdir -p "$MARKET/.claude-plugin" "$MARKET/mods/burst-session" &&
   cp "$ROOT/.claude-plugin/marketplace.json" "$MARKET/.claude-plugin/" &&
-  cp -R "$SRC/.claude-plugin" "$SRC/hooks" "$MARKET/mods/burst/" ||
+  cp -R "$SRC/.claude-plugin" "$SRC/hooks" "$MARKET/mods/burst-session/" ||
   { warn "could not copy the mod to $MARKET"; exit 0; }
 at="$("$CLAUDE" plugin marketplace list --json 2>/dev/null | python3 -c '
 import json, sys

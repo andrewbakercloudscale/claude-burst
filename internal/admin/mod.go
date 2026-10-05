@@ -11,7 +11,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 )
 
-// modResponse is what the Claude Code mod (mods/burst) reads every few
+// modResponse is what the Claude Code mod (mods/burst-session) reads every few
 // seconds for the band above the prompt: one small answer, so the mod never
 // parses /api/state, which reads transcripts and grows with every feature.
 type modResponse struct {
