@@ -182,15 +182,37 @@ async function leaveBurst($) {
   if (raw < HANDOFF_AT) return
   const out = (await inPath($)) === false
   if (!out && raw < HANDOFF_ALWAYS_AT) return
-  asking = true
   handed = h.of
+  try {
+    await handOver($, h)
+  } catch (err) {
+    $.ui.toast((out ? 'This session no longer goes through Burst and sends its whole history (' + kTokens(raw) + ')' : 'Claude Code holds ' + kTokens(raw) + ' of history for this session, close to more than it could send without Burst') + '. /compact shortens it with the summary Burst already wrote', { timeoutMs: TOAST_MS.warn })
+  }
+}
+
+// handOver has Claude Code compact, which the session.compact hook below
+// answers with h. /compact-async-full is this, typed.
+async function handOver($, h) {
+  asking = true
   asked = h.of
   try {
     await $.command.run({ command: 'compact', args: '' })
-  } catch (err) {
-    $.ui.toast((out ? 'This session no longer goes through Burst and sends its whole history (' + kTokens(raw) + ')' : 'Claude Code holds ' + kTokens(raw) + ' of history for this session, close to more than it could send without Burst') + '. /compact shortens it with the summary Burst already wrote', { timeoutMs: TOAST_MS.warn })
   } finally {
     asking = false
+  }
+}
+
+const FAST = 'compact-async-full'
+async function compactFast($) {
+  if (asking) return
+  if (!(await handoffOn($))) return $.ui.toast("/" + FAST + " is off: turn on Hand Burst's summary to Claude Code on the dashboard", { timeoutMs: TOAST_MS.warn })
+  const h = await readHandoff($)
+  if (!h) return $.ui.toast('/' + FAST + ': Burst holds no summary of this session, so there is nothing to hand over. /compact has Claude Code write one', { timeoutMs: TOAST_MS.warn })
+  handed = h.of
+  try {
+    await handOver($, h)
+  } catch (err) {
+    $.ui.toast('/' + FAST + ' could not run /compact: ' + err, { timeoutMs: TOAST_MS.warn })
   }
 }
 
@@ -210,7 +232,7 @@ export function register(on) {
     // writing a summary of the whole history is the user's to ask for.
     const mine = asking || (h !== null && asked === h.of && e.trigger === 'manual')
     asked = ''
-    if (cut < 1 && mine) return { skip: "This session no longer goes through Burst, and Burst's summary does not fit it as Claude Code holds it. /compact again has Claude Code write its own" }
+    if (cut < 1 && mine) return { skip: "Burst's summary does not fit this session as Claude Code holds it, or is in it already, so nothing was compacted. /compact has Claude Code write its own" }
     if (cut < 1) return next(e)
     handed = h.of
     $.ui.toast("Burst's summary handed to Claude Code: " + cut + ' messages replaced, no summary request', { timeoutMs: TOAST_MS.info })
@@ -250,6 +272,11 @@ export function register(on) {
     } catch (err) {
       $.ui.log('could not add /context-bar: ' + err)
     }
+    try {
+      await $.command.register({ name: FAST, description: "Compact this session with the summary Burst already wrote: no summary request, no pause. Never Claude Code's own compaction", immediate: true })
+    } catch (err) {
+      $.ui.log('could not add /' + FAST + ': ' + err)
+    }
     for (const c of Object.values(RESCUE)) {
       try {
         await $.command.register({ name: c.name, description: c.description, immediate: true })
@@ -276,6 +303,12 @@ export function register(on) {
       return {}
     }
     await $.ui.open({ id: PANE, title: 'Burst', focus: true, closeOnEscape: true })
+    return {}
+  })
+
+  on('command.run', { command: FAST }, async ($) => {
+    // Not awaited: Claude Code may hold the /compact until the turn ends.
+    compactFast($).catch((err) => $.ui.log('/' + FAST + ' did not run: ' + err))
     return {}
   })
 
