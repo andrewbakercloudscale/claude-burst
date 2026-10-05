@@ -144,7 +144,7 @@ type savedCompaction struct {
 	NextP0      int       `json:"next_p0,omitempty"`
 	NextHash    string    `json:"next_hash,omitempty"`
 	Seen        time.Time `json:"seen"`
-	// ExposureWarned: the session was told once (noteExposure); kept so a
+	// ExposureWarned: the exposure was logged once (noteExposure); kept so a
 	// restart does not tell it again.
 	ExposureWarned int64 `json:"exposure_warned,omitempty"`
 	// The prompt notice's unshown lines and the context before the latest
@@ -359,50 +359,22 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 // which keeps growing. Whenever Burst drops out of the path (the gateway
 // down, the redirect removed, burst-off) the next turn sends all of that,
 // uncached: on 2026-10-04 a session Burst kept at 135k sent 994k for $7.75.
-// Past exposureWarnTokens a compacted session is told, once, what Claude
-// Code's own copy would cost uncached and that a /compact now, while Burst
-// is in the path, shrinks it for little.
+// It is what compaction is for, not a fault, so it is information and not
+// an alert: until 5 Oct 2026 crossing exposureWarnTokens raised a warning
+// on screen, a line under the prompt and a standing problem in the band and
+// status line, all for a tool doing its job. The figure is in the usage
+// sidebar's session card and the dashboard's sessions table; the log notes
+// the crossing once per session.
 const exposureWarnTokens = 500_000
 
-var (
-	exposureMu sync.Mutex
-	exposureWG sync.WaitGroup // for tests
-)
-
-// noteExposure announces a compacted session's exposure. Called with
+// noteExposure logs a compacted session's exposure, once. Called with
 // s.compaction.mu held.
 func (s *Server) noteExposure(key string, st *compactState) {
-	if st.rawContext < exposureWarnTokens {
-		return
-	}
-	// Once per session: the advice does not change as the history grows,
-	// and repeating it every 200k (and after every restart) was noise.
-	if st.summary == "" || st.exposureWarned > 0 {
+	if st.rawContext < exposureWarnTokens || st.summary == "" || st.exposureWarned > 0 {
 		return
 	}
 	st.exposureWarned = st.rawContext
-	_, model, _ := strings.Cut(key, "|")
-	model, _, _ = strings.Cut(model, "|")
-	cost := ""
-	if usd, ok := s.PriceTokens(model, 0, 0, 0, st.rawContext); ok && usd > 0 {
-		cost = fmt.Sprintf(", about $%.2f", usd)
-	}
 	s.logger.Printf("compaction exposure session=%s: Claude Code holds %dk, Burst sends %dk", key, st.rawContext/1000, st.lastContext/1000)
-	st.notice("Claude Code holds %dk, Burst sends %dk; without Burst it all goes uncached%s. Run /compact", st.rawContext/1000, st.lastContext/1000, cost)
-	// The on-screen alert once a day across all sessions; each session still
-	// gets its own line above. PublishOnce reads notices.json, so off the
-	// request path and outside mu.
-	title := "Claude Code holds far more than Burst sends (" + time.Now().Format("Mon 2 Jan") + ")"
-	detail := fmt.Sprintf("A session holds %dk, Burst sends %dk. If Burst drops out it all goes uncached%s. Run /compact in long sessions.", st.rawContext/1000, st.lastContext/1000, cost)
-	exposureWG.Add(1)
-	go func() {
-		defer exposureWG.Done()
-		// Serialised so two sessions crossing together cannot both pass
-		// PublishOnce's check before either is written.
-		exposureMu.Lock()
-		defer exposureMu.Unlock()
-		notice.PublishOnce(alertExposure, notice.Warn, title, detail)
-	}()
 }
 
 // applyCompaction returns the body to send for an inference request and the
