@@ -73,7 +73,7 @@ async function rescue($, c) {
 
 // Held history, in tokens, from which a session that has left Burst is
 // compacted with Burst's summary before its next prompt goes.
-const HANDOFF_AT = 200000
+const HANDOFF_AT = 300000
 
 let heldSeen = 0 // the most this session was last seen to hold, kept for when the gateway is gone
 let handed = '' // the hand-off already made or refused, so it is not tried again
