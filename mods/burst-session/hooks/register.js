@@ -160,8 +160,10 @@ function handoffCut(h, msgs) {
         for (let j = cut - 1; j >= 0 && msgs[j].role === msgs[cut - 1].role; j--) ok = ok || anchorMatches(h.last, msgs[j])
         if (!ok) continue
       }
-    } else if (h.last.tool && anchorMatches(h.last, msgs[i - 1]) && msgs[i].role === h.first.role && msgs[i].role !== msgs[i - 1].role) {
-      // A reply too short to name ("Done.") is found by what it follows.
+    } else if (lastNamed && anchorMatches(h.last, msgs[i - 1]) && msgs[i].role === h.first.role && msgs[i].role !== msgs[i - 1].role) {
+      // A message too short to name ("Done.", "do both") is found by what
+      // it follows, and must still say what little it was known to say.
+      if (!h.first.tool && h.first.text && !String(msgs[i].text || '').replace(/\s+/g, '').includes(h.first.text)) continue
       cut = i
     }
     if (cut < 1) continue

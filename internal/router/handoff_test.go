@@ -91,6 +91,12 @@ func TestAnchorsNameAMessageByToolCallOrText(t *testing.T) {
 	if h := buildHandoff("S", all, "x", 4, 0, time.Now()); h != nil {
 		t.Errorf("no hand-off at a prompt too short to name: %+v", h)
 	}
+	// A short prompt is named by the reply before it, when that says enough.
+	long := append([]json.RawMessage(nil), all...)
+	long[3] = json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"done with the first task, all of it"}]}`)
+	if h := buildHandoff("S", long, "x", 4, 0, time.Now()); h == nil || h.First.Text != "secondtask" || h.Last.Text != "donewiththefirsttask,allofit" {
+		t.Errorf("want a hand-off at a short prompt after a reply that names itself: %+v", h)
+	}
 	if h := buildHandoff("S", all, "x", 5, 0, time.Now()); h == nil || h.First.Tool != "t2" {
 		t.Errorf("want a hand-off at a reply with a tool call: %+v", h)
 	}

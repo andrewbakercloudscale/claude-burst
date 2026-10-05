@@ -429,6 +429,26 @@ test('a prompt named by its text is found only after the message the summary end
   expect(calls).toEqual(['manual'])
 })
 
+test('a prompt too short to name is found by the reply before it, and only where it says the same', async ($, on) => {
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ first: { role: 'user', text: 'doboth' }, last: { role: 'assistant', text: 'whichofthetwodoyouwant?' } }) } }
+  stubs(on, [mod()], [], [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  const short = [
+    ...TRANSCRIPT,
+    { role: 'assistant', text: 'which of the two do you want?', toolUses: [], handle: 's0' },
+    { role: 'user', text: 'do both', toolUses: [], handle: 's1' },
+    { role: 'assistant', text: 'doing both', toolUses: [], handle: 's2' },
+  ]
+  const r = await $.session.compact({ trigger: 'auto', messages: short })
+  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 's1', 's2'])
+  // The same reply followed by other words is not the cut.
+  const other = short.map((m) => (m.handle === 's1' ? { ...m, text: 'neither' } : m))
+  expect((await $.session.compact({ trigger: 'auto', messages: other })).messages[0].text).toBe('CORE SUMMARY')
+  expect(calls).toEqual(['auto'])
+})
+
 test('a session that has left Burst is compacted with the summary as soon as it is seen, once', async ($, on) => {
   const toasts: string[] = []
   const calls: string[] = []
