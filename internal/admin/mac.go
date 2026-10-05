@@ -208,7 +208,9 @@ read -k 1 "?Done. Press any key to close this window..."
 
 // --- usage panel -------------------------------------------------------
 
-const panelRepoURL = "https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel.git"
+// The repo was claudecode-cost-usage-panel until 2026-10-05: a checkout or
+// clone under that name is still found, and GitHub redirects its remote.
+const panelRepoURL = "https://github.com/andrewbakercloudscale/claude-code-cost-sidebar.git"
 
 // panelOptions maps the dashboard's names to keys in the panel's options
 // file. Only these keys are ever written.
@@ -269,7 +271,8 @@ func panelOptionsPath() string {
 func (s *Server) panelRepoDir() string {
 	var cands []string
 	if dir, ok := s.scriptsDir(); ok {
-		cands = append(cands, filepath.Join(filepath.Dir(filepath.Dir(dir)), "claudecode-cost-usage-panel"))
+		beside := filepath.Dir(filepath.Dir(dir))
+		cands = append(cands, filepath.Join(beside, "claude-code-cost-sidebar"), filepath.Join(beside, "claudecode-cost-usage-panel"))
 	}
 	cands = append(cands, filepath.Join(homeDir(), ".local", "share", "claude-burst", "claudecode-cost-usage-panel"))
 	for _, c := range cands {

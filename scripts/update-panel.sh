@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Brings an installed usage panel (claudecode-cost-usage-panel, a separate
+# Brings an installed usage panel (claude-code-cost-sidebar, a separate
 # repo) up to date by re-running its own installer. Called by install.sh and
 # deploy.sh, so updating Burst updates the panel too; until 2026-10-02 only a
 # missing panel was ever installed and an existing one never changed.
@@ -21,7 +21,9 @@ if [[ ! -x "$HOME/.local/bin/ccusage-panel.sh" ]]; then
   exit 0
 fi
 
-dir="$(dirname "$ROOT")/claudecode-cost-usage-panel"
+# The repo was claudecode-cost-usage-panel until 2026-10-05; either name is found.
+dir="$(dirname "$ROOT")/claude-code-cost-sidebar"
+[[ -f "$dir/claude-panel-setup.sh" ]] || dir="$(dirname "$ROOT")/claudecode-cost-usage-panel"
 if [[ ! -f "$dir/claude-panel-setup.sh" ]]; then
   dir="$HOME/.local/share/claude-burst/claudecode-cost-usage-panel"
   if [[ ! -d "$dir/.git" ]]; then

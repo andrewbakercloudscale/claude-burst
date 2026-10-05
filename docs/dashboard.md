@@ -54,7 +54,7 @@ Times are local. Status 0 requests are counted as "unknown": they come from befo
 
 ![Session options and the usage panel: Remote Control on start, session names, caffeinate, the handover writer, and installing or removing the panel with its settings](screenshots/sessions-and-panel.png)
 
-**Session options** (Sessions menu) apply to the next session you start. The first three are carried out by the [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel)'s hooks and launcher, so they need it installed, and are saved in `~/.config/claude-panel/options`:
+**Session options** (Sessions menu) apply to the next session you start. The first three are carried out by the [usage panel](https://github.com/andrewbakercloudscale/claude-code-cost-sidebar)'s hooks and launcher, so they need it installed, and are saved in `~/.config/claude-panel/options`:
 
 - **Start with Remote Control**: every interactive `claude` starts with `--remote-control`.
 - **Name the session after its folder**: new sessions are titled with the repo's folder name instead of "Claude Code". Resumed sessions keep their name.
@@ -92,7 +92,7 @@ Information and all clear notices show for 3 seconds, warnings for 8; an error s
 
 The **support console** at http://127.0.0.1:7789/ (`claude-burst console`, its own LaunchAgent) has the same audit, plus which part of Burst is down (the gateway service, its port, the dashboard, the Codex port, a config that does not load), the latest log lines, and **Restart gateway**, **Repair**, **Diagnostic report** and **Turn Burst off**. It loads no provider and survives a broken config, so it answers when the gateway does not. Repair and the report run in a Terminal window, where macOS can ask for your password. Change its address with `console_listen` in `config.json` (`"off"` turns it off).
 
-**Usage panel** (Sessions menu): the companion [usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel), a live panel beside Claude Code showing the session's cost and burn rate, context used, a row per turn with its context, cache hit rate and cost, and where Burst compacted. On Claude Code 2.1.287 or later it is a mod, drawn as a sidebar inside the session in any terminal; on older versions it is a Ghostty split. The section explains what it installs and shows a masked screenshot.
+**Usage panel** (Sessions menu): the companion [usage panel](https://github.com/andrewbakercloudscale/claude-code-cost-sidebar), a live panel beside Claude Code showing the session's cost and burn rate, context used, a row per turn with its context, cache hit rate and cost, and where Burst compacted. On Claude Code 2.1.287 or later it is a mod, drawn as a sidebar inside the session in any terminal; on older versions it is a Ghostty split. The section explains what it installs and shows a masked screenshot.
 
 <img src="screenshots/usage-panel-sidebar.png" alt="The usage panel's sidebar: this session's cost, the context Burst sends by part against its compaction limit, per-turn graphs, the turn table with a compaction's Started and Finished rows, and Proxy State" width="420">
 

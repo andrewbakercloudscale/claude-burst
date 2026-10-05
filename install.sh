@@ -577,7 +577,7 @@ OUT
 # The usage panel (a separate repo) shows each turn's context and cost next
 # to Claude Code, and reads Burst's metrics to mark auto compaction. It is
 # optional in both directions, so a failure here never fails this install.
-PANEL_REPO="https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel.git"
+PANEL_REPO="https://github.com/andrewbakercloudscale/claude-code-cost-sidebar.git"
 offer_panel() {
   if [[ -x "$HOME/.local/bin/ccusage-panel.sh" ]]; then
     echo "\nUsage panel: installed; bringing it up to date."
@@ -594,14 +594,16 @@ offer_panel() {
     fi
     local answer
     echo
-    echo "The usage panel shows each turn's context and cost in a split beside Claude Code,"
+    echo "The usage panel shows each turn's context and cost in a sidebar beside Claude Code,"
     echo "including when Burst compacts a long session and what that saved."
     read -r "answer?Install the usage panel too? [Y/n] "
     [[ -z "$answer" || "$answer" == [Yy]* ]] || { echo "Skipped. Install it later from $PANEL_REPO"; return 0; }
   fi
 
   # A checkout beside this one wins; otherwise keep a clone of our own.
-  local dir="${ROOT:h}/claudecode-cost-usage-panel"
+  # The repo was claudecode-cost-usage-panel until 2026-10-05; either name is found.
+  local dir="${ROOT:h}/claude-code-cost-sidebar"
+  [[ -f "$dir/claude-panel-setup.sh" ]] || dir="${ROOT:h}/claudecode-cost-usage-panel"
   if [[ ! -f "$dir/claude-panel-setup.sh" ]]; then
     dir="$HOME/.local/share/claude-burst/claudecode-cost-usage-panel"
     if [[ -d "$dir/.git" ]]; then
