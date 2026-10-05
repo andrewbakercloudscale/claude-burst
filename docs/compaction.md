@@ -119,4 +119,17 @@ What that figure is, and is not:
 
 - **Dashboard, Pauseless Compaction** (its own entry in the menu): the on/off switch and thresholds, headline figures for the last 7 days, and a table of sessions with context **before** and **after** the latest summary, the **saving per turn**, and the **net saving** after summaries and cache rewrites.
 - **Dashboard, Daily activity, Saved:** the tokens compaction removed (context compacted), stacked with what overflow pruning removed, per day. The tooltip shows what each saved and what the summaries cost.
-- **[Usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel):** Started and Finished rows in the turn table, a green negative context delta on the turn where the summary landed, and the summary's cost in the session total.
+- **[Usage panel](https://github.com/andrewbakercloudscale/claudecode-cost-usage-panel)** (the companion sidebar): Started, Pending and Finished rows in the turn table, a green negative context delta on the turn where the summary landed, and the summary's cost in the session total. Its ctx bar is the context Burst sends, by part, against the limit set here. One compaction, as the sidebar shows it (figures made up):
+
+<table>
+<tr>
+<td valign="top"><img src="screenshots/usage-panel-compaction-1-started.png" alt="Usage panel sidebar, compaction started: the ctx bar at 293k of 300k, a summarising line, and an Async Compaction Started row above the turns" width="280"></td>
+<td valign="top"><img src="screenshots/usage-panel-compaction-2-pending.png" alt="Usage panel sidebar, compaction pending: a summary is ready and the next prompt compacts, with an Async Compaction Pending row" width="280"></td>
+<td valign="top"><img src="screenshots/usage-panel-compaction-3-finished.png" alt="Usage panel sidebar, compaction finished: the ctx bar at 64k of 300k, a turn reading 64k (-232k) and an Async Compaction Finished row with the summary's cost" width="280"></td>
+</tr>
+<tr>
+<td align="center"><sub>1. Started: summarising in the background</sub></td>
+<td align="center"><sub>2. Pending: waiting for the next prompt</sub></td>
+<td align="center"><sub>3. Finished: the context dropped, no pause</sub></td>
+</tr>
+</table>
