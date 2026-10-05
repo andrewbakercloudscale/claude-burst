@@ -171,8 +171,8 @@ With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass scri
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.15.0 at the time of writing)
-git clone --branch v0.15.0 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.16.0 at the time of writing)
+git clone --branch v0.16.0 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 # 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
@@ -213,7 +213,7 @@ OpenRouter, Bedrock and a metered API key are in [Providers](docs/providers.md).
 
 **Lid shut, offline.** Close the lid and Claude Code keeps running, still reachable from your phone through Remote Control, and when the internet drops Burst joins the phone hotspot you picked. See [Lid shut, hotspot and notifications](docs/lid-and-hotspot.md).
 
-**See everything.** The dashboard on `http://127.0.0.1:7788` shows health checks, routing, spend by model and by repository, compaction savings, who is editing what, and a **Needs attention** list. The companion [usage panel](https://github.com/andrewbakercloudscale/claude-code-cost-sidebar), a Claude Code mod, shows the same in a sidebar beside each session, and the `burst-band` mod shows it inside the session itself: Burst's route, the context Burst really sends and its compaction state above the prompt, a context bar of what that context is made of (`/context-bar` hides it), the panel's summary in `/burst`, and Burst's alerts and Pauseless Compaction's lines as toasts (each shown once: an alert toasted in the session is not also a Ghostty pop-up, and a compaction line is not repeated under the prompt). Where the usage panel's sidebar is installed, the sidebar's own ctx bar becomes Burst's context bar and lists standing problems, so the band stands aside and Burst's route and any standing problem sit in Claude Code's status line instead (`/burst band` switches between the two) (Claude Code 2.1.287 or later; mods do not draw on Remote Control). See [The dashboard](docs/dashboard.md).
+**See everything.** The dashboard on `http://127.0.0.1:7788` shows health checks, routing, spend by model and by repository, compaction savings, who is editing what, and a **Needs attention** list. The companion [usage panel](https://github.com/andrewbakercloudscale/claude-code-cost-sidebar), a Claude Code mod, shows the same in a sidebar beside each session, and the `burst-band` mod shows it inside the session itself: Burst's route, the context Burst really sends and its compaction state above the prompt, a context bar of what that context is made of (`/context-bar` hides it), the panel's summary in `/burst`, and Burst's alerts and Pauseless Compaction's lines as toasts (each shown once: an alert toasted in the session is not also a Ghostty pop-up, and a compaction line is not repeated under the prompt). Where the usage panel's sidebar is installed, the sidebar's own ctx bar becomes Burst's context bar and lists standing problems, so the band stands aside (`/burst band` puts it back) (Claude Code 2.1.287 or later; mods do not draw on Remote Control). See [The dashboard](docs/dashboard.md).
 
 **Keep Remote Control.** Claude Code turns Remote Control off whenever `ANTHROPIC_BASE_URL` names anything but Anthropic. Transparent mode leaves that variable alone and redirects at DNS instead, with a local certificate. See [Transparent intercept mode](docs/transparent-mode.md).
 
