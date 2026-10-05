@@ -1,5 +1,13 @@
 // Claude Burst inside the Claude Code session: a band above the prompt, the
-// usage panel's summary in a /burst pane, and Burst's alerts as toasts.
+// usage panel's summary in a /burst pane, and Burst's alerts and Pauseless
+// Compaction's lines as toasts.
+//
+// Each is shown once. An alert is claimed the way the usage panels claim one
+// (a directory per event id, made atomically), so the Ghostty pop-up for it
+// stands aside, and a pop-up that got there first is not repeated here.
+// Compaction lines are taken from the gateway's queue, the same one the
+// prompt-notice hook reads, so a line toasted here is not also printed
+// under the prompt. The dashboard's toasts option turns both off.
 //
 // Where the usage panel's sidebar is installed, the sidebar draws Burst's
 // context bar and the panel's own figures, so the band stands aside: Burst's
@@ -146,6 +154,43 @@ async function showStatus($) {
   try { await $.ui.status(text) } catch (err) { $.ui.log('could not set the status line: ' + err) }
 }
 
+// How long each toast stays: a problem longer than news.
+const TOAST_MS = { error: 20000, warn: 12000, info: 8000 }
+
+// True when this alert is the mods' to show. The first mod to ask makes the
+// panels' claim and a marker beside it; every other session's mod sees the
+// marker and shows it too, each in its own window. A claim with no marker
+// is a panel's: its pop-up has shown it, so no toast. An alert with no id,
+// or a Mac where the claim cannot be made, is shown: better twice than not.
+async function claim($, id) {
+  if (!id || !home || /[^A-Za-z0-9._-]/.test(id)) return true
+  const dir = home + '/.config/claude-panel/alerts-claimed'
+  try {
+    const r = await $.process.run(['/bin/sh', '-c', 'mkdir -p "$1" 2>/dev/null; mkdir "$1/$2" 2>/dev/null && mkdir "$1/$2.mod" 2>/dev/null; if [ -d "$1/$2.mod" ]; then exit 0; elif [ -d "$1/$2" ]; then exit 1; else exit 0; fi', 'sh', dir, id], { timeoutMs: 5000 })
+    return r.exitCode === 0
+  } catch (err) {
+    return true
+  }
+}
+
+// Pauseless Compaction's news for this session, each line a toast. Asking
+// takes the lines from the gateway, as the prompt-notice hook does.
+async function compactionLines($) {
+  if (!sid) return
+  try {
+    const r = await $.http.fetch(DASHBOARD + '/api/prompt-notice', {
+      method: 'POST',
+      headers: { 'X-Claude-Burst-Admin': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sid, hook_event_name: 'PostToolUse' }),
+    })
+    if (!r.ok || !r.text) return
+    const lines = String(JSON.parse(r.text).systemMessage || '').split('\n')
+    for (const line of lines) if (line.trim() !== '') $.ui.toast(line.replace(/^\u26a1\s*/, ''), { timeoutMs: TOAST_MS.info })
+  } catch (err) {
+    // The gateway keeps what it could not hand over; the hook still shows it.
+  }
+}
+
 async function refresh($) {
   try {
     const r = await $.http.fetch(DASHBOARD + '/api/mod?session=' + encodeURIComponent(sid) + '&since=' + since)
@@ -155,11 +200,9 @@ async function refresh($) {
     down = false
     for (const a of burst.alerts || []) {
       since = Math.max(since, a.ts)
-      // Toasts only when the dashboard asks for them: the Ghostty pop-ups
-      // show every alert already, and the band shows a standing problem as
-      // a line of its own. Info and ok never: they are news, not a problem.
-      if (burst.toasts && (a.severity === 'warn' || a.severity === 'error')) $.ui.toast('Burst: ' + a.title)
+      if (burst.toasts && (await claim($, a.id))) $.ui.toast('Burst: ' + a.title, { timeoutMs: TOAST_MS[a.severity] || TOAST_MS.info })
     }
+    if (burst.toasts) await compactionLines($)
   } catch (err) {
     if (!down) $.ui.toast('Burst dashboard not answering')
     down = true

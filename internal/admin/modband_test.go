@@ -88,14 +88,20 @@ func TestModStatusSaysInstalledCurrentOrOutOfDate(t *testing.T) {
 
 func TestModToastsOptionIsSavedAndServed(t *testing.T) {
 	s := newTestServer(t)
+	if !modOf(t, s, "").Toasts {
+		t.Fatal("toasts must default to on")
+	}
+	if rr := mutate(t, s, "/api/mod-action", `{"action":"toasts","toasts":false}`); rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
 	if modOf(t, s, "").Toasts {
-		t.Fatal("toasts must default to off")
+		t.Fatal("/api/mod does not report the saved option")
 	}
 	if rr := mutate(t, s, "/api/mod-action", `{"action":"toasts","toasts":true}`); rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	if !modOf(t, s, "").Toasts {
-		t.Fatal("/api/mod does not report the saved option")
+		t.Fatal("turning it back on is not reported")
 	}
 	for _, body := range []string{`{"action":"toasts"}`, `{"action":"nuke"}`, `nope`} {
 		if rr := mutate(t, s, "/api/mod-action", body); rr.Code != http.StatusBadRequest {

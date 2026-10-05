@@ -33,7 +33,8 @@ type modResponse struct {
 	// Problems are the warnings and errors still standing, newest first:
 	// the band shows the first as a line until its "back" event clears it.
 	Problems []notice.Event `json:"problems"`
-	// Toasts is the dashboard's "also as toasts in the session" option.
+	// Toasts is the dashboard's "alerts and compaction lines as toasts in
+	// the session" option, on unless it was turned off.
 	Toasts bool `json:"toasts"`
 }
 
