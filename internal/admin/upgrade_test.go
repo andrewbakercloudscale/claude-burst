@@ -65,7 +65,7 @@ func newUpgradeRig(t *testing.T) *upgradeRig {
 	commitFile(t, r.work, "cmd/claude-burst/main.go", mainGo("0.2.0"), "first")
 	commitFile(t, r.work, "scripts/transparent-root.sh", "#!/bin/zsh\n", "scripts")
 	// deploy.sh stub: records that it ran, from which commit.
-	commitFile(t, r.work, "scripts/deploy.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/..\" && git rev-parse --short HEAD > \"$DEPLOY_MARKER\"\n", "deploy")
+	commitFile(t, r.work, "scripts/deploy.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/..\" && git rev-parse --short HEAD > \"$DEPLOY_MARKER\"; echo \"$CLAUDE_BURST_REPO\" > \"$DEPLOY_MARKER.repo\"\n", "deploy")
 	git(t, r.work, "push", "-q", "origin", "main")
 	git(t, root, "clone", "-q", r.origin, r.checkout)
 
@@ -342,6 +342,10 @@ func TestInstallGitHubVersionRollsBackWithoutTouchingTheCheckout(t *testing.T) {
 	if got, _ := os.ReadFile(marker); strings.TrimSpace(string(got)) != github {
 		t.Fatalf("deployed %q, want GitHub's %q\n%s", got, github, out)
 	}
+	// The usage panel is beside the checkout, not beside the temporary copy.
+	if got, _ := os.ReadFile(marker + ".repo"); !sameDir(strings.TrimSpace(string(got)), r.checkout) {
+		t.Fatalf("deploy.sh was told the checkout is %q, want %q", got, r.checkout)
+	}
 	if git(t, r.checkout, "rev-parse", "HEAD") != r.running {
 		t.Fatal("the checkout's HEAD moved")
 	}
@@ -490,4 +494,10 @@ func TestVersionDialogIsOutsideEverySection(t *testing.T) {
 	if main := strings.LastIndex(src, "</main>"); at < main {
 		t.Fatalf("verDialog is inside <main>")
 	}
+}
+
+func sameDir(a, b string) bool {
+	x, _ := filepath.EvalSymlinks(a)
+	y, _ := filepath.EvalSymlinks(b)
+	return x != "" && x == y
 }

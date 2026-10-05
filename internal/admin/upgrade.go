@@ -317,7 +317,8 @@ rmdir "$tmp"
 git worktree add --quiet --detach "$tmp" origin/main || { echo "could not check out GitHub's main, nothing changed" >&2; finish 1; }
 echo "(built from a temporary copy at $tmp; your checkout is not touched)"
 echo
-bash "$tmp/scripts/deploy.sh"
+# The usage panel is looked for beside the real checkout, not beside $tmp.
+CLAUDE_BURST_REPO="$PWD" bash "$tmp/scripts/deploy.sh"
 rc=$?
 git worktree remove --force "$tmp" >/dev/null 2>&1 || rm -rf "$tmp"
 git worktree prune >/dev/null 2>&1
