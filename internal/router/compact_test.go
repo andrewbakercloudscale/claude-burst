@@ -160,6 +160,8 @@ type fakeAnthropic struct {
 	// the running turn's thinking (signature s3): an API that refuses a
 	// mid-turn swap.
 	rejectMidTurn bool
+	// toolFirst answers the first summary request with a tool call.
+	toolFirst bool
 }
 
 func (f *fakeAnthropic) handler(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +180,18 @@ func (f *fakeAnthropic) handler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: invalid thinking signature"}}`)
+		return
+	}
+	if f.toolFirst && isSummary && !strings.Contains(string(b), "Not run: tools are unavailable") {
+		w.Header().Set("content-type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":1000,\"output_tokens\":1}}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sigX\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu9\",\"name\":\"Bash\",\"input\":{}}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"ls\\\"}\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
 		return
 	}
 	w.Header().Set("content-type", "text/event-stream")
@@ -1311,5 +1325,52 @@ func TestLatestPromptText(t *testing.T) {
 	}
 	if got := latestPromptText(h[1:]); got != "" {
 		t.Fatalf("no plain prompt, got %q", got)
+	}
+}
+
+// The request the summary is written from ends where the work was, so the
+// model sometimes makes the next tool call instead (first live run,
+// 2026-10-05: "the model called a tool instead of writing the summary",
+// and five more minutes on the full history). The call is refused and the
+// model asked once more, on top of the first request so it reads from cache.
+func TestSummaryThatCallsAToolIsAskedAgain(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000, toolFirst: true}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	if n := f.summaryCount(); n != 2 {
+		t.Fatalf("want the summary asked for twice, got %d", n)
+	}
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	f.mu.Lock()
+	second := ""
+	for _, b := range f.bodies {
+		if strings.Contains(b, "Not run: tools are unavailable") {
+			second = b
+		}
+	}
+	f.mu.Unlock()
+	if err := json.Unmarshal([]byte(second), &req); err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 9 {
+		t.Fatalf("want the first request plus the refused call, got %d messages", len(req.Messages))
+	}
+	call, refusal := string(req.Messages[7]), string(req.Messages[8])
+	for _, want := range []string{`"signature":"sigX"`, `"id":"tu9"`, `"command":"ls"`} {
+		if !strings.Contains(call, want) {
+			t.Fatalf("the model's reply must go back as it came, missing %s: %s", want, call)
+		}
+	}
+	if !strings.Contains(refusal, `"tool_use_id":"tu9"`) || !strings.Contains(refusal, `"is_error":true`) {
+		t.Fatalf("the call must be refused: %s", refusal)
+	}
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the second answer is the summary in force")
 	}
 }

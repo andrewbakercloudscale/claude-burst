@@ -844,43 +844,66 @@ func (s *Server) summarise(ctx context.Context, in *http.Request, top map[string
 }
 
 func (s *Server) requestSummary(parent context.Context, in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, summaryTimeout)
+	defer cancel()
+	in = in.WithContext(context.WithValue(ctx, requestIDKey, newRequestID()))
+	msgs := withSummaryInstruction(history, cut)
+	summary, blocks, err := s.summaryCall(ctx, in, top, msgs, "compaction summary")
+	if err != errSummaryCalledTool {
+		return summary, err
+	}
+	// The request ends where the work was: often a prompt or a tool result
+	// that asks for the next tool call, and the model sometimes makes it
+	// (first live run of the cut after the request, 2026-10-05). Its calls
+	// are answered with a refusal and it is asked once more. That request
+	// starts with the first one, so it reads it from cache.
+	again, ok := afterRefusedTools(msgs, blocks)
+	if !ok {
+		return "", err
+	}
+	s.logger.Printf("req=%s compaction summary: the model called a tool instead; the call is refused and it is asked once more", requestIDFrom(in.Context()))
+	summary, _, err = s.summaryCall(ctx, in, top, again, "compaction summary, asked again after a tool call")
+	return summary, err
+}
+
+// errSummaryCalledTool: the summary call ended in a tool call.
+var errSummaryCalledTool = errors.New("the model called a tool instead of writing the summary")
+
+// summaryCall makes one summary request and returns the summary, or, with
+// errSummaryCalledTool, the reply's content blocks.
+func (s *Server) summaryCall(ctx context.Context, in *http.Request, top map[string]json.RawMessage, messages []json.RawMessage, note string) (string, []any, error) {
 	req := map[string]json.RawMessage{}
 	for _, k := range []string{"model", "system", "tools", "thinking", "metadata"} {
 		if v, ok := top[k]; ok {
 			req[k] = v
 		}
 	}
-	msgs, _ := json.Marshal(withSummaryInstruction(history, cut))
+	msgs, _ := json.Marshal(messages)
 	req["messages"] = msgs
 	req["max_tokens"] = json.RawMessage("16000")
 	req["stream"] = json.RawMessage("true")
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-
-	ctx, cancel := context.WithTimeout(parent, summaryTimeout)
-	defer cancel()
-	in = in.WithContext(context.WithValue(ctx, requestIDKey, newRequestID()))
 	start := time.Now()
 	out, model, err := s.primary.Prepare(ctx, in, body)
 	if err != nil {
-		return "", fmt.Errorf("build summary request: %w", err)
+		return "", nil, fmt.Errorf("build summary request: %w", err)
 	}
 	dest := out.URL.Scheme + "://" + out.URL.Host + out.URL.Path
 	resp, err := s.client.Do(out)
 	if err != nil {
 		s.writeMetric(in, "primary", s.primary.Name(), model, model, http.StatusBadGateway, start, tokenUsage{}, "", 0, "compaction summary failed: "+err.Error(), dest)
-		return "", err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		s.writeMetric(in, "primary", s.primary.Name(), model, model, resp.StatusCode, start, tokenUsage{}, "", 0, "compaction summary rejected: "+errorExcerpt(b), dest)
-		return "", fmt.Errorf("summary request: status %d: %s", resp.StatusCode, errorExcerpt(b))
+		return "", nil, fmt.Errorf("summary request: status %d: %s", resp.StatusCode, errorExcerpt(b))
 	}
-	text, stop, tok, rerr := readSSEText(resp.Body)
-	note := "compaction summary"
+	text, stop, tok, blocks, rerr := readSSEBlocks(resp.Body)
 	if rerr != nil {
 		note = "compaction summary incomplete: " + rerr.Error()
 	}
@@ -888,15 +911,38 @@ func (s *Server) requestSummary(parent context.Context, in *http.Request, top ma
 	summary := summaryFromText(text)
 	switch {
 	case rerr != nil:
-		return "", rerr
+		return "", nil, rerr
 	case stop == "tool_use":
-		return "", fmt.Errorf("the model called a tool instead of writing the summary")
+		return "", blocks, errSummaryCalledTool
 	case stop == "max_tokens":
-		return "", fmt.Errorf("the summary was cut off at max_tokens")
+		return "", nil, fmt.Errorf("the summary was cut off at max_tokens")
 	case summary == "":
-		return "", fmt.Errorf("empty summary (stop_reason %q)", stop)
+		return "", nil, fmt.Errorf("empty summary (stop_reason %q)", stop)
 	}
-	return summary, nil
+	return summary, nil, nil
+}
+
+// afterRefusedTools returns msgs followed by the reply that called tools
+// and a refusal of each call that asks for the summary again. False when
+// the reply has no tool call to refuse.
+func afterRefusedTools(msgs []json.RawMessage, blocks []any) ([]json.RawMessage, bool) {
+	var results []any
+	for _, b := range blocks {
+		if bm, _ := b.(map[string]any); bm["type"] == "tool_use" {
+			results = append(results, map[string]any{"type": "tool_result", "tool_use_id": bm["id"], "is_error": true,
+				"content": "Not run: tools are unavailable while the summary is written."})
+		}
+	}
+	if len(results) == 0 {
+		return nil, false
+	}
+	results = append(results, map[string]any{"type": "text", "text": "No tool was run and none can be. Write the summary now, text only, beginning with <summary>. " + compactionSummaryPrompt})
+	a, err1 := json.Marshal(map[string]any{"role": "assistant", "content": blocks})
+	u, err2 := json.Marshal(map[string]any{"role": "user", "content": results})
+	if err1 != nil || err2 != nil {
+		return nil, false
+	}
+	return append(append([]json.RawMessage(nil), msgs...), a, u), true
 }
 
 // errSessionCleared is why ClearSession stops a summary call.
@@ -1005,8 +1051,34 @@ func promptExcerpt(m json.RawMessage) string {
 // message_stop: an error event or a broken connection mid-summary leaves
 // text that reads like a summary and is only the first part of one.
 func readSSEText(r io.Reader) (text, stop string, tok tokenUsage, err error) {
+	text, stop, tok, _, err = readSSEBlocks(r)
+	return
+}
+
+// readSSEBlocks is readSSEText that also rebuilds the reply's content
+// blocks (text, thinking with its signature, tool calls), so the reply can
+// be sent back as an assistant message.
+func readSSEBlocks(r io.Reader) (text, stop string, tok tokenUsage, blocks []any, err error) {
 	var sb strings.Builder
 	done := false
+	byIndex := map[int]map[string]any{}
+	var order []int
+	partial := map[int]*strings.Builder{}
+	finish := func() []any {
+		out := make([]any, 0, len(order))
+		for _, i := range order {
+			b := byIndex[i]
+			if b["type"] == "tool_use" {
+				var input any = map[string]any{}
+				if p := partial[i]; p != nil && p.Len() > 0 {
+					_ = json.Unmarshal([]byte(p.String()), &input)
+				}
+				b["input"] = input
+			}
+			out = append(out, b)
+		}
+		return out
+	}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -1018,13 +1090,18 @@ func readSSEText(r io.Reader) (text, stop string, tok tokenUsage, err error) {
 		}
 		var ev struct {
 			Type  string `json:"type"`
+			Index int    `json:"index"`
 			Error struct {
 				Type    string `json:"type"`
 				Message string `json:"message"`
 			} `json:"error"`
+			Block map[string]any `json:"content_block"`
 			Delta struct {
 				Type       string `json:"type"`
 				Text       string `json:"text"`
+				Thinking   string `json:"thinking"`
+				Signature  string `json:"signature"`
+				Partial    string `json:"partial_json"`
 				StopReason string `json:"stop_reason"`
 			} `json:"delta"`
 		}
@@ -1032,23 +1109,50 @@ func readSSEText(r io.Reader) (text, stop string, tok tokenUsage, err error) {
 			continue
 		}
 		switch {
-		case ev.Type == "content_block_delta" && ev.Delta.Type == "text_delta":
-			sb.WriteString(ev.Delta.Text)
+		case ev.Type == "content_block_start" && ev.Block != nil:
+			if _, seen := byIndex[ev.Index]; !seen {
+				order = append(order, ev.Index)
+			}
+			byIndex[ev.Index] = ev.Block
+		case ev.Type == "content_block_delta":
+			b := byIndex[ev.Index]
+			if b == nil {
+				b = map[string]any{"type": "text", "text": ""}
+				byIndex[ev.Index] = b
+				order = append(order, ev.Index)
+			}
+			switch ev.Delta.Type {
+			case "text_delta":
+				sb.WriteString(ev.Delta.Text)
+				t, _ := b["text"].(string)
+				b["text"] = t + ev.Delta.Text
+			case "thinking_delta":
+				t, _ := b["thinking"].(string)
+				b["thinking"] = t + ev.Delta.Thinking
+			case "signature_delta":
+				t, _ := b["signature"].(string)
+				b["signature"] = t + ev.Delta.Signature
+			case "input_json_delta":
+				if partial[ev.Index] == nil {
+					partial[ev.Index] = &strings.Builder{}
+				}
+				partial[ev.Index].WriteString(ev.Delta.Partial)
+			}
 		case ev.Type == "message_delta" && ev.Delta.StopReason != "":
 			stop = ev.Delta.StopReason
 		case ev.Type == "message_stop":
 			done = true
 		case ev.Type == "error":
-			return sb.String(), stop, tok, fmt.Errorf("the stream ended with an error: %s %s", ev.Error.Type, ev.Error.Message)
+			return sb.String(), stop, tok, nil, fmt.Errorf("the stream ended with an error: %s %s", ev.Error.Type, ev.Error.Message)
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return sb.String(), stop, tok, fmt.Errorf("the stream broke off: %w", err)
+		return sb.String(), stop, tok, nil, fmt.Errorf("the stream broke off: %w", err)
 	}
 	if !done {
-		return sb.String(), stop, tok, errors.New("the stream ended before the summary was finished")
+		return sb.String(), stop, tok, nil, errors.New("the stream ended before the summary was finished")
 	}
-	return sb.String(), stop, tok, nil
+	return sb.String(), stop, tok, finish(), nil
 }
 
 // PromptNotices returns, and forgets, the lines to show under the prompt
