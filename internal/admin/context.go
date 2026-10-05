@@ -258,6 +258,9 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 	state := "compaction off"
 	if req.Enabled {
 		state = fmt.Sprintf("compaction on: compact at %dk, warn at %d%% (%dk), at least %d minutes between compactions of a session", res.CompactAtTokens/1000, res.WarnAtPercent, res.WarnAtTokens/1000, res.WindowMinutes)
+		if res.Intelligent() {
+			state = fmt.Sprintf("compaction on: a size learned for each repository, up to %dk, at least %d minutes between compactions of a session", res.CompactAtTokens/1000, res.WindowMinutes)
+		}
 		if !req.NoPromptNotice {
 			state += ", shown under your prompt"
 		}

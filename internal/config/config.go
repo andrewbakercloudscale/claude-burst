@@ -148,7 +148,7 @@ func (c CompactionConfig) ForRepo(root string) (CompactionConfig, *RepoCompactio
 			c.CompactAtTokens, c.WarnAtTokens = NeverTokens, NeverTokens
 		case o.CompactAtTokens > 0:
 			c.CompactAtTokens = o.CompactAtTokens
-			c.WarnAtTokens = o.CompactAtTokens * int64(c.WarnAtPercent) / 100
+			c.WarnAtTokens = c.warnAt(o.CompactAtTokens)
 		default:
 			continue
 		}
@@ -156,7 +156,7 @@ func (c CompactionConfig) ForRepo(root string) (CompactionConfig, *RepoCompactio
 	}
 	if at := c.Learned[root]; c.Intelligent() && at > 0 {
 		c.CompactAtTokens = at
-		c.WarnAtTokens = at * int64(c.WarnAtPercent) / 100
+		c.WarnAtTokens = c.warnAt(at)
 		return c, &RepoCompaction{Repo: root, CompactAtTokens: at, Learned: true}
 	}
 	return c, nil
@@ -170,6 +170,16 @@ const (
 	DefaultCompactionBuffer      = 20
 )
 
+// warnAt is the warning size for a Compact at. Intelligent mode has none:
+// its sizes are learned and move daily, so "80% of it" warned about a
+// compaction the mode had already decided was the cheap thing to do.
+func (c CompactionConfig) warnAt(at int64) int64 {
+	if c.Intelligent() {
+		return NeverTokens
+	}
+	return at * int64(c.WarnAtPercent) / 100
+}
+
 // Resolved returns c with its zero numbers replaced by the defaults.
 func (c CompactionConfig) Resolved() CompactionConfig {
 	if c.CompactAtTokens <= 0 {
@@ -178,7 +188,7 @@ func (c CompactionConfig) Resolved() CompactionConfig {
 	if c.WarnAtPercent <= 0 {
 		c.WarnAtPercent = DefaultCompactionWarnPercent
 	}
-	c.WarnAtTokens = c.CompactAtTokens * int64(c.WarnAtPercent) / 100
+	c.WarnAtTokens = c.warnAt(c.CompactAtTokens)
 	if c.WindowMinutes <= 0 {
 		c.WindowMinutes = DefaultCompactionWindow
 	}
