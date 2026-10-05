@@ -177,6 +177,31 @@ function handoffCut(h, msgs) {
 // running, and not $.session.compact(): a plugin's own session.compact hook
 // does not see that call, so Claude Code would write a summary of its own.
 let asking = false
+// A session opened again (claude --resume, --continue) that Burst had
+// summarised: it is compacted once as it opens, in the path or not. Opening
+// is where it can be done: a closing session is a process on its way out,
+// and a window that was shut or a crash never gets to close at all.
+let reopened = false
+
+// reopenedNow is whether this is another Claude Code process than the one
+// that last ran this session. A reload of the mod fires session.start too,
+// in the same process, and is not a restart.
+async function reopenedNow($) {
+  let pid = ''
+  try {
+    const r = await $.process.run(['sh', '-c', 'echo $PPID'])
+    pid = String((r && r.stdout) || '').trim()
+  } catch (err) {
+    return false
+  }
+  if (!/^\d+$/.test(pid)) return false
+  const key = 'process:' + sid
+  let was
+  try { was = await $.store.get(key) } catch (err) { was = undefined }
+  if (was === pid) return false
+  try { await $.store.set(key, pid) } catch (err) { $.ui.log('could not note this process: ' + err) }
+  return true
+}
 // The summary the mod's own /compact is for. Claude Code may queue that
 // /compact behind a running turn, so it is kept until the compaction comes:
 // one the mod asked for is never Claude Code's own, paid summary.
@@ -188,7 +213,9 @@ async function leaveBurst($) {
   const raw = Math.max((burst && burst.session && burst.session.raw) || 0, heldSeen, h.raw || 0)
   if (raw < HANDOFF_AT) return
   const out = (await inPath($)) === false
-  if (!out && (raw < HANDOFF_ALWAYS_AT || !(await handoffInPathOn($)))) return
+  const again = reopened
+  reopened = false
+  if (!out && !again && (raw < HANDOFF_ALWAYS_AT || !(await handoffInPathOn($)))) return
   handed = h.of
   try {
     await handOver($, h)
@@ -253,6 +280,7 @@ export function register(on) {
     toastsMarked = 0
     handed = ''
     asked = ''
+    reopened = false
     heldSeen = 0
     band = !(await hasSidebar($))
     try {
@@ -262,6 +290,8 @@ export function register(on) {
       // No stored choice: the band unless the sidebar is there.
     }
     await refresh($)
+    // Only a session Burst has summarised has a hand-off waiting as it opens.
+    try { reopened = (await reopenedNow($)) && (await readHandoff($)) !== null } catch (err) { reopened = false }
     // An entry an earlier version of this mod pinned is taken down.
     try { await $.ui.status(undefined) } catch (err) { $.ui.log('could not clear the status line: ' + err) }
     $.clock.every(POLL_MS, async () => {

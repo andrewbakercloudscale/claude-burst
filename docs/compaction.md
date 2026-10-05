@@ -140,6 +140,13 @@ whole history:
   hand-off then answers. A gateway that is restarting or down but still in the path is
   not a bypass: requests fail then, they are not sent whole, and nothing is compacted.
   If the summary does not fit, nothing is compacted and a line says so.
+- **A session opened again is compacted as it opens.** `claude --resume`, `--continue`
+  or a Finder shortcut on a session Burst had summarised, holding 300k or more: the mod
+  runs the same `/compact` within 5 seconds of opening, with Burst in the path or not.
+  It is done on opening and not on closing because a closing session is a process on
+  its way out, and a shut window or a crash never closes at all. A reload of the mod
+  (`/reload-plugins`) is not a restart, and a summary written after the session opened
+  waits for the next one.
 - **`/compact-async-full` does it on request.** Typed in any session Burst has
   summarised, in the path or not, at any size, it compacts with Burst's summary. It is
   never Claude Code's own compaction: with no summary held, or one that does not fit,
