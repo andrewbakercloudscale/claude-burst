@@ -571,7 +571,8 @@ func (s *Server) handleMac(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"keep_awake": s.readKeepAwake(), "panel": s.readPanel()})
 }
 
-// A masked frame of the panel (dollar figures scaled, ids replaced).
+// The panel's sidebar, drawn from made-up figures by the panel repo's
+// docs/render-screenshots.mjs (its docs/sidebar-top.png).
 //
 //go:embed assets/usage-panel.png
 var panelShot []byte
