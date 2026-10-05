@@ -424,6 +424,8 @@ func Watch(ctx context.Context) {
 	// it failed at 09:19 because the phone was not broadcasting yet, and with
 	// the lid open and When set to lid-closed nothing tried again.
 	openedOffline := false
+	// saidLidOpen: this offline spell's log already says why nothing is tried.
+	saidLidOpen := false
 	wasShut := lidClosed()
 	wait := config.HotspotConfig{}.CheckEvery()
 	for {
@@ -444,7 +446,7 @@ func Watch(ctx context.Context) {
 			if offline >= cfg.Hotspot.OfflineAfter() {
 				logEvent("back online")
 			}
-			offline, firstTry, gaveUp, openedOffline = 0, time.Time{}, false, false
+			offline, firstTry, gaveUp, openedOffline, saidLidOpen = 0, time.Time{}, false, false, false
 			continue
 		}
 		offline++
@@ -478,6 +480,13 @@ func Watch(ctx context.Context) {
 		}
 		giveUp := cfg.Hotspot.GiveUp()
 		if !decide(cfg.Hotspot, lid || openedOffline, offline, sinceFirst, now().Sub(lastTry)) {
+			// On 5 Oct 2026 the Mac sat offline for 7 minutes, lid open, the
+			// phone's hotspot up, and the log said nothing after "offline":
+			// the setting was lid shut only. Say so, once a spell.
+			if cfg.Hotspot.When != config.HotspotAlways && !lid && !openedOffline && offline >= cfg.Hotspot.OfflineAfter() && !saidLidOpen {
+				saidLidOpen = true
+				logEvent("not joining %q: the lid is open and the setting is to join only with the lid shut", cfg.Hotspot.SSID)
+			}
 			if !firstTry.IsZero() && sinceFirst >= giveUp && !gaveUp {
 				gaveUp = true
 				logEvent("gave up after %s; trying again after the Mac has been back online", giveUp)
