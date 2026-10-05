@@ -207,7 +207,7 @@ async function compactFast($) {
   if (asking) return
   if (!(await handoffOn($))) return $.ui.toast("/" + FAST + " is off: turn on Hand Burst's summary to Claude Code on the dashboard", { timeoutMs: TOAST_MS.warn })
   const h = await readHandoff($)
-  if (!h) return $.ui.toast('/' + FAST + ': Burst holds no summary of this session, so there is nothing to hand over. /compact has Claude Code write one', { timeoutMs: TOAST_MS.warn })
+  if (!h) return $.ui.toast('Burst holds no summary of this session yet: nothing compacted', { timeoutMs: TOAST_MS.warn })
   handed = h.of
   try {
     await handOver($, h)
