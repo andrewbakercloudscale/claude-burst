@@ -14,8 +14,9 @@ import (
 )
 
 // Finder shortcuts: right-click a folder, Services, "Launch Claude Code in
-// Ghostty" (or OpenCode). Each is an Automator Quick Action in
-// ~/Library/Services that runs a launcher script in ~/.local/bin.
+// Ghostty" (or its last session, OMC, Codex, OpenCode). Each is an
+// Automator Quick Action in ~/Library/Services that runs a launcher script
+// in ~/.local/bin. The dashboard ticks which ones to install or remove.
 //
 // Install only adds what is missing: an existing Quick Action or launcher is
 // never overwritten, because the usage panel's setup patches the Claude
@@ -27,6 +28,7 @@ type finderShortcut struct {
 	Key      string `json:"key"`
 	Name     string `json:"name"` // the menu item, and the .workflow name
 	Tool     string `json:"tool"` // the command the launcher runs
+	Note     string `json:"note,omitempty"`
 	launcher string // file name in ~/.local/bin
 	script   []byte // launcher written when none exists
 }
@@ -39,7 +41,52 @@ var opencodeLauncher []byte
 
 var finderShortcuts = []finderShortcut{
 	{Key: "claude", Name: "Launch Claude Code in Ghostty", Tool: "claude", launcher: "ghostty-claude-launcher", script: claudeLauncher},
+	{Key: "claude-continue", Name: "Continue last Claude Code session in Ghostty", Tool: "claude", Note: "claude --continue: the folder's most recent conversation",
+		launcher: "ghostty-claude-continue-launcher", script: plainLauncher("claude", "Claude Code", "--continue")},
+	{Key: "omc", Name: "Launch Claude Code with OMC in Ghostty", Tool: "omc", Note: "oh-my-claudecode: Claude Code inside tmux",
+		launcher: "ghostty-omc-launcher", script: plainLauncher("omc", "OMC (oh-my-claudecode)", "")},
+	{Key: "codex", Name: "Launch Codex in Ghostty", Tool: "codex", launcher: "ghostty-codex-launcher", script: plainLauncher("codex", "Codex", "")},
 	{Key: "opencode", Name: "Launch OpenCode in Ghostty", Tool: "opencode", launcher: "ghostty-opencode-launcher", script: opencodeLauncher},
+}
+
+// plainLauncher is the Claude launcher's shape for another tool: find it
+// however we were started, go to the folder Finder passed, run it awake.
+func plainLauncher(tool, label, args string) []byte {
+	if args != "" {
+		args = " " + args
+	}
+	return []byte(`#!/bin/bash
+# Source login files so ` + "`" + tool + "`" + ` is on PATH no matter how we were launched.
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+  [ -f "$rc" ] && source "$rc" 2>/dev/null || true
+done
+
+TOOL="$(command -v ` + tool + ` 2>/dev/null || true)"
+case "$TOOL" in /*) ;; *) TOOL="" ;; esac # a shell function or alias is no use to caffeinate
+if [ -z "$TOOL" ]; then
+  for candidate in \
+    "$HOME/.local/bin/` + tool + `" \
+    "$HOME/.npm-global/bin/` + tool + `" \
+    "/opt/homebrew/bin/` + tool + `" \
+    "/usr/local/bin/` + tool + `" \
+    "/usr/bin/` + tool + `"; do
+    if [ -x "$candidate" ]; then TOOL="$candidate"; break; fi
+  done
+fi
+if [ -z "$TOOL" ]; then
+  osascript -e 'display alert "` + label + ` not found" message "Install it, or make sure the ` + tool + ` command is on your PATH."'
+  exit 1
+fi
+
+# First argument is the folder Finder passed in.
+FOLDER="$1"
+if [ -n "$FOLDER" ] && [ -d "$FOLDER" ]; then
+  cd "$FOLDER"
+fi
+
+# caffeinate -i keeps the Mac awake while a session is running.
+caffeinate -i "$TOOL"` + args + `
+`)
 }
 
 // Variables so tests never touch the real Services menu, Ghostty or PATH:
@@ -118,9 +165,25 @@ func (s *Server) handleFinder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFinderInstall(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action string `json:"action"`
+		// Keys are the ticked shortcuts. Left out, it is every one.
+		Keys []string `json:"keys"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Action != "install" && req.Action != "remove") {
 		http.Error(w, "action must be install or remove", http.StatusBadRequest)
+		return
+	}
+	for _, k := range req.Keys {
+		known := false
+		for _, f := range finderShortcuts {
+			known = known || f.Key == k
+		}
+		if !known {
+			http.Error(w, "no Finder shortcut is called "+k, http.StatusBadRequest)
+			return
+		}
+	}
+	if req.Keys != nil && len(req.Keys) == 0 {
+		http.Error(w, "tick at least one shortcut", http.StatusBadRequest)
 		return
 	}
 	finderMu.Lock()
@@ -128,9 +191,9 @@ func (s *Server) handleFinderInstall(w http.ResponseWriter, r *http.Request) {
 	var done []string
 	var err error
 	if req.Action == "install" {
-		done, err = installFinderShortcuts(s.readPanel().Installed)
+		done, err = installFinderShortcuts(s.readPanel().Installed, req.Keys...)
 	} else {
-		done, err = removeFinderShortcuts()
+		done, err = removeFinderShortcuts(req.Keys...)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -139,13 +202,30 @@ func (s *Server) handleFinderInstall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"done": done, "finder": readFinder()})
 }
 
-func installFinderShortcuts(panelInstalled bool) ([]string, error) {
+// finderPicked is the shortcuts named by keys, every one when none is named.
+func finderPicked(keys []string) []finderStatus {
+	all := readFinder().Shortcuts
+	if len(keys) == 0 {
+		return all
+	}
+	var out []finderStatus
+	for _, st := range all {
+		for _, k := range keys {
+			if st.Key == k {
+				out = append(out, st)
+			}
+		}
+	}
+	return out
+}
+
+func installFinderShortcuts(panelInstalled bool, keys ...string) ([]string, error) {
 	if !ghosttyInstalled() {
 		return nil, fmt.Errorf("Ghostty is not installed (looked in /Applications and ~/Applications); get it from https://ghostty.org")
 	}
 	var done []string
 	changed := false
-	for _, st := range readFinder().Shortcuts {
+	for _, st := range finderPicked(keys) {
 		f := st.finderShortcut
 		if st.Installed {
 			done = append(done, f.Name+": already installed, left as it is")
@@ -185,10 +265,10 @@ func installFinderShortcuts(panelInstalled bool) ([]string, error) {
 	return done, nil
 }
 
-func removeFinderShortcuts() ([]string, error) {
+func removeFinderShortcuts(keys ...string) ([]string, error) {
 	var done []string
 	changed := false
-	for _, st := range readFinder().Shortcuts {
+	for _, st := range finderPicked(keys) {
 		f := st.finderShortcut
 		switch {
 		case !st.Installed:
