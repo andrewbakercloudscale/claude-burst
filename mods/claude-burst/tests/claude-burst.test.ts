@@ -464,7 +464,7 @@ test('the size the gateway last reported counts once the gateway is gone', async
 
 test('no hand-off while Burst is in the path, the history is short, or nothing says where requests go', async ($, on) => {
   const calls: string[] = []
-  const world: World = { files: { [HANDOFF_FILE]: handoff(), '/etc/hosts': HOSTS_IN } }
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 600000 }), '/etc/hosts': HOSTS_IN } }
   // The gateway is down but still in the path: requests fail, they are not sent whole.
   const clock = stubs(on, [null], [], [], false, [], {}, world)
   core(on, calls)
@@ -472,16 +472,30 @@ test('no hand-off while Burst is in the path, the history is short, or nothing s
   await clock.advance(5000)
   world.files = { [HANDOFF_FILE]: handoff({ raw: 90000 }), '/etc/hosts': HOSTS_OUT }
   await clock.advance(5000)
-  world.files = { [HANDOFF_FILE]: handoff() }
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 600000 }) }
   await clock.advance(5000)
   world.files = { '/etc/hosts': HOSTS_OUT }
   await clock.advance(5000)
   expect(calls).toEqual([])
 })
 
+test('a history near the 1M window is compacted with the summary even with Burst in the path, once', async ($, on) => {
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 799999 }), '/etc/hosts': HOSTS_IN } }
+  const clock = stubs(on, [null], [], [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  await clock.advance(5000)
+  expect(calls).toEqual([])
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 800000 }), '/etc/hosts': HOSTS_IN }
+  await clock.advance(5000)
+  await clock.advance(5000)
+  expect(calls).toEqual(['/compact'])
+})
+
 test('a session pointed at the gateway by ANTHROPIC_BASE_URL is in the path whatever /etc/hosts says', async ($, on) => {
   const calls: string[] = []
-  const clock = stubs(on, [null], [], [], false, [], {}, { files: { [HANDOFF_FILE]: handoff(), '/etc/hosts': HOSTS_OUT }, env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:7777' } })
+  const clock = stubs(on, [null], [], [], false, [], {}, { files: { [HANDOFF_FILE]: handoff({ raw: 600000 }), '/etc/hosts': HOSTS_OUT }, env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:7777' } })
   core(on, calls)
   await start($)
   await clock.advance(5000)
@@ -490,7 +504,7 @@ test('a session pointed at the gateway by ANTHROPIC_BASE_URL is in the path what
 
 test('base-url mode set in Claude Code\'s settings is in the path too', async ($, on) => {
   const calls: string[] = []
-  const clock = stubs(on, [null], [], [], false, [], {}, { files: { [HANDOFF_FILE]: handoff(), '/etc/hosts': HOSTS_OUT, '/Users/me/.claude/settings.json': '{"env":{"ANTHROPIC_BASE_URL":"http://localhost:7777"}}' } })
+  const clock = stubs(on, [null], [], [], false, [], {}, { files: { [HANDOFF_FILE]: handoff({ raw: 600000 }), '/etc/hosts': HOSTS_OUT, '/Users/me/.claude/settings.json': '{"env":{"ANTHROPIC_BASE_URL":"http://localhost:7777"}}' } })
   core(on, calls)
   await start($)
   await clock.advance(5000)

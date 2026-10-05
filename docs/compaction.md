@@ -140,6 +140,9 @@ whole history:
   hand-off then answers. A gateway that is restarting or down but still in the path is
   not a bypass: requests fail then, they are not sent whole, and nothing is compacted.
   If the summary does not fit, nothing is compacted and a line says so.
+- **Near the 1M window it is compacted wherever its requests go.** From 800k held the
+  mod runs the same `/compact` with Burst still in the path. Past 1M a bypass is refused
+  as too long, not just expensive, and by then no hand-off could be asked for.
 - After a hand-off the replaced messages are gone from Claude Code's copy too, so
   **Drop summary** can no longer bring them back, and with Burst still in the path the
   session is a new, short conversation to it: its old summary is retired and the window

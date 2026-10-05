@@ -75,6 +75,11 @@ async function rescue($, c) {
 // compacted with Burst's summary before its next prompt goes.
 const HANDOFF_AT = 300000
 
+// Held history from which a session is compacted that way wherever its
+// requests go. Past the 1M window a bypass is refused as too long, and no
+// later hand-off could be asked for in time.
+const HANDOFF_ALWAYS_AT = 800000
+
 let heldSeen = 0 // the most this session was last seen to hold, kept for when the gateway is gone
 let handed = '' // the hand-off already made or refused, so it is not tried again
 
@@ -168,15 +173,17 @@ let asking = false
 async function leaveBurst($) {
   if (asking || !(await handoffOn($))) return
   const h = await readHandoff($)
-  if (!h || h.of === handed || (await inPath($)) !== false) return
+  if (!h || h.of === handed) return
   const raw = Math.max((burst && burst.session && burst.session.raw) || 0, heldSeen, h.raw || 0)
   if (raw < HANDOFF_AT) return
+  const out = (await inPath($)) === false
+  if (!out && raw < HANDOFF_ALWAYS_AT) return
   asking = true
   handed = h.of
   try {
     await $.command.run({ command: 'compact', args: '' })
   } catch (err) {
-    $.ui.toast('This session no longer goes through Burst and sends its whole history (' + kTokens(raw) + '). /compact shortens it with the summary Burst already wrote', { timeoutMs: TOAST_MS.warn })
+    $.ui.toast((out ? 'This session no longer goes through Burst and sends its whole history (' + kTokens(raw) + ')' : 'Claude Code holds ' + kTokens(raw) + ' of history for this session, close to more than it could send without Burst') + '. /compact shortens it with the summary Burst already wrote', { timeoutMs: TOAST_MS.warn })
   } finally {
     asking = false
   }
