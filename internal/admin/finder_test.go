@@ -217,7 +217,7 @@ func TestFinderRemove(t *testing.T) {
 		t.Errorf("done = %q", done)
 	}
 	v := readFinder()
-	if v.Shortcuts[0].Installed || !v.Shortcuts[1].Installed || v.Shortcuts[1].Ours {
+	if last := v.Shortcuts[len(v.Shortcuts)-1]; v.Shortcuts[0].Installed || !last.Installed || last.Ours {
 		t.Errorf("status after remove: %+v", v.Shortcuts)
 	}
 }
@@ -251,7 +251,7 @@ func TestFinderEndpoints(t *testing.T) {
 	}
 	rr = do("GET", "/api/finder", "", false)
 	var v finderView
-	if err := json.Unmarshal(rr.Body.Bytes(), &v); err != nil || len(v.Shortcuts) != 2 || !v.Shortcuts[0].Installed {
+	if err := json.Unmarshal(rr.Body.Bytes(), &v); err != nil || len(v.Shortcuts) != len(finderShortcuts) || !v.Shortcuts[0].Installed {
 		t.Fatalf("GET /api/finder = %s (%v)", rr.Body.String(), err)
 	}
 }
@@ -271,6 +271,7 @@ func TestFinderButtonsReflectWhatIsInstalled(t *testing.T) {
 	runPageJS(t, []string{"renderFinder"}, fmt.Sprintf(`
 const els = {}; const $ = id => (els[id] = els[id] || {});
 let finderState; const setDot = () => {};
+const finderPick = {}; const finderTicked = x => finderPick[x.key] ?? (x.installed || x.tool_found);
 const run = st => { for (const k in els) delete els[k]; finderState = st; renderFinder();
   return {install: els.finderInstall, remove: els.finderRemove}; };
 out({
@@ -298,5 +299,78 @@ out({
 	}
 	if b := got["noGhostty"]; b["install"].Disabled {
 		t.Errorf("no Ghostty: install still runs and the server says why it cannot: %+v", b)
+	}
+}
+
+// Only the ticked shortcuts are installed or removed, and each generated
+// launcher is a script bash accepts that runs its own tool.
+func TestFinderInstallsAndRemovesOnlyTheTickedShortcuts(t *testing.T) {
+	r := newFinderRig(t, true)
+	if _, err := installFinderShortcuts(false, "omc", "claude-continue"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"omc": true, "claude-continue": true}
+	for _, st := range readFinder().Shortcuts {
+		if st.Installed != want[st.Key] {
+			t.Errorf("%s installed = %v, want %v", st.Key, st.Installed, want[st.Key])
+		}
+	}
+	for name, ends := range map[string]string{"ghostty-omc-launcher": `caffeinate -i "$TOOL"`, "ghostty-claude-continue-launcher": `caffeinate -i "$TOOL" --continue`} {
+		b, err := os.ReadFile(r.launcher(name))
+		if err != nil || !strings.HasSuffix(strings.TrimSpace(string(b)), ends) {
+			t.Errorf("%s must end with %q: %v\n%s", name, ends, err, b)
+		}
+		if out, err := exec.Command("bash", "-n", r.launcher(name)).CombinedOutput(); err != nil {
+			t.Errorf("bash rejects %s: %s", name, out)
+		}
+	}
+	if _, err := removeFinderShortcuts("omc"); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range readFinder().Shortcuts {
+		if st.Installed != (st.Key == "claude-continue") {
+			t.Errorf("after removing omc alone, %s installed = %v", st.Key, st.Installed)
+		}
+	}
+
+	s := newTestServer(t)
+	for body, code := range map[string]int{`{"action":"install","keys":["nope"]}`: http.StatusBadRequest, `{"action":"install","keys":[]}`: http.StatusBadRequest} {
+		if rr := mutate(t, s, "/api/finder-install", body); rr.Code != code {
+			t.Errorf("%s: status=%d, want %d", body, rr.Code, code)
+		}
+	}
+}
+
+// A row starts ticked when it is installed or its tool is here, and the
+// buttons count the ticked rows only.
+func TestFinderTicksDecideWhatTheButtonsDo(t *testing.T) {
+	var got struct {
+		HTML    string   `json:"html"`
+		Install string   `json:"install"`
+		Keys    []string `json:"keys"`
+		After   []string `json:"after"`
+	}
+	runPageJS(t, []string{"renderFinder"}, `
+const els = {}; const $ = id => (els[id] = els[id] || {});
+const setDot = () => {};
+const finderPick = {};
+const finderTicked = x => finderPick[x.key] ?? (x.installed || x.tool_found);
+const finderKeys = () => finderState.shortcuts.filter(finderTicked).map(x => x.key);
+let finderState = {ghostty: true, shortcuts: [
+  {key:"claude", name:"A", tool:"claude", tool_found:true, installed:true, ours:true},
+  {key:"omc", name:"B", tool:"omc", tool_found:true, installed:false},
+  {key:"codex", name:"C", tool:"codex", tool_found:false, installed:false}]};
+renderFinder();
+const first = {html: els.finderStatus.innerHTML, install: els.finderInstall.textContent, keys: finderKeys()};
+finderPick.codex = true; finderPick.claude = false; renderFinder();
+out({...first, after: finderKeys()});`, &got)
+	if strings.Count(got.HTML, `type="checkbox"`) != 3 || strings.Count(got.HTML, " checked") != 2 {
+		t.Errorf("want three ticks, two of them on: %s", got.HTML)
+	}
+	if !strings.Contains(got.Install, "missing one (1)") || strings.Join(got.Keys, ",") != "claude,omc" {
+		t.Errorf("install=%q keys=%v", got.Install, got.Keys)
+	}
+	if strings.Join(got.After, ",") != "omc,codex" {
+		t.Errorf("after ticking codex and unticking claude: %v", got.After)
 	}
 }

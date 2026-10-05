@@ -22,6 +22,7 @@ The menu down the left follows you as you scroll, grouped by job:
 - **Context**: [Pauseless Compaction](compaction.md), Context & cache.
 - **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
 - **Sessions**: [Session handover](handover.md), [Session coordination](coordination.md), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
+- **Finder shortcuts** (General tab): right-click a folder in Finder, then Services, to open Ghostty there running Claude Code, its last session in that folder (`claude --continue`), Claude Code with OMC (`omc`), Codex or OpenCode. Each has a tick; Install and Remove act on the ticked ones only. A row starts ticked when it is installed or its tool is on this Mac. Install never overwrites a shortcut that is already there.
 - **This Mac**: [lid closed and hotspot](lid-and-hotspot.md), [Notifications](lid-and-hotspot.md#notifications).
 - **Health**: Guards, [Audit](#audit-and-the-support-console), Actions, Advanced (timeouts and limits).
 - **Requests**: Responses and Requests, the audit trail of recent traffic.

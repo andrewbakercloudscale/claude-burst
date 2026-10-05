@@ -1623,7 +1623,7 @@
   <section id="sec-finder" style="scroll-margin-top:70px">
     <h2>Finder shortcuts <span class="applies" data-where="~/Library/Services, ~/.local/bin" data-when="now"></span></h2>
     <div class="body">
-      <div class="hint">Right-click any folder in Finder, then <b>Services</b> (or <b>Quick Actions</b>), to open a new Ghostty window in that folder running Claude Code or OpenCode. Install adds only the shortcuts that are missing and never overwrites one that is already there. Remove deletes the shortcuts it can recognise as these; the launcher scripts in <code>~/.local/bin</code> stay, so the usage panel's changes to them survive a reinstall. Needs Ghostty.</div>
+      <div class="hint">Right-click any folder in Finder, then <b>Services</b> (or <b>Quick Actions</b>), to open a new Ghostty window in that folder running Claude Code, its last session there, Claude Code with OMC, Codex or OpenCode. Tick the ones you want: Install and Remove act on the ticked rows only. Install adds only what is missing and never overwrites a shortcut that is already there. Remove deletes the shortcuts it can recognise as these; the launcher scripts in <code>~/.local/bin</code> stay, so the usage panel's changes to them survive a reinstall. Needs Ghostty.</div>
       <div id="finderStatus" style="margin:10px 0"></div>
       <div class="row">
         <button class="primary" id="finderInstall">&#x2913; Install Finder shortcuts</button>
@@ -5522,43 +5522,55 @@ loadUpgrade(false);
 setInterval(() => { if (!upgradeAsking) loadUpgrade(false); }, 30 * 60 * 1000);
 loadMac();
 
-// Finder shortcuts. The buttons reflect what is already there: Install is
-// disabled once every shortcut exists, Remove while none of ours does.
+// Finder shortcuts. Each row has a tick, and the buttons act on the ticked
+// rows and reflect what is already there. A row starts ticked when it is
+// installed or its tool is on this Mac; after that the tick is yours.
 let finderState = null;
+const finderPick = {};
+const finderTicked = x => finderPick[x.key] ?? (x.installed || x.tool_found);
 async function loadFinder() {
   try { finderState = await (await fetch("/api/finder")).json(); } catch { return; }
   renderFinder();
 }
 function renderFinder() {
   const f = finderState; if (!f) return;
-  const list = f.shortcuts || [];
+  const all = f.shortcuts || [];
+  const list = all.filter(finderTicked);
   const missing = list.filter(x => !x.installed);
   const removable = list.filter(x => x.installed && x.ours);
   $("finderStatus").innerHTML = (f.ghostty ? "" : `<div class="note warn">Ghostty is not installed, so there is nothing for these to open. Get it from <a href="https://ghostty.org" target="_blank" rel="noopener">ghostty.org</a>.</div>`) +
-    list.map(x => `<div style="margin:4px 0">${x.installed ? `<span class="pill p">installed</span>` : `<span class="pill">not installed</span>`} <b>${esc(x.name)}</b>${
+    all.map(x => `<label style="display:block;margin:4px 0;cursor:pointer"><input type="checkbox" data-finder="${esc(x.key)}"${finderTicked(x) ? " checked" : ""}> ${x.installed ? `<span class="pill p">installed</span>` : `<span class="pill">not installed</span>`} <b>${esc(x.name)}</b>${
       x.installed && !x.ours ? ` <span class="hint">(not made here; Remove leaves it alone)</span>` : ""}${
-      x.tool_found ? "" : ` <span class="hint"><code>${esc(x.tool)}</code> is not installed</span>`}</div>`).join("");
-  setDot("nd-finder", list.length && !missing.length ? "ok" : "");
+      x.note ? ` <span class="hint">${esc(x.note)}</span>` : ""}${
+      x.tool_found ? "" : ` <span class="hint"><code>${esc(x.tool)}</code> is not installed</span>`}</label>`).join("");
+  setDot("nd-finder", all.some(x => x.installed) ? "ok" : "");
   // Never disabled: running it again is harmless (it only adds what is
   // missing) and is how you check; without Ghostty the server says so.
   $("finderInstall").disabled = false;
-  $("finderInstall").textContent = !missing.length ? "\u2713 Installed: run again"
+  $("finderInstall").textContent = !list.length ? "Tick the shortcuts to install"
+    : !missing.length ? "\u2713 Installed: run again"
     : missing.length === list.length ? "\u2913 Install Finder shortcuts"
     : `\u2913 Install the missing one${missing.length === 1 ? "" : "s"} (${missing.length})`;
-  $("finderInstall").title = !missing.length ? "Every shortcut is already in ~/Library/Services" : "";
+  $("finderInstall").title = list.length && !missing.length ? "Every ticked shortcut is already in ~/Library/Services" : "";
   $("finderRemove").disabled = !removable.length;
-  $("finderRemove").title = removable.length ? "" : "Nothing to remove";
+  $("finderRemove").title = removable.length ? "" : "Nothing ticked to remove";
 }
+$("finderStatus").onchange = e => {
+  const k = e.target.dataset.finder;
+  if (k) { finderPick[k] = e.target.checked; renderFinder(); }
+};
+const finderKeys = () => (finderState?.shortcuts || []).filter(finderTicked).map(x => x.key);
 async function finderAction(action) {
   try {
-    const r = await post("/api/finder-install", {action});
+    const r = await post("/api/finder-install", {action, keys: finderKeys()});
     finderState = r.finder; renderFinder();
     note($("finderNote"), "ok", r.done.join("\n"));
   } catch (e) { note($("finderNote"), "bad", e.message); loadFinder(); }
 }
 $("finderInstall").onclick = () => finderAction("install");
 $("finderRemove").onclick = () => {
-  if (!confirm("Remove the Finder shortcuts?\n\n\"Launch Claude Code in Ghostty\" and \"Launch OpenCode in Ghostty\" disappear from Finder's right-click menu. The launcher scripts in ~/.local/bin are kept.")) return;
+  const names = (finderState?.shortcuts || []).filter(x => finderTicked(x) && x.installed && x.ours).map(x => "\u2022 " + x.name);
+  if (!confirm("Remove these from Finder's right-click menu?\n\n" + names.join("\n") + "\n\nThe launcher scripts in ~/.local/bin are kept.")) return;
   finderAction("remove");
 };
 loadFinder();
