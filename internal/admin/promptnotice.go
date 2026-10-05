@@ -30,7 +30,7 @@ const promptNoticeScript = "prompt-notice.sh"
 // after one, so a stopped gateway never holds a prompt back.
 const promptNoticeTimeout = 3
 
-// modNoticeFor is how long after the claude-burst mod last asked for a
+// modNoticeFor is how long after the Burst mod last asked for a
 // session's lines the hook is answered with nothing. The mod asks every 5
 // seconds and shows each line as a toast in the session; the hook printing
 // the same news under the prompt was the two racing for one queue, and the
@@ -166,7 +166,7 @@ func (s *Server) handlePromptNotice(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"session_id"`
 		Event     string `json:"hook_event_name"`
 		Reason    string `json:"reason"`
-		Mod       bool   `json:"mod"` // asked by the claude-burst mod, not the hook
+		Mod       bool   `json:"mod"` // asked by the Burst mod, not the hook
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	_ = json.Unmarshal(b, &in)

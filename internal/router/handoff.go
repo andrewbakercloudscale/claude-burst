@@ -12,7 +12,7 @@ import (
 	"unicode"
 )
 
-// Hand-off: Burst's summary, written where the claude-burst mod can read it
+// Hand-off: Burst's summary, written where the Burst mod can read it
 // with the gateway down, so Claude Code can take the summary as its own
 // compaction instead of writing another.
 //
