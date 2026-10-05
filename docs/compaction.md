@@ -118,6 +118,40 @@ sends all of it, uncached: on 2026-10-04 a session Burst kept at 135k sent 994k 
   and on the first look after the gateway starts, since the gateway is usually what
   was down. A bypass chosen with `burst-off`, `rollback.sh` or `disable` is quiet.
 
+### Hand-off: Claude Code takes Burst's summary
+
+With the `claude-burst` mod installed (Sessions menu, **In-session band**), the summary Burst
+already wrote can become Claude Code's own compaction, so a bypass stops costing the
+whole history:
+
+- For every session with a summary in force the gateway keeps
+  `~/.config/claude-burst/handoff/<session>.json` (mode 0600): the summary as Burst sends
+  it, and the two messages either side of the cut, each named by a tool call id or by
+  the start of its text. The file goes when the summary is dropped.
+- **Any compaction by Claude Code is answered with it**: `/compact`, or Claude Code's own
+  automatic one. The mod finds the cut in Claude Code's transcript and hands back the
+  summary followed by the kept messages, untouched. No summary request is made and
+  nothing pauses. `/compact` with instructions of your own, a subagent's transcript, and
+  a transcript the cut cannot be found in are left to Claude Code.
+- **A session that has left Burst is compacted once, by itself.** The mod checks every 5
+  seconds whether its requests still go through Burst (`ANTHROPIC_BASE_URL` naming the
+  gateway, or the `api.anthropic.com` line in `/etc/hosts`). When neither is there, a
+  hand-off exists and Claude Code holds 200k or more, it runs `/compact`, which the
+  hand-off then answers. A gateway that is restarting or down but still in the path is
+  not a bypass: requests fail then, they are not sent whole, and nothing is compacted.
+  If the summary does not fit, nothing is compacted and a line says so.
+- After a hand-off the replaced messages are gone from Claude Code's copy too, so
+  **Drop summary** can no longer bring them back, and with Burst still in the path the
+  session is a new, short conversation to it: its old summary is retired and the window
+  starts again.
+- Turn it off under **When Burst is out of the path** in the same section (on by
+  default, `handoff` in `~/.config/claude-burst/mod.json`, which the mod reads itself
+  because the gateway may not be there to ask).
+
+Tried live on 2026-10-05 with Claude Code 2.1.289: a typed `/compact` and the automatic
+one both replaced the transcript with the handed summary, the session answered from it,
+and no summary request was made.
+
 ## Intelligent Compaction Mode: a limit learned for each repository
 
 One *Compact at* does not suit every repository. With **Mode** set to **Intelligent Compaction Mode** (dashboard, Pauseless Compaction), Burst learns a *Compact at* for each repository from the last 14 days of that repository's own compactions:

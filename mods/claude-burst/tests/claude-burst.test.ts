@@ -39,11 +39,11 @@ function mod(over: Record<string, unknown> = {}) {
 // panel's pop-up already took, `lines` what the gateway's notice queue holds
 // (handed over once), `runs` and `posts` what the mod ran and posted,
 // `commands` the slash commands it added, `missing` a program that is not there.
-type World = { claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; commands?: string[]; missing?: string }
+type World = { claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string> }
 
 function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}, world: World = {}) {
   const clock = mock.clock(on, { now: 1_000_000_000_000 })
-  mock.env(on, { HOME: '/Users/me' })
+  mock.env(on, { HOME: '/Users/me', ...(world.env || {}) })
   on('session.start', () => ({ cwd: '/work' }))
   on('session.id', () => ({ value: 'S1' }))
   on('command.register', ($, e) => { world.commands?.push(e.name); return { value: undefined } })
@@ -54,6 +54,7 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
   on('store.set', ($, e) => { store[e.key] = e.value; return { value: undefined } })
   on('fs.read', ($, e) => {
     if (e.path.endsWith('/band/S1.ansi')) return { value: PANEL_FILE }
+    if (world.files && e.path in world.files) return { value: world.files[e.path] }
     if (sidebar && e.path === '/Users/me/.config/claude-panel/mod-installed') return { value: '2026-10-05 11:35:56\n' }
     return { deny: 'no such file' }
   })
@@ -333,4 +334,145 @@ test('a rescue command whose script is not installed says what to run instead', 
   await start($)
   await $.command.run({ command: 'claude-burst-revert', args: '' })
   expect(toasts.some((t) => t.startsWith('Could not run /Users/me/.local/bin/burst-off') && t.includes('./install.sh'))).toBe(true)
+})
+
+// Hand-off: Claude Code's transcript as a session.compact hook sees it. The
+// reply with tool call t2 is two messages here, as Claude Code holds it.
+const TRANSCRIPT = [
+  { role: 'user', text: 'first task', toolUses: [], handle: 'h0' },
+  { role: 'assistant', text: '', toolUses: [{ tool_use_id: 't1', tool: 'Read', input: {} }], handle: 'h1' },
+  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: 'old file' }], handle: 'h2' },
+  { role: 'assistant', text: 'done with first', toolUses: [], handle: 'h3' },
+  { role: 'user', text: 'second task, the long one', toolUses: [], handle: 'h4' },
+  { role: 'assistant', text: 'Looking.', toolUses: [], handle: 'h5' },
+  { role: 'assistant', text: '', toolUses: [{ tool_use_id: 't2', tool: 'Bash', input: {} }], handle: 'h6' },
+  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't2', text: 'output' }], handle: 'h7' },
+  { role: 'assistant', text: 'done with second', toolUses: [], handle: 'h8' },
+]
+const LEAD = '<system-reminder>\nThe earlier part of this conversation was compacted by claude-burst to save context. Summary of it:\n<summary>\nTHE GIST\n</summary>\n</system-reminder>'
+const HANDOFF_FILE = '/Users/me/.config/claude-burst/handoff/S1.json'
+const HOSTS_IN = '127.0.0.1 localhost\n# BEGIN claude-burst hosts\n127.0.0.1 api.anthropic.com\n# END claude-burst hosts\n'
+const HOSTS_OUT = '127.0.0.1 localhost\n# 127.0.0.1 api.anthropic.com\n'
+
+function handoff(over: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    session: 'S1', lead: LEAD, of: 'abc', messages: 5, raw: 994000,
+    last: { role: 'user', text: 'secondtask,thelongone' }, first: { role: 'assistant', tool: 't2' }, ...over,
+  })
+}
+
+// Claude Code's own compaction, counted: a hand-off must not reach it.
+function core(on, calls: string[]) {
+  on('session.compact', ($, e) => { calls.push(e.trigger); return { messages: [{ role: 'user', text: 'CORE SUMMARY', toolUses: [] }] } })
+  on('command.run', { command: 'compact' }, () => { calls.push('/compact'); return {} })
+  on('ui.log', ($, e) => { calls.push('log: ' + e.text); return { value: undefined } })
+}
+
+test("Claude Code's compaction is answered with Burst's summary: no summary request, the kept messages whole", async ($, on) => {
+  const toasts: string[] = []
+  const calls: string[] = []
+  stubs(on, [mod()], toasts, [], false, [], {}, { files: { [HANDOFF_FILE]: handoff() } })
+  core(on, calls)
+  await start($)
+  const r = await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
+  expect(calls).toEqual([])
+  // The cut is the start of the reply, not of its tool call: "Looking." is kept.
+  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h5', 'h6', 'h7', 'h8'])
+  expect(r.messages[0]).toEqual({ role: 'user', text: LEAD, toolUses: [] })
+  expect(toasts).toContain("Burst's summary handed to Claude Code: 5 messages replaced, no summary request")
+})
+
+test('a hand-off that does not fit the transcript, or is turned off, leaves the compaction to Claude Code', async ($, on) => {
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ first: { role: 'assistant', tool: 'gone' }, last: { role: 'user', text: 'nothingsaidlikethisanywhere' } }) } }
+  stubs(on, [mod()], [], [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[0].text).toBe('CORE SUMMARY')
+  world.files = { [HANDOFF_FILE]: handoff(), '/Users/me/.config/claude-burst/mod.json': '{"toasts":true,"handoff":false}' }
+  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[0].text).toBe('CORE SUMMARY')
+  // No file at all, a subagent's transcript, and /compact with instructions.
+  world.files = {}
+  await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT })
+  world.files = { [HANDOFF_FILE]: handoff() }
+  await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: TRANSCRIPT })
+  await $.session.compact({ trigger: 'manual', instructions: 'keep the plan', messages: TRANSCRIPT })
+  // A kept part that would open with tool results is refused.
+  world.files = { [HANDOFF_FILE]: handoff({ first: { role: 'user', tool: 't2' }, last: { role: 'assistant', tool: 't2' } }) }
+  await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
+  expect(calls).toEqual(['auto', 'auto', 'manual', 'auto', 'manual', 'auto'])
+})
+
+test('a prompt named by its text is found only after the message the summary ends on, and a summary already handed over is not handed again', async ($, on) => {
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ first: { role: 'user', text: 'secondtask,thelongone' }, last: { role: 'assistant', text: 'donewithfirst' } }) } }
+  stubs(on, [mod()], [], [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  // The same words said earlier are not the cut.
+  const twice = [{ role: 'user', text: 'second task, the long one', toolUses: [], handle: 'e0' }, { role: 'assistant', text: 'which one?', toolUses: [], handle: 'e1' }, ...TRANSCRIPT]
+  const r = await $.session.compact({ trigger: 'manual', messages: twice })
+  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h4', 'h5', 'h6', 'h7', 'h8'])
+  expect((await $.session.compact({ trigger: 'manual', messages: r.messages })).messages[0].text).toBe('CORE SUMMARY')
+  expect(calls).toEqual(['manual'])
+})
+
+test('a session that has left Burst is compacted with the summary as soon as it is seen, once', async ($, on) => {
+  const toasts: string[] = []
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff(), '/etc/hosts': HOSTS_OUT } }
+  const clock = stubs(on, [null], toasts, [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  await clock.advance(5000)
+  await clock.advance(5000)
+  expect(calls).toEqual(['/compact'])
+  // The transcript does not fit: nothing is compacted, and the notice says why.
+  expect((await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT.slice(0, 2) })).messages[0].text).toBe('CORE SUMMARY')
+})
+
+test('asked for by the mod, a summary that does not fit compacts nothing', async ($, on) => {
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff(), '/etc/hosts': HOSTS_OUT } }
+  const clock = stubs(on, [null], [], [], false, [], {}, world)
+  on('session.compact', ($, e) => { calls.push(e.trigger); return { messages: [] } })
+  // /compact is held open, as Claude Code holds it while it compacts.
+  let release = () => {}
+  let held = false
+  on('command.run', { command: 'compact' }, () => new Promise((r) => { held = true; release = () => r({}) }))
+  await start($)
+  const tick = clock.advance(5000)
+  for (let i = 0; i < 50 && !held; i++) await new Promise((r) => setTimeout(r, 5))
+  expect(held).toBe(true)
+  const answer = await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT.slice(0, 3) })
+  release()
+  await tick
+  expect(String(answer.skip)).toContain("Burst's summary does not fit")
+  expect(calls).toEqual([])
+})
+
+test('no hand-off while Burst is in the path, the history is short, or nothing says where requests go', async ($, on) => {
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff(), '/etc/hosts': HOSTS_IN } }
+  // The gateway is down but still in the path: requests fail, they are not sent whole.
+  const clock = stubs(on, [null], [], [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  await clock.advance(5000)
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 90000 }), '/etc/hosts': HOSTS_OUT }
+  await clock.advance(5000)
+  world.files = { [HANDOFF_FILE]: handoff() }
+  await clock.advance(5000)
+  world.files = { '/etc/hosts': HOSTS_OUT }
+  await clock.advance(5000)
+  expect(calls).toEqual([])
+})
+
+test('a session pointed at the gateway by ANTHROPIC_BASE_URL is in the path whatever /etc/hosts says', async ($, on) => {
+  const calls: string[] = []
+  const clock = stubs(on, [null], [], [], false, [], {}, { files: { [HANDOFF_FILE]: handoff(), '/etc/hosts': HOSTS_OUT }, env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:7777' } })
+  core(on, calls)
+  await start($)
+  await clock.advance(5000)
+  expect(calls).toEqual([])
 })
