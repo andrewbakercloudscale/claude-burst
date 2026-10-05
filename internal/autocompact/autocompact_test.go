@@ -138,6 +138,35 @@ func TestBoundsAndEvidence(t *testing.T) {
 	}
 }
 
+// The buffer sits on top of the cheapest size, and a reseat takes a
+// threshold already in use straight to the new target the same day.
+func TestTheBufferRaisesTheTargetAndAReseatAppliesItAtOnce(t *testing.T) {
+	runs := []metrics.CompactionRun{
+		swapped("a1", 400_000, 70_000, 0.40, 120, 2_000),
+		swapped("a2", 400_000, 70_000, 0.40, 120, 2_000),
+		swapped("a3", 400_000, 70_000, 0.40, 120, 2_000),
+	}
+	plain := Learn(empty(), inputs(runs...), bounds, true)
+	base := plain.Repos["/src/repo-a"].Target
+	b := bounds
+	b.BufferPercent = 20
+	// The same day, already stepped: the threshold stays where it was.
+	same := Learn(plain, inputs(runs...), b, true).Repos["/src/repo-a"]
+	if same.Target <= base || same.Threshold != base {
+		t.Fatalf("target %d (was %d), threshold %d", same.Target, base, same.Threshold)
+	}
+	if d := same.Target - base*120/100; d < -round || d > round {
+		t.Fatalf("target %d, want about a fifth over %d", same.Target, base)
+	}
+	if !strings.Contains(same.Reason, "plus the 20% buffer") {
+		t.Fatalf("reason %q", same.Reason)
+	}
+	plain.Reseat()
+	if got := Learn(plain, inputs(runs...), b, true).Repos["/src/repo-a"]; got.Threshold != got.Target || got.Target != same.Target {
+		t.Fatalf("after a reseat: threshold %d target %d", got.Threshold, got.Target)
+	}
+}
+
 // A failure is a compaction that lost money, and that alone.
 func TestFailuresAreCompactionsThatLostMoney(t *testing.T) {
 	// Each saves (400k-70k) * $0.5/M = $0.165 a turn against $0.40.

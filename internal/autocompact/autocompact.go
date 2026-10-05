@@ -161,6 +161,15 @@ func Save(path string, st State) error {
 	return atomicfile.Write(path, b, 0o600)
 }
 
+// Reseat forgets every threshold in use, so the next Learn that steps takes
+// each repository straight to its target: for when the user has changed
+// what the targets are worked out from.
+func (st State) Reseat() {
+	for _, r := range st.Repos {
+		r.Threshold, r.SteppedOn = 0, ""
+	}
+}
+
 // Thresholds is each repository's Compact at in force, by root.
 func (st State) Thresholds() map[string]int64 {
 	out := map[string]int64{}
@@ -191,6 +200,9 @@ func (st State) Sorted() []Repo {
 type Bounds struct {
 	Floor   int64 // never compact below this
 	Ceiling int64 // the fixed Compact at: never above it
+	// BufferPercent is added to the cheapest size: room for what the money
+	// does not measure.
+	BufferPercent int
 }
 
 // Optimal is the Compact at with the lowest cost per turn: see the package
@@ -359,11 +371,16 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 			best := Optimal(r.AfterTokens, r.GrowthTurn, int64(extraUSD/a.price), a.fails.Rate)
 			// Room to work in: half as much again as a compaction leaves.
 			low := max(b.Floor, r.AfterTokens*3/2)
+			cheapest := best
+			best = best * int64(100+max(b.BufferPercent, 0)) / 100
 			target := min(max(best, low), b.Ceiling)
 			if gap := float64(target - r.AfterTokens); gap > 0 {
 				r.PaybackTurn = int(math.Ceil((a.price*float64(target) + extraUSD) / (a.price * gap)))
 			}
-			r.Reason = fmt.Sprintf("a compaction leaves %dk and costs $%.2f, the context grows %.1fk a turn: cheapest at %dk", r.AfterTokens/1000, r.CostUSD, float64(r.GrowthTurn)/1000, best/1000)
+			r.Reason = fmt.Sprintf("a compaction leaves %dk and costs $%.2f, the context grows %.1fk a turn: cheapest at %dk", r.AfterTokens/1000, r.CostUSD, float64(r.GrowthTurn)/1000, cheapest/1000)
+			if b.BufferPercent > 0 {
+				r.Reason += fmt.Sprintf(", plus the %d%% buffer: %dk", b.BufferPercent, best/1000)
+			}
 			switch {
 			case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare:
 				target = b.Ceiling

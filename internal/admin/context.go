@@ -205,6 +205,7 @@ const (
 	minCompactAt = 50_000
 	maxCompactAt = 900_000
 	maxWindow    = 24 * 60
+	maxBuffer    = 200
 )
 
 func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
@@ -227,14 +228,20 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 	case req.Mode != "" && req.Mode != config.CompactionIntelligent:
 		http.Error(w, "mode must be fixed or intelligent", http.StatusBadRequest)
 		return
+	case *res.BufferPercent < 0 || *res.BufferPercent > maxBuffer:
+		http.Error(w, fmt.Sprintf("the buffer must be between 0%% and %d%%", maxBuffer), http.StatusBadRequest)
+		return
 	case req.FloorTokens < 0 || res.FloorTokens < minCompactAt || res.FloorTokens > res.CompactAtTokens:
 		http.Error(w, fmt.Sprintf("the floor must be between %dk and Compact at (%dk)", minCompactAt/1000, res.CompactAtTokens/1000), http.StatusBadRequest)
 		return
 	}
+	retarget := false
 	cfg, ok := updateConfig(w, func(c *config.Config) error {
 		// Repository overrides have their own endpoint; this form never
 		// carries them, so it must not wipe them.
 		req.RepoOverrides = c.PrimaryCompaction.RepoOverrides
+		old := c.PrimaryCompaction.Resolved()
+		retarget = old.Mode != res.Mode || old.FloorTokens != res.FloorTokens || old.CompactAtTokens != res.CompactAtTokens || *old.BufferPercent != *res.BufferPercent
 		c.PrimaryCompaction = req
 		return nil
 	})
@@ -244,6 +251,9 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 	s.gateway.SetCompaction(req)
 	// The mode, the floor and Compact at all bear on what is learned: the
 	// thresholds follow at once, not at the learner's next look.
+	if retarget {
+		s.reseatLearned()
+	}
 	learned := s.learnCompaction(cfg, time.Now())
 	state := "compaction off"
 	if req.Enabled {
@@ -255,7 +265,7 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 			state += ", swapped in mid-turn (experimental)"
 		}
 		if req.Intelligent() {
-			state += fmt.Sprintf("; Intelligent Compaction Mode on: %d repositories on a learned Compact at, never below %dk", len(learned.Thresholds()), res.FloorTokens/1000)
+			state += fmt.Sprintf("; Intelligent Compaction Mode on: %d repositories on a learned Compact at, never below %dk, with a %d%% buffer", len(learned.Thresholds()), res.FloorTokens/1000, *res.BufferPercent)
 		}
 	}
 	if err := SyncPromptNoticeHook(cfg); err != nil {

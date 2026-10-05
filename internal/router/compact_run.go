@@ -1071,6 +1071,11 @@ type CompactionSession struct {
 	Override  bool   `json:"override,omitempty"`
 	// Learned: CompactAt is the repository's learned one (intelligent mode).
 	Learned bool `json:"learned,omitempty"`
+	// DelayMinutes is the least time between this session's compactions,
+	// and BufferPercent what a learned CompactAt has on top of the cheapest
+	// size.
+	DelayMinutes  int `json:"delay_minutes,omitempty"`
+	BufferPercent int `json:"buffer_percent,omitempty"`
 	// Parts is what the context is made of, for the band's context bar.
 	Parts []ContextPart `json:"parts,omitempty"`
 	// Raw is Claude Code's own history, estimated, when it is larger than
@@ -1124,7 +1129,10 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			state = "warning"
 		}
 		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0,
-			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil && !override.Learned, Learned: override != nil && override.Learned, Parts: st.parts}
+			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil && !override.Learned, Learned: override != nil && override.Learned, Parts: st.parts, DelayMinutes: cfg.WindowMinutes}
+		if cs.Learned {
+			cs.BufferPercent = *cfg.BufferPercent
+		}
 		if override != nil && override.Off {
 			cs.CompactAt = 0
 		}

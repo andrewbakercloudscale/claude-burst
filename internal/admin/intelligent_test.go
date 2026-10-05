@@ -16,8 +16,9 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/repo"
 )
 
-// seedLearned gives the server a repository the learner has a threshold
-// for, already stepped today so a save does not move it.
+// seedLearned gives the server a repository the learner has a threshold of
+// 160k and a target of 150k for. Turning the mode on is a change to what
+// targets come from, so the save takes it straight to the target.
 func seedLearned(t *testing.T, s *Server) (root string) {
 	t.Helper()
 	root = filepath.Join(t.TempDir(), "my-project")
@@ -80,11 +81,11 @@ func TestGetAutoCompactionThreshold(t *testing.T) {
 	}
 	for _, q := range []string{"folder=my-project", "folder=MY-PROJECT", "folder=" + url.QueryEscape(filepath.Join(root, "src", "deep"))} {
 		a, code = threshold(t, s, q)
-		if code != http.StatusOK || a.Threshold != 160_000 || a.Source != "learned" || !a.Intelligent || a.Repo != "my-project" {
+		if code != http.StatusOK || a.Threshold != 150_000 || a.Source != "learned" || !a.Intelligent || a.Repo != "my-project" {
 			t.Fatalf("%s: %d %+v", q, code, a)
 		}
 	}
-	if a.Fixed != 300_000 || a.Floor != 120_000 || a.DelayMinutes != 45 || a.Previous != 175_000 || a.Failures.Unpaid != 1 || a.Failures.LostUSD != 0.31 {
+	if a.Fixed != 300_000 || a.Floor != 120_000 || a.BufferPercent != 20 || a.DelayMinutes != 45 || a.Previous != 300_000 || a.Failures.Unpaid != 1 || a.Failures.LostUSD != 0.31 {
 		t.Fatalf("the rest of the answer: %+v", a)
 	}
 	// The running gateway has it too.
@@ -112,6 +113,8 @@ func TestIntelligentCompactionSettingsAreValidatedAndListed(t *testing.T) {
 	seedLearned(t, s)
 	for _, body := range []string{
 		`{"enabled":true,"mode":"clever"}`,
+		`{"enabled":true,"mode":"intelligent","buffer_percent":-5}`,
+		`{"enabled":true,"mode":"intelligent","buffer_percent":500}`,
 		`{"enabled":true,"mode":"intelligent","floor_tokens":10000}`,                             // under the least Compact at
 		`{"enabled":true,"mode":"intelligent","compact_at_tokens":200000,"floor_tokens":250000}`, // over Compact at
 	} {
@@ -129,10 +132,10 @@ func TestIntelligentCompactionSettingsAreValidatedAndListed(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil || w.Code != http.StatusOK {
 		t.Fatalf("%d %v %s", w.Code, err, w.Body.String())
 	}
-	if v.Mode != "intelligent" || !v.Enabled || v.Fixed != 300_000 || v.Floor != 100_000 || v.Delay != 30 || v.Days != 14 {
+	if v.Mode != "intelligent" || !v.Enabled || v.Fixed != 300_000 || v.Floor != 100_000 || v.Buffer != 20 || v.Delay != 30 || v.Days != 14 {
 		t.Fatalf("view %+v", v)
 	}
-	if len(v.Repos) != 1 || v.Repos[0].InForce != 160_000 || v.Repos[0].Source != "learned" || v.Repos[0].Name != "my-project" {
+	if len(v.Repos) != 1 || v.Repos[0].InForce != 150_000 || v.Repos[0].Source != "learned" || v.Repos[0].Name != "my-project" {
 		t.Fatalf("rows %+v", v.Repos)
 	}
 	// What was learned is kept in the test's own folder, never the real one.
