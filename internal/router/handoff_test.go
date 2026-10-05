@@ -58,6 +58,10 @@ func TestHandoffFileFollowsTheSummaryInForce(t *testing.T) {
 	if h.First.Role == "assistant" && !strings.Contains(h.Lead, "second task") {
 		t.Fatalf("the latest prompt must be carried word for word: %q", h.Lead)
 	}
+	// The answer to that request said how large the whole history is.
+	if h.Raw <= 0 {
+		t.Fatalf("the file must say how much Claude Code holds: %+v", h.Raw)
+	}
 	if fi, err := os.Stat(filepath.Join(handoffDir(s.compaction.path), "S.json")); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("the file holds the conversation's summary: mode %v, %v", fi.Mode().Perm(), err)
 	}
