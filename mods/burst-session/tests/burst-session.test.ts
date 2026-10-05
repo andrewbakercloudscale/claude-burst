@@ -180,6 +180,17 @@ test('a dashboard that stops answering says so once, and again when it is back',
   expect(toasts).toEqual(['Burst dashboard not answering', 'Burst gateway back'])
 })
 
+test('before the first answer the band is not drawn: unknown is not down', async ($, on) => {
+  stubs(on, [mod()], [])
+  const early = await $.ui.mount(BAND)
+  expect(await early.find({ type: 'Text', text: '⚡ Burst down' })).toBeUndefined()
+  await early.unmount()
+  await start($)
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('/burst opens a pane with the panel summary and Burst details', async ($, on) => {
   stubs(on, [mod()], [])
   on('ui.open', () => ({ value: { isPlaced: true } }))
