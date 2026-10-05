@@ -473,3 +473,21 @@ func TestUpgradeSaysWhenGitIsWaitingOnMacOS(t *testing.T) {
 		t.Fatalf("status = %+v", st)
 	}
 }
+
+// The Check version button is in the header, on every tab, so its dialog
+// must not live inside a section: a section on another tab is not displayed,
+// and showModal on a dialog inside one draws nothing while making the whole
+// page inert. That is how the button "hung" on the Claude and Codex tabs.
+func TestVersionDialogIsOutsideEverySection(t *testing.T) {
+	src := string(indexHTML)
+	at := strings.Index(src, `<dialog id="verDialog"`)
+	if at < 0 {
+		t.Fatal("no verDialog in the page")
+	}
+	if last := strings.LastIndex(src, "</section>"); at < last {
+		t.Fatalf("verDialog is at %d, before the last </section> at %d: it is inside a tab's section", at, last)
+	}
+	if main := strings.LastIndex(src, "</main>"); at < main {
+		t.Fatalf("verDialog is inside <main>")
+	}
+}
