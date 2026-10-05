@@ -149,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/inspect/remove", s.mutating(s.handleInspectRemove))
 	mux.HandleFunc("/api/automask-save", s.mutating(s.handleAutomaskSave))
 	mux.HandleFunc("/api/compaction/repo", s.mutating(s.handleCompactionRepo))
+	mux.HandleFunc("/api/compaction/drop", s.mutating(s.handleCompactionDrop))
 	mux.HandleFunc("/api/intelligent-compaction", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			s.mutating(s.handleIntelligent)(w, r)

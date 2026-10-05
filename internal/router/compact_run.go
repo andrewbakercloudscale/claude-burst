@@ -1210,6 +1210,39 @@ func (s *Server) promptNotices(sid string, midTurn bool) []string {
 	return out
 }
 
+// DropSummary takes session sid's summary out of force, and any waiting
+// one with it: Claude Code still holds the whole history, so its next
+// request goes as sent, in full. It is the way back from a summary that
+// lost something. The window starts now, so the next summary is not
+// started by that same request. It returns how many summaries it dropped.
+func (s *Server) DropSummary(sid string) int {
+	if sid == "" {
+		return 0
+	}
+	s.compaction.mu.Lock()
+	defer s.compaction.mu.Unlock()
+	n := 0
+	for key, st := range s.compaction.sessions {
+		if !strings.HasPrefix(key, sid+"|") || (st.summary == "" && st.next == "") {
+			continue
+		}
+		n++
+		st.summary, st.hash, st.p0, st.swapAt, st.marks = "", "", 0, 0, nil
+		st.next, st.nextHash, st.nextP0, st.nextMarks = "", "", 0, nil
+		st.nextTightP0, st.nextTightHash = 0, ""
+		st.undo, st.midTurnUnproven = nil, false
+		st.swappedFrom, st.swappedMsgs = 0, 0
+		st.startedAt = time.Now()
+		st.notice("summary dropped on request; the full history is sent again")
+		s.compaction.outcome(key, autocompact.OutcomeEnded)
+		s.logger.Printf("compaction dropped session=%s: asked for from the dashboard; the full history goes again and the window starts now", key)
+	}
+	if n > 0 {
+		s.compaction.save()
+	}
+	return n
+}
+
 // QueueTestNotice queues a test line for session sid, or for every tracked
 // session when sid is "", and returns how many sessions got one.
 func (s *Server) QueueTestNotice(sid string) int {

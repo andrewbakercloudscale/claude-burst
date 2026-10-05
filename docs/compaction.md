@@ -90,7 +90,7 @@ Anthropic receives and bills:     139k tokens
 Claude Code's transcript after:   still 664 messages, plus the reply
 ```
 
-**Example 2, the summary missed something.** You ask about a detail from three hours ago and the summary does not have it. The detail is still in Claude Code's transcript. Dropping the summary sends the full history on the next request, and the model can read it again. The price is one uncached read of the full history. After `/compact` in Claude Code, or a mod that answers it, the detail is gone from the session for good.
+**Example 2, the summary missed something.** You ask about a detail from three hours ago and the summary does not have it. The detail is still in Claude Code's transcript. **Drop summary**, beside the session in the dashboard's compaction table, sends the full history on the next request, and the model can read it again. The price is one uncached read of the full history, and no new summary starts for one delay. After `/compact` in Claude Code, or a mod that answers it, the detail is gone from the session for good.
 
 **Example 3, you rewind.** Rewinding to a message that was summarised changes the start of the request. The summary no longer fits, Burst drops it, and the request goes as Claude Code sent it, in full. Nothing is lost, and a new summary starts at once.
 

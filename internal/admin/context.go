@@ -285,6 +285,24 @@ type repoOverrideRequest struct {
 	Remove          bool   `json:"remove"`
 }
 
+// handleCompactionDrop takes a session's summary out of force: its next
+// request carries the full history Claude Code still holds.
+func (s *Server) handleCompactionDrop(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Session) == "" {
+		http.Error(w, "session is required", http.StatusBadRequest)
+		return
+	}
+	n := s.gateway.DropSummary(strings.TrimSpace(req.Session))
+	if n == 0 {
+		http.Error(w, "that session has no summary in force", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]int{"dropped": n})
+}
+
 func (s *Server) handleCompactionRepo(w http.ResponseWriter, r *http.Request) {
 	var req repoOverrideRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
