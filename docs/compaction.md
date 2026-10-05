@@ -66,6 +66,19 @@ sends all of it, uncached: on 2026-10-04 a session Burst kept at 135k sent 994k 
   and on the first look after the gateway starts, since the gateway is usually what
   was down. A bypass chosen with `burst-off`, `rollback.sh` or `disable` is quiet.
 
+## Intelligent Compaction Mode: a limit learned for each repository
+
+One *Compact at* does not suit every repository. With **Mode** set to **Intelligent Compaction Mode** (dashboard, Pauseless Compaction), Burst learns a *Compact at* for each repository from the last 14 days of that repository's own compactions:
+
+- **What it weighs.** Compacting early costs summaries (each one reads the whole history, then the shortened history is written to cache). Compacting late costs every turn in between, since each turn reads the whole context. With a compaction leaving `A` tokens, the context growing `g` a turn and a compaction costing `c` beyond reading the history, the cheapest size is `A + sqrt(2 * g * (A + c))`, with `c` counted in cache-read tokens.
+- **Once a day.** The first learned size is used as it is; after that it moves by a tenth a day at most. **Learn now** recalculates the figures without moving it a second time that day.
+- **Failures are compactions that lost money.** One that had not saved what it cost by the time its session moved on, a summary call that was paid for and wrote nothing, or a summary dropped before it was used. They are counted for each repository and shown in the table. They push the learned size up, and where more than half of at least four lost money the repository goes back to *Compact at*. So does one whose sessions end before a compaction has paid for itself twice over.
+- **Guards.** Never below the **Floor** (100k unless you change it), never above *Compact at*, nothing learned from fewer than 3 compactions, and *Delay between compactions* still applies (default: a session is compacted at most once every 30 minutes). A repository override always wins. The log measures money, not what a summary loses, which is why the floor exists.
+
+The table lists each repository with the limit in force, the target, what a compaction leaves, growth per turn, cost, payback and the compactions that lost money, with the reason in words. With the mode off the table still shows what it would use.
+
+**For other tools:** `GET http://127.0.0.1:7788/api/GetAutoCompactionThreshold?folder=<name or full path>` (or `?session=<id>`) answers with the limit in force for that folder: `threshold` (tokens, 0 when never), `source` (`learned`, `override`, `fixed` or `off`), `fixed`, `floor`, `target`, `delay_minutes`, `failures` and `reason`. The cost sidebar asks it for the folder a session runs in.
+
 ## A different limit for some repositories
 
 *Compact at* is the default for every session. Under **Repository overrides** in the dashboard, a repository can have its own size (a big monorepo that needs more context, say 500k) or **Never compact**, which leaves its sessions alone unless you run `/compact-async`. *Warn when at* and the delay between compactions apply to the repository's own size.

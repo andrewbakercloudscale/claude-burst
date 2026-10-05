@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/autocompact"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
@@ -114,6 +115,9 @@ type compactor struct {
 	// the conversation it is for, and the rest of it would be paid for
 	// and thrown away.
 	cancels map[string]context.CancelCauseFunc
+	// outcomes is the log of summaries that were dropped, for the learner
+	// (internal/autocompact); "" keeps none.
+	outcomes string
 	// midTurnOff: the API rejected a mid-turn swap, so none are tried again
 	// until the settings are saved again (SetCompaction). One rejection is
 	// taken as the API's answer: retrying each turn would cost a wasted
@@ -123,6 +127,9 @@ type compactor struct {
 
 func newCompactor(c config.CompactionConfig, path string, logger *log.Logger) *compactor {
 	cp := &compactor{cfg: c.Resolved(), sessions: map[string]*compactState{}, cancels: map[string]context.CancelCauseFunc{}, path: path, logger: logger}
+	if path != "" {
+		cp.outcomes = filepath.Join(filepath.Dir(path), "compaction-outcomes.jsonl")
+	}
 	cp.load()
 	return cp
 }
@@ -263,9 +270,33 @@ func compactInfoFrom(ctx context.Context) compactInfo {
 // SetCompaction applies c to the running gateway; the admin page's toggle.
 func (s *Server) SetCompaction(c config.CompactionConfig) {
 	s.compaction.mu.Lock()
+	learned := s.compaction.cfg.Learned
 	s.compaction.cfg = c.Resolved()
+	s.compaction.cfg.Learned = learned
 	s.compaction.midTurnOff = false
 	s.compaction.mu.Unlock()
+}
+
+// SetLearnedCompaction gives the running gateway each repository's learned
+// Compact at, by root (internal/autocompact). They apply only in the
+// intelligent mode, and never over a repository's own override.
+func (s *Server) SetLearnedCompaction(byRoot map[string]int64) {
+	s.compaction.mu.Lock()
+	s.compaction.cfg.Learned = byRoot
+	s.compaction.mu.Unlock()
+}
+
+// CompactionOutcomesPath is where dropped summaries are logged, "" when
+// nowhere.
+func (s *Server) CompactionOutcomesPath() string { return s.compaction.outcomes }
+
+// outcome logs a summary that was dropped. Caller holds mu; the write is a
+// short append.
+func (c *compactor) outcome(key, kind string) {
+	sid, _, _ := strings.Cut(key, "|")
+	if err := autocompact.AppendOutcome(c.outcomes, autocompact.Outcome{Time: time.Now(), Session: sid, Kind: kind}); err != nil {
+		c.logger.Printf("compaction outcome not logged: %v", err)
+	}
 }
 
 // MidTurnOff reports whether the API refused a mid-turn swap since the
@@ -413,6 +444,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	limit := fmt.Sprintf("compact at %dk", cfg.CompactAtTokens/1000)
 	if override != nil {
 		limit += " for " + filepath.Base(root)
+		if override.Learned {
+			limit += ", learned"
+		}
 	}
 	ci := compactInfo{key: key}
 	now := time.Now()
@@ -434,6 +468,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		st.summary, st.hash, st.p0, st.swapAt, st.marks = "", "", 0, 0, nil
 		st.startedAt = time.Time{}
 		st.notice("summary dropped (history changed); full history sent")
+		s.compaction.outcome(key, autocompact.OutcomeEnded)
 		notice.Publish(alertCompact, notice.Warn, "Compaction summary dropped",
 			"The history was cleared, compacted or rewound, so the summary no longer fits. The full history goes again; a new summary can start at once.")
 		dirty = true
@@ -442,6 +477,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary (%s); window reopened", rid, key, divergence(msgs, st.nextP0, st.nextMarks))
 		st.next, st.nextHash, st.nextP0, st.nextMarks = "", "", 0, nil
 		st.startedAt = time.Time{}
+		s.compaction.outcome(key, autocompact.OutcomeUnused)
 		// Log only: a summary that never swapped in changed nothing the
 		// model sees, and a notice for it, then one for the summary that
 		// replaces it, was most of the noise on 2026-10-03.
@@ -1033,6 +1069,8 @@ type CompactionSession struct {
 	RepoRoot  string `json:"repo_root,omitempty"`
 	CompactAt int64  `json:"compact_at"`
 	Override  bool   `json:"override,omitempty"`
+	// Learned: CompactAt is the repository's learned one (intelligent mode).
+	Learned bool `json:"learned,omitempty"`
 	// Parts is what the context is made of, for the band's context bar.
 	Parts []ContextPart `json:"parts,omitempty"`
 	// Raw is Claude Code's own history, estimated, when it is larger than
@@ -1086,7 +1124,7 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			state = "warning"
 		}
 		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0,
-			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil, Parts: st.parts}
+			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil && !override.Learned, Learned: override != nil && override.Learned, Parts: st.parts}
 		if override != nil && override.Off {
 			cs.CompactAt = 0
 		}

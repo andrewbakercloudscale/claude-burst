@@ -325,3 +325,28 @@ func TestCompactionWarnIsAPercentOfCompactAt(t *testing.T) {
 		t.Fatalf("the derived token count must not be stored: %s", out)
 	}
 }
+
+// A learned Compact at applies only in the intelligent mode, and never over
+// the user's own override for a repository.
+func TestForRepoTakesTheLearnedCompactAtInTheIntelligentMode(t *testing.T) {
+	c := CompactionConfig{Enabled: true, CompactAtTokens: 300_000,
+		RepoOverrides: []RepoCompaction{{Repo: "/src/pinned", CompactAtTokens: 500_000}},
+		Learned:       map[string]int64{"/src/learned": 150_000, "/src/pinned": 120_000}}
+	if got, o := c.ForRepo("/src/learned"); got.CompactAtTokens != 300_000 || o != nil {
+		t.Fatalf("fixed mode: %d %+v, want the fixed Compact at", got.CompactAtTokens, o)
+	}
+	c.Mode = CompactionIntelligent
+	got, o := c.ForRepo("/src/learned")
+	if got.CompactAtTokens != 150_000 || got.WarnAtTokens != 120_000 || o == nil || !o.Learned {
+		t.Fatalf("intelligent: %d warn %d %+v", got.CompactAtTokens, got.WarnAtTokens, o)
+	}
+	if got, o := c.ForRepo("/src/pinned"); got.CompactAtTokens != 500_000 || o == nil || o.Learned {
+		t.Fatalf("an override must win: %d %+v", got.CompactAtTokens, o)
+	}
+	if got, o := c.ForRepo("/src/other"); got.CompactAtTokens != 300_000 || o != nil {
+		t.Fatalf("nothing learned: %d %+v", got.CompactAtTokens, o)
+	}
+	if c.Resolved().FloorTokens != DefaultCompactionFloor || DefaultCompactionFloor != 100_000 {
+		t.Fatal("the floor defaults to 100k")
+	}
+}

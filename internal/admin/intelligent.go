@@ -1,0 +1,243 @@
+package admin
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/autocompact"
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+)
+
+// Intelligent Compaction Mode on the dashboard: the learner
+// (internal/autocompact) run once a day and on demand, its table, and
+// GetAutoCompactionThreshold, which the usage panel asks for the Compact at
+// in force in a folder.
+
+// learnEvery is how often the learner looks. It steps a repository's
+// threshold once a local day whatever this is; the rest of the day it only
+// refreshes the figures the table shows.
+const learnEvery = 30 * time.Minute
+
+// learnedPath is the learner's file, beside the gateway's compaction state
+// so a test server's stays in its own folder. "" keeps it in memory.
+func (s *Server) learnedPath() string {
+	p := s.gateway.CompactionOutcomesPath()
+	if p == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(p), "intelligent-compaction.json")
+}
+
+// learnCompaction reads the window, works out every repository's target,
+// steps the thresholds when the intelligent mode is on, and gives the
+// running gateway the result.
+func (s *Server) learnCompaction(cfg config.Config, now time.Time) autocompact.State {
+	s.learnMu.Lock()
+	defer s.learnMu.Unlock()
+	path := s.learnedPath()
+	if s.learned.Repos == nil && path != "" {
+		s.learned = autocompact.Load(path)
+	}
+	c := cfg.PrimaryCompaction.Resolved()
+	since := now.Add(-autocompact.Window)
+	runs, failed, err := metrics.CompactionRunsSince(s.metricsPath, since)
+	if err != nil {
+		return s.learned
+	}
+	st := autocompact.Learn(s.learned, autocompact.Inputs{
+		Runs: runs, Failed: failed,
+		Outcomes:  autocompact.ReadOutcomes(s.gateway.CompactionOutcomesPath(), since),
+		Resolve:   s.repos.resolve,
+		ReadPrice: metrics.CacheReadPrice,
+		Now:       now,
+	}, autocompact.Bounds{Floor: c.FloorTokens, Ceiling: c.CompactAtTokens}, c.Enabled && c.Intelligent())
+	s.learned = st
+	if path != "" {
+		_ = autocompact.Save(path, st)
+	}
+	s.gateway.SetLearnedCompaction(st.Thresholds())
+	return st
+}
+
+// StartLearner runs the learner until ctx ends.
+func (s *Server) StartLearner(ctx context.Context) {
+	t := time.NewTicker(learnEvery)
+	defer t.Stop()
+	for {
+		if cfg, err := config.Load(); err == nil {
+			s.learnCompaction(cfg, time.Now())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// learnedRepo is one row of the dashboard's table.
+type learnedRepo struct {
+	autocompact.Repo
+	// InForce is the Compact at this repository's sessions get now, 0 when
+	// never, and Source why: learned, override, off or fixed.
+	InForce int64  `json:"in_force"`
+	Source  string `json:"source"`
+}
+
+type learnedView struct {
+	Mode    string        `json:"mode"` // "" fixed, "intelligent"
+	Enabled bool          `json:"enabled"`
+	Fixed   int64         `json:"fixed"`
+	Floor   int64         `json:"floor"`
+	Delay   int           `json:"delay_minutes"`
+	Days    int           `json:"window_days"`
+	Repos   []learnedRepo `json:"repos"`
+}
+
+// inForce is the Compact at for the repository at root, and why.
+func inForce(c config.CompactionConfig, root string) (int64, string) {
+	res, o := c.ForRepo(root)
+	switch {
+	case o == nil:
+		return res.CompactAtTokens, "fixed"
+	case o.Off:
+		return 0, "off"
+	case o.Learned:
+		return res.CompactAtTokens, "learned"
+	}
+	return res.CompactAtTokens, "override"
+}
+
+func (s *Server) learnedView(cfg config.Config, st autocompact.State) learnedView {
+	c := cfg.PrimaryCompaction.Resolved()
+	c.Learned = st.Thresholds()
+	v := learnedView{Mode: c.Mode, Enabled: c.Enabled, Fixed: c.CompactAtTokens, Floor: c.FloorTokens, Delay: c.WindowMinutes,
+		Days: int(autocompact.Window.Hours() / 24), Repos: []learnedRepo{}}
+	for _, r := range st.Sorted() {
+		row := learnedRepo{Repo: r}
+		row.InForce, row.Source = inForce(c, r.Root)
+		v.Repos = append(v.Repos, row)
+	}
+	return v
+}
+
+// handleIntelligent is the table (GET) and "learn now" (POST).
+func (s *Server) handleIntelligent(w http.ResponseWriter, r *http.Request) {
+	cfg, err := config.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if r.Method == http.MethodPost {
+		writeJSON(w, s.learnedView(cfg, s.learnCompaction(cfg, time.Now())))
+		return
+	}
+	s.learnMu.Lock()
+	st := s.learned
+	s.learnMu.Unlock()
+	if st.Repos == nil {
+		st = s.learnCompaction(cfg, time.Now())
+	}
+	writeJSON(w, s.learnedView(cfg, st))
+}
+
+// thresholdAnswer is GetAutoCompactionThreshold's answer.
+type thresholdAnswer struct {
+	Folder string `json:"folder"`
+	Repo   string `json:"repo,omitempty"`
+	Root   string `json:"root,omitempty"`
+	// Threshold is the Compact at in force for the folder, in tokens: 0
+	// when its sessions are never compacted on their own. Source says where
+	// it comes from: learned (intelligent mode), override (the user's own
+	// for this repository), fixed (the one Compact at) or off.
+	Threshold   int64  `json:"threshold"`
+	Source      string `json:"source"`
+	Intelligent bool   `json:"intelligent"`
+	Enabled     bool   `json:"enabled"`
+	Fixed       int64  `json:"fixed"`
+	Floor       int64  `json:"floor"`
+	// Target is where the learner says the threshold should be, 0 when it
+	// has too little to go on, and Previous what it was before the last
+	// daily step.
+	Target       int64                `json:"target,omitempty"`
+	Previous     int64                `json:"previous,omitempty"`
+	DelayMinutes int                  `json:"delay_minutes"`
+	Failures     autocompact.Failures `json:"failures"`
+	Reason       string               `json:"reason,omitempty"`
+}
+
+// handleThreshold is GetAutoCompactionThreshold: the Compact at in force
+// for a folder, named by ?folder= (a full path, anywhere inside the
+// repository, or the repository folder's name) or by ?session=.
+func (s *Server) handleThreshold(w http.ResponseWriter, r *http.Request) {
+	cfg, err := config.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	folder := strings.TrimSpace(r.URL.Query().Get("folder"))
+	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	if folder == "" && session == "" {
+		http.Error(w, "GetAutoCompactionThreshold needs ?folder=<name or full path> or ?session=<id>", http.StatusBadRequest)
+		return
+	}
+	s.learnMu.Lock()
+	st := s.learned
+	s.learnMu.Unlock()
+	if st.Repos == nil {
+		st = s.learnCompaction(cfg, time.Now())
+	}
+	c := cfg.PrimaryCompaction.Resolved()
+	c.Learned = st.Thresholds()
+
+	var name, root string
+	switch {
+	case session != "":
+		name, root = s.repos.resolve(session)
+	case filepath.IsAbs(folder) || strings.HasPrefix(folder, "~/"):
+		if strings.HasPrefix(folder, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				folder = filepath.Join(home, folder[2:])
+			}
+		}
+		name, root = s.repos.RepoOf(folder)
+	default:
+		// A bare name: a repository the learner or an override knows.
+		name = folder
+		for _, known := range st.Sorted() {
+			if strings.EqualFold(known.Name, folder) {
+				name, root = known.Name, known.Root
+				break
+			}
+		}
+		for _, o := range c.RepoOverrides {
+			if root == "" && strings.EqualFold(filepath.Base(o.Repo), folder) {
+				root = filepath.Clean(o.Repo)
+			}
+		}
+	}
+	a := thresholdAnswer{Folder: folder, Repo: name, Root: root, Intelligent: c.Intelligent(), Enabled: c.Enabled,
+		Fixed: c.CompactAtTokens, Floor: c.FloorTokens, DelayMinutes: c.WindowMinutes}
+	if folder == "" {
+		a.Folder = name
+	}
+	a.Threshold, a.Source = inForce(c, root)
+	if known := st.Repos[root]; known != nil {
+		a.Target, a.Previous, a.Failures, a.Reason = known.Target, known.Previous, known.Failures, known.Reason
+	} else {
+		a.Reason = fmt.Sprintf("nothing learned for this folder yet: the fixed Compact at of %dk", c.CompactAtTokens/1000)
+	}
+	if !c.Enabled {
+		a.Threshold, a.Source = 0, "off"
+		a.Reason = "Pauseless Compaction is off"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a)
+}

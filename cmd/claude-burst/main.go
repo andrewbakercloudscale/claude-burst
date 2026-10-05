@@ -300,6 +300,7 @@ func serve(args []string) {
 		a.SetHandshakes(handshakes)
 		a.SetCodex(codexGW, codexStartErr)
 		go a.StartNotifier(context.Background())
+		go a.StartLearner(context.Background())
 		if err := admin.SyncPromptNoticeHook(cfg); err != nil {
 			logger.Printf("error stage=prompt_notice_hook err=%v", err)
 		}

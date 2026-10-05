@@ -87,7 +87,25 @@ type CompactionConfig struct {
 	// none at all. Everything else (the warning percentage, the delay
 	// between compactions, mid-turn) applies to the repository's own limit.
 	RepoOverrides []RepoCompaction `json:"repo_overrides,omitempty"`
+	// Mode is how Compact at is chosen. "" is fixed: CompactAtTokens for
+	// every repository without an override. CompactionIntelligent learns a
+	// Compact at for each repository from what its compactions cost and
+	// saved (internal/autocompact), adjusted once a day, never below
+	// FloorTokens nor above CompactAtTokens. A repository's override still
+	// wins, and WindowMinutes still spaces a session's compactions.
+	Mode        string `json:"mode,omitempty"`
+	FloorTokens int64  `json:"floor_tokens,omitempty"`
+	// Learned is each repository's learned Compact at, by root. Memory
+	// only: internal/autocompact keeps it, with how it got there, in its
+	// own file, and it applies only in the intelligent mode.
+	Learned map[string]int64 `json:"-"`
 }
+
+// CompactionIntelligent is CompactionConfig.Mode for a learned Compact at.
+const CompactionIntelligent = "intelligent"
+
+// Intelligent reports whether Compact at is learned per repository.
+func (c CompactionConfig) Intelligent() bool { return c.Mode == CompactionIntelligent }
 
 // RepoCompaction is one repository's override. Repo is the repository's
 // root, an absolute path: two checkouts of the same project can differ.
@@ -97,6 +115,9 @@ type RepoCompaction struct {
 	// Off never compacts this repository's sessions on its own;
 	// /compact-async still does, since the user chose the moment.
 	Off bool `json:"off,omitempty"`
+	// Learned marks a limit ForRepo took from CompactionConfig.Learned, not
+	// one the user set. Never stored.
+	Learned bool `json:"-"`
 }
 
 // NeverTokens is the Compact at of a repository with compaction off: no
@@ -128,6 +149,11 @@ func (c CompactionConfig) ForRepo(root string) (CompactionConfig, *RepoCompactio
 		}
 		return c, &o
 	}
+	if at := c.Learned[root]; c.Intelligent() && at > 0 {
+		c.CompactAtTokens = at
+		c.WarnAtTokens = at * int64(c.WarnAtPercent) / 100
+		return c, &RepoCompaction{Repo: root, CompactAtTokens: at, Learned: true}
+	}
 	return c, nil
 }
 
@@ -135,6 +161,7 @@ const (
 	DefaultCompactionWarnPercent = 80
 	DefaultCompactionCompactAt   = 300_000
 	DefaultCompactionWindow      = 30
+	DefaultCompactionFloor       = 100_000
 )
 
 // Resolved returns c with its zero numbers replaced by the defaults.
@@ -148,6 +175,9 @@ func (c CompactionConfig) Resolved() CompactionConfig {
 	c.WarnAtTokens = c.CompactAtTokens * int64(c.WarnAtPercent) / 100
 	if c.WindowMinutes <= 0 {
 		c.WindowMinutes = DefaultCompactionWindow
+	}
+	if c.FloorTokens <= 0 {
+		c.FloorTokens = DefaultCompactionFloor
 	}
 	return c
 }

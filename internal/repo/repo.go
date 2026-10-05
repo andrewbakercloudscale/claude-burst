@@ -140,6 +140,10 @@ func (r *Resolver) repoOf(dir string) (name, root string) {
 	return filepath.Base(dir), dir
 }
 
+// RepoOf names the repository holding the folder dir, as Resolve does for
+// a session's working directory.
+func (r *Resolver) RepoOf(dir string) (name, root string) { return r.repoOf(filepath.Clean(dir)) }
+
 // stat is os.Stat, a variable so tests can answer as a denied folder would.
 var stat = os.Stat
 

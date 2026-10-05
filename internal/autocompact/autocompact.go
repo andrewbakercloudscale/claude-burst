@@ -1,0 +1,452 @@
+// Package autocompact is Intelligent Compaction Mode: a Compact at learned
+// for each repository from what its compactions cost and what they saved,
+// adjusted once a day.
+//
+// The trade. A session's context grows g tokens a turn from A, where a
+// compaction leaves it, to T, where the next one starts, and every turn
+// reads the whole of it from cache at p a token. A compaction at T costs a
+// read of T for the summary call plus c0 for the summary's output and the
+// cache rewrite. Over one cycle of (T-A)/g turns that is
+//
+//	cost per turn = (p*T + c0) * g / (T-A)  +  p * (A+T) / 2
+//
+// the first term cheaper the later you compact, the second the earlier.
+// It is lowest at
+//
+//	T = A + sqrt(2 * g * (A + c0/p))
+//
+// A failure is a compaction that lost money: it did not save what it cost,
+// or its summary was paid for and never used. Those are measured, and the
+// cost of a compaction that works is divided by the share that do: with a failure rate f the square root's contents are
+// divided by 1-f, which moves T up.
+//
+// Guards, since the log measures money and not what a summary loses: never
+// below the floor, never above the fixed Compact at, a tenth a day at most
+// once a threshold is in use (the first one learned goes straight there),
+// nothing learned from fewer than MinCompactions, and back to the fixed
+// Compact at where most compactions fail or sessions end before one has
+// paid for itself. How often a session may compact at all stays the
+// compaction settings' delay.
+package autocompact
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"os"
+	"sort"
+	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
+)
+
+const (
+	// Window is how far back a repository's compactions are read.
+	Window = 14 * 24 * time.Hour
+	// MinCompactions is how many a repository needs before anything is
+	// learned from them.
+	MinCompactions = 3
+	// stepShare is the most a threshold moves in one day.
+	stepShare = 0.10
+	// round is what a threshold is rounded to.
+	round = 5_000
+	// minGrowthTurns is the shortest run a growth rate is taken from.
+	minGrowthTurns = 10
+	// settled is how long after its last request a run is taken as over,
+	// so its saving can be judged.
+	settled = time.Hour
+	// maxFailShare caps the failure rate's effect on the target, and
+	// backOffShare is the rate from which a repository is left on the
+	// fixed Compact at, once backOffAttempts have been seen.
+	maxFailShare    = 0.8
+	backOffShare    = 0.5
+	backOffAttempts = 4
+)
+
+// Outcome kinds the gateway records (router), beside the summary calls
+// that failed, which the metrics log has.
+const (
+	// OutcomeUnused: a summary was written and dropped before it applied.
+	OutcomeUnused = "unused"
+	// OutcomeEnded: a summary in force stopped fitting (/clear, /compact, a
+	// rewind). Not a failure: it is counted, and its cost is judged by
+	// whether the compaction had paid for itself by then.
+	OutcomeEnded = "ended"
+)
+
+// Outcome is one line of the gateway's outcome log.
+type Outcome struct {
+	Time    time.Time `json:"time"`
+	Session string    `json:"session"`
+	Kind    string    `json:"kind"`
+}
+
+// Failures is the compactions that lost money in the window: what one cost
+// did not come back. That is the one test of a failure.
+type Failures struct {
+	// Unpaid: a compaction that had not saved what it cost by the time its
+	// run was over. SummaryFailed: a summary call that was paid for and
+	// wrote no summary. Unused: a summary paid for and dropped before it
+	// applied.
+	SummaryFailed int `json:"summary_failed"`
+	Unused        int `json:"unused"`
+	Unpaid        int `json:"unpaid"`
+	// Ended is informational, see OutcomeEnded.
+	Ended int `json:"ended"`
+	// Attempts is every summary started; Rate is the failures' share of it.
+	Attempts int     `json:"attempts"`
+	Rate     float64 `json:"rate"`
+	// LostUSD is what the failures cost beyond what they saved, where the
+	// log has the figure (an unused summary's cost is in the next one's).
+	LostUSD float64 `json:"lost_usd"`
+}
+
+// Count is the compactions that lost money, of Attempts.
+func (f Failures) Count() int { return f.SummaryFailed + f.Unused + f.Unpaid }
+
+// Repo is one repository's learned Compact at and how it got there.
+type Repo struct {
+	Root string `json:"root"`
+	Name string `json:"name"`
+	// Threshold is the Compact at in force in the intelligent mode, 0 when
+	// nothing is learned yet. Target is where the model says it should be,
+	// and Previous what Threshold was before the last daily step.
+	Threshold int64 `json:"threshold"`
+	Target    int64 `json:"target"`
+	Previous  int64 `json:"previous,omitempty"`
+	// The inputs, from the window: what a compaction leaves, how fast the
+	// context grows, what a compaction costs, and how long a session goes
+	// on after one.
+	Compactions int     `json:"compactions"`
+	AfterTokens int64   `json:"after_tokens"`
+	GrowthTurn  int64   `json:"growth_per_turn"`
+	CostUSD     float64 `json:"cost_usd"`
+	TurnsAfter  int     `json:"turns_after"`
+	PaybackTurn int     `json:"payback_turns"`
+	// SavedTurnUSD is what a turn costs less at Target than at the fixed
+	// Compact at, by the model.
+	SavedTurnUSD float64   `json:"saved_per_turn_usd"`
+	Failures     Failures  `json:"failures"`
+	Reason       string    `json:"reason"`
+	LearnedAt    time.Time `json:"learned_at"`
+	SteppedOn    string    `json:"stepped_on,omitempty"` // 2006-01-02, local
+}
+
+// State is the learner's file.
+type State struct {
+	Repos map[string]*Repo `json:"repos"`
+}
+
+// Load reads the state, empty when there is none or it cannot be read.
+func Load(path string) State {
+	st := State{Repos: map[string]*Repo{}}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return st
+	}
+	_ = json.Unmarshal(b, &st)
+	if st.Repos == nil {
+		st.Repos = map[string]*Repo{}
+	}
+	return st
+}
+
+// Save writes the state.
+func Save(path string, st State) error {
+	b, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(path, b, 0o600)
+}
+
+// Thresholds is each repository's Compact at in force, by root.
+func (st State) Thresholds() map[string]int64 {
+	out := map[string]int64{}
+	for root, r := range st.Repos {
+		if r.Threshold > 0 {
+			out[root] = r.Threshold
+		}
+	}
+	return out
+}
+
+// Sorted is the repositories, most compactions first.
+func (st State) Sorted() []Repo {
+	out := make([]Repo, 0, len(st.Repos))
+	for _, r := range st.Repos {
+		out = append(out, *r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Compactions != out[j].Compactions {
+			return out[i].Compactions > out[j].Compactions
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// Bounds are the limits a learned Compact at stays inside.
+type Bounds struct {
+	Floor   int64 // never compact below this
+	Ceiling int64 // the fixed Compact at: never above it
+}
+
+// Optimal is the Compact at with the lowest cost per turn: see the package
+// comment. after is A, growth g, extraTokens c0/p (what a compaction costs
+// beyond reading the history, in cache-read tokens) and failRate f.
+func Optimal(after, growth, extraTokens int64, failRate float64) int64 {
+	if growth <= 0 {
+		return 0
+	}
+	f := math.Min(math.Max(failRate, 0), maxFailShare)
+	return after + int64(math.Sqrt(2*float64(growth)*float64(after+extraTokens)/(1-f)))
+}
+
+// costPerTurn is the model's cost of a turn in USD at Compact at t.
+func costPerTurn(t, after, growth int64, readPrice, extraUSD float64) float64 {
+	if t <= after || growth <= 0 {
+		return 0
+	}
+	return (readPrice*float64(t)+extraUSD)*float64(growth)/float64(t-after) + readPrice*float64(after+t)/2
+}
+
+func roundTo(n int64) int64 { return (n + round/2) / round * round }
+
+func median(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	sort.Float64s(v)
+	if len(v)%2 == 1 {
+		return v[len(v)/2]
+	}
+	return (v[len(v)/2-1] + v[len(v)/2]) / 2
+}
+
+// Inputs is what Learn reads: the window's runs and failed summary calls
+// from the metrics log, the gateway's outcome log, which repository a
+// session is in, and what a cached token costs on a model.
+type Inputs struct {
+	Runs      []metrics.CompactionRun
+	Failed    []metrics.SummaryFailure
+	Outcomes  []Outcome
+	Resolve   func(session string) (name, root string)
+	ReadPrice func(model string) float64
+	Now       time.Time
+}
+
+// Learn works out each repository's target from in and, when step is true,
+// moves each Threshold one day's step towards it. Repositories already in
+// st keep their Threshold when the window has nothing new to say. It
+// returns the new state; st is not changed.
+func Learn(st State, in Inputs, b Bounds, step bool) State {
+	type acc struct {
+		name              string
+		swapped           []metrics.CompactionRun
+		growth, after, c0 []float64
+		turnsAfter        []float64
+		price             float64
+		latest            time.Time
+		fails             Failures
+		costs             []float64
+	}
+	by := map[string]*acc{}
+	get := func(session string) *acc {
+		name, root := in.Resolve(session)
+		if root == "" {
+			return nil
+		}
+		a := by[root]
+		if a == nil {
+			a = &acc{name: name}
+			by[root] = a
+		}
+		return a
+	}
+	for _, r := range in.Runs {
+		a := get(r.Session)
+		if a == nil {
+			continue
+		}
+		p := in.ReadPrice(r.Model)
+		if !r.Last.Before(a.latest) && p > 0 {
+			a.latest, a.price = r.Last, p
+		}
+		if r.Turns >= minGrowthTurns && r.End > r.Start {
+			a.growth = append(a.growth, float64(r.End-r.Start)/float64(r.Turns))
+		}
+		if !r.Swapped {
+			continue
+		}
+		a.swapped = append(a.swapped, r)
+		a.after = append(a.after, float64(r.Start))
+		a.costs = append(a.costs, r.CostUSD)
+		if p > 0 {
+			a.c0 = append(a.c0, math.Max(0, r.CostUSD-p*float64(r.Before)))
+		}
+		if in.Now.Sub(r.Last) >= settled {
+			a.turnsAfter = append(a.turnsAfter, float64(r.Turns))
+			// Each of its turns read Before-Start fewer tokens.
+			if saved := p * float64(r.Before-r.Start) * float64(r.Turns); saved < r.CostUSD {
+				a.fails.Unpaid++
+				a.fails.LostUSD += r.CostUSD - saved
+			}
+		}
+	}
+	for _, f := range in.Failed {
+		// One that failed before it was billed lost nothing.
+		if a := get(f.Session); a != nil && f.USD > 0 {
+			a.fails.SummaryFailed++
+			a.fails.LostUSD += f.USD
+		}
+	}
+	for _, o := range in.Outcomes {
+		a := get(o.Session)
+		if a == nil {
+			continue
+		}
+		switch o.Kind {
+		case OutcomeUnused:
+			a.fails.Unused++
+		case OutcomeEnded:
+			a.fails.Ended++
+		}
+	}
+
+	out := State{Repos: map[string]*Repo{}}
+	for root, old := range st.Repos {
+		c := *old
+		out.Repos[root] = &c
+	}
+	today := in.Now.Local().Format("2006-01-02")
+	for root, a := range by {
+		r := out.Repos[root]
+		// A repository that has never had a summary started has nothing to
+		// show: it is on the fixed Compact at like any folder not listed.
+		if r == nil && len(a.swapped) == 0 && a.fails.SummaryFailed+a.fails.Unused == 0 {
+			continue
+		}
+		if r == nil {
+			r = &Repo{Root: root}
+			out.Repos[root] = r
+		}
+		r.Name, r.LearnedAt = a.name, in.Now
+		n := len(a.swapped)
+		// A summary that was never used never swapped in: it is an attempt
+		// beside the ones that did.
+		a.fails.Attempts = n + a.fails.SummaryFailed + a.fails.Unused
+		if a.fails.Attempts > 0 {
+			a.fails.Rate = math.Min(1, float64(a.fails.Count())/float64(a.fails.Attempts))
+		}
+		r.Failures, r.Compactions = a.fails, n
+		r.AfterTokens = int64(median(a.after))
+		r.GrowthTurn = int64(median(a.growth))
+		r.CostUSD = median(a.costs)
+		r.TurnsAfter = int(median(a.turnsAfter))
+		r.PaybackTurn, r.SavedTurnUSD = 0, 0
+
+		switch {
+		case n < MinCompactions:
+			r.Target = 0
+			r.Reason = fmt.Sprintf("%d of the %d compactions needed in the last %d days: on the fixed Compact at until then", n, MinCompactions, int(Window.Hours()/24))
+		case r.GrowthTurn <= 0 || a.price <= 0:
+			r.Target = 0
+			r.Reason = "no run long enough to measure how fast the context grows: on the fixed Compact at"
+		default:
+			extraUSD := median(a.c0)
+			best := Optimal(r.AfterTokens, r.GrowthTurn, int64(extraUSD/a.price), a.fails.Rate)
+			// Room to work in: half as much again as a compaction leaves.
+			low := max(b.Floor, r.AfterTokens*3/2)
+			target := min(max(best, low), b.Ceiling)
+			if gap := float64(target - r.AfterTokens); gap > 0 {
+				r.PaybackTurn = int(math.Ceil((a.price*float64(target) + extraUSD) / (a.price * gap)))
+			}
+			r.Reason = fmt.Sprintf("a compaction leaves %dk and costs $%.2f, the context grows %.1fk a turn: cheapest at %dk", r.AfterTokens/1000, r.CostUSD, float64(r.GrowthTurn)/1000, best/1000)
+			switch {
+			case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare:
+				target = b.Ceiling
+				r.Reason = fmt.Sprintf("%d of %d compactions lost money: back to the fixed Compact at", a.fails.Count(), a.fails.Attempts)
+			case len(a.turnsAfter) >= MinCompactions && r.TurnsAfter < 2*r.PaybackTurn:
+				target = b.Ceiling
+				r.Reason = fmt.Sprintf("sessions go on %d turns after a compaction and one needs %d to pay for itself: back to the fixed Compact at", r.TurnsAfter, r.PaybackTurn)
+			case best < low:
+				r.Reason += fmt.Sprintf(", held at %dk (the floor, or room above what a compaction leaves)", low/1000)
+			case best > b.Ceiling:
+				r.Reason += fmt.Sprintf(", held at the fixed Compact at of %dk", b.Ceiling/1000)
+			}
+			r.Target = roundTo(target)
+			r.SavedTurnUSD = costPerTurn(b.Ceiling, r.AfterTokens, r.GrowthTurn, a.price, extraUSD) - costPerTurn(r.Target, r.AfterTokens, r.GrowthTurn, a.price, extraUSD)
+		}
+	}
+	for _, r := range out.Repos {
+		// Bounds the user has since moved apply at once, step or no step.
+		if r.Threshold > 0 {
+			r.Threshold = min(max(r.Threshold, b.Floor), b.Ceiling)
+		}
+		if !step || r.SteppedOn == today {
+			continue
+		}
+		r.SteppedOn = today
+		if r.Target <= 0 {
+			// Nothing to learn from any more: the fixed Compact at.
+			r.Previous, r.Threshold = r.Threshold, 0
+			continue
+		}
+		cur := r.Threshold
+		if cur <= 0 {
+			// Learned for the first time: straight to the target. The daily
+			// step is for adjusting a threshold already in use.
+			r.Previous, r.Threshold = b.Ceiling, r.Target
+			continue
+		}
+		limit := int64(float64(cur) * stepShare)
+		next := cur + min(max(r.Target-cur, -limit), limit)
+		if d := r.Target - next; d > -round && d < round {
+			next = r.Target
+		}
+		r.Previous, r.Threshold = cur, min(max(roundTo(next), b.Floor), b.Ceiling)
+	}
+	return out
+}
+
+// ReadOutcomes reads the gateway's outcome log from since on. A missing
+// file is no outcomes.
+func ReadOutcomes(path string, since time.Time) []Outcome {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []Outcome
+	start := 0
+	for i := 0; i <= len(b); i++ {
+		if i < len(b) && b[i] != '\n' {
+			continue
+		}
+		var o Outcome
+		if json.Unmarshal(b[start:i], &o) == nil && !o.Time.Before(since) && o.Session != "" {
+			out = append(out, o)
+		}
+		start = i + 1
+	}
+	return out
+}
+
+// AppendOutcome adds one line to the outcome log. An empty path is no log.
+func AppendOutcome(path string, o Outcome) error {
+	if path == "" {
+		return nil
+	}
+	b, err := json.Marshal(o)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(b, '\n'))
+	return err
+}

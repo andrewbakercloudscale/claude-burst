@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/autocompact"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
@@ -1151,5 +1152,35 @@ func TestClearSessionStopsASummaryInFlight(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the stopped call's cost is not recorded against session S:\n%s", b)
+	}
+}
+
+// A learned Compact at reaches the running gateway, survives the settings
+// being saved again, and a summary dropped before it applied is logged for
+// the learner as a compaction that bought nothing.
+func TestLearnedCompactAtAndTheOutcomeLog(t *testing.T) {
+	s := compactServer(t, &fakeAnthropic{context: 450_000}, config.CompactionConfig{Enabled: true, Mode: config.CompactionIntelligent})
+	s.SetLearnedCompaction(map[string]int64{"/src/x": 150_000})
+	s.SetCompaction(config.CompactionConfig{Enabled: true, Mode: config.CompactionIntelligent, CompactAtTokens: 400_000})
+	s.compaction.mu.Lock()
+	got, o := s.compaction.cfg.ForRepo("/src/x")
+	s.compaction.mu.Unlock()
+	if got.CompactAtTokens != 150_000 || o == nil || !o.Learned {
+		t.Fatalf("after saving the settings again: %d %+v", got.CompactAtTokens, o)
+	}
+
+	log := s.CompactionOutcomesPath()
+	if filepath.Base(log) != "compaction-outcomes.jsonl" || filepath.Dir(log) != filepath.Dir(s.compaction.path) {
+		t.Fatalf("outcome log at %q, want it beside the compaction state", log)
+	}
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	// The history is cut back before the summary applied: /clear or a rewind.
+	send(t, s, "S", all[:1])
+	out := autocompact.ReadOutcomes(log, time.Time{})
+	if len(out) != 1 || out[0].Session != "S" || out[0].Kind != autocompact.OutcomeUnused {
+		t.Fatalf("outcomes %+v, want one unused summary for S", out)
 	}
 }
