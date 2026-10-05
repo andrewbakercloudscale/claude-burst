@@ -190,6 +190,17 @@ The dashboard shows the net figure in the Pauseless Compaction section (per sess
 
 The Saved view above is also an illustration, not a measured month: the real daily average so far (2026-09-29 to 10-01, about 195M tokens of context compacted per active day) spread over 30 days, weekdays varying by a fixed pattern and weekends at 35%.
 
+### The other saving: overflow to the secondary
+
+Past the plan's limit Burst sends requests to the secondary. `overflow_stats` in
+`/api/state` (under `context`, the same 7 days) prices each of those requests twice: the
+same tokens at the price of the model Claude Code asked for, which is what they would
+have cost on Anthropic's API, and what the secondary charged. The difference is the
+saving, per day and in total, and it is negative on a day the secondary was the dearer
+one. Only answered requests with both prices known are counted (`priced` against
+`requests`), so a model with no price leaves the figure short rather than invented. The
+usage panel's sidebar draws it as **Overflow to Secondary**, under Pauseless Compaction.
+
 ## Savings per day, and what it means on a subscription
 
 The Pauseless Compaction section charts each day: **savings** (context compacted, priced at what resending it would have cost) above the line, **cost** (the summaries and the cache rewrites after each swap) below it, on one scale. The header totals the net for the window, hovering a day shows the breakdown, and *Show as a table* lists every day.

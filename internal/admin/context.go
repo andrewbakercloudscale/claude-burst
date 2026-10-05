@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -48,6 +49,9 @@ type contextInfo struct {
 	Sessions   []router.CompactionSession `json:"sessions"`
 	// CompactionStats is what compaction did over the same window.
 	CompactionStats metrics.CompactionStats `json:"compaction_stats"`
+	// Overflow is what the secondary's requests would have cost at the
+	// price of the model asked for, against what it charged, same window.
+	Overflow metrics.OverflowStats `json:"overflow_stats"`
 	// SavingsByRepo is the same savings split by repository.
 	SavingsByRepo []RepoSaving `json:"savings_by_repo,omitempty"`
 	// PromptNotice is whether the prompt notice hook is in settings.json.
@@ -81,12 +85,36 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.PromptNotice = promptNoticeState()
 	ci.MidTurnOff = s.gateway.MidTurnOff()
 	ci.CompactionStats, _ = metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
+	ci.Overflow = s.overflowStats()
 	if s.repos != nil {
 		ci.SavingsByRepo = s.repos.savingsByRepo(ci.CompactionStats.Sessions)
 	}
 	ci.Verdict = pruneVerdict(ci)
 	ci.CacheVerdict = cacheVerdict(eff)
 	return ci
+}
+
+// overflowStats is metrics.OverflowSince over the context window, read at
+// most once a minute: it is a pass over a week of requests, and the page
+// asks for the state every few seconds.
+var overflowCache struct {
+	sync.Mutex
+	path string
+	at   time.Time
+	st   metrics.OverflowStats
+}
+
+func (s *Server) overflowStats() metrics.OverflowStats {
+	overflowCache.Lock()
+	defer overflowCache.Unlock()
+	if overflowCache.path != s.metricsPath || time.Since(overflowCache.at) > time.Minute {
+		st, err := metrics.OverflowSince(s.metricsPath, time.Now().Add(-contextWindow))
+		if err != nil {
+			return overflowCache.st
+		}
+		overflowCache.path, overflowCache.at, overflowCache.st = s.metricsPath, time.Now(), st
+	}
+	return overflowCache.st
 }
 
 // failRate is failures as a share of requests, 0 with no requests.
