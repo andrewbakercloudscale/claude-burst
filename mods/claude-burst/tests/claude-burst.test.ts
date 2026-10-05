@@ -427,7 +427,11 @@ test('a session that has left Burst is compacted with the summary as soon as it 
   await clock.advance(5000)
   await clock.advance(5000)
   expect(calls).toEqual(['/compact'])
-  // The transcript does not fit: nothing is compacted, and the notice says why.
+  // Claude Code queued that /compact behind a turn and it comes later. The
+  // transcript does not fit: nothing is compacted, Claude Code writes no summary.
+  expect(String((await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT.slice(0, 2) })).skip)).toContain("Burst's summary does not fit")
+  expect(calls).toEqual(['/compact'])
+  // Typed again, it is the user's: Claude Code writes its own.
   expect((await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT.slice(0, 2) })).messages[0].text).toBe('CORE SUMMARY')
 })
 

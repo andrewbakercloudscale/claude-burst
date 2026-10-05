@@ -170,6 +170,10 @@ function handoffCut(h, msgs) {
 // running, and not $.session.compact(): a plugin's own session.compact hook
 // does not see that call, so Claude Code would write a summary of its own.
 let asking = false
+// The summary the mod's own /compact is for. Claude Code may queue that
+// /compact behind a running turn, so it is kept until the compaction comes:
+// one the mod asked for is never Claude Code's own, paid summary.
+let asked = ''
 async function leaveBurst($) {
   if (asking || !(await handoffOn($))) return
   const h = await readHandoff($)
@@ -180,6 +184,7 @@ async function leaveBurst($) {
   if (!out && raw < HANDOFF_ALWAYS_AT) return
   asking = true
   handed = h.of
+  asked = h.of
   try {
     await $.command.run({ command: 'compact', args: '' })
   } catch (err) {
@@ -203,7 +208,9 @@ export function register(on) {
     const cut = h ? handoffCut(h, e.messages || []) : -1
     // Asked for by leaveBurst and no fit: nothing is compacted. Claude Code
     // writing a summary of the whole history is the user's to ask for.
-    if (cut < 1 && asking) return { skip: "This session no longer goes through Burst, and Burst's summary does not fit it as Claude Code holds it. /compact again has Claude Code write its own" }
+    const mine = asking || (h !== null && asked === h.of && e.trigger === 'manual')
+    asked = ''
+    if (cut < 1 && mine) return { skip: "This session no longer goes through Burst, and Burst's summary does not fit it as Claude Code holds it. /compact again has Claude Code write its own" }
     if (cut < 1) return next(e)
     handed = h.of
     $.ui.toast("Burst's summary handed to Claude Code: " + cut + ' messages replaced, no summary request', { timeoutMs: TOAST_MS.info })
@@ -216,6 +223,7 @@ export function register(on) {
     since = Math.floor((await $.clock.now()) / 1000)
     toastsMarked = 0
     handed = ''
+    asked = ''
     heldSeen = 0
     band = !(await hasSidebar($))
     try {
