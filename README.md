@@ -171,8 +171,8 @@ With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass scri
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.17.0 at the time of writing)
-git clone --branch v0.17.0 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.18.0 at the time of writing)
+git clone --branch v0.18.0 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 # 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
@@ -204,6 +204,20 @@ OpenRouter, Bedrock and a metered API key are in [Providers](docs/providers.md).
 **Keep working past a limit.** Your Claude login stays the primary credential. Burst watches Anthropic's own subscription rate-limit headers, and only when Anthropic says a model's allowance is actually exhausted does it send *that model's* requests elsewhere: first to other Claude models on your own plan (Fable to Opus), then to a secondary you pay for (Together AI, OpenRouter, any OpenAI-compatible endpoint, or Amazon Bedrock). It returns to the subscription when the reset time arrives. A bare 429 never triggers it, and overflow requests are pruned of old tool output before they are sent. See [Routing and failover](docs/routing.md) and [Providers](docs/providers.md).
 
 **Long sessions without the pause** (Leading Edge, off by default). Every turn resends the whole conversation, so a turn at 400k tokens uses your limits about four times as fast as one at 100k, and Claude Code only compacts near the end of its 1M window, stopping the session while it does. Burst compacts much earlier, in the background, and swaps the summary in on your next prompt; `/compact-async` does it on demand. In two days of real use (one person, long Opus sessions) it saved about $26 a day of **API-equivalent** value, net of the summaries' own cost. On a subscription that is not money back: your bill does not change, your limits last longer. See [Pauseless compaction](docs/compaction.md).
+
+**Why compaction belongs in a gateway.** A model has no memory: every request carries the whole conversation, and a turn is often 10 to 30 requests, so the size of the context is what you pay for. Claude Code's `/compact`, and any plugin that answers it, shorten the conversation *inside* Claude Code: the old messages are gone and a poor summary cannot be undone. Burst shortens only what is *sent*:
+
+```
+Claude Code builds the request:   664 messages, about 980k tokens   (it keeps all of them)
+Burst replaces messages 0-601:    1 summary + 62 newer messages
+Anthropic receives and bills:     139k tokens
+```
+
+- **Nothing is destroyed.** Claude Code keeps every message. Drop the summary, or rewind, and the full history is sent again.
+- **No pause, and mid-turn.** The summary is written in the background from the cache (about $0.20 at 400k) and swapped in between two requests, even inside a long turn.
+- **The trade.** Claude Code's copy keeps growing, so a request that bypasses Burst sends all of it, uncached. Burst shows that figure and alerts on a bypass.
+
+The details, with five worked examples, are in [Two copies of the conversation](docs/compaction.md#two-copies-of-the-conversation-what-claude-code-keeps-and-what-burst-sends).
 
 **Codex too.** OpenAI's Codex, signed in with ChatGPT, can go through Burst as well: one button on the dashboard's Codex tab (or `claude-burst codex enable`). Requests reach ChatGPT unchanged; the Codex tab shows tokens, each session's context against its window, and the ChatGPT plan's limits. See [Codex](docs/codex.md).
 

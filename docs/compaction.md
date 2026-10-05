@@ -52,6 +52,14 @@ Good to know:
 
 This is the difference that matters most between Burst's compaction and every other kind.
 
+**Context windows, briefly.** A model has no memory between requests. Every request carries the whole conversation: system prompt, tools, CLAUDE.md, every prompt, every reply and every tool result so far. The context window is the most a request may hold (1M tokens on Opus 5.5 and Fable). Three things follow:
+
+- **Cost grows with the conversation, not with the question.** A one-line prompt at 400k of context re-reads 400k tokens. From cache that is a tenth of the input price, but it is paid on every request, and one turn is often 10 to 30 requests (one per tool call).
+- **The cache is keyed on the start of the request.** Change anything early and everything after it is written to the cache again at 1.25 times the input price. So a compaction is never free: what it leaves behind is written once more.
+- **Quality drops before the window is full.** A model attends less reliably to detail in the middle of a very long context, so a session at 800k is dearer and less sharp than one at 150k.
+
+Compaction replaces the old part of the conversation with a summary. There are two places it can be done, and they differ in what is lost.
+
 | | Claude Code `/compact`, or a mod that answers it | Burst (gateway) |
 |---|---|---|
 | Where the history is shortened | inside Claude Code: the old messages are replaced | on the wire only: the request is rewritten as it leaves the Mac |
@@ -60,6 +68,18 @@ This is the difference that matters most between Burst's compaction and every ot
 | Burst out of the path | no effect | the full history is sent, uncached |
 
 **What it means, exactly.** Claude Code builds every request from its whole transcript. Burst receives that request, checks that it still starts with the messages its summary was written from, and replaces those messages with the summary before sending it on. Anthropic's model only ever reads the short version. Claude Code never learns that anything changed.
+
+**Why the gateway is the better place.**
+
+- **Nothing is destroyed.** The summary is a view over the transcript, not a replacement for it. A summary that turns out poor is dropped and the original comes back. Compaction inside Claude Code cannot be undone.
+- **No pause.** The summary is written by a background request while you work, and swapped in between two requests. Claude Code's own compaction stops the session for 7 to 77 seconds in one set of measurements.
+- **The summary call is nearly free.** It resends the request Claude Code just sent, so it reads the history from the cache entry that request wrote: about $0.20 at 400k, against about $2 for a summary that misses the cache.
+- **It can compact in the middle of a turn.** A gateway sees every request, so a turn of 200 tool calls is cut while it runs. Claude Code compacts only when its window is nearly full.
+- **It can choose when.** The limit is yours, per repository, and Intelligent mode learns it from what compactions cost and saved. Claude Code's limit is fixed near the end of its window.
+- **Rewind, resume and the transcript still work on the real history.** Rewinding to a message from before the compaction gives you that message, not a summary of it.
+- **Nothing runs inside Claude Code.** No plugin to install and nothing to keep in step with Claude Code releases.
+
+**What it costs.** Claude Code's own copy keeps growing, so a request that leaves the Mac without Burst carries all of it (example 4), and Claude Code's own limit still exists (example 5). Burst shows what Claude Code holds, and alerts the moment it is bypassed.
 
 **Example 1, a normal turn** (a real session, 5 Oct 2026):
 
@@ -78,7 +98,7 @@ Claude Code's transcript after:   still 664 messages, plus the reply
 
 **Example 5, Claude Code's own limit still exists.** Claude Code's copy keeps growing. Past the model's 1M window Claude Code compacts in its own way, with the pause, and its transcript really is shortened. Burst's summary then stops fitting and is dropped.
 
-**What Burst keeps after a compaction.** The summary, CLAUDE.md and the other session context word for word, your latest prompt word for word, and every message after the request the summary was written from. Until v0.17.0 it kept the whole running turn instead, so a long turn left 140k and more behind (the 139k in example 1).
+**What Burst keeps after a compaction.** The summary, CLAUDE.md and the other session context word for word, your latest prompt word for word, and every message after the request the summary was written from. Up to and including v0.17.0 it kept the whole running turn instead, so a long turn left 140k and more behind (the 139k in example 1).
 
 ## Claude Code's own history, and what a bypass costs
 
