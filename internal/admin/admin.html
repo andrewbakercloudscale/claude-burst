@@ -3036,7 +3036,7 @@ function renderCompaction(s) {
       <td class="mono" title="${esc(r.session)}">${esc(r.session.slice(0, 8))}</td>
       <td class="mono" title="${esc(r.repo_root || "")}">${esc(r.repo || "-")}</td>
       <td class="mono">${esc(r.model || "-")}</td>
-      <td>${esc(r.state)}</td>
+      <td>${esc(r.state)}${r.state === "compacted" ? ` <button data-drop-summary="${esc(r.session)}" title="Send the full history again. Claude Code still holds all of it, so nothing is lost; the next request reads it uncached, and no new summary starts for one delay.">Drop summary</button>` : ""}</td>
       <td class="num" title="${r.override ? "this repository's override" : "Compact at"}">${limitOf(r) ? tok(limitOf(r)) : "never"}${r.override ? ` <span class="hint">repo</span>` : ""}</td>
       <td class="num">${x ? tok(x.before) : "-"}</td>
       <td class="num">${x ? tok(x.after) : "-"}</td>
@@ -3093,6 +3093,13 @@ $("roAdd").onclick = async () => {
     $("roRepo").value = $("roAt").value = ""; $("roOff").checked = false; $("roAt").disabled = false;
   }
 };
+$("compactSessions").addEventListener("click", e => {
+  const dr = e.target.closest("[data-drop-summary]");
+  if (!dr) return;
+  dr.disabled = true;
+  fetch("/api/compaction/drop", {method: "POST", headers: H, body: JSON.stringify({session: dr.dataset.dropSummary})})
+    .then(r => { dr.textContent = r.ok ? "Dropped" : "Not dropped"; });
+});
 $("roList").onclick = e => {
   const ed = e.target.closest("[data-ro-edit]"), rm = e.target.closest("[data-ro-remove]");
   if (ed) editRepoOverride(ed.dataset.roEdit);

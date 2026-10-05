@@ -1374,3 +1374,33 @@ func TestSummaryThatCallsAToolIsAskedAgain(t *testing.T) {
 		t.Fatal("the second answer is the summary in force")
 	}
 }
+
+// The way back from a poor summary: Claude Code still holds everything, so
+// dropping the summary sends the request as it was built, and no new
+// summary starts on that request.
+func TestDropSummarySendsTheFullHistoryAgain(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the summary must be in force first")
+	}
+	if n := s.DropSummary("S"); n != 1 {
+		t.Fatalf("want 1 summary dropped, got %d", n)
+	}
+	send(t, s, "S", all[:9])
+	s.compaction.running.Wait()
+	if got := f.last(); strings.Contains(got, "THE GIST") || !strings.Contains(got, "old file") {
+		t.Fatalf("the full history must go again:\n%s", got)
+	}
+	if n := f.summaryCount(); n != 1 {
+		t.Fatalf("no new summary inside the delay, got %d", n)
+	}
+	if s.DropSummary("S") != 0 || s.DropSummary("") != 0 {
+		t.Fatal("nothing left to drop")
+	}
+}
