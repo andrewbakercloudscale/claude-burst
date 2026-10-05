@@ -1,6 +1,6 @@
 {
   "name": "burst-band",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Claude Burst inside the session: route, real context, a context bar (/context-bar) and compaction above the prompt, or in the status line where the usage sidebar shows the rest (/burst band switches), the usage panel's summary in /burst, Burst's alerts and compaction lines as toasts",
   "author": { "name": "Andrew Baker" }
 }

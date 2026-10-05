@@ -40,6 +40,7 @@ export function register(on) {
     sid = await $.session.id()
     home = (await $.env.get('HOME')) || ''
     since = Math.floor((await $.clock.now()) / 1000)
+    toastsMarked = 0
     band = !(await hasSidebar($))
     try {
       const v = await $.store.get(BAND_KEY)
@@ -173,6 +174,24 @@ async function claim($, id) {
   }
 }
 
+// Tells the usage panel this session's compaction news is toasted here, so
+// it does not also float "Async Compaction In Progress" over the window: a
+// file named for the session, touched once a minute while toasts are on and
+// removed when they are turned off. The panel ignores one three minutes old.
+let toastsMarked = 0
+async function markToasts($, on) {
+  if (!home || !sid || /[^A-Za-z0-9._-]/.test(sid)) return
+  const now = await $.clock.now()
+  if (on ? now - toastsMarked < 60000 : toastsMarked === 0) return
+  toastsMarked = on ? now : 0
+  const script = on ? 'mkdir -p "$1" 2>/dev/null; : > "$1/$2"' : 'rm -f "$1/$2"'
+  try {
+    await $.process.run(['/bin/sh', '-c', script, 'sh', home + '/.config/claude-panel/mod-toasts', sid], { timeoutMs: 5000 })
+  } catch (err) {
+    // Unmarked, the panel floats its notice as well: twice, not never.
+  }
+}
+
 // Pauseless Compaction's news for this session, each line a toast. Asking
 // takes the lines from the gateway, as the prompt-notice hook does.
 async function compactionLines($) {
@@ -202,6 +221,7 @@ async function refresh($) {
       since = Math.max(since, a.ts)
       if (burst.toasts && (await claim($, a.id))) $.ui.toast('Burst: ' + a.title, { timeoutMs: TOAST_MS[a.severity] || TOAST_MS.info })
     }
+    await markToasts($, !!burst.toasts)
     if (burst.toasts) await compactionLines($)
   } catch (err) {
     if (!down) $.ui.toast('Burst dashboard not answering')

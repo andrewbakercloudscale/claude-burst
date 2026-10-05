@@ -125,8 +125,9 @@ test('alerts become toasts once, each claimed so its pop-up stands aside', async
   await clock.advance(5000)
   expect(toasts).toEqual(['Burst: Overflow to the secondary', 'Burst: Pauseless compaction started'])
   // One claim each, in the panels' own folder, by the event's id.
-  expect(world.runs.length).toBe(2)
-  expect(world.runs[0].slice(-2)).toEqual(['/Users/me/.config/claude-panel/alerts-claimed', 'a'])
+  const claims = world.runs.filter((r) => r[r.length - 2].endsWith('/alerts-claimed'))
+  expect(claims.length).toBe(2)
+  expect(claims[0].slice(-2)).toEqual(['/Users/me/.config/claude-panel/alerts-claimed', 'a'])
   await clock.advance(5000)
   // The next poll asks only for what came after the newest alert seen.
   expect(urls[2]).toContain('since=1000000101')
@@ -189,6 +190,23 @@ test('/burst opens a pane with the panel summary and Burst details', async ($, o
   // A background colour's numbers are not read as bold, dim or a colour.
   const view = await ui.find({ type: 'Text', text: /^\[View\]$/ })
   expect(view.props).toEqual({ color: 'rgb(0,0,0)', backgroundColor: 'rgb(125,249,255)', bold: true })
+})
+
+test('toasting, the mod marks the session so the panel does not also float its compaction notice', async ($, on) => {
+  const world: World = { runs: [] }
+  const clock = stubs(on, [mod(), mod(), mod({ toasts: false })], [], [], false, [], {}, world)
+  await start($)
+  await clock.advance(5000)
+  // Marked once, not at every poll.
+  const marks = world.runs.filter((r) => r[r.length - 2] === '/Users/me/.config/claude-panel/mod-toasts')
+  expect(marks.length).toBe(1)
+  expect(marks[0][2]).toContain(': > "$1/$2"')
+  expect(marks[0][marks[0].length - 1]).toBe('S1')
+  // Toasts turned off: the mark goes, and the notice is the panel's again.
+  await clock.advance(5000)
+  const last = world.runs[world.runs.length - 1]
+  expect(last[2]).toBe('rm -f "$1/$2"')
+  expect(last.slice(-2)).toEqual(['/Users/me/.config/claude-panel/mod-toasts', 'S1'])
 })
 
 test('toasts are off unless the dashboard turns them on', async ($, on) => {
