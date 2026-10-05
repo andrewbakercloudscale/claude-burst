@@ -291,6 +291,10 @@
   /* Times and ids stay on one line; the table scrolls sideways instead. */
   .scroll td.mono { white-space: nowrap; }
 
+  .ic-panel { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin: 12px 0; }
+  [data-ic][hidden], [data-static][hidden] { display: none !important; }
+  .ic-choice { display: flex; align-items: flex-start; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--text); margin: 0; min-width: 260px; }
+  .ic-choice:has(input:checked) { border-color: var(--ok); background: var(--ok-bg); }
   .pill { font: 11px var(--mono); padding: 1.5px 7px; border-radius: 5px; border: 1px solid var(--border);
           background: var(--panel-2); color: var(--muted); }
   .pill.p { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); background: var(--ok-bg); }
@@ -1136,49 +1140,43 @@
         <p style="margin:0 0 8px"><strong>How:</strong> when a session's context passes <em>Compact at</em>, Burst asks the same model, on your subscription and your session's own login, to summarise everything before your latest prompt (about 40 seconds, in the background). From your next prompt it sends that summary in place of those messages. Claude Code keeps its full history and sees no difference. Your CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.</p>
         <p style="margin:0">If you run <code>/clear</code> or <code>/compact</code>, or rewind, the summary no longer fits and requests go through untouched. Each compaction costs one summary call, which reads the session from cache, and one cache rewrite, and pays for itself within a few turns. The usage panel marks each one with Started and Finished rows and a green drop in context.</p>
       </div>
+      <div class="ic-panel">
+      <h3 class="mac-h" style="margin-top:0">Compaction mode <span class="pill" id="icState">static</span></h3>
+      <div class="row" style="gap:10px;margin:6px 0 10px;flex-wrap:wrap" role="radiogroup" aria-label="When to compact">
+        <label class="ic-choice"><input type="radio" name="icMode" value="" style="width:auto;margin:0 8px 0 0"><span><strong>Static</strong><br><span class="hint">One size for every repository.</span></span></label>
+        <label class="ic-choice"><input type="radio" name="icMode" value="intelligent" style="width:auto;margin:0 8px 0 0"><span><strong>Intelligent</strong><br><span class="hint">A size learned for each repository, adjusted daily.</span></span></label>
+      </div>
       <div class="row" style="align-items:flex-end">
         <div>
-          <label for="compactAt">Compact at (k tokens)</label>
+          <label for="compactAt" id="compactAtLabel">Compact at (k tokens)</label>
           <input type="number" id="compactAt" min="50" max="900" step="10" style="width:110px">
+        </div>
+        <div data-ic>
+          <label for="icFloor">Never below (k tokens)</label>
+          <input type="number" id="icFloor" min="50" max="900" step="10" style="width:110px">
+        </div>
+        <div data-ic>
+          <label for="icBuffer" title="Added on top of the cheapest size, so a learned size is less eager than the money alone says">Buffer (%)</label>
+          <input type="number" id="icBuffer" min="0" max="200" step="5" style="width:110px">
         </div>
         <div>
           <label for="compactWarn">Warn when at (%)</label>
           <input type="number" id="compactWarn" min="1" max="99" step="5" style="width:110px">
         </div>
         <div>
-          <label for="compactWindow">Delay between compactions (minutes)</label>
+          <label for="compactWindow">Max 1 compaction per (minutes)</label>
           <input type="number" id="compactWindow" min="1" max="1440" step="5" style="width:110px">
         </div>
         <button class="primary" id="compactSave">&#x2713; Save</button>
-      </div>
-      <div class="hint" style="margin-top:6px"><strong>Compact at</strong>: the context that triggers a summary (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default threshold). <strong>Delay between compactions</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
-      <h3 class="mac-h">Intelligent Compaction Mode <span class="pill" id="icState">off</span></h3>
-      <div class="hint" style="font-size:13.5px;line-height:1.55">One <em>Compact at</em> does not suit every repository. In this mode Burst learns one for each, from the last 14 days of that repository's own compactions: what a compaction leaves behind, how fast the context grows again, and what a compaction costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is where the two add up to the least, and it is adjusted once a day, by a tenth at most. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. Failures are counted for each repository and push its size up; where most compactions lose money it goes back to <em>Compact at</em>.
-        <br><br>Guards: never below the floor, never above <em>Compact at</em>, a buffer on top of the cheapest size (20% unless you change it) since the money does not measure what a summary loses, nothing learned from fewer than 3 compactions, and <em>Delay between compactions</em> above still spaces a session's compactions (default: at most one every 30 minutes). A repository override below always wins.</div>
-      <div class="row" style="align-items:flex-end;margin-top:8px">
-        <div>
-          <label for="icMode">Mode</label>
-          <select id="icMode" style="width:auto"><option value="">Fixed: one Compact at</option><option value="intelligent">Intelligent Compaction Mode</option></select>
-        </div>
-        <div>
-          <label for="icFloor">Floor (k tokens)</label>
-          <input type="number" id="icFloor" min="50" max="900" step="10" style="width:110px">
-        </div>
-        <div>
-          <label for="icBuffer" title="Added on top of the cheapest size, so a learned Compact at is less eager than the money alone says">Buffer (%)</label>
-          <input type="number" id="icBuffer" min="0" max="200" step="5" style="width:110px">
-        </div>
-        <div>
-          <label for="icDelay" title="The same setting as Delay between compactions above">Max 1 compaction per (minutes)</label>
-          <input type="number" id="icDelay" min="1" max="1440" step="5" style="width:110px">
-        </div>
-        <button class="primary" id="icSave">&#x2713; Save</button>
-        <button id="icLearn">Learn now</button>
+        <button id="icLearn" data-ic>Learn now</button>
         <span class="hint" id="icNote"></span>
       </div>
-      <div id="icTable" style="margin-top:8px"></div>
+      <div class="hint" style="margin-top:6px" data-static><strong>Compact at</strong>: the context that triggers a summary, the same for every repository (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default). <strong>Max 1 compaction per</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
+      <div class="hint" style="margin-top:6px;line-height:1.55" data-ic>Burst learns a size for each repository from the last 14 days of its own compactions: what one leaves behind, how fast the context grows again, and what one costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is where the two add up to the least, plus the <strong>Buffer</strong>, kept between <strong>Never below</strong> and <strong>Never above</strong>, and adjusted once a day by a tenth at most. A repository with fewer than 3 compactions uses <em>Never above</em>. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. Failures push a repository's size up, and where most lose money it goes back to <em>Never above</em>. <strong>Warn when at</strong> is a share of each repository's own size, and <strong>Max 1 compaction per</strong> is the least time between two compactions of the same session (default 30 minutes).</div>
+      <div id="icTable" style="margin-top:8px" data-ic></div>
+      </div>
       <h3 class="mac-h">Repository overrides</h3>
-      <div class="hint">Sessions in these repositories compact at their own size instead of <em>Compact at</em> above, or never on their own (<code>/compact-async</code> still works). <em>Warn when at</em> and the delay apply to each repository's own size. A repository is the folder holding <code>.git</code> above where Claude Code was started; every other repository uses <em>Compact at</em>.</div>
+      <div class="hint">Sessions in these repositories compact at their own size instead of the one above, static or learned, or never on their own (<code>/compact-async</code> still works). <em>Warn when at</em> and the delay apply to each repository's own size. A repository is the folder holding <code>.git</code> above where Claude Code was started; every other repository uses <em>Compact at</em>.</div>
       <div id="roList" style="margin-top:6px"></div>
       <div class="row" style="align-items:flex-end">
         <div style="flex:1;min-width:240px">
@@ -2970,10 +2968,9 @@ function renderCompaction(s) {
     }
     if (document.activeElement !== $("icFloor")) $("icFloor").value = Math.round((k.floor_tokens || 100000) / 1000);
     if (document.activeElement !== $("icBuffer")) $("icBuffer").value = k.buffer_percent ?? 20;
-    if (!typing && document.activeElement !== $("icDelay")) $("icDelay").value = k.window_minutes || 30;
-    $("icMode").value = k.mode || "";
+    setMode(k.mode || "");
   }
-  setPill("icState", !k.enabled ? "compaction off" : k.mode === "intelligent" ? "on" : "off", k.enabled && k.mode === "intelligent" ? "ok" : "");
+  setPill("icState", !k.enabled ? "compaction off" : k.mode === "intelligent" ? "intelligent" : "static", k.enabled ? "ok" : "");
   loadLearned(false);
   setPill("compactState", k.enabled ? "on" : "off", k.enabled ? "ok" : "");
   setPill("compactMidTurnState", !k.mid_turn ? "off" : c.mid_turn_off ? "refused by the API: off until you save again" : "on",
@@ -3105,7 +3102,7 @@ async function saveCompaction() {
     compact_at_tokens: (parseInt($("compactAt").value, 10) || 0) * 1000,
     warn_at_percent: parseInt($("compactWarn").value, 10) || 0,
     window_minutes: parseInt($("compactWindow").value, 10) || 0,
-    mode: $("icMode").value,
+    mode: getMode(),
     floor_tokens: (parseInt($("icFloor").value, 10) || 0) * 1000,
     buffer_percent: Math.max(0, parseInt($("icBuffer").value, 10) || 0),
   };
@@ -3124,6 +3121,20 @@ async function saveCompaction() {
     compactBusy = false;
     refresh();
   }
+}
+
+// Static or intelligent: one or the other. The chosen one's fields and
+// explanation are the only ones on the page.
+function getMode() { return document.querySelector('input[name="icMode"]:checked')?.value || ""; }
+function setMode(m) {
+  for (const r of document.querySelectorAll('input[name="icMode"]')) r.checked = r.value === m;
+  showMode();
+}
+function showMode() {
+  const on = getMode() === "intelligent";
+  for (const el of document.querySelectorAll("[data-ic]")) el.hidden = !on;
+  for (const el of document.querySelectorAll("[data-static]")) el.hidden = on;
+  $("compactAtLabel").textContent = on ? "Never above (k tokens)" : "Compact at (k tokens)";
 }
 
 // Intelligent Compaction Mode's table: each repository's learned Compact at,
@@ -3178,13 +3189,15 @@ function renderLearned(v) {
       }).join("")}</tbody></table>`;
 }
 // One setting, shown in both places.
-$("icDelay").addEventListener("input", () => { $("compactWindow").value = $("icDelay").value; });
-$("compactWindow").addEventListener("input", () => { $("icDelay").value = $("compactWindow").value; });
-for (const id of ["icMode", "icFloor", "icBuffer", "icDelay"]) $(id).addEventListener("input", () => {
+for (const id of ["icFloor", "icBuffer"]) $(id).addEventListener("input", () => {
   compactDirty = true;
   $("icNote").textContent = "Not saved yet: press Save to apply.";
 });
-$("icSave").onclick = saveCompaction;
+for (const r of document.querySelectorAll('input[name="icMode"]')) r.addEventListener("change", () => {
+  compactDirty = true;
+  showMode();
+  $("icNote").textContent = "Not saved yet: press Save to apply.";
+});
 $("icLearn").onclick = async () => {
   $("icNote").textContent = "Learning...";
   await loadLearned(true, true);
