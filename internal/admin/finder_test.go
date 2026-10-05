@@ -217,8 +217,10 @@ func TestFinderRemove(t *testing.T) {
 		t.Errorf("done = %q", done)
 	}
 	v := readFinder()
-	if last := v.Shortcuts[len(v.Shortcuts)-1]; v.Shortcuts[0].Installed || !last.Installed || last.Ours {
-		t.Errorf("status after remove: %+v", v.Shortcuts)
+	for _, st := range v.Shortcuts {
+		if foreign := st.Key == "opencode"; st.Installed != foreign || st.Ours {
+			t.Errorf("status after remove: %s installed=%v ours=%v", st.Key, st.Installed, st.Ours)
+		}
 	}
 }
 
@@ -315,11 +317,7 @@ func TestFinderInstallsAndRemovesOnlyTheTickedShortcuts(t *testing.T) {
 			t.Errorf("%s installed = %v, want %v", st.Key, st.Installed, want[st.Key])
 		}
 	}
-	for name, ends := range map[string]string{"ghostty-omc-launcher": `caffeinate -i "$TOOL"`, "ghostty-claude-continue-launcher": `caffeinate -i "$TOOL" --continue`} {
-		b, err := os.ReadFile(r.launcher(name))
-		if err != nil || !strings.HasSuffix(strings.TrimSpace(string(b)), ends) {
-			t.Errorf("%s must end with %q: %v\n%s", name, ends, err, b)
-		}
+	for _, name := range []string{"ghostty-omc-launcher", "ghostty-claude-continue-launcher"} {
 		if out, err := exec.Command("bash", "-n", r.launcher(name)).CombinedOutput(); err != nil {
 			t.Errorf("bash rejects %s: %s", name, out)
 		}
@@ -373,4 +371,152 @@ out({...first, after: finderKeys()});`, &got)
 	if strings.Join(got.After, ",") != "omc,codex" {
 		t.Errorf("after ticking codex and unticking claude: %v", got.After)
 	}
+}
+
+// runLauncher runs a launcher as Ghostty would, with stand-ins for the tool
+// and for caffeinate, and returns the command line the tool was started
+// with. The real ones would open Claude Code and hold the Mac awake.
+func (r *finderRig) runLauncher(t *testing.T, launcher, tool, folder string) string {
+	t.Helper()
+	bin := filepath.Join(r.home, "fakebin")
+	os.MkdirAll(bin, 0o755)
+	ran := filepath.Join(r.home, "ran")
+	os.Remove(ran)
+	os.WriteFile(filepath.Join(bin, "caffeinate"), []byte("#!/bin/bash\nshift\nprintf '%s|%s\\n' \"$PWD\" \"$*\" > \""+ran+"\"\n"), 0o755)
+	if tool != "" {
+		os.WriteFile(filepath.Join(r.home, ".local", "bin", tool), []byte("#!/bin/bash\n"), 0o755)
+	}
+	cmd := exec.Command("/bin/bash", r.launcher(launcher), folder)
+	cmd.Env = []string{"HOME=" + r.home, "PATH=" + bin + ":/usr/bin:/bin"}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%s: %v: %s", launcher, err, out)
+	}
+	b, err := os.ReadFile(ran)
+	if err != nil {
+		t.Fatalf("%s did not start its tool through the stand-in caffeinate: %v", launcher, err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// The bypass tick is read by the launcher when it runs: on adds the tool's
+// own flag, off takes it away, with no reinstall, and one row's tick is not
+// another's.
+func TestFinderBypassTickChangesWhatTheLauncherRuns(t *testing.T) {
+	r := newFinderRig(t, true)
+	if _, err := installFinderShortcuts(false, "omc", "claude-continue", "claude-resume"); err != nil {
+		t.Fatal(err)
+	}
+	folder, _ := filepath.EvalSymlinks(t.TempDir())
+	tool := filepath.Join(r.home, ".local", "bin")
+	if got, want := r.runLauncher(t, "ghostty-claude-continue-launcher", "claude", folder), folder+"|"+tool+"/claude --continue"; got != want {
+		t.Fatalf("no tick: ran %q, want %q", got, want)
+	}
+	if got, want := r.runLauncher(t, "ghostty-omc-launcher", "omc", folder), folder+"|"+tool+"/omc"; got != want {
+		t.Fatalf("no tick, no arguments: ran %q, want %q", got, want)
+	}
+	msg, err := setFinderBypass("claude-continue", true)
+	if err != nil || !strings.Contains(msg, "--dangerously-skip-permissions") {
+		t.Fatalf("%q, %v", msg, err)
+	}
+	if got, want := r.runLauncher(t, "ghostty-claude-continue-launcher", "claude", folder), folder+"|"+tool+"/claude --continue --dangerously-skip-permissions"; got != want {
+		t.Fatalf("ticked: ran %q, want %q", got, want)
+	}
+	if got := r.runLauncher(t, "ghostty-claude-resume-launcher", "claude", folder); !strings.HasSuffix(got, "/claude --resume") {
+		t.Fatalf("another row's tick leaked: %q", got)
+	}
+	if _, err := setFinderBypass("omc", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.runLauncher(t, "ghostty-omc-launcher", "omc", folder); !strings.HasSuffix(got, "/omc --madmax") {
+		t.Fatalf("omc ticked: %q", got)
+	}
+	for _, st := range readFinder().Shortcuts {
+		if want := st.Key == "claude-continue" || st.Key == "omc"; st.BypassOn != want {
+			t.Errorf("%s bypass_on = %v, want %v", st.Key, st.BypassOn, want)
+		}
+	}
+	if _, err := setFinderBypass("claude-continue", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.runLauncher(t, "ghostty-claude-continue-launcher", "claude", folder); !strings.HasSuffix(got, "/claude --continue") {
+		t.Fatalf("unticked: %q", got)
+	}
+	if got := r.runLauncher(t, "ghostty-omc-launcher", "omc", folder); !strings.HasSuffix(got, "/omc --madmax") {
+		t.Fatalf("unticking one row cleared another: %q", got)
+	}
+	// Rows with no such option, and unknown rows, are refused.
+	for _, k := range []string{"claude", "opencode", "ghostty", "nope"} {
+		if _, err := setFinderBypass(k, true); err == nil {
+			t.Errorf("%s: want a refusal", k)
+		}
+	}
+}
+
+// A launcher 0.19.2 wrote does not read the tick. Untouched, it is brought
+// up to date; changed by hand, it is somebody's: left alone, and the tick
+// says it cannot work rather than pretending.
+func TestFinderBypassAndLaunchersFromBeforeTheTick(t *testing.T) {
+	r := newFinderRig(t, true)
+	os.MkdirAll(filepath.Join(r.home, ".local", "bin"), 0o755)
+	old := plainLauncherV1("omc", "OMC (oh-my-claudecode)", "")
+	os.WriteFile(r.launcher("ghostty-omc-launcher"), old, 0o755)
+	mine := []byte("#!/bin/bash\nexec my-own-codex\n")
+	os.WriteFile(r.launcher("ghostty-codex-launcher"), mine, 0o755)
+	for _, st := range readFinder().Shortcuts {
+		if st.Key == "omc" && !st.BypassOK {
+			t.Error("an untouched 0.19.2 launcher can be brought up to date, so its tick works")
+		}
+		if st.Key == "codex" && st.BypassOK {
+			t.Error("a launcher changed by hand does not read the tick")
+		}
+	}
+	if _, err := setFinderBypass("omc", true); err != nil {
+		t.Fatal(err)
+	}
+	folder, _ := filepath.EvalSymlinks(t.TempDir())
+	if got := r.runLauncher(t, "ghostty-omc-launcher", "omc", folder); !strings.HasSuffix(got, "/omc --madmax") {
+		t.Fatalf("the old launcher was not brought up to date: %q", got)
+	}
+	if _, err := setFinderBypass("codex", true); err == nil || !strings.Contains(err.Error(), "changed by hand") {
+		t.Fatalf("want a refusal that says why, got %v", err)
+	}
+	if b, _ := os.ReadFile(r.launcher("ghostty-codex-launcher")); string(b) != string(mine) {
+		t.Fatal("a launcher changed by hand was overwritten")
+	}
+	if readFinderBypass()["codex"] {
+		t.Fatal("a refused tick was saved")
+	}
+}
+
+// "Open Ghostty here" needs no tool and starts the user's shell in the folder.
+func TestFinderPlainTerminalShortcut(t *testing.T) {
+	r := newFinderRig(t, true)
+	done, err := installFinderShortcuts(false, "ghostty")
+	if err != nil || strings.Contains(strings.Join(done, "\n"), "not installed") {
+		t.Fatalf("%q, %v", done, err)
+	}
+	folder, _ := filepath.EvalSymlinks(t.TempDir())
+	sh := filepath.Join(r.home, "sh")
+	os.WriteFile(sh, []byte("#!/bin/bash\nprintf '%s|%s' \"$PWD\" \"$*\" > \"$HOME/ran\"\n"), 0o755)
+	cmd := exec.Command("/bin/bash", r.launcher("ghostty-here-launcher"), folder)
+	cmd.Env = []string{"HOME=" + r.home, "PATH=/usr/bin:/bin", "SHELL=" + sh}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.home, "ran")); string(b) != folder+"|-l" {
+		t.Fatalf("ran %q, want a login shell in %s", b, folder)
+	}
+	// omc interop is no use without Codex, and says which one is missing.
+	for _, st := range readFinder().Shortcuts {
+		if st.Key == "omc-interop" && (st.ToolFound || st.Missing != "omc") {
+			t.Errorf("omc-interop: %+v", st.finderStatusBrief())
+		}
+		if st.Key == "ghostty" && !st.ToolFound {
+			t.Error("a plain terminal needs no tool")
+		}
+	}
+}
+
+func (st finderStatus) finderStatusBrief() string {
+	return st.Key + " found=" + map[bool]string{true: "yes", false: "no"}[st.ToolFound] + " missing=" + st.Missing
 }

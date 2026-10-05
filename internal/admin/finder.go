@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"crypto/rand"
 	_ "embed"
 	"encoding/json"
@@ -11,10 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 )
 
 // Finder shortcuts: right-click a folder, Services, "Launch Claude Code in
-// Ghostty" (or its last session, OMC, Codex, OpenCode). Each is an
+// Ghostty" (or a session of it, OMC, Codex, OpenCode, a plain terminal). Each is an
 // Automator Quick Action in ~/Library/Services that runs a launcher script
 // in ~/.local/bin. The dashboard ticks which ones to install or remove.
 //
@@ -25,12 +28,20 @@ import (
 // our launcher; the launchers stay, so a reinstall keeps the panel's patch.
 
 type finderShortcut struct {
-	Key      string `json:"key"`
-	Name     string `json:"name"` // the menu item, and the .workflow name
-	Tool     string `json:"tool"` // the command the launcher runs
-	Note     string `json:"note,omitempty"`
-	launcher string // file name in ~/.local/bin
-	script   []byte // launcher written when none exists
+	Key  string `json:"key"`
+	Name string `json:"name"` // the menu item, and the .workflow name
+	Tool string `json:"tool"` // the command the launcher runs; "" for a plain shell
+	// Also is a second command the shortcut is no use without.
+	Also string `json:"also,omitempty"`
+	Note string `json:"note,omitempty"`
+	// BypassFlag is what the launcher adds when the row's bypass tick is on;
+	// "" for a shortcut with no such tick.
+	BypassFlag string `json:"bypass_flag,omitempty"`
+	launcher   string // file name in ~/.local/bin
+	script     []byte // launcher written when none exists
+	// was is the launcher 0.19.2 wrote, which knew no bypass tick: a file
+	// still equal to it is ours and unchanged, so it is brought up to date.
+	was []byte
 }
 
 //go:embed assets/finder/ghostty-claude-launcher
@@ -39,19 +50,121 @@ var claudeLauncher []byte
 //go:embed assets/finder/ghostty-opencode-launcher
 var opencodeLauncher []byte
 
+const claudeBypass = "--dangerously-skip-permissions"
+
+// The Claude launcher has no bypass tick: the usage panel patches that file
+// and gives it the dashboard's "Start with bypass permissions" option.
 var finderShortcuts = []finderShortcut{
 	{Key: "claude", Name: "Launch Claude Code in Ghostty", Tool: "claude", launcher: "ghostty-claude-launcher", script: claudeLauncher},
 	{Key: "claude-continue", Name: "Continue last Claude Code session in Ghostty", Tool: "claude", Note: "claude --continue: the folder's most recent conversation",
-		launcher: "ghostty-claude-continue-launcher", script: plainLauncher("claude", "Claude Code", "--continue")},
+		BypassFlag: claudeBypass, launcher: "ghostty-claude-continue-launcher",
+		script: plainLauncher("claude-continue", "claude", "Claude Code", "--continue", claudeBypass), was: plainLauncherV1("claude", "Claude Code", "--continue")},
+	{Key: "claude-resume", Name: "Resume a Claude Code session in Ghostty", Tool: "claude", Note: "claude --resume: pick from the folder's conversations",
+		BypassFlag: claudeBypass, launcher: "ghostty-claude-resume-launcher",
+		script: plainLauncher("claude-resume", "claude", "Claude Code", "--resume", claudeBypass)},
 	{Key: "omc", Name: "Launch Claude Code with OMC in Ghostty", Tool: "omc", Note: "oh-my-claudecode: Claude Code inside tmux",
-		launcher: "ghostty-omc-launcher", script: plainLauncher("omc", "OMC (oh-my-claudecode)", "")},
-	{Key: "codex", Name: "Launch Codex in Ghostty", Tool: "codex", launcher: "ghostty-codex-launcher", script: plainLauncher("codex", "Codex", "")},
+		BypassFlag: "--madmax", launcher: "ghostty-omc-launcher",
+		script: plainLauncher("omc", "omc", "OMC (oh-my-claudecode)", "", "--madmax"), was: plainLauncherV1("omc", "OMC (oh-my-claudecode)", "")},
+	{Key: "omc-interop", Name: "Launch OMC and Codex side by side in Ghostty", Tool: "omc", Also: "codex", Note: "omc interop: Claude Code and Codex in one tmux window",
+		launcher: "ghostty-omc-interop-launcher", script: plainLauncher("omc-interop", "omc", "OMC (oh-my-claudecode)", "interop", "")},
+	{Key: "codex", Name: "Launch Codex in Ghostty", Tool: "codex",
+		BypassFlag: "--dangerously-bypass-approvals-and-sandbox", launcher: "ghostty-codex-launcher",
+		script: plainLauncher("codex", "codex", "Codex", "", "--dangerously-bypass-approvals-and-sandbox"), was: plainLauncherV1("codex", "Codex", "")},
 	{Key: "opencode", Name: "Launch OpenCode in Ghostty", Tool: "opencode", launcher: "ghostty-opencode-launcher", script: opencodeLauncher},
+	{Key: "ghostty", Name: "Open Ghostty here", Note: "a plain terminal window in the folder", launcher: "ghostty-here-launcher", script: shellLauncher},
+}
+
+// shellLauncher opens the user's own shell in the folder Finder passed.
+var shellLauncher = []byte(`#!/bin/bash
+# First argument is the folder Finder passed in.
+FOLDER="$1"
+if [ -n "$FOLDER" ] && [ -d "$FOLDER" ]; then
+  cd "$FOLDER"
+fi
+exec "${SHELL:-/bin/zsh}" -l
+`)
+
+// finderConfName holds the bypass ticks, one "bypass=<key>" line each. The
+// launchers read it when they run, so a tick needs no reinstall.
+const finderConfName = "finder.conf"
+
+func finderConfPath() string {
+	return filepath.Join(os.Getenv("HOME"), ".config", "claude-burst", finderConfName)
+}
+
+func readFinderBypass() map[string]bool {
+	out := map[string]bool{}
+	b, err := os.ReadFile(finderConfPath())
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if k, ok := strings.CutPrefix(strings.TrimSpace(line), "bypass="); ok && k != "" {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+func writeFinderBypass(on map[string]bool) error {
+	var sb strings.Builder
+	for _, f := range finderShortcuts {
+		if on[f.Key] && f.BypassFlag != "" {
+			sb.WriteString("bypass=" + f.Key + "\n")
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(finderConfPath()), 0o700); err != nil {
+		return err
+	}
+	return atomicfile.Write(finderConfPath(), []byte(sb.String()), 0o600)
 }
 
 // plainLauncher is the Claude launcher's shape for another tool: find it
 // however we were started, go to the folder Finder passed, run it awake.
-func plainLauncher(tool, label, args string) []byte {
+func plainLauncher(key, tool, label, args, bypass string) []byte {
+	run := `ARGS=(` + args + `)
+`
+	if bypass != "" {
+		run += `# The dashboard's bypass tick for this shortcut (Finder shortcuts).
+grep -qx 'bypass=` + key + `' "$HOME/.config/claude-burst/` + finderConfName + `" 2>/dev/null && ARGS+=(` + bypass + `)
+`
+	}
+	return []byte(`#!/bin/bash
+# Source login files so ` + "`" + tool + "`" + ` is on PATH no matter how we were launched.
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+  [ -f "$rc" ] && source "$rc" 2>/dev/null || true
+done
+
+TOOL="$(command -v ` + tool + ` 2>/dev/null || true)"
+case "$TOOL" in /*) ;; *) TOOL="" ;; esac # a shell function or alias is no use to caffeinate
+if [ -z "$TOOL" ]; then
+  for candidate in \
+    "$HOME/.local/bin/` + tool + `" \
+    "$HOME/.npm-global/bin/` + tool + `" \
+    "/opt/homebrew/bin/` + tool + `" \
+    "/usr/local/bin/` + tool + `" \
+    "/usr/bin/` + tool + `"; do
+    if [ -x "$candidate" ]; then TOOL="$candidate"; break; fi
+  done
+fi
+if [ -z "$TOOL" ]; then
+  osascript -e 'display alert "` + label + ` not found" message "Install it, or make sure the ` + tool + ` command is on your PATH."'
+  exit 1
+fi
+
+# First argument is the folder Finder passed in.
+FOLDER="$1"
+if [ -n "$FOLDER" ] && [ -d "$FOLDER" ]; then
+  cd "$FOLDER"
+fi
+
+# caffeinate -i keeps the Mac awake while a session is running.
+` + run + `caffeinate -i "$TOOL" "${ARGS[@]}"
+`)
+}
+
+// plainLauncherV1 is what 0.19.2 wrote, kept to recognise its files.
+func plainLauncherV1(tool, label, args string) []byte {
 	if args != "" {
 		args = " " + args
 	}
@@ -133,6 +246,12 @@ type finderStatus struct {
 	Ours      bool `json:"ours"`      // and it runs our launcher, so Remove may delete it
 	Launcher  bool `json:"launcher"`  // the launcher script exists
 	ToolFound bool `json:"tool_found"`
+	// Missing is the command that is not installed, when ToolFound is false.
+	Missing string `json:"missing,omitempty"`
+	// BypassOn is the row's bypass tick. BypassOK is false when a launcher
+	// is there that does not read the tick (changed by hand, or not ours).
+	BypassOn bool `json:"bypass_on"`
+	BypassOK bool `json:"bypass_ok"`
 }
 
 type finderView struct {
@@ -142,8 +261,14 @@ type finderView struct {
 
 func readFinder() finderView {
 	v := finderView{Ghostty: ghosttyInstalled()}
+	bypass := readFinderBypass()
 	for _, f := range finderShortcuts {
-		st := finderStatus{finderShortcut: f, ToolFound: toolOnPath(f.Tool)}
+		st := finderStatus{finderShortcut: f, ToolFound: true, BypassOn: bypass[f.Key] && f.BypassFlag != ""}
+		for _, tool := range []string{f.Tool, f.Also} {
+			if tool != "" && st.ToolFound && !toolOnPath(tool) {
+				st.ToolFound, st.Missing = false, tool
+			}
+		}
 		if b, err := os.ReadFile(filepath.Join(f.workflowPath(), "Contents", "document.wflow")); err == nil {
 			st.Installed = true
 			st.Ours = strings.Contains(string(b), f.launcherPath())
@@ -152,6 +277,10 @@ func readFinder() finderView {
 		}
 		if fi, err := os.Stat(f.launcherPath()); err == nil && !fi.IsDir() {
 			st.Launcher = true
+		}
+		if f.BypassFlag != "" {
+			b, err := os.ReadFile(f.launcherPath())
+			st.BypassOK = err != nil || bytes.Contains(b, []byte("bypass="+f.Key)) || (f.was != nil && bytes.Equal(b, f.was))
 		}
 		v.Shortcuts = append(v.Shortcuts, st)
 	}
@@ -167,9 +296,11 @@ func (s *Server) handleFinderInstall(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 		// Keys are the ticked shortcuts. Left out, it is every one.
 		Keys []string `json:"keys"`
+		// On is the tick, for "bypass": Keys is then the one row it is on.
+		On *bool `json:"on"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Action != "install" && req.Action != "remove") {
-		http.Error(w, "action must be install or remove", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Action != "install" && req.Action != "remove" && req.Action != "bypass") {
+		http.Error(w, "action must be install, remove or bypass", http.StatusBadRequest)
 		return
 	}
 	for _, k := range req.Keys {
@@ -190,6 +321,19 @@ func (s *Server) handleFinderInstall(w http.ResponseWriter, r *http.Request) {
 	defer finderMu.Unlock()
 	var done []string
 	var err error
+	if req.Action == "bypass" {
+		if len(req.Keys) != 1 || req.On == nil {
+			http.Error(w, "bypass needs one shortcut in keys, and on true or false", http.StatusBadRequest)
+			return
+		}
+		msg, err := setFinderBypass(req.Keys[0], *req.On)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]any{"done": []string{msg}, "finder": readFinder()})
+		return
+	}
 	if req.Action == "install" {
 		done, err = installFinderShortcuts(s.readPanel().Installed, req.Keys...)
 	} else {
@@ -219,6 +363,47 @@ func finderPicked(keys []string) []finderStatus {
 	return out
 }
 
+// refreshLauncher brings a launcher 0.19.2 wrote up to date. Any other
+// file is somebody's and is left alone.
+func refreshLauncher(f finderShortcut) error {
+	if f.was == nil {
+		return nil
+	}
+	if b, err := os.ReadFile(f.launcherPath()); err != nil || !bytes.Equal(b, f.was) {
+		return nil
+	}
+	return os.WriteFile(f.launcherPath(), f.script, 0o755)
+}
+
+// setFinderBypass saves one row's bypass tick. It takes effect the next
+// time the shortcut is used: the launcher reads the tick as it starts.
+func setFinderBypass(key string, on bool) (string, error) {
+	for _, st := range readFinder().Shortcuts {
+		if st.Key != key {
+			continue
+		}
+		if st.BypassFlag == "" {
+			return "", fmt.Errorf("%s has no bypass option", st.Name)
+		}
+		if on && !st.BypassOK {
+			return "", fmt.Errorf("%s was changed by hand or was not written here, so it does not read this option; delete it and press Install to get one that does", st.launcherPath())
+		}
+		if err := refreshLauncher(st.finderShortcut); err != nil {
+			return "", err
+		}
+		ticks := readFinderBypass()
+		ticks[key] = on
+		if err := writeFinderBypass(ticks); err != nil {
+			return "", err
+		}
+		if on {
+			return st.Name + ": starts with " + st.BypassFlag + " from the next time it is used", nil
+		}
+		return st.Name + ": starts without " + st.BypassFlag + " again", nil
+	}
+	return "", fmt.Errorf("no Finder shortcut is called %s", key)
+}
+
 func installFinderShortcuts(panelInstalled bool, keys ...string) ([]string, error) {
 	if !ghosttyInstalled() {
 		return nil, fmt.Errorf("Ghostty is not installed (looked in /Applications and ~/Applications); get it from https://ghostty.org")
@@ -227,6 +412,9 @@ func installFinderShortcuts(panelInstalled bool, keys ...string) ([]string, erro
 	changed := false
 	for _, st := range finderPicked(keys) {
 		f := st.finderShortcut
+		if err := refreshLauncher(f); err != nil {
+			return done, fmt.Errorf("updating %s: %w", f.launcherPath(), err)
+		}
 		if st.Installed {
 			done = append(done, f.Name+": already installed, left as it is")
 			continue
@@ -253,7 +441,7 @@ func installFinderShortcuts(panelInstalled bool, keys ...string) ([]string, erro
 			msg += "; click Reinstall / update on the usage panel so it opens beside sessions started from Finder"
 		}
 		if !st.ToolFound {
-			msg += "; " + f.Tool + " is not installed, so it will say so when used"
+			msg += "; " + st.Missing + " is not installed, so it will say so when used"
 		}
 		done = append(done, msg)
 	}

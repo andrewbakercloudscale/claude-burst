@@ -1627,7 +1627,7 @@
   <section id="sec-finder" style="scroll-margin-top:70px">
     <h2>Finder shortcuts <span class="applies" data-where="~/Library/Services, ~/.local/bin" data-when="now"></span></h2>
     <div class="body">
-      <div class="hint">Right-click any folder in Finder, then <b>Services</b> (or <b>Quick Actions</b>), to open a new Ghostty window in that folder running Claude Code, its last session there, Claude Code with OMC, Codex or OpenCode. Tick the ones you want: Install and Remove act on the ticked rows only. Install adds only what is missing and never overwrites a shortcut that is already there. Remove deletes the shortcuts it can recognise as these; the launcher scripts in <code>~/.local/bin</code> stay, so the usage panel's changes to them survive a reinstall. Needs Ghostty.</div>
+      <div class="hint">Right-click any folder in Finder, then <b>Services</b> (or <b>Quick Actions</b>), to open a new Ghostty window in that folder running Claude Code, its last session there or one you pick, Claude Code with OMC, OMC and Codex side by side, Codex, OpenCode, or just a terminal. Tick the ones you want: Install and Remove act on the ticked rows only. <b>bypass permissions</b> on a row starts that shortcut's tool without asking before it runs anything (<code>--dangerously-skip-permissions</code> for Claude Code, <code>--madmax</code> for OMC, <code>--dangerously-bypass-approvals-and-sandbox</code> for Codex, which also drops its sandbox); it is saved as you tick it and applies the next time the shortcut is used. <b>Launch Claude Code in Ghostty</b> has no tick of its own: it follows <a href="#" data-target="sec-sessions">Session options</a>, <b>Start with bypass permissions</b>, which also turns it on for every Claude Code session whatever a row says. Install adds only what is missing and never overwrites a shortcut that is already there. Remove deletes the shortcuts it can recognise as these; the launcher scripts in <code>~/.local/bin</code> stay, so the usage panel's changes to them survive a reinstall. Needs Ghostty.</div>
       <div id="finderStatus" style="margin:10px 0"></div>
       <div class="row">
         <button class="primary" id="finderInstall">&#x2913; Install Finder shortcuts</button>
@@ -5543,10 +5543,11 @@ function renderFinder() {
   const missing = list.filter(x => !x.installed);
   const removable = list.filter(x => x.installed && x.ours);
   $("finderStatus").innerHTML = (f.ghostty ? "" : `<div class="note warn">Ghostty is not installed, so there is nothing for these to open. Get it from <a href="https://ghostty.org" target="_blank" rel="noopener">ghostty.org</a>.</div>`) +
-    all.map(x => `<label style="display:block;margin:4px 0;cursor:pointer"><input type="checkbox" data-finder="${esc(x.key)}"${finderTicked(x) ? " checked" : ""}> ${x.installed ? `<span class="pill p">installed</span>` : `<span class="pill">not installed</span>`} <b>${esc(x.name)}</b>${
+    all.map(x => `<div style="margin:4px 0"><label style="cursor:pointer"><input type="checkbox" data-finder="${esc(x.key)}"${finderTicked(x) ? " checked" : ""}> ${x.installed ? `<span class="pill p">installed</span>` : `<span class="pill">not installed</span>`} <b>${esc(x.name)}</b>${
       x.installed && !x.ours ? ` <span class="hint">(not made here; Remove leaves it alone)</span>` : ""}${
       x.note ? ` <span class="hint">${esc(x.note)}</span>` : ""}${
-      x.tool_found ? "" : ` <span class="hint"><code>${esc(x.tool)}</code> is not installed</span>`}</label>`).join("");
+      x.tool_found ? "" : ` <span class="hint"><code>${esc(x.missing || x.tool)}</code> is not installed</span>`}</label>${
+      !x.bypass_flag ? "" : ` <label class="hint" style="cursor:pointer;white-space:nowrap" title="${x.bypass_ok ? `Starts it with ${esc(x.bypass_flag)}: no asking before tools run. Read when the shortcut is used, so no reinstall.` : "Its launcher in ~/.local/bin was changed by hand or was not written here, so it does not read this option. Delete the launcher and press Install to get one that does."}"><input type="checkbox" data-finder-bypass="${esc(x.key)}"${x.bypass_on ? " checked" : ""}${x.bypass_ok || x.bypass_on ? "" : " disabled"}> bypass permissions</label>`}</div>`).join("");
   setDot("nd-finder", all.some(x => x.installed) ? "ok" : "");
   // Never disabled: running it again is harmless (it only adds what is
   // missing) and is how you check; without Ghostty the server says so.
@@ -5560,9 +5561,17 @@ function renderFinder() {
   $("finderRemove").title = removable.length ? "" : "Nothing ticked to remove";
 }
 $("finderStatus").onchange = e => {
-  const k = e.target.dataset.finder;
+  const k = e.target.dataset.finder, bp = e.target.dataset.finderBypass;
   if (k) { finderPick[k] = e.target.checked; renderFinder(); }
+  if (bp) finderBypass(bp, e.target.checked);
 };
+async function finderBypass(key, on) {
+  try {
+    const r = await post("/api/finder-install", {action: "bypass", keys: [key], on});
+    finderState = r.finder; renderFinder();
+    note($("finderNote"), "ok", r.done.join("\n"));
+  } catch (e) { note($("finderNote"), "bad", e.message); loadFinder(); }
+}
 const finderKeys = () => (finderState?.shortcuts || []).filter(finderTicked).map(x => x.key);
 async function finderAction(action) {
   try {
