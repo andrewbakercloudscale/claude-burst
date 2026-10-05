@@ -8,6 +8,13 @@
 # with the source and reinstalls when they differ, whatever the version says.
 # New sessions pick it up; running ones keep the copy they loaded.
 #
+# Claude Code installs from a marketplace, a folder it remembers by path.
+# That folder is a copy under ~/.local/share/claude-burst, refreshed here on
+# every run, never the checkout: until 2026-10-05 it was whichever checkout
+# first installed the mod, so an update run from anywhere else (another
+# clone, the dashboard's temporary copy of GitHub's main) reinstalled that
+# old checkout's mod, and a Mac on Burst 0.19.0 still had mod 0.3.0.
+#
 # CLAUDE_BURST_MOD=no skips it. Never fails its caller: the mod is optional,
 # so any problem is a warning and exit 0.
 #
@@ -16,6 +23,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/mods/burst-band"
+MARKET="$HOME/.local/share/claude-burst/marketplace"
 PLUGIN="burst-band@burst"
 MIN_VERSION="2.1.287" # the first Claude Code that loads mods
 CLAUDE="${CLAUDE_BIN:-$(command -v claude 2>/dev/null)}"
@@ -77,11 +85,28 @@ if [[ -n "$current" && "$(mod_hash "$current")" == "$(mod_hash "$SRC")" ]]; then
   exit 0
 fi
 
-# The marketplace is this checkout; adding it again is a no-op.
-if ! "$CLAUDE" plugin marketplace list 2>/dev/null | grep -qE '❯ burst$'; then
-  "$CLAUDE" plugin marketplace add "$ROOT" >/dev/null 2>&1 || { warn "could not add the marketplace in $ROOT"; exit 0; }
-else
+# The marketplace: a fresh copy of what Claude Code loads, at a path that
+# stays put. One registered anywhere else is moved here.
+rm -rf "$MARKET" &&
+  mkdir -p "$MARKET/.claude-plugin" "$MARKET/mods/burst-band" &&
+  cp "$ROOT/.claude-plugin/marketplace.json" "$MARKET/.claude-plugin/" &&
+  cp -R "$SRC/.claude-plugin" "$SRC/hooks" "$MARKET/mods/burst-band/" ||
+  { warn "could not copy the mod to $MARKET"; exit 0; }
+at="$("$CLAUDE" plugin marketplace list --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for r in rows if isinstance(rows, list) else []:
+    if r.get("name") == "burst":
+        print(r.get("path") or r.get("installLocation") or "?")
+')"
+if [[ "$at" == "$MARKET" ]]; then
   "$CLAUDE" plugin marketplace update burst >/dev/null 2>&1
+else
+  [[ -n "$at" ]] && "$CLAUDE" plugin marketplace remove burst >/dev/null 2>&1
+  "$CLAUDE" plugin marketplace add "$MARKET" >/dev/null 2>&1 || { warn "could not add the marketplace in $MARKET"; exit 0; }
 fi
 if [[ -n "$current" ]]; then
   "$CLAUDE" plugin uninstall "$PLUGIN" >/dev/null 2>&1
@@ -92,7 +117,7 @@ if ! "$CLAUDE" plugin install "$PLUGIN" >/dev/null 2>&1; then
 fi
 now="$(installed_path)"
 if [[ -z "$now" || "$(mod_hash "$now")" != "$(mod_hash "$SRC")" ]]; then
-  warn "installed, but the installed copy does not match $SRC"
+  warn "installed, but the installed copy does not match $SRC: version $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("version","?"))' "$now/.claude-plugin/plugin.json" 2>/dev/null || echo unknown) is in place. Run: claude plugin marketplace remove burst, then this again"
   exit 0
 fi
 msg=installed
