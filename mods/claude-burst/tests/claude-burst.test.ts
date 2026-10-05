@@ -39,7 +39,7 @@ function mod(over: Record<string, unknown> = {}) {
 // panel's pop-up already took, `lines` what the gateway's notice queue holds
 // (handed over once), `runs` and `posts` what the mod ran and posted,
 // `commands` the slash commands it added, `missing` a program that is not there.
-type World = { claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string> }
+type World = { claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string>; pid?: string }
 
 function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}, world: World = {}) {
   const clock = mock.clock(on, { now: 1_000_000_000_000 })
@@ -60,6 +60,7 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
   })
   // The claim is a mkdir on the real Mac unless it is answered here.
   on('process.run', ($, e) => {
+    if (e.argv[0] === 'sh') return { value: { exitCode: 0, stdout: (world.pid || '') + '\n', stderr: '' } }
     world.runs?.push(e.argv)
     if (world.missing && e.argv.includes(world.missing)) return { value: { exitCode: 1, stdout: '', stderr: 'The file ' + world.missing + ' does not exist.' } }
     const id = e.argv[e.argv.length - 1]
@@ -527,6 +528,45 @@ test('a history near the 1M window is compacted with Burst in the path only wher
   await clock.advance(5000)
   await clock.advance(5000)
   expect(calls).toEqual(['/compact'])
+})
+
+test('a session opened again is compacted with the summary as it opens, in the path, and a reload of the mod is not a restart', async ($, on) => {
+  const calls: string[] = []
+  const store: Record<string, unknown> = {}
+  // 600k: under what the in-path option needs, and that option is off.
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 600000 }), '/etc/hosts': HOSTS_IN }, pid: '4242' }
+  const clock = stubs(on, [null], [], [], false, [], store, world)
+  core(on, calls)
+  await start($)
+  await clock.advance(5000)
+  await clock.advance(5000)
+  expect(calls).toEqual(['/compact'])
+  // The mod reloads in the same process, with a newer summary waiting.
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 600000, of: 'def' }), '/etc/hosts': HOSTS_IN }
+  await start($)
+  await clock.advance(5000)
+  expect(calls).toEqual(['/compact'])
+  // Another process: opened again.
+  world.pid = '5151'
+  await start($)
+  await clock.advance(5000)
+  expect(calls).toEqual(['/compact', '/compact'])
+})
+
+test('a session opened again that Burst never summarised, or with the hand-off off, is left alone', async ($, on) => {
+  const calls: string[] = []
+  const world: World = { files: { '/etc/hosts': HOSTS_IN }, pid: '4242' }
+  const clock = stubs(on, [null], [], [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  // A summary written later in this process is not a restart's.
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 600000 }), '/etc/hosts': HOSTS_IN }
+  await clock.advance(5000)
+  world.pid = '5151'
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 600000 }), '/etc/hosts': HOSTS_IN, [MOD_FILE]: '{"handoff":false}' }
+  await start($)
+  await clock.advance(5000)
+  expect(calls).toEqual([])
 })
 
 test('a session pointed at the gateway by ANTHROPIC_BASE_URL is in the path whatever /etc/hosts says', async ($, on) => {
