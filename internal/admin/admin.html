@@ -1664,14 +1664,6 @@
       </div>
       <div id="hsLive" class="hint" style="margin-top:8px"></div>
       <div id="hsNote"></div>
-      <dialog id="verDialog" class="ver" data-tone="busy" aria-labelledby="verTitle">
-        <div class="ver-band">
-          <div class="ver-mark" id="verMark">&#x27F3;</div>
-          <div><h3 id="verTitle">Checking for a newer version...</h3><div class="ver-sub" id="verSub">Asking GitHub</div></div>
-        </div>
-        <div class="ver-main" id="verBody"></div>
-        <div class="ver-foot"><span class="hint" id="verChecked"></span><span class="spacer"></span><button id="verClose">Close</button><button id="verGitHub" hidden>&#x2913; Install GitHub version</button><button class="primary" id="verUpgrade" hidden>&#x2913; Upgrade now</button></div>
-      </dialog>
       <dialog id="hsDialog" class="hs-check" aria-labelledby="hsCheckTitle">
         <h3 id="hsCheckTitle">Test joining the hotspot</h3>
         <h4>Before you start, make sure:</h4>
@@ -1902,6 +1894,18 @@
 </div>
 </main>
 </div>
+
+<!-- The Check version dialog, outside every section: a section on another
+     tab is not displayed, and a modal opened inside one is invisible while
+     it holds the whole page (the header button then looked hung). -->
+<dialog id="verDialog" class="ver" data-tone="busy" aria-labelledby="verTitle">
+  <div class="ver-band">
+    <div class="ver-mark" id="verMark">&#x27F3;</div>
+    <div><h3 id="verTitle">Checking for a newer version...</h3><div class="ver-sub" id="verSub">Asking GitHub</div></div>
+  </div>
+  <div class="ver-main" id="verBody"></div>
+  <div class="ver-foot"><span class="hint" id="verChecked"></span><span class="spacer"></span><button id="verClose">Close</button><button id="verGitHub" hidden>&#x2913; Install GitHub version</button><button class="primary" id="verUpgrade" hidden>&#x2913; Upgrade now</button></div>
+</dialog>
 
 <script>
 const H = {"X-Claude-Burst-Admin": "1", "Content-Type": "application/json"};
@@ -5231,13 +5235,29 @@ $("macRefresh").onclick = () => { loadMac(); loadSettings(); loadFinder(); };
 // running build's commit against GitHub) and says what it found in a
 // dialog: up to date, or what is new with an Upgrade button. A quiet check
 // on load and every 30 minutes marks the button when an update is waiting.
-let upgradeState = null;
+// The check never holds the page: the dialog opens at once with the last
+// answer and fills in the fresh one when it comes, the request gives up
+// after 35 seconds (the server's own limit on GitHub is 30), and a check
+// that fails keeps the last good answer and says so.
+let upgradeState = null, upgradeSeq = 0, upgradeAsking = 0, upgradeRunning = false;
+const UPGRADE_WAIT_MS = 35000;
+// Resolves true when this call's answer is the one now in upgradeState; a
+// check that a later one overtook is dropped.
 async function loadUpgrade(refresh) {
-  try { upgradeState = await (await fetch("/api/upgrade-status" + (refresh ? "?refresh=1" : ""))).json(); }
-  catch (e) { upgradeState = {error: e.message}; }
+  const seq = ++upgradeSeq;
+  const ac = new AbortController(), timer = setTimeout(() => ac.abort(), UPGRADE_WAIT_MS);
+  let next;
+  try { next = await (await fetch("/api/upgrade-status" + (refresh ? "?refresh=1" : ""), {signal: ac.signal})).json(); }
+  catch (e) { next = {error: e.name === "AbortError" ? `no answer after ${UPGRADE_WAIT_MS / 1000} seconds` : e.message}; }
+  clearTimeout(timer);
+  if (seq !== upgradeSeq) return false;
+  if (next.error && upgradeState && !upgradeState.error) next = {...upgradeState, check_error: next.error};
+  else if (next.error && upgradeState && upgradeState.check_error) next = {...upgradeState, check_error: next.error};
+  upgradeState = next;
   const el = $("upgradeTop"), newer = !!(upgradeState && !upgradeState.error && !upgradeState.up_to_date);
   el.textContent = newer ? "\u27F3 Check version \u00b7 update available" : "\u27F3 Check version";
   el.classList.toggle("success", newer);
+  return true;
 }
 // versionMessage is what the dialog says for a status: its tone, mark,
 // title, subtitle and an optional note. Pure, for page_script_test.go.
@@ -5294,6 +5314,7 @@ function showVersion() {
     }
   }
   if (m.note) html += `<div class="ver-note ${m.note.cls}">${esc(m.note.text)}</div>`;
+  if (u.check_error) html += `<div class="ver-note warn">Could not check again just now (${esc(u.check_error)}). This is the last answer.</div>`;
   $("verBody").innerHTML = html;
   $("verChecked").textContent = u.checked_at ? "Checked " + new Date(u.checked_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "";
   $("verUpgrade").hidden = !m.canUpgrade;
@@ -5304,20 +5325,29 @@ function showVersion() {
   // The main action is primary: Upgrade when there is one, otherwise this.
   $("verGitHub").classList.toggle("primary", !!g && !m.canUpgrade);
 }
-$("upgradeTop").onclick = async () => {
-  const el = $("upgradeTop");
-  el.disabled = true;
-  setVerTone("busy", "\u27F3", "Checking for a newer version...", "Asking GitHub");
-  $("verBody").innerHTML = ""; $("verChecked").textContent = "";
-  $("verUpgrade").hidden = true; $("verGitHub").hidden = true;
-  $("verDialog").showModal();
-  await loadUpgrade(true);
-  el.disabled = false;
-  showVersion();
+$("upgradeTop").onclick = () => {
+  if (upgradeState && !upgradeState.error) {
+    // The last answer straight away; the fresh one replaces it.
+    showVersion();
+  } else {
+    setVerTone("busy", "\u27F3", "Checking for a newer version...", "Asking GitHub");
+    $("verBody").innerHTML = "";
+    $("verUpgrade").hidden = true; $("verGitHub").hidden = true;
+  }
+  $("verChecked").textContent = "Checking GitHub\u2026";
+  if (!$("verDialog").open) $("verDialog").showModal();
+  upgradeRunning = false;
+  upgradeAsking++;
+  loadUpgrade(true).then(mine => {
+    upgradeAsking--;
+    if (mine && $("verDialog").open && !upgradeRunning) showVersion();
+  });
 };
 $("verClose").onclick = () => $("verDialog").close();
 async function runUpgrade(mode, btn) {
   btn.disabled = true;
+  upgradeRunning = true; // a check still in flight must not redraw over the upgrade
+
   try {
     const r = await post("/api/upgrade", {mode});
     setVerTone("busy", "\u27F3", mode === "github" ? "Installing GitHub version in Terminal" : "Upgrading in Terminal",
@@ -5325,6 +5355,7 @@ async function runUpgrade(mode, btn) {
     $("verBody").innerHTML = `<div class="ver-note">${esc(r.detail)}</div>`;
     $("verUpgrade").hidden = true; $("verGitHub").hidden = true;
   } catch (e) {
+    upgradeRunning = false;
     $("verBody").innerHTML += `<div class="ver-note bad">${esc(e.message)}</div>`;
     btn.disabled = false;
   }
@@ -5343,7 +5374,8 @@ $("verGitHub").onclick = () => {
   runUpgrade("github", $("verGitHub"));
 };
 loadUpgrade(false);
-setInterval(() => loadUpgrade(false), 30 * 60 * 1000);
+// Not while a click's own check is out: it would overtake it.
+setInterval(() => { if (!upgradeAsking) loadUpgrade(false); }, 30 * 60 * 1000);
 loadMac();
 
 // Finder shortcuts. The buttons reflect what is already there: Install is
