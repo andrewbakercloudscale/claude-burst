@@ -35,7 +35,12 @@ function mod(over: Record<string, unknown> = {}) {
 
 // Answers everything the mod calls, with the dashboard returning `answer`
 // (an object, or null for a dashboard that is down).
-function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}) {
+// What the Mac outside the mod is, for a test: `claimed` are alert ids a
+// panel's pop-up already took, `lines` what the gateway's notice queue holds
+// (handed over once), `runs` and `posts` what the mod ran and posted.
+type World = { claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[] }
+
+function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}, world: World = {}) {
   const clock = mock.clock(on, { now: 1_000_000_000_000 })
   mock.env(on, { HOME: '/Users/me' })
   on('session.start', () => ({ cwd: '/work' }))
@@ -51,8 +56,21 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
     if (sidebar && e.path === '/Users/me/.config/claude-panel/mod-installed') return { value: '2026-10-05 11:35:56\n' }
     return { deny: 'no such file' }
   })
+  // The claim is a mkdir on the real Mac unless it is answered here.
+  on('process.run', ($, e) => {
+    world.runs?.push(e.argv)
+    const id = e.argv[e.argv.length - 1]
+    return { value: { exitCode: (world.claimed || []).includes(id) ? 1 : 0, stdout: '', stderr: '' } }
+  })
   let i = 0
   on('http.fetch', ($, e) => {
+    if (e.url.endsWith('/api/prompt-notice')) {
+      world.posts?.push(e.init.body)
+      const lines = world.lines || []
+      world.lines = []
+      if (lines.length === 0) return { value: { status: 204, ok: true, headers: {}, text: '' } }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ systemMessage: lines.join('\n') }) } }
+    }
     urls.push(e.url)
     const a = answers[Math.min(i++, answers.length - 1)]
     if (a === null) return { deny: 'connection refused' }
@@ -91,9 +109,10 @@ test('a compaction in progress and an overflow show in the band', async ($, on) 
   expect(await ui.find({ type: 'Text', text: 'summarising' })).toBeDefined()
 })
 
-test('warnings and errors become toasts once; info stays quiet', async ($, on) => {
+test('alerts become toasts once, each claimed so its pop-up stands aside', async ($, on) => {
   const toasts: string[] = []
   const urls: string[] = []
+  const world: World = { runs: [] }
   const clock = stubs(on, [
     mod(),
     mod({ alerts: [
@@ -101,14 +120,45 @@ test('warnings and errors become toasts once; info stays quiet', async ($, on) =
       { id: 'b', kind: 'context', severity: 'info', title: 'Pauseless compaction started', ts: 1000000101 },
     ] }),
     mod(),
-  ], toasts, urls)
+  ], toasts, urls, false, [], {}, world)
   await start($)
   await clock.advance(5000)
-  expect(toasts).toEqual(['Burst: Overflow to the secondary'])
+  expect(toasts).toEqual(['Burst: Overflow to the secondary', 'Burst: Pauseless compaction started'])
+  // One claim each, in the panels' own folder, by the event's id.
+  expect(world.runs.length).toBe(2)
+  expect(world.runs[0].slice(-2)).toEqual(['/Users/me/.config/claude-panel/alerts-claimed', 'a'])
   await clock.advance(5000)
   // The next poll asks only for what came after the newest alert seen.
   expect(urls[2]).toContain('since=1000000101')
-  expect(toasts.length).toBe(1)
+  expect(toasts.length).toBe(2)
+})
+
+test('an alert a pop-up already showed is not shown again as a toast', async ($, on) => {
+  const toasts: string[] = []
+  const clock = stubs(on, [
+    mod(),
+    mod({ alerts: [
+      { id: 'popped', kind: 'network', severity: 'error', title: 'Network offline', ts: 1000000100 },
+      { id: 'ours', kind: 'network', severity: 'ok', title: 'Network back', ts: 1000000101 },
+    ] }),
+  ], toasts, [], false, [], {}, { claimed: ['popped'] })
+  await start($)
+  await clock.advance(5000)
+  expect(toasts).toEqual(['Burst: Network back'])
+})
+
+test('compaction lines are taken from the gateway and shown as toasts, once', async ($, on) => {
+  const toasts: string[] = []
+  const world: World = { lines: ['\u26a1 Burst compaction: 300k context: summarising 885 messages in the background'], posts: [] }
+  const clock = stubs(on, [mod()], toasts, [], false, [], {}, world)
+  await start($)
+  expect(toasts).toEqual(['Burst compaction: 300k context: summarising 885 messages in the background'])
+  expect(JSON.parse(world.posts[0])).toEqual({ session_id: 'S1', hook_event_name: 'PostToolUse' })
+  world.lines = ['\u26a1 Burst compaction: done, 62% smaller: 300k \u2192 114k (885 messages summarised)', '\u26a1 Burst compaction: test line from the dashboard']
+  await clock.advance(5000)
+  await clock.advance(5000)
+  expect(toasts.length).toBe(3)
+  expect(toasts[2]).toBe('Burst compaction: test line from the dashboard')
 })
 
 test('a dashboard that stops answering says so once, and again when it is back', async ($, on) => {
@@ -143,10 +193,16 @@ test('/burst opens a pane with the panel summary and Burst details', async ($, o
 
 test('toasts are off unless the dashboard turns them on', async ($, on) => {
   const toasts: string[] = []
-  const clock = stubs(on, [mod({ toasts: false }), mod({ toasts: false, alerts: [{ id: 'a', kind: 'network', severity: 'error', title: 'Network offline', ts: 1000000100 }] })], toasts)
+  const world: World = { lines: ['\u26a1 Burst compaction: summary ready'], runs: [], posts: [] }
+  const clock = stubs(on, [mod({ toasts: false }), mod({ toasts: false, alerts: [{ id: 'a', kind: 'network', severity: 'error', title: 'Network offline', ts: 1000000100 }] })], toasts, [], false, [], {}, world)
   await start($)
   await clock.advance(5000)
   expect(toasts).toEqual([])
+  // Nothing is claimed and nothing taken: the pop-up and the line under
+  // the prompt are left to show them.
+  expect(world.runs).toEqual([])
+  expect(world.posts).toEqual([])
+  expect(world.lines.length).toBe(1)
 })
 
 test('a standing problem is a line in the band and in the pane', async ($, on) => {

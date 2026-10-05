@@ -18,15 +18,17 @@ import (
 )
 
 // The burst-band mod on the dashboard: whether it is installed and current,
-// install, update and remove, and whether Burst's alerts also show in the
-// session as toasts. scripts/update-mod.sh does the installing, the same
+// install, update and remove, and whether Burst's alerts and compaction
+// lines show in the session as toasts. scripts/update-mod.sh does the installing, the same
 // script install.sh and deploy.sh run.
 
 const modPlugin = "burst-band@burst"
 
-// modSettings are the mod's own options, read by /api/mod. Toasts is off by
-// default: the Ghostty pop-ups already show every alert, and the band shows
-// the current problem as a line of its own either way.
+// modSettings are the mod's own options, read by /api/mod. Toasts is on by
+// default: a session with the mod shows Burst's alerts and its compaction
+// lines as toasts, and the mod claims each alert the way the panels do, so
+// the Ghostty pop-up for it stands aside. Off, the pop-ups and the line
+// under the prompt are as they were without the mod.
 type modSettings struct {
 	Toasts bool `json:"toasts"`
 }
@@ -36,7 +38,7 @@ func modSettingsPath() string {
 }
 
 func readModSettings() modSettings {
-	var m modSettings
+	m := modSettings{Toasts: true}
 	if b, err := os.ReadFile(modSettingsPath()); err == nil {
 		_ = json.Unmarshal(b, &m)
 	}
