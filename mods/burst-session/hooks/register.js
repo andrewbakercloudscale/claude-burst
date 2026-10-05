@@ -34,6 +34,7 @@ let panel = [] // the usage panel's summary rows, as parsed segments
 let since = 0 // alerts at or before this were here before the session
 let showBar = true // the context bar under the band; /context-bar toggles it
 let band = true // the band above the prompt; off where the sidebar has it
+let ready = false // false until the session's first answer: nothing is known yet, which is not down
 const BAND_KEY = 'band'
 
 // The way out when Burst is the problem. Both are immediate, so no request
@@ -290,6 +291,8 @@ export function register(on) {
       // No stored choice: the band unless the sidebar is there.
     }
     await refresh($)
+    ready = true
+    $.ui.invalidate('ui.render')
     // Only a session Burst has summarised has a hand-off waiting as it opens.
     try { reopened = (await reopenedNow($)) && (await readHandoff($)) !== null } catch (err) { reopened = false }
     // An entry an earlier version of this mod pinned is taken down.
@@ -356,7 +359,7 @@ export function register(on) {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (!band) return next(e)
+    if (!ready || !band) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const theirs = await next(e)
     const rows = [Box({ flexDirection: 'row', columnGap: 1, children: bandSegments(Text) })]
