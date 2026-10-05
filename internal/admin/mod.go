@@ -88,6 +88,12 @@ func standingProblems(evs []notice.Event, sid string, now time.Time) []notice.Ev
 		if e.Session != "" && e.Session != sid {
 			continue
 		}
+		// What Claude Code holds beyond what Burst sends was an alert until
+		// 5 Oct 2026. It is the tool working: one left in notices.json by an
+		// older gateway is not a problem.
+		if e.Kind == "exposure" {
+			continue
+		}
 		if _, seen := last[e.Kind]; !seen {
 			order = append(order, e.Kind)
 		}
