@@ -29,8 +29,14 @@ const modPlugin = "claude-burst@burst"
 // lines as toasts, and the mod claims each alert the way the panels do, so
 // the Ghostty pop-up for it stands aside. Off, the pop-ups and the line
 // under the prompt are as they were without the mod.
+//
+// Handoff is on by default too: Claude Code's own compaction is answered
+// with the summary Burst already wrote (internal/router/handoff.go), and a
+// session that has left Burst is compacted with it. The mod reads this file
+// itself, since the option matters most when the gateway is not running.
 type modSettings struct {
-	Toasts bool `json:"toasts"`
+	Toasts  bool `json:"toasts"`
+	Handoff bool `json:"handoff"`
 }
 
 func modSettingsPath() string {
@@ -38,7 +44,7 @@ func modSettingsPath() string {
 }
 
 func readModSettings() modSettings {
-	m := modSettings{Toasts: true}
+	m := modSettings{Toasts: true, Handoff: true}
 	if b, err := os.ReadFile(modSettingsPath()); err == nil {
 		_ = json.Unmarshal(b, &m)
 	}
@@ -67,6 +73,7 @@ type modStatus struct {
 	Current bool      `json:"current"`
 	Source  string    `json:"source,omitempty"`
 	Toasts  bool      `json:"toasts"`
+	Handoff bool      `json:"handoff"`
 	Last    *panelRun `json:"last,omitempty"`
 	Error   string    `json:"error,omitempty"`
 	Hint    string    `json:"hint,omitempty"`
@@ -138,7 +145,8 @@ func modInstalledFrom() string {
 }
 
 func (s *Server) readModStatus(ctx context.Context) modStatus {
-	st := modStatus{Toasts: readModSettings().Toasts, Source: s.modSource()}
+	set := readModSettings()
+	st := modStatus{Toasts: set.Toasts, Handoff: set.Handoff, Source: s.modSource()}
 	if s.modStaleCheckout() {
 		st.Source = modInstalledFrom()
 	}
@@ -213,23 +221,36 @@ func (s *Server) handleModStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleModAction: {"action":"install"} installs or updates, "remove"
-// removes, and "toasts" with {"toasts":bool} saves that option.
+// removes, and "toasts" with {"toasts":bool} or "handoff" with
+// {"handoff":bool} saves that option.
 func (s *Server) handleModAction(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Action string `json:"action"`
-		Toasts *bool  `json:"toasts"`
+		Action  string `json:"action"`
+		Toasts  *bool  `json:"toasts"`
+		Handoff *bool  `json:"handoff"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
 	switch req.Action {
-	case "toasts":
-		if req.Toasts == nil {
-			http.Error(w, "toasts must be true or false", http.StatusBadRequest)
+	case "toasts", "handoff":
+		on := req.Toasts
+		if req.Action == "handoff" {
+			on = req.Handoff
+		}
+		if on == nil {
+			http.Error(w, req.Action+" must be true or false", http.StatusBadRequest)
 			return
 		}
-		b, _ := json.MarshalIndent(modSettings{Toasts: *req.Toasts}, "", "  ")
+		// Read, change one, write: each option keeps the other's value.
+		set := readModSettings()
+		if req.Action == "handoff" {
+			set.Handoff = *on
+		} else {
+			set.Toasts = *on
+		}
+		b, _ := json.MarshalIndent(set, "", "  ")
 		if err := os.MkdirAll(filepath.Dir(modSettingsPath()), 0o700); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -238,11 +259,11 @@ func (s *Server) handleModAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]any{"ok": true, "toasts": *req.Toasts})
+		writeJSON(w, map[string]any{"ok": true, "toasts": set.Toasts, "handoff": set.Handoff})
 		return
 	case "install", "remove":
 	default:
-		http.Error(w, "action must be install, remove or toasts", http.StatusBadRequest)
+		http.Error(w, "action must be install, remove, toasts or handoff", http.StatusBadRequest)
 		return
 	}
 	dir, ok := s.scriptsDir()

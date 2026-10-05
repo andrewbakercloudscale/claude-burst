@@ -65,12 +65,143 @@ async function rescue($, c) {
   }
 }
 
+// Hand-off. Burst compacts what it sends and Claude Code keeps everything,
+// so a session Burst holds at 135k sends its whole history the moment Burst
+// is out of the path. The gateway leaves each summary in force in
+// ~/.config/claude-burst/handoff/<session>.json; here Claude Code's own
+// compaction is answered with it: no summary request, no pause.
+
+// Held history, in tokens, from which a session that has left Burst is
+// compacted with Burst's summary before its next prompt goes.
+const HANDOFF_AT = 200000
+
+let handed = '' // the hand-off already made or refused, so it is not tried again
+
+async function readJSON($, path) {
+  try {
+    return JSON.parse(await $.fs.read(path))
+  } catch (err) {
+    return null
+  }
+}
+
+// On unless the dashboard's option is off. Read from the file, not from
+// /api/mod: this matters most when the gateway is not there to ask.
+async function handoffOn($) {
+  const m = await readJSON($, home + '/.config/claude-burst/mod.json')
+  return !(m && m.handoff === false)
+}
+
+async function readHandoff($) {
+  if (!home || !sid || /[^A-Za-z0-9._-]/.test(sid)) return null
+  const h = await readJSON($, home + '/.config/claude-burst/handoff/' + sid + '.json')
+  return h && h.session === sid && h.lead && h.first && h.last ? h : null
+}
+
+// True when this session's requests go through Burst, false when they go
+// straight to Anthropic, undefined when it cannot be told. A gateway that
+// is down but still in the path is true: its requests fail, they are not
+// sent whole to Anthropic.
+async function inPath($) {
+  let base = ''
+  try { base = (await $.env.get('ANTHROPIC_BASE_URL')) || '' } catch (err) { /* unset */ }
+  if (/\/\/(127\.0\.0\.1|localhost|\[::1\])[:/]/.test(base + '/')) return true
+  if (base !== '' && !/\/\/api\.anthropic\.com/.test(base)) return undefined
+  let hosts
+  try { hosts = await $.fs.read('/etc/hosts') } catch (err) { return undefined }
+  for (const line of String(hosts).split('\n')) {
+    const f = line.replace(/#.*/, '').trim().split(/\s+/)
+    if ((f[0] === '127.0.0.1' || f[0] === '::1') && f.slice(1).some((h) => h.toLowerCase() === 'api.anthropic.com')) return true
+  }
+  return false
+}
+
+function anchorMatches(a, m) {
+  if (!a || !m || m.role !== a.role) return false
+  if (a.tool) {
+    return (m.toolUses || []).some((t) => t.tool_use_id === a.tool) || (m.toolResults || []).some((t) => t.tool_use_id === a.tool)
+  }
+  return !!a.text && a.text.length >= 16 && String(m.text || '').replace(/\s+/g, '').includes(a.text)
+}
+
+// Where the kept messages start in Claude Code's transcript, or -1. Claude
+// Code may hold one message of the request as several of its own, all with
+// the same role, so a message of the request is a run of one role here.
+function handoffCut(h, msgs) {
+  const runStart = (i) => { while (i > 0 && msgs[i - 1].role === msgs[i].role) i--; return i }
+  const lastNamed = !!h.last.tool || (h.last.text || '').length >= 16
+  for (let i = 1; i < msgs.length; i++) {
+    let cut = -1
+    if (anchorMatches(h.first, msgs[i])) {
+      cut = runStart(i)
+      if (cut < 1) continue
+      if (!h.first.tool && lastNamed) {
+        let ok = false
+        for (let j = cut - 1; j >= 0 && msgs[j].role === msgs[cut - 1].role; j--) ok = ok || anchorMatches(h.last, msgs[j])
+        if (!ok) continue
+      }
+    } else if (h.last.tool && anchorMatches(h.last, msgs[i - 1]) && msgs[i].role === h.first.role && msgs[i].role !== msgs[i - 1].role) {
+      // A reply too short to name ("Done.") is found by what it follows.
+      cut = i
+    }
+    if (cut < 1) continue
+    // Tool results cannot open a conversation: their calls would be gone.
+    if (msgs[cut].role === 'user' && (msgs[cut].toolResults || []).length > 0) return -1
+    if (msgs.slice(0, cut).some((m) => m.text === h.lead)) return -1
+    return cut
+  }
+  return -1
+}
+
+// A session that has left Burst is compacted with the summary Burst already
+// wrote, once. It runs /compact, which Claude Code queues until no turn is
+// running, and not $.session.compact(): a plugin's own session.compact hook
+// does not see that call, so Claude Code would write a summary of its own.
+let asking = false
+async function leaveBurst($) {
+  if (asking || !(await handoffOn($))) return
+  const h = await readHandoff($)
+  if (!h || h.of === handed || (await inPath($)) !== false) return
+  const raw = (burst && burst.session && burst.session.raw) || h.raw || 0
+  if (raw < HANDOFF_AT) return
+  asking = true
+  handed = h.of
+  try {
+    await $.command.run({ command: 'compact', args: '' })
+  } catch (err) {
+    $.ui.toast('This session no longer goes through Burst and sends its whole history (' + kTokens(raw) + '). /compact shortens it with the summary Burst already wrote', { timeoutMs: TOAST_MS.warn })
+  } finally {
+    asking = false
+  }
+}
+
 export function register(on) {
+  on('session.compact', async ($, e, next) => {
+    // A subagent's transcript, a precompute and a /compact with the user's
+    // own instructions are Claude Code's.
+    if (e.trigger === 'precompute' || e.agentId || (e.instructions && e.trigger === 'manual')) return next(e)
+    let h = null
+    try {
+      if (await handoffOn($)) h = await readHandoff($)
+    } catch (err) {
+      h = null
+    }
+    const cut = h ? handoffCut(h, e.messages || []) : -1
+    // Asked for by leaveBurst and no fit: nothing is compacted. Claude Code
+    // writing a summary of the whole history is the user's to ask for.
+    if (cut < 1 && asking) return { skip: "This session no longer goes through Burst, and Burst's summary does not fit it as Claude Code holds it. /compact again has Claude Code write its own" }
+    if (cut < 1) return next(e)
+    handed = h.of
+    $.ui.toast("Burst's summary handed to Claude Code: " + cut + ' messages replaced, no summary request', { timeoutMs: TOAST_MS.info })
+    return { messages: [{ role: 'user', text: h.lead, toolUses: [] }, ...e.messages.slice(cut)] }
+  })
+
   on('session.start', async ($, e, next) => {
     sid = await $.session.id()
     home = (await $.env.get('HOME')) || ''
     since = Math.floor((await $.clock.now()) / 1000)
     toastsMarked = 0
+    handed = ''
     band = !(await hasSidebar($))
     try {
       const v = await $.store.get(BAND_KEY)
@@ -83,6 +214,7 @@ export function register(on) {
     try { await $.ui.status(undefined) } catch (err) { $.ui.log('could not clear the status line: ' + err) }
     $.clock.every(POLL_MS, async () => {
       await refresh($)
+      try { await leaveBurst($) } catch (err) { $.ui.log('hand-off did not run: ' + err) }
       $.ui.invalidate('ui.render')
     })
     try {

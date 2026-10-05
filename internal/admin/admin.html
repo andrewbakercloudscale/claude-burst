@@ -1604,6 +1604,10 @@
       <div class="mac-toggles">
         <label><input type="checkbox" id="bandToasts"> <b>Alerts and compaction lines as toasts in the session</b><span>In a session with the mod, Burst's alerts and Pauseless Compaction's lines pop up as toasts inside Claude Code. Each alert shown this way is not shown again as a Ghostty pop-up (<a href="#" data-target="sec-sessions">Session options</a>, <b>Show gateway alerts on screen</b>), and each compaction line is not repeated under the prompt. On by default. Where no session has the mod, or it cannot draw (Remote Control), turn this off: the pop-ups and the line under the prompt are then as before. A standing problem is shown as a line whether this is on or not.</span></label>
       </div>
+      <h3 class="mac-h">When Burst is out of the path</h3>
+      <div class="mac-toggles">
+        <label><input type="checkbox" id="bandHandoff"> <b>Hand Burst's summary to Claude Code</b><span>Burst shortens what it sends; Claude Code keeps the whole history, and sends all of it the moment Burst is turned off or bypassed (994k for one turn on 4 October, $7.75). With this on, a session with the mod that has left Burst and holds 200k or more is compacted once with the summary Burst already wrote: no summary request, no pause. The same summary answers <code>/compact</code> and Claude Code's own automatic compaction while Burst is running. A gateway that is only restarting is not "out of the path": nothing happens then. Once handed over, the replaced messages are gone from Claude Code's copy, so <b>Drop summary</b> can no longer bring them back for that session. <code>/compact</code> with instructions of your own is always Claude Code's. On by default.</span></label>
+      </div>
     </div>
   </section>
 
@@ -6298,7 +6302,7 @@ async function loadBand() {
   $("bandInstall").textContent = st.installed ? (st.current ? "\u2913 Reinstall" : "\u2913 Update") : "\u2913 Install";
   $("bandInstall").disabled = running || !st.supported || !st.source;
   $("bandRemove").disabled = running || !st.installed;
-  if (!formDirty.band) $("bandToasts").checked = !!st.toasts;
+  if (!formDirty.band) { $("bandToasts").checked = !!st.toasts; $("bandHandoff").checked = !!st.handoff; }
   setDot("nd-band", st.installed && st.current ? "ok" : st.installed ? "warn" : "");
   const run = st.last;
   if (run) {
@@ -6329,6 +6333,12 @@ $("bandToasts").onchange = async e => {
   const ok = await bandAction({action: "toasts", toasts: e.target.checked});
   formDirty.band = false;
   if (ok) note($("bandNote"), "ok", e.target.checked ? "Saved: alerts and compaction lines show as toasts in the session, within 5 seconds." : "Saved: no toasts in the session; alerts are Ghostty pop-ups and compaction lines sit under the prompt.");
+};
+$("bandHandoff").onchange = async e => {
+  formDirty.band = true;
+  const ok = await bandAction({action: "handoff", handoff: e.target.checked});
+  formDirty.band = false;
+  if (ok) note($("bandNote"), "ok", e.target.checked ? "Saved: a session that leaves Burst is compacted with Burst's summary, and /compact uses it." : "Saved: Claude Code's compaction is its own again.");
 };
 loadBand();
 </script>

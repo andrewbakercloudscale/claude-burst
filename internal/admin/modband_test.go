@@ -159,3 +159,35 @@ func TestModInstallRefusesACheckoutFromBeforeTheRename(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// The two options share a file: saving one must keep the other, and the
+// file is what the mod reads when the gateway is down.
+func TestModHandoffOptionKeepsToasts(t *testing.T) {
+	s := newTestServer(t)
+	read := func() modSettings { return readModSettings() }
+	if !read().Handoff {
+		t.Fatal("hand-off must default to on")
+	}
+	if rr := mutate(t, s, "/api/mod-action", `{"action":"toasts","toasts":false}`); rr.Code != http.StatusOK {
+		t.Fatalf("toasts: %d %s", rr.Code, rr.Body)
+	}
+	if rr := mutate(t, s, "/api/mod-action", `{"action":"handoff","handoff":false}`); rr.Code != http.StatusOK {
+		t.Fatalf("handoff: %d %s", rr.Code, rr.Body)
+	}
+	if got := read(); got.Toasts || got.Handoff {
+		t.Fatalf("both off, got %+v", got)
+	}
+	if rr := mutate(t, s, "/api/mod-action", `{"action":"toasts","toasts":true}`); rr.Code != http.StatusOK {
+		t.Fatalf("toasts: %d %s", rr.Code, rr.Body)
+	}
+	if got := read(); !got.Toasts || got.Handoff {
+		t.Fatalf("toasts on must leave hand-off off, got %+v", got)
+	}
+	b, err := os.ReadFile(modSettingsPath())
+	if err != nil || !strings.Contains(string(b), `"handoff": false`) {
+		t.Fatalf("the mod reads this file: %s, %v", b, err)
+	}
+	if rr := mutate(t, s, "/api/mod-action", `{"action":"handoff"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("handoff with no value = %d, want 400", rr.Code)
+	}
+}

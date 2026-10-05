@@ -89,6 +89,11 @@ type compactState struct {
 	// the rawContext at which the exposure was last announced.
 	rawContext     int64
 	exposureWarned int64
+	// hand is the summary in force as the mod can hand it to Claude Code
+	// (handoff.go), and handOf the summary it was last worked out for, so a
+	// cut that cannot be handed over is not tried on every request.
+	hand   *Handoff
+	handOf string
 }
 
 // swapUndo is the summary state from before a mid-turn swap.
@@ -174,6 +179,7 @@ type savedCompaction struct {
 	Notices     []string `json:"notices,omitempty"`
 	SwappedFrom int64    `json:"swapped_from,omitempty"`
 	SwappedMsgs int      `json:"swapped_msgs,omitempty"`
+	Hand        *Handoff `json:"hand,omitempty"`
 }
 
 // savedTTL drops sessions not seen for this long when state is saved.
@@ -198,7 +204,10 @@ func (c *compactor) load() {
 		st := &compactState{lastContext: v.LastContext, warnedAt: v.WarnedAt, startedAt: v.StartedAt,
 			summary: v.Summary, p0: v.P0, hash: v.Hash, swapAt: v.SwapAt,
 			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, nextTightP0: v.NextTightP0, nextTightHash: v.NextTightHash, seen: v.Seen,
-			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs, exposureWarned: v.ExposureWarned}
+			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs, exposureWarned: v.ExposureWarned, hand: v.Hand}
+		if st.hand != nil {
+			st.handOf = st.hand.Of
+		}
 		// Saved before summaries waited as next: an unapplied summary.
 		if st.summary != "" && st.swapAt == 0 && st.next == "" {
 			st.next, st.nextP0, st.nextHash = st.summary, st.p0, st.hash
@@ -231,8 +240,9 @@ func (c *compactor) save() {
 		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
 			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt,
 			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, NextTightP0: st.nextTightP0, NextTightHash: st.nextTightHash, Seen: st.seen,
-			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned}
+			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned, Hand: st.hand}
 	}
+	c.writeHandoffs()
 	b, err := json.Marshal(out)
 	if err == nil {
 		tmp := c.path + ".tmp"
@@ -685,6 +695,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 	}
 	out := rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt)
+	if of := handoffOf(st.summary, st.p0); st.handOf != of {
+		st.hand, st.handOf = buildHandoff(sid, msgs, st.summary, st.p0, st.rawContext, now), of
+		dirty = true
+	}
 	if dirty {
 		s.compaction.save()
 	}
