@@ -17,12 +17,12 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 )
 
-// Burst's Claude Code mod (burst@burst) on the dashboard: whether it is installed and current,
+// Burst's Claude Code mod (burst-session@burst) on the dashboard: whether it is installed and current,
 // install, update and remove, and whether Burst's alerts and compaction
 // lines show in the session as toasts. scripts/update-mod.sh does the installing, the same
 // script install.sh and deploy.sh run.
 
-const modPlugin = "burst@burst"
+const modPlugin = "burst-session@burst"
 
 // modSettings are the mod's own options, read by /api/mod. Toasts is on by
 // default: a session with the mod shows Burst's alerts and its compaction
@@ -75,7 +75,7 @@ type modStatus struct {
 	Supported bool   `json:"supported"`
 	Installed bool   `json:"installed"`
 	Version   string `json:"version,omitempty"`
-	// Current is whether the installed copy matches mods/burst.
+	// Current is whether the installed copy matches mods/burst-session.
 	Current bool   `json:"current"`
 	Source  string `json:"source,omitempty"`
 	Toasts  bool   `json:"toasts"`
@@ -127,7 +127,7 @@ func (s *Server) modSource() string {
 	if !ok {
 		return ""
 	}
-	src := filepath.Join(filepath.Dir(dir), "mods", "burst")
+	src := filepath.Join(filepath.Dir(dir), "mods", "burst-session")
 	if _, err := os.Stat(filepath.Join(src, ".claude-plugin", "plugin.json")); err != nil {
 		return ""
 	}
@@ -135,7 +135,7 @@ func (s *Server) modSource() string {
 }
 
 // modStaleCheckout is true when the checkout predates one of the mod's
-// renames (burst-band until 0.19.1, claude-burst until 0.20.2): Burst was upgraded from GitHub's copy and the
+// renames (burst-band until 0.19.1, claude-burst until 0.20.2, burst in 0.20.2): Burst was upgraded from GitHub's copy and the
 // checkout left alone. Its update-mod.sh would install the old mod beside
 // this one, so a session would draw the band twice.
 func (s *Server) modStaleCheckout() bool {
@@ -146,7 +146,7 @@ func (s *Server) modStaleCheckout() bool {
 	if s.modSource() != "" {
 		return false
 	}
-	for _, old := range []string{"burst-band", "claude-burst"} {
+	for _, old := range []string{"burst-band", "claude-burst", "burst"} {
 		if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "mods", old, ".claude-plugin", "plugin.json")); err == nil {
 			return true
 		}
