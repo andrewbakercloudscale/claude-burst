@@ -508,15 +508,22 @@ test('no hand-off while Burst is in the path, the history is short, or nothing s
   expect(calls).toEqual([])
 })
 
-test('a history near the 1M window is compacted with the summary even with Burst in the path, once', async ($, on) => {
+const MOD_FILE = '/Users/me/.config/claude-burst/mod.json'
+
+test('a history near the 1M window is compacted with Burst in the path only where the dashboard turns that on, once', async ($, on) => {
   const calls: string[] = []
-  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 799999 }), '/etc/hosts': HOSTS_IN } }
+  // Off by default: it has costs with Burst working.
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 994000 }), '/etc/hosts': HOSTS_IN } }
   const clock = stubs(on, [null], [], [], false, [], {}, world)
   core(on, calls)
   await start($)
   await clock.advance(5000)
   expect(calls).toEqual([])
-  world.files = { [HANDOFF_FILE]: handoff({ raw: 800000 }), '/etc/hosts': HOSTS_IN }
+  const inPath = JSON.stringify({ handoff_in_path: true })
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 799999 }), '/etc/hosts': HOSTS_IN, [MOD_FILE]: inPath }
+  await clock.advance(5000)
+  expect(calls).toEqual([])
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 800000 }), '/etc/hosts': HOSTS_IN, [MOD_FILE]: inPath }
   await clock.advance(5000)
   await clock.advance(5000)
   expect(calls).toEqual(['/compact'])

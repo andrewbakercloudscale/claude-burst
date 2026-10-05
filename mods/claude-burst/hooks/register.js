@@ -76,8 +76,10 @@ async function rescue($, c) {
 const HANDOFF_AT = 300000
 
 // Held history from which a session is compacted that way wherever its
-// requests go. Past the 1M window a bypass is refused as too long, and no
-// later hand-off could be asked for in time.
+// requests go, where the dashboard turns that on. Past the 1M window a
+// bypass is refused as too long. Off by default, since it has costs with
+// Burst working: the next turn is read uncached, and the replaced messages
+// are gone from Claude Code's copy.
 const HANDOFF_ALWAYS_AT = 800000
 
 let heldSeen = 0 // the most this session was last seen to hold, kept for when the gateway is gone
@@ -96,6 +98,11 @@ async function readJSON($, path) {
 async function handoffOn($) {
   const m = await readJSON($, home + '/.config/claude-burst/mod.json')
   return !(m && m.handoff === false)
+}
+
+async function handoffInPathOn($) {
+  const m = await readJSON($, home + '/.config/claude-burst/mod.json')
+  return !!(m && m.handoff_in_path === true)
 }
 
 async function readHandoff($) {
@@ -181,7 +188,7 @@ async function leaveBurst($) {
   const raw = Math.max((burst && burst.session && burst.session.raw) || 0, heldSeen, h.raw || 0)
   if (raw < HANDOFF_AT) return
   const out = (await inPath($)) === false
-  if (!out && raw < HANDOFF_ALWAYS_AT) return
+  if (!out && (raw < HANDOFF_ALWAYS_AT || !(await handoffInPathOn($)))) return
   handed = h.of
   try {
     await handOver($, h)

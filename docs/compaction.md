@@ -144,9 +144,13 @@ whole history:
   summarised, in the path or not, at any size, it compacts with Burst's summary. It is
   never Claude Code's own compaction: with no summary held, or one that does not fit,
   nothing is compacted and a line says so. The automatic hand-offs are this command.
-- **Near the 1M window it is compacted wherever its requests go.** From 800k held the
-  mod runs the same `/compact` with Burst still in the path. Past 1M a bypass is refused
-  as too long, not just expensive, and by then no hand-off could be asked for.
+- **Near the 1M window it can be compacted with Burst still in the path** (off by
+  default). Past 1M a bypass is refused as too long, not just expensive. With **Also from
+  800k held, with Burst still in the path** ticked on the dashboard (`handoff_in_path` in
+  `~/.config/claude-burst/mod.json`), the mod runs the same `/compact` from 800k held
+  while Burst is working normally. It is optional because it has costs: the turn after
+  it is read uncached, and the replaced messages are gone from Claude Code's copy.
+  `/compact-async-full` does it for one session when you choose.
 - After a hand-off the replaced messages are gone from Claude Code's copy too, so
   **Drop summary** can no longer bring them back, and with Burst still in the path the
   session is a new, short conversation to it: its old summary is retired and the window
