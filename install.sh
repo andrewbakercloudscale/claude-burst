@@ -327,7 +327,7 @@ $(grep -n claude-burst "$SETTINGS" | sed 's/^/      /')
     echo " Check it with: sudo pfctl -a claude-burst -s nat   which should print nothing.)"
   fi
   echo "Removed: the redirect and root daemons (if any), the self-heal watchdog, the token-shunting,"
-  echo "coordination, handover and prompt-notice hooks, /compact-async, the burst-band mod, the LaunchAgent and the binary."
+  echo "coordination, handover and prompt-notice hooks, /compact-async, the claude-burst mod, the LaunchAgent and the binary."
   if (( purge )); then
     echo "Purged $CONFIG_DIR."
   else
@@ -569,7 +569,7 @@ To remove everything later:
 OUT
 
   offer_panel
-  # Burst inside Claude Code sessions (mods/burst-band). CLAUDE_BURST_MOD=no skips it.
+  # Burst inside Claude Code sessions (mods/claude-burst). CLAUDE_BURST_MOD=no skips it.
   echo
   zsh "$ROOT/scripts/update-mod.sh"
 }

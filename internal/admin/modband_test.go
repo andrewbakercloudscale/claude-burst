@@ -35,7 +35,7 @@ func fakeClaudeBin(t *testing.T, version, listJSON string) {
 
 func writeMod(t *testing.T, dir, hook string) {
 	t.Helper()
-	for p, body := range map[string]string{".claude-plugin/plugin.json": `{"name":"burst-band"}`, "hooks/register.js": hook, "tests/x.test.ts": "ignored"} {
+	for p, body := range map[string]string{".claude-plugin/plugin.json": `{"name":"claude-burst"}`, "hooks/register.js": hook, "tests/x.test.ts": "ignored"} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -63,11 +63,11 @@ func TestModStatusSaysInstalledCurrentOrOutOfDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.rootHelper = filepath.Join(repo, "scripts", "transparent-root.sh")
-	src := filepath.Join(repo, "mods", "burst-band")
+	src := filepath.Join(repo, "mods", "claude-burst")
 	installed := t.TempDir()
 	writeMod(t, src, "export function register(on) {}\n")
 	writeMod(t, installed, "export function register(on) {}\n")
-	list := `[{"id":"other@x","installPath":"/nowhere"},{"id":"burst-band@burst","version":"0.2.0","installPath":"` + installed + `"}]`
+	list := `[{"id":"other@x","installPath":"/nowhere"},{"id":"claude-burst@burst","version":"0.2.0","installPath":"` + installed + `"}]`
 
 	fakeClaudeBin(t, "2.1.288", list)
 	st := modStatusOf(t, s)
@@ -132,5 +132,30 @@ func TestStandingProblems(t *testing.T) {
 	}
 	if strings.Join(got, "|") != "On the secondary|Requests are failing" {
 		t.Fatalf("problems = %q", got)
+	}
+}
+
+// Burst upgraded from GitHub's copy leaves the checkout alone. One that
+// still has the mod under its old name must not be installed from: it would
+// put burst-band beside claude-burst.
+func TestModInstallRefusesACheckoutFromBeforeTheRename(t *testing.T) {
+	s := newTestServer(t)
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.rootHelper = filepath.Join(repo, "scripts", "transparent-root.sh")
+	writeMod(t, filepath.Join(repo, "mods", "burst-band"), "// old\n")
+	installed := t.TempDir()
+	writeMod(t, installed, "export function register(on) {}\n")
+	writeMod(t, modInstalledFrom(), "export function register(on) {}\n")
+	fakeClaudeBin(t, "2.1.288", `[{"id":"claude-burst@burst","version":"0.8.0","installPath":"`+installed+`"}]`)
+
+	if st := modStatusOf(t, s); !st.Installed || !st.Current {
+		t.Fatalf("the mod matches what Burst installed, whatever the checkout holds: %+v", st)
+	}
+	rr := mutate(t, s, "/api/mod-action", `{"action":"install"}`)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "git pull") {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }

@@ -14,7 +14,7 @@
 // the band stands aside and the rows above the prompt go back to the
 // transcript. /burst band puts the band back (and takes it away again).
 // Nothing goes in Claude Code's status line: it draws every mod's entry as
-// "⚠ burst-band: ..." in yellow, a warning's dress on a line that said
+// "⚠ claude-burst: ..." in yellow, a warning's dress on a line that said
 // PRIMARY.
 //
 // Two sources, both already on this Mac:

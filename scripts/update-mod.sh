@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Installs, updates or removes the burst-band Claude Code mod (mods/burst-band):
+# Installs, updates or removes the claude-burst Claude Code mod (mods/claude-burst):
 # Burst and the usage panel inside the session. Called by install.sh and
 # deploy.sh, so updating Burst updates the mod too.
 #
@@ -22,14 +22,17 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$ROOT/mods/burst-band"
+SRC="$ROOT/mods/claude-burst"
 MARKET="$HOME/.local/share/claude-burst/marketplace"
-PLUGIN="burst-band@burst"
+PLUGIN="claude-burst@burst"
+# The mod's name until Burst 0.19.1. Removed wherever it is found, or a
+# session would load both and draw the band twice.
+OLD_PLUGIN="burst-band@burst"
 MIN_VERSION="2.1.287" # the first Claude Code that loads mods
 CLAUDE="${CLAUDE_BIN:-$(command -v claude 2>/dev/null)}"
 
-say() { echo "burst-band mod: $*"; }
-warn() { echo "WARNING: burst-band mod: $*" >&2; }
+say() { echo "claude-burst mod: $*"; }
+warn() { echo "WARNING: claude-burst mod: $*" >&2; }
 
 if [[ -z "$CLAUDE" || ! -x "$CLAUDE" ]]; then
   say "Claude Code not found, skipped"
@@ -43,7 +46,7 @@ mod_hash() { # $1 = plugin dir
   (cd "$1" && cat .claude-plugin/plugin.json hooks/*(.N) 2>/dev/null) | shasum -a 256 | cut -c1-16
 }
 
-installed_path() {
+installed_path() { # $1 = plugin id, this mod's when not given
   "$CLAUDE" plugin list --json 2>/dev/null | python3 -c '
 import json, sys
 try:
@@ -51,7 +54,7 @@ try:
 except Exception:
     sys.exit(0)
 for r in rows if isinstance(rows, list) else []:
-    if r.get("id") == "'"$PLUGIN"'":
+    if r.get("id") == "'"${1:-$PLUGIN}"'":
         print(r.get("installPath", ""))
 '
 }
@@ -62,6 +65,7 @@ case "${1:-install}" in
       "$CLAUDE" plugin uninstall "$PLUGIN" >/dev/null 2>&1 || warn "could not uninstall; run: claude plugin uninstall $PLUGIN"
       say "removed"
     fi
+    [[ -n "$(installed_path "$OLD_PLUGIN")" ]] && "$CLAUDE" plugin uninstall "$OLD_PLUGIN" >/dev/null 2>&1
     "$CLAUDE" plugin marketplace remove burst >/dev/null 2>&1
     exit 0
     ;;
@@ -79,6 +83,11 @@ if [[ "$(printf '%s\n%s\n' "$MIN_VERSION" "$version" | sort -V | head -1)" != "$
   exit 0
 fi
 
+renamed=""
+if [[ -n "$(installed_path "$OLD_PLUGIN")" ]]; then
+  "$CLAUDE" plugin uninstall "$OLD_PLUGIN" >/dev/null 2>&1 || warn "could not remove the mod under its old name; run: claude plugin uninstall $OLD_PLUGIN"
+  renamed=yes
+fi
 current="$(installed_path)"
 if [[ -n "$current" && "$(mod_hash "$current")" == "$(mod_hash "$SRC")" ]]; then
   say "up to date"
@@ -88,9 +97,9 @@ fi
 # The marketplace: a fresh copy of what Claude Code loads, at a path that
 # stays put. One registered anywhere else is moved here.
 rm -rf "$MARKET" &&
-  mkdir -p "$MARKET/.claude-plugin" "$MARKET/mods/burst-band" &&
+  mkdir -p "$MARKET/.claude-plugin" "$MARKET/mods/claude-burst" &&
   cp "$ROOT/.claude-plugin/marketplace.json" "$MARKET/.claude-plugin/" &&
-  cp -R "$SRC/.claude-plugin" "$SRC/hooks" "$MARKET/mods/burst-band/" ||
+  cp -R "$SRC/.claude-plugin" "$SRC/hooks" "$MARKET/mods/claude-burst/" ||
   { warn "could not copy the mod to $MARKET"; exit 0; }
 at="$("$CLAUDE" plugin marketplace list --json 2>/dev/null | python3 -c '
 import json, sys
@@ -122,5 +131,6 @@ if [[ -z "$now" || "$(mod_hash "$now")" != "$(mod_hash "$SRC")" ]]; then
 fi
 msg=installed
 [[ -n "$current" ]] && msg=updated
+[[ -n "$renamed" ]] && msg="updated (it was called burst-band until 0.19.1)"
 say "$msg; new Claude Code sessions load it"
 exit 0
