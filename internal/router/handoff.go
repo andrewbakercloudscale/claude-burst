@@ -27,7 +27,8 @@ import (
 // The mod sees Claude Code's transcript, not the request, so the cut cannot
 // be a message count. It is two anchors instead: the last message the
 // summary covers and the first one kept, each named by a tool call id (unique
-// in a conversation) or, without one, by the start of its text.
+// in a conversation) or, without one, by the start of its text. A message
+// too short to be named that way is the one right after a message that is.
 
 // handAnchor names one message of the conversation.
 type handAnchor struct {
@@ -121,9 +122,13 @@ func buildHandoff(sid string, msgs []json.RawMessage, summary string, p0 int, ra
 		return nil
 	}
 	first, last := anchorOf(msgs[p0]), anchorOf(msgs[p0-1])
-	// A short reply ("Done.") cannot name itself, but the tool results just
-	// before it can: the mod then looks for the pair.
-	if !(first.names() || last.Tool != "") || (first.Role == "user" && first.Tool != "") {
+	// A short message ("Done.", "do both") cannot name itself, but the one
+	// just before it can: the mod then looks for the pair. Until 5 Oct 2026
+	// only tool results counted as that message, so a cut at a short prompt
+	// after a reply in words had no hand-off at all: a session holding
+	// 1,320k had none to give when it was closed, because its last
+	// compaction cut at "do both".
+	if !(first.names() || last.names()) || (first.Role == "user" && first.Tool != "") {
 		return nil
 	}
 	lead := "<system-reminder>\nThe earlier part of this conversation was compacted by claude-burst to save context. Summary of it:\n<summary>\n" +
