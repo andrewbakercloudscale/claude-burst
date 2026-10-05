@@ -11,9 +11,9 @@
 
 On the subscription every turn re-reads the whole conversation, so a turn at 400k tokens costs about four times one at 100k and uses up your limits four times as fast. Claude Code only compacts near the end of its 1M window. With pauseless compaction on:
 
-- When a session's context passes **Compact at** (default 300k), Burst sends one background request, on your subscription with the session's own login, asking the same model to summarise everything before your latest prompt. It takes about 40 seconds and you keep working.
+- When a session's context passes **Compact at** (default 300k), Burst sends one background request, on your subscription with the session's own login, asking the same model to summarise everything sent so far, the running turn included. It takes about 40 seconds and you keep working.
 - The summary request resends the history exactly as Claude Code last sent it, so it reads from cache rather than paying for the whole context again.
-- From your next prompt, Burst sends the summary in place of those messages. Claude Code keeps its full local history and sees no difference. CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.
+- From your next prompt, Burst sends the summary in place of those messages, and keeps only what came after the request the summary was written from. Your latest prompt is carried word for word beside the summary. Claude Code keeps its full local history and sees no difference. CLAUDE.md and other session context are carried over word for word. Thinking from before the summary is dropped, as Anthropic requires when history changes.
 - `/clear`, `/compact` or a rewind make the summary stop fitting, and requests then go through untouched.
 - A session is compacted at most once per window (default 30 minutes), a warning is logged at **Warn when at** (default 80% of **Compact at**; none in Intelligent mode), and state survives a gateway restart. A summary that fails is retried after 5 minutes, and a summary that stops fitting reopens the window at once, so a session is never left on its full history for the rest of the window.
 - **Limit:** Claude Code never learns that Burst shortened the history, so its own copy keeps growing. If Burst's summary stops fitting after that copy has passed the 1M window, the full history is too big to send: Anthropic refuses it and Claude Code compacts in its own way, with the pause. The gateway log says which message changed, so the cause can be found.
@@ -48,6 +48,38 @@ Good to know:
 - **Only your prompt triggers it.** The marker inside a file Claude reads, or any other tool output, is ignored.
 - **Cost:** one summary request on your subscription, read from cache, typically about $0.20 API-equivalent (see [the savings](#how-the-savings-are-calculated)).
 
+## Two copies of the conversation: what Claude Code keeps and what Burst sends
+
+This is the difference that matters most between Burst's compaction and every other kind.
+
+| | Claude Code `/compact`, or a mod that answers it | Burst (gateway) |
+|---|---|---|
+| Where the history is shortened | inside Claude Code: the old messages are replaced | on the wire only: the request is rewritten as it leaves the Mac |
+| Claude Code's own transcript | summary plus a short tail | everything, word for word |
+| A poor summary | permanent, the detail is gone | can be dropped: the next request carries the full history again |
+| Burst out of the path | no effect | the full history is sent, uncached |
+
+**What it means, exactly.** Claude Code builds every request from its whole transcript. Burst receives that request, checks that it still starts with the messages its summary was written from, and replaces those messages with the summary before sending it on. Anthropic's model only ever reads the short version. Claude Code never learns that anything changed.
+
+**Example 1, a normal turn** (a real session, 5 Oct 2026):
+
+```
+Claude Code builds the request:   664 messages, about 980k tokens
+Burst replaces messages 0-601:    1 summary (13k characters) + 62 newer messages
+Anthropic receives and bills:     139k tokens
+Claude Code's transcript after:   still 664 messages, plus the reply
+```
+
+**Example 2, the summary missed something.** You ask about a detail from three hours ago and the summary does not have it. The detail is still in Claude Code's transcript. Dropping the summary sends the full history on the next request, and the model can read it again. The price is one uncached read of the full history. After `/compact` in Claude Code, or a mod that answers it, the detail is gone from the session for good.
+
+**Example 3, you rewind.** Rewinding to a message that was summarised changes the start of the request. The summary no longer fits, Burst drops it, and the request goes as Claude Code sent it, in full. Nothing is lost, and a new summary starts at once.
+
+**Example 4, Burst is not in the path.** The gateway is down, or `burst-off` was run. Claude Code sends what it holds: on 2026-10-04 a session Burst kept at 135k sent 994k for $7.75 in one turn. This is the cost of keeping everything, and why the band shows what Claude Code holds.
+
+**Example 5, Claude Code's own limit still exists.** Claude Code's copy keeps growing. Past the model's 1M window Claude Code compacts in its own way, with the pause, and its transcript really is shortened. Burst's summary then stops fitting and is dropped.
+
+**What Burst keeps after a compaction.** The summary, CLAUDE.md and the other session context word for word, your latest prompt word for word, and every message after the request the summary was written from. Until v0.17.0 it kept the whole running turn instead, so a long turn left 140k and more behind (the 139k in example 1).
+
 ## Claude Code's own history, and what a bypass costs
 
 Burst compacts what it **sends**. Claude Code's own copy of the conversation is never
@@ -72,6 +104,7 @@ One *Compact at* does not suit every repository. With **Mode** set to **Intellig
 
 - **What it weighs.** Compacting early costs summaries (each one reads the whole history, then the shortened history is written to cache). Compacting late costs every turn in between, since each turn reads the whole context. With a compaction leaving `A` tokens, the context growing `g` a turn and a compaction costing `c` beyond reading the history, the cheapest size is `A + sqrt(2 * g * (A + c))`, with `c` counted in cache-read tokens.
 - **Once a day.** The first learned size is used as it is; after that it moves by a tenth a day at most. **Learn now** recalculates the figures without moving it a second time that day.
+- **Never lose money twice.** Each compaction that lost money adds 10% to that repository's limit, at once, without waiting for the daily step, up to the fixed **Compact at**. It comes back down, a tenth a day, as the loss ages out of the 14 days.
 - **Failures are compactions that lost money.** One that had not saved what it cost by the time its session moved on, a summary call that was paid for and wrote nothing, or a summary dropped before it was used. They are counted for each repository and shown in the table. They push the learned size up, and where more than half of at least four lost money the repository goes back to *Compact at*. So does one whose sessions end before a compaction has paid for itself twice over.
 - **Guards.** A **Buffer** (20% unless you change it) is added on top of the cheapest size, so the limit is less eager than the money alone says. Never below the **Floor** (100k unless you change it), never above *Compact at*, nothing learned from fewer than 3 compactions, and *Delay between compactions* still applies (default: a session is compacted at most once every 30 minutes). A repository override always wins. The log measures money, not what a summary loses, which is why the floor exists.
 

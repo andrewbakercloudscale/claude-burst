@@ -20,11 +20,25 @@ import (
 // request. Claude Code keeps its full transcript and never sees a
 // difference; the model sees the summary.
 //
-// THE SHAPE is Anthropic's documented keep-tail compaction:
-//   - the summary covers messages [0, p0), where p0 is a plain user prompt,
-//     never a tool_result, so no call is summarised away from its result;
-//   - the swap is applied first on a request that ends in a plain user
-//     prompt, never mid tool round;
+// THE SHAPE is Anthropic's documented keep-tail compaction, with the
+// shortest tail that is still a valid conversation:
+//   - the summary is written from one whole request, and covers all of it:
+//     messages [0, p0), where p0 is the reply to that request. The kept tail
+//     starts with that reply, so no call is summarised away from its result
+//     and nothing the model had not seen is summarised. Until 5 Oct 2026 the
+//     tail started at the latest plain prompt instead, which kept the whole
+//     running turn word for word: a compaction left 65k (median), and what
+//     is left is re-read by every later request and written to the cache
+//     again at each swap;
+//   - the user's latest prompt is carried word for word beside the summary,
+//     since the turn it started may now be inside the summary;
+//   - that cut is used when the request still starts with exactly what the
+//     summary was written from. When it does not (Claude Code rewrote the
+//     newest message), the older cut at the latest plain prompt before it
+//     is used instead: the summary then overlaps the tail, which repeats a
+//     little and loses nothing;
+//   - the swap is applied at a plain user prompt, or mid-turn when that is
+//     switched on;
 //   - retained turns from before the swap lose their thinking blocks: those
 //     were produced with the old history present, and the API rejects or
 //     drops them after it changes. Turns produced after the swap keep them.
@@ -131,8 +145,11 @@ func hashForm(v any) any {
 }
 
 // rewriteWithSummary returns messages [p0, len) with the summary and the
-// first message's system reminders prepended to message p0, and thinking
-// blocks removed from messages [p0, swapAt).
+// first message's system reminders in front, and thinking blocks removed
+// from messages [p0, swapAt). When message p0 is a user prompt they are
+// prepended to it; when it is a reply (the cut is right after the request
+// the summary was written from) they are a user message of their own,
+// which also carries the user's latest prompt word for word.
 func rewriteWithSummary(msgs []json.RawMessage, summary string, p0, swapAt int) []json.RawMessage {
 	if p0 <= 0 || p0 >= len(msgs) {
 		return msgs
@@ -141,7 +158,19 @@ func rewriteWithSummary(msgs []json.RawMessage, summary string, p0, swapAt int) 
 		summary + "\n</summary>\n</system-reminder>"}}
 	lead = append(lead, systemReminders(msgs[0])...)
 
-	out := make([]json.RawMessage, 0, len(msgs)-p0)
+	out := make([]json.RawMessage, 0, len(msgs)-p0+1)
+	own := messageRole(msgs[p0]) != "user"
+	if own {
+		if t := latestPromptText(msgs[:p0]); t != "" {
+			lead = append(lead, map[string]any{"type": "text", "text": "<system-reminder>\nThe user's most recent message before this point, word for word (the summary above covers the work done on it so far):\n<latest-user-message>\n" +
+				t + "\n</latest-user-message>\n</system-reminder>"})
+		}
+		if b, err := json.Marshal(map[string]any{"role": "user", "content": lead}); err == nil {
+			out = append(out, b)
+		} else {
+			return msgs
+		}
+	}
 	for i := p0; i < len(msgs); i++ {
 		var msg map[string]any
 		if json.Unmarshal(msgs[i], &msg) != nil {
@@ -150,16 +179,20 @@ func rewriteWithSummary(msgs []json.RawMessage, summary string, p0, swapAt int) 
 		}
 		blocks := contentBlocks(msg["content"])
 		if i < swapAt {
-			kept := blocks[:0]
+			kept := make([]any, 0, len(blocks))
 			for _, b := range blocks {
 				if bm, ok := b.(map[string]any); ok && (bm["type"] == "thinking" || bm["type"] == "redacted_thinking") {
 					continue
 				}
 				kept = append(kept, b)
 			}
-			blocks = kept
+			// A reply that was only thinking would be left with no content,
+			// which the API refuses: it keeps what it had.
+			if len(kept) > 0 {
+				blocks = kept
+			}
 		}
-		if i == p0 {
+		if i == p0 && !own {
 			blocks = append(append([]any{}, lead...), blocks...)
 		}
 		msg["content"] = blocks
@@ -171,6 +204,50 @@ func rewriteWithSummary(msgs []json.RawMessage, summary string, p0, swapAt int) 
 		out = append(out, b)
 	}
 	return out
+}
+
+// messageRole returns a message's role, or "".
+func messageRole(m json.RawMessage) string {
+	var msg struct {
+		Role string `json:"role"`
+	}
+	_ = json.Unmarshal(m, &msg)
+	return msg.Role
+}
+
+// latestPromptMax bounds the prompt carried beside a summary. A pasted log
+// is not worth re-reading on every request: its start and end are kept.
+const latestPromptMax = 8000
+
+// latestPromptText returns what the user typed in the latest plain prompt
+// of msgs, without Claude Code's <system-reminder> blocks, or "".
+func latestPromptText(msgs []json.RawMessage) string {
+	bounds := promptBoundaries(msgs)
+	for i := len(bounds) - 1; i >= 0; i-- {
+		var msg map[string]any
+		if json.Unmarshal(msgs[bounds[i]], &msg) != nil {
+			continue
+		}
+		var parts []string
+		for _, b := range contentBlocks(msg["content"]) {
+			bm, _ := b.(map[string]any)
+			t, _ := bm["text"].(string)
+			t = strings.TrimSpace(t)
+			if bm["type"] != "text" || t == "" || strings.Contains(t, "<system-reminder>") {
+				continue
+			}
+			parts = append(parts, t)
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		t := strings.Join(parts, "\n\n")
+		if r := []rune(t); len(r) > latestPromptMax {
+			t = string(r[:latestPromptMax*3/4]) + "\n[... middle left out by claude-burst ...]\n" + string(r[len(r)-latestPromptMax/4:])
+		}
+		return t
+	}
+	return ""
 }
 
 // contentBlocks returns a message's content as a block list, turning the

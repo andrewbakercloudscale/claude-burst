@@ -249,3 +249,32 @@ func TestStateAndOutcomesSurviveTheFile(t *testing.T) {
 		t.Fatalf("outcomes since now: %+v", got)
 	}
 }
+
+// "We never want to lose money": a compaction that lost money raises the
+// repository's Compact at by a tenth, at once, not at tomorrow's step.
+func TestALossRaisesTheThresholdATenthAtOnce(t *testing.T) {
+	good := []metrics.CompactionRun{
+		swapped("a1", 400_000, 70_000, 0.40, 120, 2_000),
+		swapped("a2", 400_000, 70_000, 0.40, 120, 2_000),
+		swapped("a3", 400_000, 70_000, 0.40, 120, 2_000),
+	}
+	wide := Bounds{Floor: 100_000, Ceiling: 600_000}
+	st := Learn(empty(), inputs(good...), wide, true)
+	before := st.Repos["/src/repo-a"].Threshold
+	if before <= 0 || before >= wide.Ceiling {
+		t.Fatalf("want a learned threshold below the ceiling, got %d", before)
+	}
+	// One more compaction, 2 turns long: it did not save what it cost.
+	lost := append(append([]metrics.CompactionRun(nil), good...), swapped("a4", 400_000, 70_000, 0.40, 2, 2_000))
+	st = Learn(st, inputs(lost...), wide, false)
+	r := st.Repos["/src/repo-a"]
+	if r.Failures.Unpaid != 1 {
+		t.Fatalf("want 1 compaction that lost money, got %+v", r.Failures)
+	}
+	if r.Threshold < before*110/100-round || r.Threshold != r.Target || r.Previous != before {
+		t.Fatalf("want at least a tenth above %d at once, got threshold %d target %d previous %d", before, r.Threshold, r.Target, r.Previous)
+	}
+	if !strings.Contains(r.Reason, "plus 10% for each of the 1 compactions that lost money") {
+		t.Fatalf("the reason must say so: %s", r.Reason)
+	}
+}
