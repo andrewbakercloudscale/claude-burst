@@ -270,6 +270,7 @@
   button:hover { background: color-mix(in srgb, var(--accent) 22%, var(--panel)); border-color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover { filter: brightness(1.08); }
+  button.primary.saved { background: var(--pass); border-color: var(--pass); }
   button.danger { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 30%, transparent); color: var(--bad); }
   button.danger:hover { border-color: var(--bad); }
   button.success { background: var(--ok-bg); border-color: color-mix(in srgb, var(--ok) 30%, transparent); color: var(--ok); }
@@ -3112,7 +3113,8 @@ async function saveCompaction() {
     compactDirty = false;
     $("compactPending").textContent = "";
     note($("compactNote"), "ok", r.ok);
-    $("icNote").textContent = "Saved.";
+    $("icNote").textContent = "";
+    savedFlash();
     loadLearned(true);
   } catch (e) {
     note($("compactNote"), "bad", e.message);
@@ -3121,6 +3123,18 @@ async function saveCompaction() {
     compactBusy = false;
     refresh();
   }
+}
+
+// A save that worked says so on the button itself: green and "Saved" for
+// five seconds, then back to Save.
+let savedTimer = 0;
+function savedFlash() {
+  const btns = [$("compactSaveTop"), $("compactSave")];
+  for (const b of btns) { b.innerHTML = "&#x2713; Saved"; b.classList.add("saved"); }
+  clearTimeout(savedTimer);
+  savedTimer = setTimeout(() => {
+    for (const b of btns) { b.innerHTML = "&#x2713; Save"; b.classList.remove("saved"); }
+  }, 5000);
 }
 
 // Static or intelligent: one or the other. The chosen one's fields and
