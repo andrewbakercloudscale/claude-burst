@@ -95,6 +95,11 @@ type CompactionConfig struct {
 	// wins, and WindowMinutes still spaces a session's compactions.
 	Mode        string `json:"mode,omitempty"`
 	FloorTokens int64  `json:"floor_tokens,omitempty"`
+	// BufferPercent is added on top of the size the learner works out as
+	// cheapest, so a learned Compact at is less eager than the money alone
+	// says: the log does not measure what a summary loses. nil is the
+	// default; 0 is no buffer.
+	BufferPercent *int `json:"buffer_percent,omitempty"`
 	// Learned is each repository's learned Compact at, by root. Memory
 	// only: internal/autocompact keeps it, with how it got there, in its
 	// own file, and it applies only in the intelligent mode.
@@ -162,6 +167,7 @@ const (
 	DefaultCompactionCompactAt   = 300_000
 	DefaultCompactionWindow      = 30
 	DefaultCompactionFloor       = 100_000
+	DefaultCompactionBuffer      = 20
 )
 
 // Resolved returns c with its zero numbers replaced by the defaults.
@@ -178,6 +184,10 @@ func (c CompactionConfig) Resolved() CompactionConfig {
 	}
 	if c.FloorTokens <= 0 {
 		c.FloorTokens = DefaultCompactionFloor
+	}
+	if c.BufferPercent == nil {
+		b := DefaultCompactionBuffer
+		c.BufferPercent = &b
 	}
 	return c
 }

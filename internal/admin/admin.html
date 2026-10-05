@@ -1154,7 +1154,7 @@
       <div class="hint" style="margin-top:6px"><strong>Compact at</strong>: the context that triggers a summary (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default threshold). <strong>Delay between compactions</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
       <h3 class="mac-h">Intelligent Compaction Mode <span class="pill" id="icState">off</span></h3>
       <div class="hint" style="font-size:13.5px;line-height:1.55">One <em>Compact at</em> does not suit every repository. In this mode Burst learns one for each, from the last 14 days of that repository's own compactions: what a compaction leaves behind, how fast the context grows again, and what a compaction costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is where the two add up to the least, and it is adjusted once a day, by a tenth at most. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. Failures are counted for each repository and push its size up; where most compactions lose money it goes back to <em>Compact at</em>.
-        <br><br>Guards: never below the floor, never above <em>Compact at</em>, nothing learned from fewer than 3 compactions, and <em>Delay between compactions</em> above still spaces a session's compactions (default: at most one every 30 minutes). A repository override below always wins.</div>
+        <br><br>Guards: never below the floor, never above <em>Compact at</em>, a buffer on top of the cheapest size (20% unless you change it) since the money does not measure what a summary loses, nothing learned from fewer than 3 compactions, and <em>Delay between compactions</em> above still spaces a session's compactions (default: at most one every 30 minutes). A repository override below always wins.</div>
       <div class="row" style="align-items:flex-end;margin-top:8px">
         <div>
           <label for="icMode">Mode</label>
@@ -1163,6 +1163,14 @@
         <div>
           <label for="icFloor">Floor (k tokens)</label>
           <input type="number" id="icFloor" min="50" max="900" step="10" style="width:110px">
+        </div>
+        <div>
+          <label for="icBuffer" title="Added on top of the cheapest size, so a learned Compact at is less eager than the money alone says">Buffer (%)</label>
+          <input type="number" id="icBuffer" min="0" max="200" step="5" style="width:110px">
+        </div>
+        <div>
+          <label for="icDelay" title="The same setting as Delay between compactions above">Max 1 compaction per (minutes)</label>
+          <input type="number" id="icDelay" min="1" max="1440" step="5" style="width:110px">
         </div>
         <button class="primary" id="icSave">&#x2713; Save</button>
         <button id="icLearn">Learn now</button>
@@ -2961,6 +2969,8 @@ function renderCompaction(s) {
       $("compactWindow").value = k.window_minutes || 30;
     }
     if (document.activeElement !== $("icFloor")) $("icFloor").value = Math.round((k.floor_tokens || 100000) / 1000);
+    if (document.activeElement !== $("icBuffer")) $("icBuffer").value = k.buffer_percent ?? 20;
+    if (!typing && document.activeElement !== $("icDelay")) $("icDelay").value = k.window_minutes || 30;
     $("icMode").value = k.mode || "";
   }
   setPill("icState", !k.enabled ? "compaction off" : k.mode === "intelligent" ? "on" : "off", k.enabled && k.mode === "intelligent" ? "ok" : "");
@@ -3097,6 +3107,7 @@ async function saveCompaction() {
     window_minutes: parseInt($("compactWindow").value, 10) || 0,
     mode: $("icMode").value,
     floor_tokens: (parseInt($("icFloor").value, 10) || 0) * 1000,
+    buffer_percent: Math.max(0, parseInt($("icBuffer").value, 10) || 0),
   };
   compactBusy = true;
   try {
@@ -3141,7 +3152,7 @@ function renderLearned(v) {
   }
   const src = {learned: ["learned", "p"], override: ["your override", "s"], off: ["never", "s"], fixed: ["fixed", ""]};
   $("icTable").innerHTML = `<div class="hint" style="margin-bottom:4px">${on
-      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, at most once every ${v.delay_minutes} minutes.`
+      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, ${v.buffer_percent}% above the cheapest size, at most once every ${v.delay_minutes} minutes for a session.`
       : `Off: every repository compacts at ${k(v.fixed)}. <b>Would be</b> shows what this mode would use.`}</div>
     <table><thead><tr><th>Repository</th><th class="num">Compact at now</th><th class="num">${on ? "Target" : "Would be"}</th>
       <th class="num" title="The context a compaction leaves behind (median)">Leaves</th>
@@ -3166,7 +3177,10 @@ function renderLearned(v) {
           <td class="hint">${esc(r.reason || "")}</td></tr>`;
       }).join("")}</tbody></table>`;
 }
-for (const id of ["icMode", "icFloor"]) $(id).addEventListener("input", () => {
+// One setting, shown in both places.
+$("icDelay").addEventListener("input", () => { $("compactWindow").value = $("icDelay").value; });
+$("compactWindow").addEventListener("input", () => { $("icDelay").value = $("compactWindow").value; });
+for (const id of ["icMode", "icFloor", "icBuffer", "icDelay"]) $(id).addEventListener("input", () => {
   compactDirty = true;
   $("icNote").textContent = "Not saved yet: press Save to apply.";
 });

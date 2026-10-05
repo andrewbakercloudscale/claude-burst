@@ -57,13 +57,26 @@ func (s *Server) learnCompaction(cfg config.Config, now time.Time) autocompact.S
 		Resolve:   s.repos.resolve,
 		ReadPrice: metrics.CacheReadPrice,
 		Now:       now,
-	}, autocompact.Bounds{Floor: c.FloorTokens, Ceiling: c.CompactAtTokens}, c.Enabled && c.Intelligent())
+	}, autocompact.Bounds{Floor: c.FloorTokens, Ceiling: c.CompactAtTokens, BufferPercent: *c.BufferPercent}, c.Enabled && c.Intelligent())
 	s.learned = st
 	if path != "" {
 		_ = autocompact.Save(path, st)
 	}
 	s.gateway.SetLearnedCompaction(st.Thresholds())
 	return st
+}
+
+// reseatLearned makes the next learn take every repository straight to its
+// target, not a tenth of the way: the settings the targets come from changed.
+func (s *Server) reseatLearned() {
+	s.learnMu.Lock()
+	defer s.learnMu.Unlock()
+	if s.learned.Repos == nil {
+		if p := s.learnedPath(); p != "" {
+			s.learned = autocompact.Load(p)
+		}
+	}
+	s.learned.Reseat()
 }
 
 // StartLearner runs the learner until ctx ends.
@@ -96,6 +109,7 @@ type learnedView struct {
 	Enabled bool          `json:"enabled"`
 	Fixed   int64         `json:"fixed"`
 	Floor   int64         `json:"floor"`
+	Buffer  int           `json:"buffer_percent"`
 	Delay   int           `json:"delay_minutes"`
 	Days    int           `json:"window_days"`
 	Repos   []learnedRepo `json:"repos"`
@@ -118,7 +132,7 @@ func inForce(c config.CompactionConfig, root string) (int64, string) {
 func (s *Server) learnedView(cfg config.Config, st autocompact.State) learnedView {
 	c := cfg.PrimaryCompaction.Resolved()
 	c.Learned = st.Thresholds()
-	v := learnedView{Mode: c.Mode, Enabled: c.Enabled, Fixed: c.CompactAtTokens, Floor: c.FloorTokens, Delay: c.WindowMinutes,
+	v := learnedView{Mode: c.Mode, Enabled: c.Enabled, Fixed: c.CompactAtTokens, Floor: c.FloorTokens, Buffer: *c.BufferPercent, Delay: c.WindowMinutes,
 		Days: int(autocompact.Window.Hours() / 24), Repos: []learnedRepo{}}
 	for _, r := range st.Sorted() {
 		row := learnedRepo{Repo: r}
@@ -163,6 +177,9 @@ type thresholdAnswer struct {
 	Enabled     bool   `json:"enabled"`
 	Fixed       int64  `json:"fixed"`
 	Floor       int64  `json:"floor"`
+	// BufferPercent is what a learned threshold has on top of the cheapest
+	// size, and DelayMinutes the least time between a session's compactions.
+	BufferPercent int `json:"buffer_percent"`
 	// Target is where the learner says the threshold should be, 0 when it
 	// has too little to go on, and Previous what it was before the last
 	// daily step.
@@ -224,7 +241,7 @@ func (s *Server) handleThreshold(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a := thresholdAnswer{Folder: folder, Repo: name, Root: root, Intelligent: c.Intelligent(), Enabled: c.Enabled,
-		Fixed: c.CompactAtTokens, Floor: c.FloorTokens, DelayMinutes: c.WindowMinutes}
+		Fixed: c.CompactAtTokens, Floor: c.FloorTokens, BufferPercent: *c.BufferPercent, DelayMinutes: c.WindowMinutes}
 	if folder == "" {
 		a.Folder = name
 	}
