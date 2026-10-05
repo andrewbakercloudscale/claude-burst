@@ -1,6 +1,12 @@
 // Claude Burst inside the Claude Code session: a band above the prompt, the
 // usage panel's summary in a /burst pane, and Burst's alerts as toasts.
 //
+// Where the usage panel's sidebar is installed, the sidebar draws Burst's
+// context bar and the panel's own figures, so the band stands aside: Burst's
+// route and any standing problem go in Claude Code's status line instead,
+// one entry, and the rows above the prompt go back to the transcript.
+// /burst band puts the band back (and takes it away again).
+//
 // Two sources, both already on this Mac:
 // - the Burst dashboard's /api/mod: route, compaction for this session, alerts
 // - the usage panel's band file: its summary rows, colours and all, so the
@@ -17,19 +23,31 @@ let down = false
 let panel = [] // the usage panel's summary rows, as parsed segments
 let since = 0 // alerts at or before this were here before the session
 let showBar = true // the context bar under the band; /context-bar toggles it
+let band = true // the band above the prompt; off where the sidebar has it
+let status // the status line entry as last set, so it is set only on a change
+const BAND_KEY = 'band'
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
     sid = await $.session.id()
     home = (await $.env.get('HOME')) || ''
     since = Math.floor((await $.clock.now()) / 1000)
+    band = !(await hasSidebar($))
+    try {
+      const v = await $.store.get(BAND_KEY)
+      if (typeof v === 'boolean') band = v
+    } catch (err) {
+      // No stored choice: the band unless the sidebar is there.
+    }
     await refresh($)
+    await showStatus($)
     $.clock.every(POLL_MS, async () => {
       await refresh($)
+      await showStatus($)
       $.ui.invalidate('ui.render')
     })
     try {
-      await $.command.register({ name: 'burst', description: 'Claude Burst and usage panel for this session', immediate: true })
+      await $.command.register({ name: 'burst', description: 'Claude Burst and usage panel for this session; /burst band moves Burst between the band above the prompt and the status line', immediate: true })
     } catch (err) {
       $.ui.log('could not add /burst: ' + err)
     }
@@ -41,7 +59,15 @@ export function register(on) {
     return next(e)
   })
 
-  on('command.run', { command: 'burst' }, async ($) => {
+  on('command.run', { command: 'burst' }, async ($, e) => {
+    if (String((e && e.args) || '').trim().toLowerCase() === 'band') {
+      band = !band
+      try { await $.store.set(BAND_KEY, band) } catch (err) { $.ui.log('could not save the band choice: ' + err) }
+      await showStatus($)
+      $.ui.invalidate('ui.render')
+      $.ui.toast(band ? 'Burst band above the prompt' : 'Burst in the status line')
+      return {}
+    }
     await $.ui.open({ id: PANE, title: 'Burst', focus: true, closeOnEscape: true })
     return {}
   })
@@ -53,12 +79,13 @@ export function register(on) {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!band) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const theirs = await next(e)
     const rows = [Box({ flexDirection: 'row', columnGap: 1, children: bandSegments(Text) })]
     if (showBar) rows.push(...contextBar(Box, Text, e.viewport && e.viewport.columns))
-    const band = rows.length === 1 ? rows[0] : Box({ flexDirection: 'column', children: rows })
-    return theirs ? Box({ flexDirection: 'column', children: [theirs, band] }) : band
+    const ours = rows.length === 1 ? rows[0] : Box({ flexDirection: 'column', children: rows })
+    return theirs ? Box({ flexDirection: 'column', children: [theirs, ours] }) : ours
   })
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
@@ -84,6 +111,39 @@ export function register(on) {
     }))
     return Box({ flexDirection: 'column', children: rows })
   })
+}
+
+// The usage panel's installer leaves this marker while its sidebar mod is
+// installed (the same one its Ghostty split stands aside for).
+async function hasSidebar($) {
+  if (!home) return false
+  try {
+    await $.fs.read(home + '/.config/claude-panel/mod-installed')
+    return true
+  } catch (err) {
+    return false
+  }
+}
+
+// Without the band, the status line carries what must stay in sight when the
+// sidebar is closed or scrolled: the route, a compaction under way, and the
+// first problem still standing.
+export function statusText() {
+  if (down || !burst) return '⚡ Burst down'
+  const failing = burst.primary_failing > 0
+  const out = ['⚡ ' + (burst.overflow ? 'SECONDARY' : failing ? 'PRIMARY failing' : 'PRIMARY')]
+  const s = burst.session
+  if (s && s.state && s.state !== 'ok') out.push(s.state)
+  const problem = (burst.problems || [])[0]
+  if (problem) out.push('⚠ ' + problem.title)
+  return out.join(' · ')
+}
+
+async function showStatus($) {
+  const text = band ? undefined : statusText()
+  if (text === status) return
+  status = text
+  try { await $.ui.status(text) } catch (err) { $.ui.log('could not set the status line: ' + err) }
 }
 
 async function refresh($) {

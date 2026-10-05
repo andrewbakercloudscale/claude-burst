@@ -35,7 +35,7 @@ function mod(over: Record<string, unknown> = {}) {
 
 // Answers everything the mod calls, with the dashboard returning `answer`
 // (an object, or null for a dashboard that is down).
-function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = []) {
+function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}) {
   const clock = mock.clock(on, { now: 1_000_000_000_000 })
   mock.env(on, { HOME: '/Users/me' })
   on('session.start', () => ({ cwd: '/work' }))
@@ -43,7 +43,14 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
   on('command.register', () => ({ value: undefined }))
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
   on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
-  on('fs.read', ($, e) => (e.path.endsWith('/band/S1.ansi') ? { value: PANEL_FILE } : { deny: 'no such file' }))
+  on('ui.status', ($, e) => { status.push(e.text); return { value: undefined } })
+  on('store.get', ($, e) => ({ value: store[e.key] }))
+  on('store.set', ($, e) => { store[e.key] = e.value; return { value: undefined } })
+  on('fs.read', ($, e) => {
+    if (e.path.endsWith('/band/S1.ansi')) return { value: PANEL_FILE }
+    if (sidebar && e.path === '/Users/me/.config/claude-panel/mod-installed') return { value: '2026-10-05 11:35:56\n' }
+    return { deny: 'no such file' }
+  })
   let i = 0
   on('http.fetch', ($, e) => {
     urls.push(e.url)
@@ -179,4 +186,60 @@ test('no context bar before a response reports the parts', async ($, on) => {
   await start($)
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: /of 300k \(/ })).toBeUndefined()
+})
+
+test('with the usage sidebar installed the band stands aside and the status line carries the route and a standing problem', async ($, on) => {
+  const status: Array<string | undefined> = []
+  const clock = stubs(on, [
+    mod({ problems: [{ id: 'a', kind: 'keep-awake', severity: 'warn', title: 'Keep-awake turned off', ts: 1 }] }),
+    mod({ problems: [{ id: 'a', kind: 'keep-awake', severity: 'warn', title: 'Keep-awake turned off', ts: 1 }] }),
+    mod({ route: 'SECONDARY', overflow: true, session: { session: 'S1', context: 310000, state: 'summarising', compact_at: 300000 } }),
+    null,
+  ], [], [], true, status)
+  await start($)
+  expect(status).toEqual(['⚡ PRIMARY · ⚠ Keep-awake turned off'])
+  // Nothing of Burst's above the prompt: only what was there already.
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'Session ' })).toBeUndefined()
+  await ui.unmount()
+  // Set again only when it changes.
+  await clock.advance(5000)
+  expect(status.length).toBe(1)
+  await clock.advance(5000)
+  expect(status[1]).toBe('⚡ SECONDARY · summarising')
+  await clock.advance(5000)
+  expect(status[2]).toBe('⚡ Burst down')
+})
+
+test('without the sidebar the band is drawn and the status line is left alone', async ($, on) => {
+  const status: Array<string | undefined> = []
+  stubs(on, [mod()], [], [], false, status)
+  await start($)
+  expect(status).toEqual([])
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeDefined()
+})
+
+test('/burst band puts the band back over the sidebar, clears the status line, and is remembered', async ($, on) => {
+  const status: Array<string | undefined> = []
+  const store: Record<string, unknown> = {}
+  stubs(on, [mod()], [], [], true, status, store)
+  await start($)
+  expect(status).toEqual(['⚡ PRIMARY'])
+  expect(await $.command.run({ command: 'burst', args: 'band' })).toEqual({})
+  expect(store.band).toBe(true)
+  expect(status).toEqual(['⚡ PRIMARY', undefined])
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeDefined()
+})
+
+test('a remembered choice of the band wins over the sidebar being there', async ($, on) => {
+  const status: Array<string | undefined> = []
+  stubs(on, [mod()], [], [], true, status, { band: true })
+  await start($)
+  expect(status).toEqual([])
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeDefined()
 })
