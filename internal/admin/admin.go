@@ -55,6 +55,7 @@ const mutationHeader = "X-Claude-Burst-Admin"
 
 type Server struct {
 	gateway     *router.Server
+	modNotices  modNotices
 	metricsPath string
 	version     string
 	// extraHost is an optional friendly hostname accepted in addition to the

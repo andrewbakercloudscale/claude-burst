@@ -110,6 +110,10 @@ type compactor struct {
 	path     string                   // where sessions survive a restart; "" = memory only
 	logger   *log.Logger
 	running  sync.WaitGroup // summary calls in flight
+	// cancels stops a summary call in flight, by session key: /clear ends
+	// the conversation it is for, and the rest of it would be paid for
+	// and thrown away.
+	cancels map[string]context.CancelCauseFunc
 	// midTurnOff: the API rejected a mid-turn swap, so none are tried again
 	// until the settings are saved again (SetCompaction). One rejection is
 	// taken as the API's answer: retrying each turn would cost a wasted
@@ -118,7 +122,7 @@ type compactor struct {
 }
 
 func newCompactor(c config.CompactionConfig, path string, logger *log.Logger) *compactor {
-	cp := &compactor{cfg: c.Resolved(), sessions: map[string]*compactState{}, path: path, logger: logger}
+	cp := &compactor{cfg: c.Resolved(), sessions: map[string]*compactState{}, cancels: map[string]context.CancelCauseFunc{}, path: path, logger: logger}
 	cp.load()
 	return cp
 }
@@ -540,7 +544,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			for k, v := range top {
 				own[k] = v
 			}
-			go s.summarise(in.Clone(context.Background()), own, history, cut, key, p, hash)
+			ctx, cancel := context.WithCancelCause(context.Background())
+			s.compaction.cancels[key] = cancel
+			go s.summarise(ctx, in.Clone(context.Background()), own, history, cut, key, p, hash)
 		} else if forced {
 			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: /compact-async with too little before this prompt to summarise", rid, key, st.lastContext/1000)
 			st.notice("/compact-async: too little to summarise yet")
@@ -715,7 +721,7 @@ func compactionBoundary(view []json.RawMessage, bounds []int, offset int) (p, cu
 // summarise makes one summary request through the primary, with the
 // session's own auth, model, system prompt and tools, and stores the
 // summary for key when it succeeds.
-func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int, key string, p0 int, hash string) {
+func (s *Server) summarise(ctx context.Context, in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int, key string, p0 int, hash string) {
 	// Runs on its own goroutine, outside net/http's per-connection recover,
 	// and parses model output: a panic here would otherwise exit the gateway
 	// and drop every session's in-flight request. Registered first, so it
@@ -726,12 +732,23 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 		}
 	}()
 	defer s.compaction.running.Done()
-	summary, err := s.requestSummary(in, top, history, cut)
+	summary, err := s.requestSummary(ctx, in, top, history, cut)
 	s.compaction.mu.Lock()
 	defer s.compaction.mu.Unlock()
+	if cancel := s.compaction.cancels[key]; cancel != nil {
+		cancel(nil)
+		delete(s.compaction.cancels, key)
+	}
 	st := s.compaction.state(key)
 	st.pending = false
 	defer s.compaction.save()
+	if context.Cause(ctx) == errSessionCleared {
+		// Not a failure, and nobody is left to tell. The window reopens: a
+		// cleared session that is resumed can summarise at once.
+		st.startedAt = time.Time{}
+		s.logger.Printf("compaction cancelled session=%s: the session was cleared while its summary was being written", key)
+		return
+	}
 	if err != nil {
 		// A failed attempt must not hold the session on its full history
 		// for the whole window: try again after retryAfterFailure.
@@ -753,7 +770,7 @@ func (s *Server) summarise(in *http.Request, top map[string]json.RawMessage, his
 	s.logger.Printf("compaction summary ready session=%s: %d messages summarised into %d characters; applies from the next plain prompt", key, p0, len(summary))
 }
 
-func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int) (string, error) {
+func (s *Server) requestSummary(parent context.Context, in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int) (string, error) {
 	req := map[string]json.RawMessage{}
 	for _, k := range []string{"model", "system", "tools", "thinking", "metadata"} {
 		if v, ok := top[k]; ok {
@@ -769,7 +786,7 @@ func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), summaryTimeout)
+	ctx, cancel := context.WithTimeout(parent, summaryTimeout)
 	defer cancel()
 	in = in.WithContext(context.WithValue(ctx, requestIDKey, newRequestID()))
 	start := time.Now()
@@ -807,6 +824,36 @@ func (s *Server) requestSummary(in *http.Request, top map[string]json.RawMessage
 		return "", fmt.Errorf("empty summary (stop_reason %q)", stop)
 	}
 	return summary, nil
+}
+
+// errSessionCleared is why ClearSession stops a summary call.
+var errSessionCleared = errors.New("session cleared")
+
+// ClearSession is told that session sid ran /clear: its conversation is
+// gone, so a summary still being written for it is stopped. It was seen on
+// 3 Dec 2026 in another client of the same idea: a summary started at 407k,
+// /clear 14 seconds later, and the summary finished 12 seconds after that
+// for a conversation nobody had. The read of the history is paid for the
+// moment the call starts; stopping saves the writing. It returns how many
+// calls it stopped.
+//
+// Only /clear: a session that exits is often resumed, and its summary is
+// then wanted. A summary already written is left too: it costs nothing to
+// keep, and is dropped by the history check if it never fits again.
+func (s *Server) ClearSession(sid string) int {
+	if sid == "" {
+		return 0
+	}
+	s.compaction.mu.Lock()
+	defer s.compaction.mu.Unlock()
+	n := 0
+	for key, cancel := range s.compaction.cancels {
+		if strings.HasPrefix(key, sid+"|") {
+			cancel(errSessionCleared)
+			n++
+		}
+	}
+	return n
 }
 
 // withSummaryInstruction returns the request's own history with the summary

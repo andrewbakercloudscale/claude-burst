@@ -154,7 +154,7 @@ test('compaction lines are taken from the gateway and shown as toasts, once', as
   const clock = stubs(on, [mod()], toasts, [], false, [], {}, world)
   await start($)
   expect(toasts).toEqual(['Burst compaction: 300k context: summarising 885 messages in the background'])
-  expect(JSON.parse(world.posts[0])).toEqual({ session_id: 'S1', hook_event_name: 'PostToolUse' })
+  expect(JSON.parse(world.posts[0])).toEqual({ session_id: 'S1', hook_event_name: 'PostToolUse', mod: true })
   world.lines = ['\u26a1 Burst compaction: done, 62% smaller: 300k \u2192 114k (885 messages summarised)', '\u26a1 Burst compaction: test line from the dashboard']
   await clock.advance(5000)
   await clock.advance(5000)

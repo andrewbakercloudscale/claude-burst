@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -44,8 +45,8 @@ func TestPromptNoticeHookFollowsTheSetting(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
-	if n := strings.Count(string(b), promptNoticeScript); n != 2 {
-		t.Fatalf("want it once under UserPromptSubmit and once under PostToolUse, installed %d times:\n%s", n, b)
+	if n := strings.Count(string(b), promptNoticeScript); n != 3 {
+		t.Fatalf("want it once each under UserPromptSubmit, PostToolUse and SessionEnd, installed %d times:\n%s", n, b)
 	}
 	root, _ := claudesettings.Read(p)
 	if !claudesettings.HasCommandHook(root, "PostToolUse", isPromptNotice) {
@@ -57,8 +58,17 @@ func TestPromptNoticeHookFollowsTheSetting(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(p)
-	if promptNoticeState() != "not installed" || !strings.Contains(string(b), "mine.sh") || strings.Contains(string(b), promptNoticeScript) {
-		t.Fatalf("off must remove only ours:\n%s", b)
+	// SessionEnd stays: it goes with compaction, which is still on.
+	if promptNoticeState() != "not installed" || !strings.Contains(string(b), "mine.sh") || strings.Count(string(b), promptNoticeScript) != 1 {
+		t.Fatalf("off must remove only ours, and leave SessionEnd:\n%s", b)
+	}
+	cfg.PrimaryCompaction.Enabled = false
+	if err := SyncPromptNoticeHook(cfg); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(p)
+	if !strings.Contains(string(b), "mine.sh") || strings.Contains(string(b), promptNoticeScript) {
+		t.Fatalf("compaction off must remove every one of ours and nothing else:\n%s", b)
 	}
 }
 
@@ -117,5 +127,64 @@ func TestCompactCommandFollowsTheSetting(t *testing.T) {
 	SyncCompactCommand(cfg)
 	if b, _ := os.ReadFile(p); string(b) != "my own command" {
 		t.Fatalf("someone else's compact-async.md was changed: %q", b)
+	}
+}
+
+// The mod shows a session's lines as toasts, so while it is asking the hook
+// is answered with nothing and the lines are left for the mod.
+func TestPromptNoticeHookStandsAsideForTheMod(t *testing.T) {
+	s := newTestServer(t)
+	ask := func(body string) int {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/prompt-notice", bytes.NewReader([]byte(body)))
+		req.Header.Set(mutationHeader, "1")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		return w.Code
+	}
+	if s.modNotices.has("S") {
+		t.Fatal("no mod has asked yet")
+	}
+	ask(`{"session_id":"S","hook_event_name":"PostToolUse","mod":true}`)
+	if !s.modNotices.has("S") || s.modNotices.has("T") {
+		t.Fatal("the mod asking for S must mark S, and only S")
+	}
+	// A mod that stopped asking half a minute ago has gone.
+	s.modNotices.mu.Lock()
+	s.modNotices.seen["S"] = time.Now().Add(-modNoticeFor - time.Second)
+	s.modNotices.mu.Unlock()
+	if s.modNotices.has("S") {
+		t.Fatal("a mod that has gone must give the lines back to the hook")
+	}
+	// A session ending is never answered with text.
+	if code := ask(`{"session_id":"S","hook_event_name":"SessionEnd","reason":"clear"}`); code != http.StatusNoContent {
+		t.Fatalf("SessionEnd answered %d", code)
+	}
+}
+
+// SessionEnd goes with compaction, not with the notice under the prompt.
+func TestSessionEndHookFollowsCompaction(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p, err := claudesettings.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func() bool {
+		root, err := claudesettings.Read(p)
+		return err == nil && claudesettings.HasCommandHook(root, "SessionEnd", isPromptNotice)
+	}
+	cfg := config.Default()
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, NoPromptNotice: true}
+	if err := SyncPromptNoticeHook(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !has() || promptNoticeState() != "not installed" {
+		t.Fatal("notice off, compaction on: SessionEnd installed, the prompt hooks not")
+	}
+	cfg.PrimaryCompaction.Enabled = false
+	if err := SyncPromptNoticeHook(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if has() {
+		t.Fatal("compaction off must remove the SessionEnd hook")
 	}
 }

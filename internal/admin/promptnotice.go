@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -28,6 +30,43 @@ const promptNoticeScript = "prompt-notice.sh"
 // after one, so a stopped gateway never holds a prompt back.
 const promptNoticeTimeout = 3
 
+// modNoticeFor is how long after the burst-band mod last asked for a
+// session's lines the hook is answered with nothing. The mod asks every 5
+// seconds and shows each line as a toast in the session; the hook printing
+// the same news under the prompt was the two racing for one queue, and the
+// hook won often enough to keep the red "PostToolUse:Bash says" lines. A mod
+// that has gone stops asking, and the hook has the lines again.
+const modNoticeFor = 30 * time.Second
+
+// modNotices is when each session's mod last asked, by session id.
+type modNotices struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+// asked records the mod asking now.
+func (m *modNotices) asked(sid string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.seen == nil {
+		m.seen = map[string]time.Time{}
+	}
+	for k, t := range m.seen {
+		if time.Since(t) > modNoticeFor {
+			delete(m.seen, k)
+		}
+	}
+	m.seen[sid] = time.Now()
+}
+
+// has reports whether the session's mod is taking its lines.
+func (m *modNotices) has(sid string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.seen[sid]
+	return ok && time.Since(t) <= modNoticeFor
+}
+
 func isPromptNotice(cmd string) bool {
 	return strings.HasSuffix(cmd, "/claude-burst/"+promptNoticeScript)
 }
@@ -36,8 +75,9 @@ func isPromptNotice(cmd string) bool {
 // nothing: plain text from a UserPromptSubmit hook would reach the model.
 func promptNoticeScriptText(url string) string {
 	return `#!/bin/sh
-# UserPromptSubmit and PostToolUse hook, installed by claude-burst (internal/admin/promptnotice.go).
-# Shows Pauseless Compaction's news under the prompt. Generated: edits are
+# UserPromptSubmit, PostToolUse and SessionEnd hook, installed by claude-burst (internal/admin/promptnotice.go).
+# Shows Pauseless Compaction's news under the prompt, and tells the gateway
+# when a session is cleared. Generated: edits are
 # overwritten; turn it off on the dashboard instead.
 curl -sf -m 1 -X POST -H 'X-Claude-Burst-Admin: 1' -H 'Content-Type: application/json' \
   --data-binary @- '` + url + `' 2>/dev/null
@@ -72,7 +112,10 @@ func SyncPromptNoticeHook(cfg config.Config) error {
 		return err
 	}
 	script := filepath.Join(dir, promptNoticeScript)
-	if want {
+	// SessionEnd goes with compaction itself, not with the notice: it stops
+	// a summary being written for a session that ran /clear.
+	wantEnd := cfg.AdminListen != "" && c.Enabled
+	if wantEnd {
 		if err := config.EnsureDir(); err != nil {
 			return err
 		}
@@ -105,6 +148,11 @@ func SyncPromptNoticeHook(cfg config.Config) error {
 		changed = claudesettings.RemoveCommandHooks(root, "UserPromptSubmit", isPromptNotice) > 0
 		changed = claudesettings.RemoveCommandHooks(root, "PostToolUse", isPromptNotice) > 0 || changed
 	}
+	if wantEnd {
+		changed = claudesettings.AddCommandHook(root, "SessionEnd", "", script, promptNoticeTimeout, isPromptNotice) || changed
+	} else {
+		changed = claudesettings.RemoveCommandHooks(root, "SessionEnd", isPromptNotice) > 0 || changed
+	}
 	if !changed {
 		return nil
 	}
@@ -117,9 +165,27 @@ func (s *Server) handlePromptNotice(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		SessionID string `json:"session_id"`
 		Event     string `json:"hook_event_name"`
+		Reason    string `json:"reason"`
+		Mod       bool   `json:"mod"` // asked by the burst-band mod, not the hook
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	_ = json.Unmarshal(b, &in)
+	if in.Event == "SessionEnd" {
+		// Nothing to show a session that has ended. One that was cleared
+		// has no use for a summary still being written.
+		if in.Reason == "clear" {
+			s.gateway.ClearSession(in.SessionID)
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if in.Mod {
+		s.modNotices.asked(in.SessionID)
+	} else if s.modNotices.has(in.SessionID) {
+		// The lines stay queued for the mod, which shows them as toasts.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	lines := s.gateway.PromptNotices(in.SessionID, in.Event == "PostToolUse")
 	if len(lines) == 0 {
 		w.WriteHeader(http.StatusNoContent)
