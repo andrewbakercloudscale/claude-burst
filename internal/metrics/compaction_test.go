@@ -180,3 +180,28 @@ func TestCompactionSavingFollowsAWithoutBurstTwin(t *testing.T) {
 		t.Fatalf("session row: %+v", c)
 	}
 }
+
+// A summary call cut short (the session was cleared, or the stream broke)
+// wrote no summary and was still paid for: its cost counts, on the session
+// that started it, and it is not a compaction.
+func TestAnUnfinishedSummaryCostsButDoesNotCount(t *testing.T) {
+	at := time.Now().Add(-time.Hour)
+	ev := func(d time.Duration, rest string) string {
+		return `{"time":"` + at.Add(d).Format(time.RFC3339) + `","session_id":"S","slot":"primary","model":"m","http_status":200,` + rest + `}`
+	}
+	lines := []string{
+		ev(0, `"input_tokens":2,"cache_read_tokens":407000`),
+		ev(time.Minute, `"input_tokens":400,"cache_read_tokens":407000,"api_equivalent_usd":0.18,"note":"compaction summary incomplete: the stream broke off: context canceled"`),
+	}
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := CompactionStatsSince(p, at.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Compactions != 0 || st.SummaryUSD != 0.18 || st.NetUSD != -0.18 {
+		t.Fatalf("compactions=%d summary=$%.2f net=$%.2f, want 0, $0.18, -$0.18", st.Compactions, st.SummaryUSD, st.NetUSD)
+	}
+}

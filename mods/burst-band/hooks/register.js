@@ -193,14 +193,16 @@ async function markToasts($, on) {
 }
 
 // Pauseless Compaction's news for this session, each line a toast. Asking
-// takes the lines from the gateway, as the prompt-notice hook does.
+// takes the lines from the gateway, as the prompt-notice hook does; `mod`
+// tells it who asks, and it then answers the hook with nothing, so a line
+// is a toast and not also red text under the prompt.
 async function compactionLines($) {
   if (!sid) return
   try {
     const r = await $.http.fetch(DASHBOARD + '/api/prompt-notice', {
       method: 'POST',
       headers: { 'X-Claude-Burst-Admin': '1', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sid, hook_event_name: 'PostToolUse' }),
+      body: JSON.stringify({ session_id: sid, hook_event_name: 'PostToolUse', mod: true }),
     })
     if (!r.ok || !r.text) return
     const lines = String(JSON.parse(r.text).systemMessage || '').split('\n')

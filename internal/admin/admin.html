@@ -88,6 +88,7 @@
   }
   .badge.ok   { background: var(--ok-bg);   color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
   .badge.warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+  .neg { color: var(--bad); }
   .badge.bad  { background: var(--bad-bg);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 25%, transparent); }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
@@ -2797,6 +2798,9 @@ $("save").onclick = async () => {
 // Dollars with enough precision to see small overflow spend: four decimals under $1.
 // A saving that can be negative: "-$0.40", never "$-0.40".
 function signedUSD(n) { n = n || 0; return (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2); }
+// A net figure as HTML: a loss is red, so a minus sign is not the only thing
+// saying the feature cost more than it saved.
+function netUSD(n) { const t = esc(signedUSD(n)); return (n || 0) < 0 ? `<span class="neg">${t}</span>` : t; }
 
 function smallUSD(n) { return "$" + (n || 0).toFixed((n || 0) < 1 ? 4 : 2); }
 
@@ -3006,7 +3010,7 @@ function renderCompaction(s) {
       <td class="num ${limitOf(r) && r.context >= limitOf(r) ? "st-5" : limitOf(r) && r.context >= limitOf(r) * warnPct ? "st-4" : ""}">${tok(r.context)}</td>
       <td class="num ${(r.raw || 0) >= 800000 ? "st-5" : (r.raw || 0) >= 500000 ? "st-4" : ""}" title="${r.raw ? esc(`about $${(r.raw_usd || 0).toFixed(2)} uncached if Burst drops out`) : ""}">${r.raw ? tok(r.raw) : "-"}</td>
       <td class="num">${x ? `<b style="color:var(--pc-a)">${tok(x.per_turn_tokens)}</b> <span class="hint">${esc(smallUSD(x.per_turn_usd))}</span>` : "-"}</td>
-      <td class="num" title="${x ? esc(`$${x.saved_usd.toFixed(2)} of context compacted, less $${x.summary_usd.toFixed(2)} summaries and $${x.rewrite_usd.toFixed(2)} cache rewrites, over ${x.requests} turns and ${x.compactions} compaction(s)`) : ""}">${x ? `${esc(signedUSD(x.net_usd))} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
+      <td class="num" title="${x ? esc(`$${x.saved_usd.toFixed(2)} of context compacted, less $${x.summary_usd.toFixed(2)} summaries and $${x.rewrite_usd.toFixed(2)} cache rewrites, over ${x.requests} turns and ${x.compactions} compaction(s)`) : ""}">${x ? `${netUSD(x.net_usd)} <span class="hint">${esc(num(x.requests))} turns</span>` : "-"}</td>
       <td class="mono">${x ? esc(stamp(x.at)) : "-"}</td>
     </tr>`;
     }).join("")}</tbody></table>`;
@@ -4091,9 +4095,9 @@ const METRICS = {
       }
       if (d.compacted_tokens || d.compaction_summary_usd) {
         const net = (d.compacted_usd || 0) - (d.compaction_summary_usd || 0) - (d.compaction_rewrite_usd || 0);
-        out += `<div class="r"><span>Context compacted</span><b>${esc(signedUSD(d.compacted_usd))}</b></div>` +
+        out += `<div class="r"><span>Context compacted</span><b>${netUSD(d.compacted_usd)}</b></div>` +
                `<div class="r"><span>Summaries + rewrites</span><b>${esc(smallUSD((d.compaction_summary_usd || 0) + (d.compaction_rewrite_usd || 0)))}</b></div>` +
-               `<div class="r"><span>Compaction net</span><b>${esc(signedUSD(net))}</b></div>`;
+               `<div class="r"><span>Compaction net</span><b>${netUSD(net)}</b></div>`;
       }
       return out;
     },
@@ -4262,7 +4266,7 @@ function savingsTiles(cs) {
   return {
     tokens: {value: `${big(cs.tokens_not_resent || 0)} <span style="font-size:15px">(${pct(cs.tokens_not_resent || 0, cs.twin_tokens || 0)})</span>`,
       text: `tokens of context compacted\n${pct(cs.tokens_not_resent || 0, cs.twin_tokens || 0)} of the ${big(cs.twin_tokens || 0)} that would have been sent without Burst, over ${num(reqs)} requests`},
-    money: {value: `${signedUSD(cs.net_usd)} <span style="font-size:15px">(${pct(cs.net_usd || 0, cs.twin_usd || 0)})</span>`,
+    money: {value: `${netUSD(cs.net_usd)} <span style="font-size:15px">(${pct(cs.net_usd || 0, cs.twin_usd || 0)})</span>`,
       text: `async context savings, after costs\n$${gross.toFixed(2)} saved, $${cost.toFixed(2)} costs (${pct(cost, gross)} of the saving)\n` +
         `${pct(cs.net_usd || 0, cs.twin_usd || 0)} off what these requests' context would have cost`,
       title: `Costs: $${(cs.summary_usd || 0).toFixed(2)} for the summaries and $${(cs.rewrite_usd || 0).toFixed(2)} for cache rewrites after each swap. API-equivalent dollars: on a subscription the saving is your limits lasting longer.`},
@@ -4289,7 +4293,7 @@ function drawSavingsChart() {
   tip.style.opacity = "0";
   if (!any) { host.innerHTML = ""; return; }
   const total = days.reduce((t, d) => t + d.net, 0);
-  $("pcChartSum").innerHTML = `net <b>${esc(signedUSD(total))}</b> over ${days.length} days`;
+  $("pcChartSum").innerHTML = `net <b>${netUSD(total)}</b> over ${days.length} days`;
 
   const W = Math.max(320, host.clientWidth || 640), H = 190;
   const padL = 48, padR = 10, padT = 10, padB = 24;
@@ -4343,7 +4347,7 @@ function drawSavingsChart() {
     r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
   });
   $("pcChartTable").innerHTML = `<table><thead><tr><th>Day</th><th class="num">Savings</th><th class="num">Summaries</th><th class="num">Cache rewrites</th><th class="num">Net</th><th class="num">Compactions</th></tr></thead><tbody>` +
-    days.slice().reverse().map(d => `<tr><td>${esc(dayLabel(d.date))}</td><td class="num">$${d.up.toFixed(2)}</td><td class="num">$${d.summary.toFixed(2)}</td><td class="num">$${d.rewrite.toFixed(2)}</td><td class="num">${esc(signedUSD(d.net))}</td><td class="num">${d.compactions}</td></tr>`).join("") + `</tbody></table>`;
+    days.slice().reverse().map(d => `<tr><td>${esc(dayLabel(d.date))}</td><td class="num">$${d.up.toFixed(2)}</td><td class="num">$${d.summary.toFixed(2)}</td><td class="num">$${d.rewrite.toFixed(2)}</td><td class="num">${netUSD(d.net)}</td><td class="num">${d.compactions}</td></tr>`).join("") + `</tbody></table>`;
 }
 window.addEventListener("resize", () => { clearTimeout(window.__pcResize); window.__pcResize = setTimeout(drawSavingsChart, 120); });
 
@@ -4474,7 +4478,7 @@ function renderSavingsByRepo(repos, days) {
   box.hidden = !repos.length;
   if (!repos.length) { $("pcRepoSplit").innerHTML = ""; return; }
   const total = repos.reduce((t, r) => t + r.net_usd, 0);
-  $("pcRepoSum").innerHTML = `net <b>${esc(signedUSD(total))}</b> over ${days} days, ${repos.length} ${repos.length === 1 ? "repository" : "repositories"}`;
+  $("pcRepoSum").innerHTML = `net <b>${netUSD(total)}</b> over ${days} days, ${repos.length} ${repos.length === 1 ? "repository" : "repositories"}`;
   const sumOf = k => repos.reduce((t, r) => t + (r[k] || 0), 0);
   $("pcRepoSplit").innerHTML = shareTable("Repository", "Share of net saving",
     [{h: "Sessions"}, {h: "Compactions"}, {h: "Saved", title: "What the summaries saved before their own costs"},
@@ -4485,11 +4489,11 @@ function renderSavingsByRepo(repos, days) {
       share: total > 0 ? Math.max(r.net_usd, 0) / total : 0,
       color: "var(--pcs-saved)",
       cells: [esc(num(r.sessions)), esc(num(r.compactions)), esc(money(r.saved_usd)),
-        esc(money((r.summary_usd || 0) + (r.rewrite_usd || 0))), esc(signedUSD(r.net_usd))],
+        esc(money((r.summary_usd || 0) + (r.rewrite_usd || 0))), netUSD(r.net_usd)],
       cls: ["", "", "", "dim", r.net_usd >= 0 ? "good" : "bad"],
     })),
     {name: "Total", cells: [esc(num(sumOf("sessions"))), esc(num(sumOf("compactions"))), esc(money(sumOf("saved_usd"))),
-      esc(money(sumOf("summary_usd") + sumOf("rewrite_usd"))), esc(signedUSD(total))],
+      esc(money(sumOf("summary_usd") + sumOf("rewrite_usd"))), netUSD(total)],
      cls: ["", "", "", "dim", total >= 0 ? "good" : "bad"]});
 }
 
@@ -4505,7 +4509,7 @@ function renderRepoSplit(h) {
       const cells = [esc(num(r.sessions)), esc(num(r.requests)), esc(money(r.usd)) + (r.unpriced ? " +unpriced" : "")];
       const cls = ["", "", ""];
       if (anyCompacted) {
-        cells.push(r.compacted ? esc(signedUSD(r.saved_usd)) : `<span title="No session in this repository was compacted in this window">-</span>`);
+        cells.push(r.compacted ? netUSD(r.saved_usd) : `<span title="No session in this repository was compacted in this window">-</span>`);
         cls.push(r.compacted ? (r.saved_usd >= 0 ? "good" : "bad") : "dim");
       }
       return {name: esc(r.repo), title: r.path || r.repo, share: total ? r.usd / total : 0, color: "var(--s-primary)", cells, cls};
@@ -4513,7 +4517,7 @@ function renderRepoSplit(h) {
       const sum = k => repos.reduce((t, r) => t + (r[k] || 0), 0);
       const saved = repos.filter(r => r.compacted).reduce((t, r) => t + r.saved_usd, 0);
       return {name: repos.length < (h.repos || []).length ? `Top ${repos.length}` : "Total",
-        cells: [esc(num(sum("sessions"))), esc(num(sum("requests"))), esc(money(total))].concat(anyCompacted ? [esc(signedUSD(saved))] : []),
+        cells: [esc(num(sum("sessions"))), esc(num(sum("requests"))), esc(money(total))].concat(anyCompacted ? [netUSD(saved)] : []),
         cls: ["", "", ""].concat(anyCompacted ? [saved >= 0 ? "good" : "bad"] : [])};
     })());
 }

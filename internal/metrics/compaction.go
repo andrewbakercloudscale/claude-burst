@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -144,6 +145,7 @@ type trackedSession struct {
 type compactionEffect struct {
 	summaryUSD float64
 	isSummary  bool
+	unfinished bool  // a summary call that was paid for and wrote no summary
 	compacted  bool  // the request carried a Burst summary
 	saved      int64 // twin minus real, may be negative
 	savedUSD   float64
@@ -177,8 +179,11 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 	key := e.SessionID + "|" + e.Model
 	fx.sessionKey = key
 	s := t.session(key)
-	if e.Note == "compaction summary" {
+	// A summary cut short (the stream broke, or the session was cleared)
+	// was still paid for: its cost counts, the summary does not.
+	if e.Note == "compaction summary" || strings.HasPrefix(e.Note, "compaction summary incomplete") {
 		fx.isSummary, fx.summaryUSD = true, e.APIEquivalentUSD
+		fx.unfinished = e.Note != "compaction summary"
 		return fx
 	}
 	ctx := eventContext(e)
@@ -260,10 +265,14 @@ func CompactionStatsSince(path string, since time.Time) (CompactionStats, error)
 			}
 			day := dayOf(e.Time)
 			if fx.isSummary {
-				st.Compactions++
+				if !fx.unfinished {
+					st.Compactions++
+				}
 				st.SummaryUSD += fx.summaryUSD
 				if day != nil {
-					day.Compactions++
+					if !fx.unfinished {
+						day.Compactions++
+					}
 					day.SummaryUSD += fx.summaryUSD
 				}
 				if c := bySession[fx.sessionKey]; c != nil {

@@ -1077,3 +1077,79 @@ func TestReadSSETextNeedsACompletedStream(t *testing.T) {
 		}
 	}
 }
+
+// /clear ends the conversation a summary is being written for: the call is
+// stopped, nothing is kept or announced, and the window is open again.
+func TestClearSessionStopsASummaryInFlight(t *testing.T) {
+	started := make(chan struct{})
+	gone := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("content-type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":450000}}}\n\n")
+		if !strings.Contains(string(b), "Summarize the transcript inside") {
+			fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
+			fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+			return
+		}
+		w.(http.Flusher).Flush()
+		close(started)
+		// The summary is still being written until the gateway hangs up.
+		select {
+		case <-r.Context().Done():
+			close(gone)
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	defer up.Close()
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = up.URL
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true}
+	dir := t.TempDir()
+	metricsPath := filepath.Join(dir, "metrics.jsonl")
+	s, err := New(cfg, filepath.Join(dir, "state.json"), metricsPath, log.New(testLogWriter{t}, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	<-started
+	s.PromptNotices("S", false)
+
+	if n := s.ClearSession("T"); n != 0 {
+		t.Fatalf("another session's /clear stopped %d summaries", n)
+	}
+	if n := s.ClearSession("S"); n != 1 {
+		t.Fatalf("stopped %d summaries, want 1", n)
+	}
+	select {
+	case <-gone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the summary call was not hung up")
+	}
+	s.compaction.running.Wait()
+
+	s.compaction.mu.Lock()
+	st := stateFor(s, "S")
+	pending, next, opened, left := st.pending, st.next, st.startedAt.IsZero(), len(s.compaction.cancels)
+	s.compaction.mu.Unlock()
+	if pending || next != "" || !opened || left != 0 {
+		t.Fatalf("pending=%v next=%q window open=%v cancels left=%d", pending, next, opened, left)
+	}
+	// Not a failure: nobody is told anything.
+	if got := s.PromptNotices("S", false); len(got) != 0 {
+		t.Fatalf("a cleared session was told %q", got)
+	}
+	// What the call cost before it was stopped is still on the old session.
+	b, _ := os.ReadFile(metricsPath)
+	found := false
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.Contains(l, `"note":"compaction summary incomplete`) {
+			found = strings.Contains(l, `"session_id":"S"`) && strings.Contains(l, `"cache_read_tokens":450000`)
+		}
+	}
+	if !found {
+		t.Fatalf("the stopped call's cost is not recorded against session S:\n%s", b)
+	}
+}
