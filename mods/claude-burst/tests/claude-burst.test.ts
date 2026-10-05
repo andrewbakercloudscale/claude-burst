@@ -455,6 +455,31 @@ test('asked for by the mod, a summary that does not fit compacts nothing', async
   expect(calls).toEqual([])
 })
 
+test("/compact-async-full hands Burst's summary over with Burst in the path, and never has Claude Code write one", async ($, on) => {
+  const toasts: string[] = []
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 90000 }), '/etc/hosts': HOSTS_IN } }
+  stubs(on, [null], toasts, [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  expect(await $.command.run({ command: 'compact-async-full', args: '' })).toEqual({})
+  await new Promise((r) => setTimeout(r, 0))
+  expect(calls).toEqual(['/compact'])
+  // The /compact it ran comes with a transcript the summary does not fit: skipped, not Claude Code's.
+  expect(String((await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT.slice(0, 2) })).skip)).toContain("Burst's summary does not fit")
+  // With one it fits, the summary is handed over.
+  await $.command.run({ command: 'compact-async-full', args: '' })
+  await new Promise((r) => setTimeout(r, 0))
+  expect((await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT })).messages[0].text).toBe(LEAD)
+  expect(calls).toEqual(['/compact', '/compact'])
+  // No summary held: it says so and runs nothing.
+  world.files = { '/etc/hosts': HOSTS_IN }
+  await $.command.run({ command: 'compact-async-full', args: '' })
+  await new Promise((r) => setTimeout(r, 0))
+  expect(calls).toEqual(['/compact', '/compact'])
+  expect(toasts.some((t) => t.includes('Burst holds no summary of this session'))).toBe(true)
+})
+
 test('the size the gateway last reported counts once the gateway is gone', async ($, on) => {
   const calls: string[] = []
   // The file was written when the session was small; the gateway said 600k before it went.
