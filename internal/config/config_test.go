@@ -337,7 +337,7 @@ func TestForRepoTakesTheLearnedCompactAtInTheIntelligentMode(t *testing.T) {
 	}
 	c.Mode = CompactionIntelligent
 	got, o := c.ForRepo("/src/learned")
-	if got.CompactAtTokens != 150_000 || got.WarnAtTokens != 120_000 || o == nil || !o.Learned {
+	if got.CompactAtTokens != 150_000 || got.WarnAtTokens != NeverTokens || o == nil || !o.Learned {
 		t.Fatalf("intelligent: %d warn %d %+v", got.CompactAtTokens, got.WarnAtTokens, o)
 	}
 	if got, o := c.ForRepo("/src/pinned"); got.CompactAtTokens != 500_000 || o == nil || o.Learned {
@@ -348,5 +348,18 @@ func TestForRepoTakesTheLearnedCompactAtInTheIntelligentMode(t *testing.T) {
 	}
 	if c.Resolved().FloorTokens != DefaultCompactionFloor || DefaultCompactionFloor != 100_000 {
 		t.Fatal("the floor defaults to 100k")
+	}
+}
+
+func TestIntelligentModeHasNoWarning(t *testing.T) {
+	c := CompactionConfig{Enabled: true, Mode: CompactionIntelligent, Learned: map[string]int64{"/r": 160_000}}.Resolved()
+	if c.WarnAtTokens != NeverTokens {
+		t.Fatalf("intelligent mode warns at %d, want never", c.WarnAtTokens)
+	}
+	if got, _ := c.ForRepo("/r"); got.CompactAtTokens != 160_000 || got.WarnAtTokens != NeverTokens {
+		t.Fatalf("learned repo: compact at %d, warn at %d", got.CompactAtTokens, got.WarnAtTokens)
+	}
+	if fixed := (CompactionConfig{Enabled: true}).Resolved(); fixed.WarnAtTokens != 240_000 {
+		t.Fatalf("static mode warns at %d, want 240000", fixed.WarnAtTokens)
 	}
 }

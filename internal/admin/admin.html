@@ -294,6 +294,10 @@
 
   .ic-panel { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin: 12px 0; }
   [data-ic][hidden], [data-static][hidden] { display: none !important; }
+  .ic-scroll { overflow-x: auto; }
+  .ic-scroll table { width: max-content; min-width: 100%; }
+  .ic-scroll th, .ic-scroll td { white-space: nowrap; padding-left: 18px; padding-right: 18px; }
+  .ic-scroll td.ic-why { white-space: normal; min-width: 460px; max-width: 620px; }
   .ic-choice { display: flex; align-items: flex-start; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--text); margin: 0; min-width: 260px; }
   .ic-choice:has(input:checked) { border-color: var(--ok); background: var(--ok-bg); }
   .pill { font: 11px var(--mono); padding: 1.5px 7px; border-radius: 5px; border: 1px solid var(--border);
@@ -1160,7 +1164,7 @@
           <label for="icBuffer" title="Added on top of the cheapest size, so a learned size is less eager than the money alone says">Buffer (%)</label>
           <input type="number" id="icBuffer" min="0" max="200" step="5" style="width:110px">
         </div>
-        <div>
+        <div data-static>
           <label for="compactWarn">Warn when at (%)</label>
           <input type="number" id="compactWarn" min="1" max="99" step="5" style="width:110px">
         </div>
@@ -1173,7 +1177,7 @@
         <span class="hint" id="icNote"></span>
       </div>
       <div class="hint" style="margin-top:6px" data-static><strong>Compact at</strong>: the context that triggers a summary, the same for every repository (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default). <strong>Max 1 compaction per</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
-      <div class="hint" style="margin-top:6px;line-height:1.55" data-ic>Burst learns a size for each repository from the last 14 days of its own compactions: what one leaves behind, how fast the context grows again, and what one costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is where the two add up to the least, plus the <strong>Buffer</strong>, kept between <strong>Never below</strong> and <strong>Never above</strong>, and adjusted once a day by a tenth at most. A repository with fewer than 3 compactions uses <em>Never above</em>. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. Failures push a repository's size up, and where most lose money it goes back to <em>Never above</em>. <strong>Warn when at</strong> is a share of each repository's own size, and <strong>Max 1 compaction per</strong> is the least time between two compactions of the same session (default 30 minutes).</div>
+      <div class="hint" style="margin-top:6px;line-height:1.55" data-ic>Burst learns a size for each repository from the last 14 days of its own compactions: what one leaves behind, how fast the context grows again, and what one costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is where the two add up to the least, plus the <strong>Buffer</strong>, kept between <strong>Never below</strong> and <strong>Never above</strong>, and adjusted once a day by a tenth at most. A repository with fewer than 3 compactions uses <em>Never above</em>. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. Failures push a repository's size up, and where most lose money it goes back to <em>Never above</em>. There is no warning in this mode. <strong>Max 1 compaction per</strong> is the least time between two compactions of the same session (default 30 minutes).</div>
       <div id="icTable" style="margin-top:8px" data-ic></div>
       </div>
       <h3 class="mac-h">Repository overrides</h3>
@@ -2994,7 +2998,7 @@ function renderCompaction(s) {
   renderSavingsByRepo(c.savings_by_repo || [], (cs.daily || []).length || days);
   setDot("nd-compaction", k.enabled ? "ok" : "");
   renderRepoOverrides(k, c);
-  const at = k.compact_at_tokens || 300000, warnPct = (k.warn_at_percent || 80) / 100;
+  const at = k.compact_at_tokens || 300000, warnPct = k.mode === "intelligent" ? 2 : (k.warn_at_percent || 80) / 100;
   // Each session's own limit: a repository override, or 0 when it never compacts.
   const limitOf = r => r.compact_at === undefined ? at : r.compact_at;
   const sorted = [...allRows].sort((a, b) => (b.context || 0) - (a.context || 0));
@@ -3175,11 +3179,11 @@ function renderLearned(v) {
     $("icTable").innerHTML = `<div class="hint">No repository has been compacted in the last ${v.window_days} days, so there is nothing to learn from yet. Every repository compacts at ${k(v.fixed)}.</div>`;
     return;
   }
-  const src = {learned: ["learned", "p"], override: ["your override", "s"], off: ["never", "s"], fixed: ["fixed", ""]};
+  const src = {learned: ["learned", "p"], override: ["your override", "s"], off: ["never", "s"], fixed: ["fixed", "s"]};
   $("icTable").innerHTML = `<div class="hint" style="margin-bottom:4px">${on
       ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, ${v.buffer_percent}% above the cheapest size, at most once every ${v.delay_minutes} minutes for a session.`
       : `Off: every repository compacts at ${k(v.fixed)}. <b>Would be</b> shows what this mode would use.`}</div>
-    <table><thead><tr><th>Repository</th><th class="num">Compact at now</th><th class="num">${on ? "Target" : "Would be"}</th>
+    <div class="ic-scroll"><table><thead><tr><th>Repository</th><th class="num">Compact at now</th><th class="num">${on ? "Target" : "Would be"}</th>
       <th class="num" title="The context a compaction leaves behind (median)">Leaves</th>
       <th class="num" title="How fast the context grows, per request (median)">Grows / turn</th>
       <th class="num" title="Summary call and cache rewrite (median)">Cost each</th>
@@ -3199,8 +3203,8 @@ function renderLearned(v) {
           <td class="num">${r.compactions || 0}</td>
           <td class="num" title="${esc(`${f.unpaid || 0} did not save what they cost, ${f.summary_failed || 0} summary calls paid for and failed, ${f.unused || 0} summaries never used; ${f.ended || 0} ended early by /clear, /compact or a rewind`)}">${lost
             ? `<span class="neg">${lost} of ${f.attempts || lost}</span>${f.lost_usd ? ` <span class="hint">$${f.lost_usd.toFixed(2)}</span>` : ""}` : `0 of ${f.attempts || 0}`}</td>
-          <td class="hint">${esc(r.reason || "")}</td></tr>`;
-      }).join("")}</tbody></table>`;
+          <td class="hint ic-why">${esc(r.reason || "")}</td></tr>`;
+      }).join("")}</tbody></table></div>`;
 }
 // One setting, shown in both places.
 for (const id of ["icFloor", "icBuffer"]) $(id).addEventListener("input", () => {
