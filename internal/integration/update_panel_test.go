@@ -15,6 +15,7 @@ import (
 type panelRig struct {
 	t                   *testing.T
 	home, burst, beside string
+	origin              string
 }
 
 func newPanelRig(t *testing.T) *panelRig {
@@ -33,6 +34,7 @@ func newPanelRig(t *testing.T) *panelRig {
 	must(t, os.WriteFile(filepath.Join(r.burst, "scripts", "update-panel.sh"), script, 0o755))
 
 	origin := filepath.Join(base, "origin")
+	r.origin = origin
 	must(t, os.MkdirAll(origin, 0o755))
 	r.git(origin, "init", "-q", "-b", "main")
 	r.release(origin, "v1")
@@ -59,7 +61,8 @@ func (r *panelRig) release(dir, version string) {
 func (r *panelRig) run(script string, env ...string) string {
 	r.t.Helper()
 	cmd := exec.Command("zsh", script)
-	cmd.Env = append(append(os.Environ(), "HOME="+r.home), env...)
+	// Never GitHub: a panel with no copy of its repo is fetched from here.
+	cmd.Env = append(append(os.Environ(), "HOME="+r.home, "CLAUDE_BURST_PANEL_REPO="+r.origin), env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		r.t.Fatalf("update-panel.sh must never fail its caller: %v\n%s", err, out)
@@ -100,10 +103,26 @@ func TestUpdatePanelFindsThePanelFromATemporaryCopy(t *testing.T) {
 	script, err := os.ReadFile(r.script())
 	must(t, err)
 	must(t, os.WriteFile(filepath.Join(tmp, "update-panel.sh"), script, 0o755))
-	if out := r.run(filepath.Join(tmp, "update-panel.sh")); !strings.Contains(out, "no copy of its repo was found") {
-		t.Fatalf("without the real checkout's path there is nothing to find:\n%s", out)
+	out := r.run(filepath.Join(tmp, "update-panel.sh"), "CLAUDE_BURST_REPO="+r.burst)
+	if !strings.Contains(out, "updating from "+r.beside) || !strings.Contains(out, "installed v2") {
+		t.Fatalf("the panel beside the real checkout is the one updated:\n%s", out)
 	}
-	if out := r.run(filepath.Join(tmp, "update-panel.sh"), "CLAUDE_BURST_REPO="+r.burst); !strings.Contains(out, "installed v2") {
-		t.Fatalf("with it, the panel beside the real checkout is updated:\n%s", out)
+}
+
+// A panel installed from a repo that has since moved or gone used to be left
+// as it was for good, with a warning. A copy is fetched and installed.
+func TestUpdatePanelFetchesACopyWhenNoneIsFound(t *testing.T) {
+	r := newPanelRig(t)
+	must(t, os.RemoveAll(r.beside))
+	out := r.run(r.script())
+	if !strings.Contains(out, "installed v2") {
+		t.Fatalf("want the newest panel fetched and installed:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(r.home, ".local", "share", "claude-burst", "claudecode-cost-usage-panel", ".git")); err != nil {
+		t.Fatalf("the fetched copy is kept for the next update: %v\n%s", err, out)
+	}
+	r.release(r.origin, "v3")
+	if out := r.run(r.script()); !strings.Contains(out, "installed v3") {
+		t.Fatalf("the kept copy is pulled next time:\n%s", out)
 	}
 }

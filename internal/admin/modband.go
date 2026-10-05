@@ -17,12 +17,12 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 )
 
-// The burst-band mod on the dashboard: whether it is installed and current,
+// The claude-burst mod on the dashboard: whether it is installed and current,
 // install, update and remove, and whether Burst's alerts and compaction
 // lines show in the session as toasts. scripts/update-mod.sh does the installing, the same
 // script install.sh and deploy.sh run.
 
-const modPlugin = "burst-band@burst"
+const modPlugin = "claude-burst@burst"
 
 // modSettings are the mod's own options, read by /api/mod. Toasts is on by
 // default: a session with the mod shows Burst's alerts and its compaction
@@ -63,7 +63,7 @@ type modStatus struct {
 	Supported bool   `json:"supported"`
 	Installed bool   `json:"installed"`
 	Version   string `json:"version,omitempty"`
-	// Current is whether the installed copy matches mods/burst-band.
+	// Current is whether the installed copy matches mods/claude-burst.
 	Current bool      `json:"current"`
 	Source  string    `json:"source,omitempty"`
 	Toasts  bool      `json:"toasts"`
@@ -112,15 +112,36 @@ func (s *Server) modSource() string {
 	if !ok {
 		return ""
 	}
-	src := filepath.Join(filepath.Dir(dir), "mods", "burst-band")
+	src := filepath.Join(filepath.Dir(dir), "mods", "claude-burst")
 	if _, err := os.Stat(filepath.Join(src, ".claude-plugin", "plugin.json")); err != nil {
 		return ""
 	}
 	return src
 }
 
+// modStaleCheckout is true when the checkout predates the mod's rename
+// (burst-band until 0.19.1): Burst was upgraded from GitHub's copy and the
+// checkout left alone. Its update-mod.sh would install the old mod beside
+// this one, so a session would draw the band twice.
+func (s *Server) modStaleCheckout() bool {
+	dir, ok := s.scriptsDir()
+	if !ok {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(filepath.Dir(dir), "mods", "burst-band", ".claude-plugin", "plugin.json"))
+	return err == nil && s.modSource() == ""
+}
+
+// modInstalledFrom is the copy update-mod.sh last installed from.
+func modInstalledFrom() string {
+	return filepath.Join(homeDir(), ".local", "share", "claude-burst", "marketplace", "mods", "claude-burst")
+}
+
 func (s *Server) readModStatus(ctx context.Context) modStatus {
 	st := modStatus{Toasts: readModSettings().Toasts, Source: s.modSource()}
+	if s.modStaleCheckout() {
+		st.Source = modInstalledFrom()
+	}
 	modMu.Lock()
 	if modLast != nil {
 		c := *modLast
@@ -227,6 +248,10 @@ func (s *Server) handleModAction(w http.ResponseWriter, r *http.Request) {
 	dir, ok := s.scriptsDir()
 	if !ok {
 		http.Error(w, "the scripts directory was not found, so update-mod.sh cannot run", http.StatusInternalServerError)
+		return
+	}
+	if req.Action == "install" && s.modStaleCheckout() {
+		http.Error(w, "the claude-burst checkout in "+filepath.Dir(dir)+" is older than the Burst that is running and would install the mod under its old name. Run git pull there, or press Upgrade", http.StatusConflict)
 		return
 	}
 	modMu.Lock()

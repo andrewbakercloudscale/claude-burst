@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 const BAND = {
-  plugin: 'burst-band',
+  plugin: 'claude-burst',
   component: 'AbovePrompt',
   surface: 'terminal',
   viewport: { columns: 120, rows: 40 },
@@ -9,7 +9,7 @@ const BAND = {
 } as const
 
 const PANE = {
-  plugin: 'burst-band',
+  plugin: 'claude-burst',
   component: 'Pane',
   surface: 'terminal',
   requestId: 'burst',

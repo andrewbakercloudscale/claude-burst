@@ -8,8 +8,8 @@
   },
   "plugins": [
     {
-      "name": "burst-band",
-      "source": "./mods/burst-band",
+      "name": "claude-burst",
+      "source": "./mods/claude-burst",
       "description": "Claude Burst inside the session: route, real context, a context bar (/context-bar) and compaction above the prompt, or in the status line where the usage sidebar shows the rest (/burst band switches), the usage panel's summary in /burst, Burst's alerts and compaction lines as toasts"
     }
   ]

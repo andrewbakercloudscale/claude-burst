@@ -267,7 +267,7 @@ func TestInstallScriptUninstallRemovesEveryHook(t *testing.T) {
 	contains(t, "stub calls", calls,
 		"launchctl bootout gui/", "ninja.andrewbaker.claude-burst-selfheal", // the watchdog, through its own script
 		"defaults delete com.mitchellh.ghostty", "security find-certificate",
-		"claude plugin marketplace remove burst") // the burst-band mod, through update-mod.sh
+		"claude plugin marketplace remove burst") // the claude-burst mod, through update-mod.sh
 	// The watchdog reloads the gateway, and a gateway that starts reinstalls
 	// its hooks: both must be stopped before the hooks come out.
 	if strings.Index(calls, "claude-burst-selfheal") > strings.Index(calls, "/ninja.andrewbaker.claude-burst\n") {

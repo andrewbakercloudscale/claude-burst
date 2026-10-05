@@ -8,7 +8,7 @@
 #   main with nothing uncommitted: that is a plain clone. Anything else is
 #   someone's work in progress, and its installer runs on it as it is.
 # - Otherwise the clone install.sh keeps under ~/.local/share is pulled
-#   (fast-forward only) first.
+#   (fast-forward only) first, and fetched when there is none.
 #
 # CLAUDE_BURST_REPO names the real checkout when this script runs from a
 # temporary copy of it (the dashboard's "Install GitHub version"), where
@@ -20,6 +20,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PANEL_REPO="${CLAUDE_BURST_PANEL_REPO:-https://github.com/andrewbakercloudscale/claude-code-cost-sidebar.git}"
 
 if [[ ! -x "$HOME/.local/bin/ccusage-panel.sh" ]]; then
   echo "usage panel: not installed, nothing to update"
@@ -43,10 +44,18 @@ if [[ -f "$dir/claude-panel-setup.sh" ]]; then
 else
   dir="$HOME/.local/share/claude-burst/claudecode-cost-usage-panel"
   if [[ ! -d "$dir/.git" ]]; then
-    echo "WARNING: usage panel is installed but no copy of its repo was found to update it from; reinstall with CLAUDE_BURST_PANEL=yes ./install.sh" >&2
-    exit 0
+    # Installed some other way (its own repo, since moved or deleted): fetch
+    # a copy, or this panel would never be updated again.
+    echo "usage panel: no copy of its repo was found, fetching one to $dir"
+    rm -rf "$dir"
+    mkdir -p "${dir:h}"
+    if ! git clone --quiet "$PANEL_REPO" "$dir"; then
+      echo "WARNING: could not fetch the usage panel from $PANEL_REPO, so it was not updated" >&2
+      exit 0
+    fi
+  else
+    git -C "$dir" pull --ff-only --quiet || echo "WARNING: could not update $dir; reinstalling the copy already there" >&2
   fi
-  git -C "$dir" pull --ff-only --quiet || echo "WARNING: could not update $dir; reinstalling the copy already there" >&2
 fi
 
 echo "usage panel: updating from $dir"

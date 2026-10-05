@@ -1,0 +1,4 @@
+{
+  "description": "The claude-burst hooks module",
+  "modules": ["./register.js"]
+}
