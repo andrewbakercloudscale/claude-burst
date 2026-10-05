@@ -173,8 +173,8 @@ With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass scri
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.20.1 at the time of writing)
-git clone --branch v0.20.1 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.20.2 at the time of writing)
+git clone --branch v0.20.2 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 # 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
@@ -263,7 +263,7 @@ Claude Burst is a man-in-the-middle for your Claude traffic by design. This is w
 - **Ghostty** is assumed by the lid-shut feature (it turns off Ghostty's App Nap), by the handover's window-close handling and by the usage panel's split. Everything else works in any terminal.
 - **Optional:** a key for a secondary (Together AI, OpenRouter, another OpenAI-compatible endpoint, or Amazon Bedrock). See [Providers](docs/providers.md).
 
-`./install.sh` builds `claude-burst` into `~/.local/bin`, writes the initial configuration, adds `~/.local/bin` to `~/.zprofile` if needed, sets `ANTHROPIC_BASE_URL=http://127.0.0.1:7777` in `~/.claude/settings.json` (and adds no credential of its own, so your saved login stays in use), and starts the LaunchAgent. At the end it offers the optional [usage panel](https://github.com/andrewbakercloudscale/claude-code-cost-sidebar), a separate repository; `CLAUDE_BURST_PANEL=yes` or `no` answers without the prompt. It also installs the `claude-burst` mod from `mods/claude-burst` (`CLAUDE_BURST_MOD=no` skips it), and every deploy brings the installed copy up to date.
+`./install.sh` builds `claude-burst` into `~/.local/bin`, writes the initial configuration, adds `~/.local/bin` to `~/.zprofile` if needed, sets `ANTHROPIC_BASE_URL=http://127.0.0.1:7777` in `~/.claude/settings.json` (and adds no credential of its own, so your saved login stays in use), and starts the LaunchAgent. At the end it offers the optional [usage panel](https://github.com/andrewbakercloudscale/claude-code-cost-sidebar), a separate repository; `CLAUDE_BURST_PANEL=yes` or `no` answers without the prompt. It also installs the `burst` Claude Code mod from `mods/burst` (`CLAUDE_BURST_MOD=no` skips it), and every deploy brings the installed copy up to date.
 
 ## Commands
 

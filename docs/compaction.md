@@ -120,7 +120,7 @@ sends all of it, uncached: on 2026-10-04 a session Burst kept at 135k sent 994k 
 
 ### Hand-off: Claude Code takes Burst's summary
 
-With the `claude-burst` mod installed (Sessions menu, **In-session band**), the summary Burst
+With the `burst` mod installed (Sessions menu, **In-session band**), the summary Burst
 already wrote can become Claude Code's own compaction, so a bypass stops costing the
 whole history:
 
