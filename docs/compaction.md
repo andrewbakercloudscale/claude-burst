@@ -135,7 +135,7 @@ whole history:
   a transcript the cut cannot be found in are left to Claude Code.
 - **A session that has left Burst is compacted once, by itself.** The mod checks every 5
   seconds whether its requests still go through Burst (`ANTHROPIC_BASE_URL` naming the
-  gateway, or the `api.anthropic.com` line in `/etc/hosts`). When neither is there, a
+  gateway, in the environment or in `~/.claude/settings.json`, or the `api.anthropic.com` line in `/etc/hosts`). When neither is there, a
   hand-off exists and Claude Code holds 200k or more, it runs `/compact`, which the
   hand-off then answers. A gateway that is restarting or down but still in the path is
   not a bypass: requests fail then, they are not sent whole, and nothing is compacted.

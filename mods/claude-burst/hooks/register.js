@@ -75,6 +75,7 @@ async function rescue($, c) {
 // compacted with Burst's summary before its next prompt goes.
 const HANDOFF_AT = 200000
 
+let heldSeen = 0 // the most this session was last seen to hold, kept for when the gateway is gone
 let handed = '' // the hand-off already made or refused, so it is not tried again
 
 async function readJSON($, path) {
@@ -105,6 +106,12 @@ async function readHandoff($) {
 async function inPath($) {
   let base = ''
   try { base = (await $.env.get('ANTHROPIC_BASE_URL')) || '' } catch (err) { /* unset */ }
+  // Base-url mode sets it in Claude Code's settings, which this process's
+  // environment may not show.
+  if (base === '') {
+    const set = await readJSON($, home + '/.claude/settings.json')
+    base = (set && set.env && set.env.ANTHROPIC_BASE_URL) || ''
+  }
   if (/\/\/(127\.0\.0\.1|localhost|\[::1\])[:/]/.test(base + '/')) return true
   if (base !== '' && !/\/\/api\.anthropic\.com/.test(base)) return undefined
   let hosts
@@ -162,7 +169,7 @@ async function leaveBurst($) {
   if (asking || !(await handoffOn($))) return
   const h = await readHandoff($)
   if (!h || h.of === handed || (await inPath($)) !== false) return
-  const raw = (burst && burst.session && burst.session.raw) || h.raw || 0
+  const raw = Math.max((burst && burst.session && burst.session.raw) || 0, heldSeen, h.raw || 0)
   if (raw < HANDOFF_AT) return
   asking = true
   handed = h.of
@@ -202,6 +209,7 @@ export function register(on) {
     since = Math.floor((await $.clock.now()) / 1000)
     toastsMarked = 0
     handed = ''
+    heldSeen = 0
     band = !(await hasSidebar($))
     try {
       const v = await $.store.get(BAND_KEY)
@@ -371,6 +379,7 @@ async function refresh($) {
     const r = await $.http.fetch(DASHBOARD + '/api/mod?session=' + encodeURIComponent(sid) + '&since=' + since)
     if (!r.ok) throw new Error('status ' + r.status)
     burst = JSON.parse(r.text)
+    if (burst.session) heldSeen = burst.session.raw || 0
     if (down) $.ui.toast('Burst gateway back')
     down = false
     for (const a of burst.alerts || []) {
