@@ -20,17 +20,19 @@ const statusLineMarker = "ccusage statusline"
 
 // ccusageCommand is the command written: the installed ccusage when it is on
 // the PATH (fast), else npx, which fetches it on first use. -B text adds the
-// burn rate as words rather than an emoji meter. A variable for tests.
+// burn rate as words rather than an emoji meter. --no-offline fetches
+// current prices: ccusage's built-in list did not know Opus 5.5, and the
+// line read $0.00 for the block and the burn rate. A variable for tests.
 var ccusageCommand = func() string {
 	if _, err := exec.LookPath("ccusage"); err == nil {
-		return "ccusage statusline -B text"
+		return "ccusage statusline -B text --no-offline"
 	}
 	for _, dir := range []string{"/opt/homebrew/bin", "/usr/local/bin", filepath.Join(homeDir(), ".local", "bin")} {
 		if p := filepath.Join(dir, "ccusage"); isExecutable(p) {
-			return p + " statusline -B text"
+			return p + " statusline -B text --no-offline"
 		}
 	}
-	return "npx -y ccusage@latest statusline -B text"
+	return "npx -y ccusage@latest statusline -B text --no-offline"
 }
 
 func isExecutable(p string) bool {

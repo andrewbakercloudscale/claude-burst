@@ -262,49 +262,39 @@ test('no context bar before a response reports the parts', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /of 300k \(/ })).toBeUndefined()
 })
 
-test('with the usage sidebar installed the band stands aside and the status line carries the route and a standing problem', async ($, on) => {
+test('with the usage sidebar installed the band stands aside, and nothing is put in the status line', async ($, on) => {
   const status: Array<string | undefined> = []
   const clock = stubs(on, [
-    mod({ problems: [{ id: 'a', kind: 'keep-awake', severity: 'warn', title: 'Keep-awake turned off', ts: 1 }] }),
     mod({ problems: [{ id: 'a', kind: 'keep-awake', severity: 'warn', title: 'Keep-awake turned off', ts: 1 }] }),
     mod({ route: 'SECONDARY', overflow: true, session: { session: 'S1', context: 310000, state: 'summarising', compact_at: 300000 } }),
     null,
   ], [], [], true, status)
   await start($)
-  expect(status).toEqual(['⚡ PRIMARY · ⚠ Keep-awake turned off'])
   // Nothing of Burst's above the prompt: only what was there already.
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: 'drawn by Claude Code' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: 'Session ' })).toBeUndefined()
   await ui.unmount()
-  // Set again only when it changes.
   await clock.advance(5000)
-  expect(status.length).toBe(1)
   await clock.advance(5000)
-  expect(status[1]).toBe('⚡ SECONDARY · summarising')
-  await clock.advance(5000)
-  expect(status[2]).toBe('⚡ Burst down')
+  // Only ever cleared, once: an entry an earlier version pinned comes down.
+  expect(status).toEqual([undefined])
 })
 
-test('without the sidebar the band is drawn and the status line is left alone', async ($, on) => {
-  const status: Array<string | undefined> = []
-  stubs(on, [mod()], [], [], false, status)
+test('without the sidebar the band is drawn', async ($, on) => {
+  stubs(on, [mod()], [], [], false, [])
   await start($)
-  expect(status).toEqual([])
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeDefined()
 })
 
-test('/burst band puts the band back over the sidebar, clears the status line, and is remembered', async ($, on) => {
-  const status: Array<string | undefined> = []
+test('/burst band puts the band back over the sidebar, and is remembered', async ($, on) => {
   const store: Record<string, unknown> = {}
-  stubs(on, [mod()], [], [], true, status, store)
+  stubs(on, [mod()], [], [], true, [], store)
   await start($)
-  expect(status).toEqual(['⚡ PRIMARY'])
   expect(await $.command.run({ command: 'burst', args: 'band' })).toEqual({})
   expect(store.band).toBe(true)
-  expect(status).toEqual(['⚡ PRIMARY', undefined])
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeDefined()
 })
@@ -313,7 +303,7 @@ test('a remembered choice of the band wins over the sidebar being there', async 
   const status: Array<string | undefined> = []
   stubs(on, [mod()], [], [], true, status, { band: true })
   await start($)
-  expect(status).toEqual([])
+  expect(status).toEqual([undefined])
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeDefined()
 })
