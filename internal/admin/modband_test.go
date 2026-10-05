@@ -187,6 +187,19 @@ func TestModHandoffOptionKeepsToasts(t *testing.T) {
 	if err != nil || !strings.Contains(string(b), `"handoff": false`) {
 		t.Fatalf("the mod reads this file: %s, %v", b, err)
 	}
+	// In the path it has costs, so it is asked for: off until turned on.
+	if read().HandoffInPath {
+		t.Fatal("hand-off with Burst in the path must default to off")
+	}
+	if rr := mutate(t, s, "/api/mod-action", `{"action":"handoff_in_path","handoff_in_path":true}`); rr.Code != http.StatusOK {
+		t.Fatalf("handoff_in_path: %d %s", rr.Code, rr.Body)
+	}
+	if got := read(); !got.HandoffInPath || !got.Toasts || got.Handoff {
+		t.Fatalf("in-path on must leave the others, got %+v", got)
+	}
+	if b, _ := os.ReadFile(modSettingsPath()); !strings.Contains(string(b), `"handoff_in_path": true`) {
+		t.Fatalf("the mod reads this file: %s", b)
+	}
 	if rr := mutate(t, s, "/api/mod-action", `{"action":"handoff"}`); rr.Code != http.StatusBadRequest {
 		t.Fatalf("handoff with no value = %d, want 400", rr.Code)
 	}

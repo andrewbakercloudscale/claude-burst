@@ -1606,7 +1606,8 @@
       </div>
       <h3 class="mac-h">When Burst is out of the path</h3>
       <div class="mac-toggles">
-        <label><input type="checkbox" id="bandHandoff"> <b>Hand Burst's summary to Claude Code</b><span>Burst shortens what it sends; Claude Code keeps the whole history, and sends all of it the moment Burst is turned off or bypassed (994k for one turn on 4 October, $7.75). With this on, a session with the mod that has left Burst and holds 300k or more is compacted once with the summary Burst already wrote: no summary request, no pause. From 800k held it is compacted that way with Burst still in the path: past 1M a bypass would be refused as too long. The same summary answers <code>/compact</code> and Claude Code's own automatic compaction while Burst is running. A gateway that is only restarting is not "out of the path": nothing happens then. Once handed over, the replaced messages are gone from Claude Code's copy, so <b>Drop summary</b> can no longer bring them back for that session. <code>/compact</code> with instructions of your own is always Claude Code's. On by default.</span></label>
+        <label><input type="checkbox" id="bandHandoff"> <b>Hand Burst's summary to Claude Code</b><span>Burst shortens what it sends; Claude Code keeps the whole history, and sends all of it the moment Burst is turned off or bypassed (994k for one turn on 4 October, $7.75). With this on, a session with the mod that has left Burst and holds 300k or more is compacted once with the summary Burst already wrote: no summary request, no pause. The same summary answers <code>/compact</code> and Claude Code's own automatic compaction while Burst is running. A gateway that is only restarting is not "out of the path": nothing happens then. Once handed over, the replaced messages are gone from Claude Code's copy, so <b>Drop summary</b> can no longer bring them back for that session. <code>/compact-async-full</code> does the same on request, at any size, and never has Claude Code write a summary. <code>/compact</code> with instructions of your own is always Claude Code's. On by default.</span></label>
+        <label><input type="checkbox" id="bandHandoffInPath"> <b>Also from 800k held, with Burst still in the path</b><span>Past the 1M window a bypass is refused as too long, not just expensive, so a session that large can no longer leave Burst. With this on, a session holding 800k or more is compacted with Burst's summary while Burst is working normally. It has costs: the turn after it is read uncached, the replaced messages are gone from Claude Code's copy, and <b>Drop summary</b> can no longer bring them back. Needs the option above. Off by default; <code>/compact-async-full</code> does it for one session when you choose.</span></label>
       </div>
     </div>
   </section>
@@ -6311,7 +6312,7 @@ async function loadBand() {
   $("bandInstall").textContent = st.installed ? (st.current ? "\u2913 Reinstall" : "\u2913 Update") : "\u2913 Install";
   $("bandInstall").disabled = running || !st.supported || !st.source;
   $("bandRemove").disabled = running || !st.installed;
-  if (!formDirty.band) { $("bandToasts").checked = !!st.toasts; $("bandHandoff").checked = !!st.handoff; }
+  if (!formDirty.band) { $("bandToasts").checked = !!st.toasts; $("bandHandoff").checked = !!st.handoff; $("bandHandoffInPath").checked = !!st.handoff_in_path; $("bandHandoffInPath").disabled = !st.handoff; }
   setDot("nd-band", st.installed && st.current ? "ok" : st.installed ? "warn" : "");
   const run = st.last;
   if (run) {
@@ -6347,7 +6348,14 @@ $("bandHandoff").onchange = async e => {
   formDirty.band = true;
   const ok = await bandAction({action: "handoff", handoff: e.target.checked});
   formDirty.band = false;
+  if (ok) $("bandHandoffInPath").disabled = !e.target.checked;
   if (ok) note($("bandNote"), "ok", e.target.checked ? "Saved: a session that leaves Burst is compacted with Burst's summary, and /compact uses it." : "Saved: Claude Code's compaction is its own again.");
+};
+$("bandHandoffInPath").onchange = async e => {
+  formDirty.band = true;
+  const ok = await bandAction({action: "handoff_in_path", handoff_in_path: e.target.checked});
+  formDirty.band = false;
+  if (ok) note($("bandNote"), "ok", e.target.checked ? "Saved: a session holding 800k or more is compacted with Burst's summary, with Burst still in the path." : "Saved: with Burst in the path, a session is only compacted that way when you type /compact-async-full.");
 };
 loadBand();
 </script>

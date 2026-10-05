@@ -34,9 +34,15 @@ const modPlugin = "claude-burst@burst"
 // with the summary Burst already wrote (internal/router/handoff.go), and a
 // session that has left Burst is compacted with it. The mod reads this file
 // itself, since the option matters most when the gateway is not running.
+//
+// HandoffInPath is off by default: from 800k held, a session is compacted
+// that way with Burst still in the path. It has costs Burst working
+// normally does not: the turn after it is read uncached, and the replaced
+// messages are gone from Claude Code's copy.
 type modSettings struct {
-	Toasts  bool `json:"toasts"`
-	Handoff bool `json:"handoff"`
+	Toasts        bool `json:"toasts"`
+	Handoff       bool `json:"handoff"`
+	HandoffInPath bool `json:"handoff_in_path"`
 }
 
 func modSettingsPath() string {
@@ -70,13 +76,15 @@ type modStatus struct {
 	Installed bool   `json:"installed"`
 	Version   string `json:"version,omitempty"`
 	// Current is whether the installed copy matches mods/claude-burst.
-	Current bool      `json:"current"`
-	Source  string    `json:"source,omitempty"`
-	Toasts  bool      `json:"toasts"`
-	Handoff bool      `json:"handoff"`
-	Last    *panelRun `json:"last,omitempty"`
-	Error   string    `json:"error,omitempty"`
-	Hint    string    `json:"hint,omitempty"`
+	Current bool   `json:"current"`
+	Source  string `json:"source,omitempty"`
+	Toasts  bool   `json:"toasts"`
+	Handoff bool   `json:"handoff"`
+	// HandoffInPath: see modSettings.
+	HandoffInPath bool      `json:"handoff_in_path"`
+	Last          *panelRun `json:"last,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	Hint          string    `json:"hint,omitempty"`
 }
 
 var (
@@ -146,7 +154,7 @@ func modInstalledFrom() string {
 
 func (s *Server) readModStatus(ctx context.Context) modStatus {
 	set := readModSettings()
-	st := modStatus{Toasts: set.Toasts, Handoff: set.Handoff, Source: s.modSource()}
+	st := modStatus{Toasts: set.Toasts, Handoff: set.Handoff, HandoffInPath: set.HandoffInPath, Source: s.modSource()}
 	if s.modStaleCheckout() {
 		st.Source = modInstalledFrom()
 	}
@@ -221,33 +229,40 @@ func (s *Server) handleModStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleModAction: {"action":"install"} installs or updates, "remove"
-// removes, and "toasts" with {"toasts":bool} or "handoff" with
-// {"handoff":bool} saves that option.
+// removes, and "toasts", "handoff" or "handoff_in_path" with that key set
+// to a bool saves that option.
 func (s *Server) handleModAction(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action  string `json:"action"`
 		Toasts  *bool  `json:"toasts"`
 		Handoff *bool  `json:"handoff"`
+		InPath  *bool  `json:"handoff_in_path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
 	switch req.Action {
-	case "toasts", "handoff":
+	case "toasts", "handoff", "handoff_in_path":
 		on := req.Toasts
-		if req.Action == "handoff" {
+		switch req.Action {
+		case "handoff":
 			on = req.Handoff
+		case "handoff_in_path":
+			on = req.InPath
 		}
 		if on == nil {
 			http.Error(w, req.Action+" must be true or false", http.StatusBadRequest)
 			return
 		}
-		// Read, change one, write: each option keeps the other's value.
+		// Read, change one, write: each option keeps the others' values.
 		set := readModSettings()
-		if req.Action == "handoff" {
+		switch req.Action {
+		case "handoff":
 			set.Handoff = *on
-		} else {
+		case "handoff_in_path":
+			set.HandoffInPath = *on
+		default:
 			set.Toasts = *on
 		}
 		b, _ := json.MarshalIndent(set, "", "  ")
@@ -259,11 +274,11 @@ func (s *Server) handleModAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]any{"ok": true, "toasts": set.Toasts, "handoff": set.Handoff})
+		writeJSON(w, map[string]any{"ok": true, "toasts": set.Toasts, "handoff": set.Handoff, "handoff_in_path": set.HandoffInPath})
 		return
 	case "install", "remove":
 	default:
-		http.Error(w, "action must be install, remove, toasts or handoff", http.StatusBadRequest)
+		http.Error(w, "action must be install, remove, toasts, handoff or handoff_in_path", http.StatusBadRequest)
 		return
 	}
 	dir, ok := s.scriptsDir()
