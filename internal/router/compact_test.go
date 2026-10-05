@@ -317,6 +317,54 @@ func TestCompactionEndToEnd(t *testing.T) {
 	}
 }
 
+// A fork of a session (claude --resume --fork-session, the handover writer)
+// has a new session id and the same history. Its first request must go with
+// the summary the first session holds, not whole.
+func TestAForkTakesTheSummaryOfTheSessionItWasForkedFrom(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return f.summaryCount() == 1 })
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	parent := f.last()
+	if !strings.Contains(parent, "THE GIST OF THE FIRST TASK") {
+		t.Fatalf("the first session must be compacted:\n%s", parent)
+	}
+
+	send(t, s, "FORK", all[:9])
+	if got := f.last(); got != parent {
+		t.Fatalf("the fork's first request must be the one the first session sent, summary and all:\n%s\nwant:\n%s", got, parent)
+	}
+	s.compaction.running.Wait()
+	if n := f.summaryCount(); n != 1 {
+		t.Fatalf("the fork must not pay for a summary of its own, got %d summaries", n)
+	}
+
+	// Another conversation under a new session id takes nothing.
+	send(t, s, "OTHER", msgs(t, `[{"role":"user","content":"a fresh start"},{"role":"assistant","content":"ok"},{"role":"user","content":"go on"}]`))
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("a different conversation must not be given the summary")
+	}
+	// A fork whose history has parted from the summarised one takes nothing.
+	changed := append([]json.RawMessage(nil), all[:9]...)
+	changed[1] = json.RawMessage(`{"role":"assistant","content":"something else was said"}`)
+	send(t, s, "PARTED", changed)
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("a history the summary was not made from must go as it is")
+	}
+	// A summary dropped on request stays dropped: it is not taken again.
+	if s.DropSummary("FORK") != 1 {
+		t.Fatal("the fork holds a summary to drop")
+	}
+	send(t, s, "FORK", all[:9])
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("a dropped summary must not come back from the first session")
+	}
+}
+
 func TestCompactionIsOffByDefault(t *testing.T) {
 	if config.Default().PrimaryCompaction.Enabled {
 		t.Fatal("experimental: must be off unless switched on")

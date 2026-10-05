@@ -264,6 +264,45 @@ func (c *compactor) state(key string) *compactState {
 	return st
 }
 
+// adopt gives a session seen for the first time the summary another session
+// holds for the same conversation: a fork (claude --resume --fork-session,
+// which is how the handover writer opens a finished session) has a new
+// session id and Claude Code's whole history. Without this the fork's first
+// request goes whole: on 2026-10-05 a session Burst held at 158k was forked
+// to write its handover and sent 1,320k, which the API refused; Claude Code
+// then summarised 747k of it itself and sent the other 629k, $7 and two
+// minutes for a note. A summary only fits the history it was made from, so
+// the donor's is taken only where its hash matches this request, and with
+// its swapAt, so the request is the one the donor's cache already holds.
+// Returns the donor's key, or "". Caller holds c.mu.
+func (c *compactor) adopt(st *compactState, key string, msgs []json.RawMessage) string {
+	if st.summary != "" || st.next != "" || st.pending {
+		return ""
+	}
+	_, rest, _ := strings.Cut(key, "|")
+	_, conv, _ := strings.Cut(rest, "|")
+	var from string
+	var donor *compactState
+	for k, d := range c.sessions {
+		if k == key || !strings.HasSuffix(k, "|"+conv) || d.summary == "" || d.swapAt == 0 || d.midTurnUnproven || len(msgs) <= d.p0 {
+			continue
+		}
+		if donor != nil && d.p0 <= donor.p0 {
+			continue
+		}
+		if prefixHash(msgs, d.p0) == d.hash {
+			from, donor = k, d
+		}
+	}
+	if donor == nil {
+		return ""
+	}
+	st.summary, st.p0, st.hash, st.swapAt = donor.summary, donor.p0, donor.hash, min(donor.swapAt, len(msgs))
+	st.marks = donor.marks
+	st.startedAt = donor.startedAt
+	return from
+}
+
 // compactInfo rides on the inbound request's context from applyCompaction
 // to forward and writeMetric.
 type compactInfo struct {
@@ -484,9 +523,16 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 
 	s.compaction.mu.Lock()
 	st := s.compaction.state(key)
+	first := st.seen.IsZero()
 	st.seen = now
 	dirty := false
 	quietStart := false
+	if first {
+		if from := s.compaction.adopt(st, key, msgs); from != "" {
+			s.logger.Printf("req=%s compaction adopted session=%s: the same conversation under another session id (%s), whose summary of %d messages fits this history", rid, key, from, st.p0)
+			dirty = true
+		}
+	}
 
 	// A summary only fits the history it was made from.
 	// A dropped summary also reopens the window: the session is back to its
