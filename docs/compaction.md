@@ -123,9 +123,9 @@ What that figure is, and is not:
 
 <table>
 <tr>
-<td valign="top"><img src="screenshots/usage-panel-compaction-1-started.png" alt="Usage panel sidebar, compaction started: the ctx bar at 293k of 300k, a summarising line, and an Async Compaction Started row above the turns" width="280"></td>
+<td valign="top"><img src="screenshots/usage-panel-compaction-1-started.png" alt="Usage panel sidebar, compaction started: the ctx bar at 293k, just short of the red cell where Burst compacts, a summarising line, and an Async Compaction Started row above the turns" width="280"></td>
 <td valign="top"><img src="screenshots/usage-panel-compaction-2-pending.png" alt="Usage panel sidebar, compaction pending: a summary is ready and the next prompt compacts, with an Async Compaction Pending row" width="280"></td>
-<td valign="top"><img src="screenshots/usage-panel-compaction-3-finished.png" alt="Usage panel sidebar, compaction finished: the ctx bar at 64k of 300k, a turn reading 64k (-232k) and an Async Compaction Finished row with the summary's cost" width="280"></td>
+<td valign="top"><img src="screenshots/usage-panel-compaction-3-finished.png" alt="Usage panel sidebar, compaction finished: the ctx bar back at 64k, a turn reading 64k (-232k) and an Async Compaction Finished row with the summary's cost" width="280"></td>
 </tr>
 <tr>
 <td align="center"><sub>1. Started: summarising in the background</sub></td>
