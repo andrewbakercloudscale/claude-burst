@@ -200,10 +200,11 @@ func TestNoContextAlertForAOneShotRequest(t *testing.T) {
 	}
 }
 
-// Two prompts, but the current turn is nearly all of it: no boundary
-// leaves 30% to summarise, so the alert says it cannot summarise yet
-// instead of promising a compaction.
-func TestContextAlertSaysWhenItCannotSummarise(t *testing.T) {
+// Two prompts, and the current turn is nearly all of it. Until 5 Oct 2026
+// no cut left enough to summarise and the alert said "cannot summarise
+// yet"; the cut is now right after the request, so the running turn is
+// summarised too and the alert promises what happens.
+func TestContextAlertForATurnThatIsMostOfTheSession(t *testing.T) {
 	events := captureNotices(t)
 	f := &fakeAnthropic{context: 450_000}
 	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 300_000, WarnAtPercent: 80, WindowMinutes: 60})
@@ -218,7 +219,7 @@ func TestContextAlertSaysWhenItCannotSummarise(t *testing.T) {
 	s.compaction.running.Wait()
 	notice.Flush(2 * time.Second)
 	got := titles(events())
-	if len(got) != 1 || got[0] != "warn: Context at 450k of 300k, cannot summarise yet" || f.summaryCount() != 0 {
+	if len(got) != 1 || got[0] != "info: Context at 450k of 300k, compaction soon" || f.summaryCount() != 1 {
 		t.Fatalf("alerts %q, summaries %d", got, f.summaryCount())
 	}
 }

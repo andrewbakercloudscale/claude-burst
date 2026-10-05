@@ -20,6 +20,9 @@
 // cost of a compaction that works is divided by the share that do: with a failure rate f the square root's contents are
 // divided by 1-f, which moves T up.
 //
+// Each compaction that lost money also adds a tenth to the target, and a
+// threshold below its target then moves up at once.
+//
 // Guards, since the log measures money and not what a summary loses: never
 // below the floor, never above the fixed Compact at, a tenth a day at most
 // once a threshold is in use (the first one learned goes straight there),
@@ -62,6 +65,10 @@ const (
 	maxFailShare    = 0.8
 	backOffShare    = 0.5
 	backOffAttempts = 4
+	// lossRaisePercent is added to a repository's Compact at for each of
+	// its compactions that lost money, at once and not at the daily step:
+	// a size that loses money is never kept waiting for tomorrow.
+	lossRaisePercent = 10
 )
 
 // Outcome kinds the gateway records (router), beside the summary calls
@@ -381,6 +388,11 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 			if b.BufferPercent > 0 {
 				r.Reason += fmt.Sprintf(", plus the %d%% buffer: %dk", b.BufferPercent, best/1000)
 			}
+			if c := a.fails.Count(); c > 0 {
+				raised := min(max(best, low)*int64(100+lossRaisePercent*c)/100, b.Ceiling)
+				r.Reason += fmt.Sprintf(", plus %d%% for each of the %d compactions that lost money: %dk", lossRaisePercent, c, raised/1000)
+				target = raised
+			}
 			switch {
 			case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare:
 				target = b.Ceiling
@@ -401,6 +413,10 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		// Bounds the user has since moved apply at once, step or no step.
 		if r.Threshold > 0 {
 			r.Threshold = min(max(r.Threshold, b.Floor), b.Ceiling)
+		}
+		// A compaction lost money: up to the target now, whatever the day.
+		if r.Failures.Count() > 0 && r.Threshold > 0 && r.Target > r.Threshold {
+			r.Previous, r.Threshold = r.Threshold, min(max(r.Target, b.Floor), b.Ceiling)
 		}
 		if !step || r.SteppedOn == today {
 			continue

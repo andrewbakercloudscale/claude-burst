@@ -61,6 +61,12 @@ type compactState struct {
 	next     string
 	nextP0   int
 	nextHash string
+	// The cut right after the request the waiting summary was written
+	// from: its first kept message is the reply to that request. Preferred
+	// over nextP0, the latest plain prompt before it, which is 0 when no
+	// prompt left enough to summarise. 0 once this cut is known not to fit.
+	nextTightP0   int
+	nextTightHash string
 	// Per-message hashes of the summarised prefix, memory only: when a
 	// summary is dropped they say which message changed, so the log names
 	// the cause instead of guessing.
@@ -90,6 +96,10 @@ type swapUndo struct {
 	summary, hash string
 	p0, swapAt    int
 	marks         []string
+	// The waiting summary's two cuts as they were before the swap.
+	nextP0, nextTightP0     int
+	nextHash, nextTightHash string
+	nextMarks               []string
 }
 
 // maxNotices bounds a session's unshown notices, for a session whose
@@ -150,7 +160,10 @@ type savedCompaction struct {
 	Next        string    `json:"next,omitempty"`
 	NextP0      int       `json:"next_p0,omitempty"`
 	NextHash    string    `json:"next_hash,omitempty"`
-	Seen        time.Time `json:"seen"`
+	// The cut right after the request the summary was written from.
+	NextTightP0   int       `json:"next_tight_p0,omitempty"`
+	NextTightHash string    `json:"next_tight_hash,omitempty"`
+	Seen          time.Time `json:"seen"`
 	// ExposureWarned: the exposure was logged once (noteExposure); kept so a
 	// restart does not tell it again.
 	ExposureWarned int64 `json:"exposure_warned,omitempty"`
@@ -184,7 +197,7 @@ func (c *compactor) load() {
 	for k, v := range saved {
 		st := &compactState{lastContext: v.LastContext, warnedAt: v.WarnedAt, startedAt: v.StartedAt,
 			summary: v.Summary, p0: v.P0, hash: v.Hash, swapAt: v.SwapAt,
-			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, seen: v.Seen,
+			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, nextTightP0: v.NextTightP0, nextTightHash: v.NextTightHash, seen: v.Seen,
 			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs, exposureWarned: v.ExposureWarned}
 		// Saved before summaries waited as next: an unapplied summary.
 		if st.summary != "" && st.swapAt == 0 && st.next == "" {
@@ -217,7 +230,7 @@ func (c *compactor) save() {
 		}
 		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
 			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt,
-			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, Seen: st.seen,
+			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, NextTightP0: st.nextTightP0, NextTightHash: st.nextTightHash, Seen: st.seen,
 			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned}
 	}
 	b, err := json.Marshal(out)
@@ -323,8 +336,9 @@ func (s *Server) rejectMidTurn(in *http.Request, reason string) bool {
 	if st == nil || !st.midTurnUnproven || st.undo == nil {
 		return false
 	}
-	st.next, st.nextP0, st.nextHash, st.nextMarks = st.summary, st.p0, st.hash, st.marks
 	u := st.undo
+	st.next, st.nextP0, st.nextHash, st.nextMarks = st.summary, u.nextP0, u.nextHash, u.nextMarks
+	st.nextTightP0, st.nextTightHash = u.nextTightP0, u.nextTightHash
 	st.summary, st.hash, st.p0, st.swapAt, st.marks = u.summary, u.hash, u.p0, u.swapAt, u.marks
 	st.undo, st.midTurnUnproven = nil, false
 	st.swappedFrom, st.swappedMsgs = 0, 0
@@ -473,9 +487,36 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			"The history was cleared, compacted or rewound, so the summary no longer fits. The full history goes again; a new summary can start at once.")
 		dirty = true
 	}
-	if st.next != "" && (len(msgs) <= st.nextP0 || prefixHash(msgs, st.nextP0) != st.nextHash) {
-		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary (%s); window reopened", rid, key, divergence(msgs, st.nextP0, st.nextMarks))
+	// The waiting summary's cut: right after the request it was written
+	// from when the history still starts with exactly that request, else
+	// the latest plain prompt before it.
+	nextCut, nextCutHash := 0, ""
+	if st.next != "" {
+		if tp := st.nextTightP0; tp > 0 && len(msgs) > tp {
+			if h := prefixHash(msgs, tp); h == st.nextTightHash && messageRole(msgs[tp]) == "assistant" {
+				nextCut, nextCutHash = tp, h
+			} else {
+				s.logger.Printf("req=%s compaction cut moved back session=%s: the request the summary was written from is no longer the start of the history (%s, then %s); cutting at the latest prompt before it instead",
+					rid, key, divergence(msgs, tp, st.nextMarks), lastMessageShape(msgs[tp:tp+1]))
+				st.nextTightP0, st.nextTightHash = 0, ""
+				dirty = true
+			}
+		}
+		if nextCut == 0 && st.nextP0 > 0 && len(msgs) > st.nextP0 && prefixHash(msgs, st.nextP0) == st.nextHash {
+			nextCut, nextCutHash = st.nextP0, st.nextHash
+		}
+	}
+	// A request no longer than the one the summary was written from, and
+	// the same as far as it goes, is that request sent again: wait.
+	resent := st.next != "" && nextCut == 0 && st.nextTightP0 > 0 && len(msgs) == st.nextTightP0 && prefixHash(msgs, len(msgs)) == st.nextTightHash
+	if st.next != "" && nextCut == 0 && !resent {
+		at := st.nextP0
+		if st.nextTightP0 > 0 {
+			at = st.nextTightP0
+		}
+		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary (%s); window reopened", rid, key, divergence(msgs, at, st.nextMarks))
 		st.next, st.nextHash, st.nextP0, st.nextMarks = "", "", 0, nil
+		st.nextTightP0, st.nextTightHash = 0, ""
 		st.startedAt = time.Time{}
 		s.compaction.outcome(key, autocompact.OutcomeUnused)
 		// Log only: a summary that never swapped in changed nothing the
@@ -493,7 +534,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// all, so its summary covers everything before its boundary.
 	view, offset := msgs, 0
 	if st.summary != "" && st.swapAt > 0 {
-		view, offset = rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt), st.p0
+		view = rewriteWithSummary(msgs, st.summary, st.p0, st.swapAt)
+		// The view has a message of its own for the summary when the cut
+		// is at a reply, so view index plus offset is the original index.
+		offset = len(msgs) - len(view)
 	}
 
 	// A one-shot request carries a whole conversation in a single prompt
@@ -507,10 +551,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	oneShot := len(bounds) <= 1 || !hasAssistant(msgs)
 	if !oneShot && st.lastContext >= cfg.WarnAtTokens && (st.warnedAt.IsZero() || now.Sub(st.warnedAt) >= window) {
 		st.warnedAt = now
-		_, canCut := compactionBoundary(view, bounds, offset)
-		s.logger.Printf("req=%s warn stage=compaction session=%s context=%dk (warn at %dk, %s)%s",
-			rid, key, st.lastContext/1000, cfg.WarnAtTokens/1000, limit, map[bool]string{true: "", false: " cannot summarise yet: the current turn is most of it"}[canCut > 0])
-		alertContextNear(sid, root, st.lastContext, cfg.CompactAtTokens, canCut > 0)
+		s.logger.Printf("req=%s warn stage=compaction session=%s context=%dk (warn at %dk, %s)",
+			rid, key, st.lastContext/1000, cfg.WarnAtTokens/1000, limit)
+		alertContextNear(sid, root, st.lastContext, cfg.CompactAtTokens, true)
 	}
 
 	// /compact-async asks for a summary now, whatever the context size and
@@ -526,13 +569,25 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		// Only a compaction that actually starts opens the window. A skip
 		// (no boundary yet, typically one long prompt) must leave the next
 		// prompt free to compact.
-		p, cut := compactionBoundary(view, bounds, offset)
+		// The summary is written from this whole request, and its cut is
+		// right after it: the reply to this request is the first message
+		// kept. The latest plain prompt that leaves enough before it is the
+		// cut to fall back to, when there is one.
+		safeP, _ := compactionBoundary(view, bounds, offset)
+		p, cut := len(msgs), len(view)
+		if !hasAssistant(msgs) {
+			cut = 0
+		}
 		if cut > 0 {
 			st.startedAt = now
 			st.pending = true
 			dirty = true
 			history := append([]json.RawMessage(nil), view...)
 			hash := prefixHash(msgs, p)
+			safeHash := ""
+			if safeP > 0 {
+				safeHash = prefixHash(msgs, safeP)
+			}
 			st.pendingMarks = messageMarks(msgs, p)
 			why := ""
 			if forced {
@@ -554,18 +609,18 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			}
 			ctx, cancel := context.WithCancelCause(context.Background())
 			s.compaction.cancels[key] = cancel
-			go s.summarise(ctx, in.Clone(context.Background()), own, history, cut, key, p, hash)
+			go s.summarise(ctx, in.Clone(context.Background()), own, history, cut, key, p, hash, safeP, safeHash)
 		} else if forced {
 			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: /compact-async with too little before this prompt to summarise", rid, key, st.lastContext/1000)
 			st.notice("/compact-async: too little to summarise yet")
 		} else if st.skippedAt.IsZero() || now.Sub(st.skippedAt) >= window {
 			st.skippedAt = now
-			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no prompt boundary leaves at least %.0f%% to summarise (%d messages, %d prompts)",
-				rid, key, st.lastContext/1000, minSummarisedShare*100, len(msgs), len(bounds))
+			s.logger.Printf("req=%s compaction skipped session=%s context=%dk: no turn has been answered yet (%d messages, %d prompts)",
+				rid, key, st.lastContext/1000, len(msgs), len(bounds))
 		}
 	}
 
-	if st.next != "" && !fresh {
+	if st.next != "" && nextCut > 0 && !fresh {
 		kept := ""
 		if st.summary != "" {
 			kept = " (the previous summary stays in force)"
@@ -573,31 +628,40 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		s.logger.Printf("req=%s compaction waiting session=%s: summary ready, request ends in %s, applies at the next plain prompt%s",
 			rid, key, lastMessageShape(msgs), kept)
 	}
-	// Mid-turn: swap at the prompt that started the running turn. Its own
-	// messages keep their thinking (they are past swapAt); everything before
-	// it is summarised or loses thinking, exactly as at a plain prompt.
+	// Mid-turn: the running turn's own messages keep their thinking (they
+	// are past swapAt); everything kept from before it loses thinking,
+	// exactly as at a plain prompt. When the cut is inside the running turn
+	// everything kept is that turn's, so nothing loses it.
 	turnStart := 0
 	if len(bounds) > 0 {
 		turnStart = bounds[len(bounds)-1]
 	}
-	midTurn := !fresh && st.next != "" && cfg.MidTurn && !s.compaction.midTurnOff &&
-		turnStart > 0 && turnStart >= st.nextP0
-	if st.next != "" && (fresh || midTurn) {
+	midTurn := !fresh && nextCut > 0 && cfg.MidTurn && !s.compaction.midTurnOff &&
+		turnStart > 0
+	if nextCut > 0 && (fresh || midTurn) {
 		if midTurn {
-			st.undo = &swapUndo{summary: st.summary, hash: st.hash, p0: st.p0, swapAt: st.swapAt, marks: st.marks}
+			st.undo = &swapUndo{summary: st.summary, hash: st.hash, p0: st.p0, swapAt: st.swapAt, marks: st.marks,
+				nextP0: st.nextP0, nextHash: st.nextHash, nextTightP0: st.nextTightP0, nextTightHash: st.nextTightHash, nextMarks: st.nextMarks}
 			st.midTurnUnproven = true
 		} else {
 			st.undo, st.midTurnUnproven = nil, false
 		}
 		swapAt := len(msgs)
 		if midTurn {
-			swapAt = turnStart
+			swapAt = max(turnStart, nextCut)
 		}
-		st.summary, st.p0, st.hash, st.swapAt = st.next, st.nextP0, st.nextHash, swapAt
+		st.summary, st.p0, st.hash, st.swapAt = st.next, nextCut, nextCutHash, swapAt
 		st.marks, st.nextMarks = st.nextMarks, nil
+		if len(st.marks) > nextCut {
+			st.marks = st.marks[:nextCut]
+		}
 		st.next, st.nextP0, st.nextHash = "", 0, ""
+		st.nextTightP0, st.nextTightHash = 0, ""
 		where := ""
-		if midTurn {
+		switch {
+		case midTurn && turnStart < nextCut:
+			where = fmt.Sprintf(" mid-turn (the running turn is kept from message %d, the reply to the request the summary was written from)", nextCut)
+		case midTurn:
 			where = fmt.Sprintf(" mid-turn (the running turn, from message %d, kept as it was)", turnStart)
 		}
 		s.logger.Printf("req=%s compaction applied session=%s: %d messages replaced by a summary%s", rid, key, st.p0, where)
@@ -729,7 +793,7 @@ func compactionBoundary(view []json.RawMessage, bounds []int, offset int) (p, cu
 // summarise makes one summary request through the primary, with the
 // session's own auth, model, system prompt and tools, and stores the
 // summary for key when it succeeds.
-func (s *Server) summarise(ctx context.Context, in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int, key string, p0 int, hash string) {
+func (s *Server) summarise(ctx context.Context, in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int, key string, p0 int, hash string, safeP0 int, safeHash string) {
 	// Runs on its own goroutine, outside net/http's per-connection recover,
 	// and parses model output: a panic here would otherwise exit the gateway
 	// and drop every session's in-flight request. Registered first, so it
@@ -773,9 +837,10 @@ func (s *Server) summarise(ctx context.Context, in *http.Request, top map[string
 		st.notice("summary failed (%s); retry in %s", reason, retryAfterFailure)
 		return
 	}
-	st.next, st.nextP0, st.nextHash, st.nextMarks = summary, p0, hash, st.pendingMarks
+	st.next, st.nextP0, st.nextHash, st.nextMarks = summary, safeP0, safeHash, st.pendingMarks
+	st.nextTightP0, st.nextTightHash = p0, hash
 	st.waitShown = false
-	s.logger.Printf("compaction summary ready session=%s: %d messages summarised into %d characters; applies from the next plain prompt", key, p0, len(summary))
+	s.logger.Printf("compaction summary ready session=%s: %d messages summarised into %d characters; applies from the next request it fits", key, p0, len(summary))
 }
 
 func (s *Server) requestSummary(parent context.Context, in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int) (string, error) {
@@ -873,7 +938,11 @@ func (s *Server) ClearSession(sid string) int {
 // cache at 1.25x ($2.96). The messages from the boundary on stay in the
 // request, so the instruction names where the summary must stop.
 func withSummaryInstruction(history []json.RawMessage, cut int) []json.RawMessage {
-	text := compactionSummaryPrompt
+	// The whole request is summarised: the work carries on from the reply
+	// to its last message, which must not be written here.
+	text := "Stop here and do not answer or continue the conversation. Everything above is being replaced by your summary, and the work then carries on from the reply to the last message above, which is kept. " +
+		"So cover the conversation right up to and including that last message: what it asks for or reports, and exactly what was in progress. " +
+		compactionSummaryPrompt
 	if ex := promptExcerpt(history[min(cut, len(history)-1)]); cut < len(history) && ex != "" {
 		text = "Stop reading here and do not answer or continue the conversation. " +
 			"Only the part of this conversation BEFORE the user message that begins \"" + ex +

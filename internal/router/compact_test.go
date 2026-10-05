@@ -157,7 +157,7 @@ type fakeAnthropic struct {
 	summaries int
 	context   int64
 	// rejectMidTurn answers 400 to a summarised request that still carries
-	// the running turn's thinking (signature s2): an API that refuses a
+	// the running turn's thinking (signature s3): an API that refuses a
 	// mid-turn swap.
 	rejectMidTurn bool
 }
@@ -172,7 +172,7 @@ func (f *fakeAnthropic) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := f.context
 	n := f.summaries
-	reject := f.rejectMidTurn && !isSummary && strings.Contains(string(b), "THE GIST") && strings.Contains(string(b), `"signature":"s2"`)
+	reject := f.rejectMidTurn && !isSummary && strings.Contains(string(b), "THE GIST") && strings.Contains(string(b), `"signature":"s3"`)
 	f.mu.Unlock()
 	if reject {
 		w.Header().Set("content-type", "application/json")
@@ -385,7 +385,7 @@ func TestCompactionRecordsWhatTheSwapRemoved(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &e); err != nil {
 		t.Fatal(err)
 	}
-	if e.CompactedMessages != 4 || e.CompactedBytes <= 0 {
+	if e.CompactedMessages != 6 || e.CompactedBytes <= 0 {
 		t.Fatalf("the compacted request's metrics row must say what the swap removed: %+v", e)
 	}
 	var sawSummary bool
@@ -481,7 +481,7 @@ func TestCompactionSummaryReusesTheCachedHistory(t *testing.T) {
 		}
 	}
 	last := string(req.Messages[6])
-	if !strings.Contains(last, "Summarize the transcript inside") || !strings.Contains(last, "BEFORE the user message that begins") {
+	if !strings.Contains(last, "Summarize the transcript inside") || !strings.Contains(last, "right up to and including that last message") {
 		t.Fatalf("last message must end with the bounded instruction: %s", last)
 	}
 	if strings.Count(f.summaryBody(), "cache_control") != strings.Count(string(mustJSON(t, all[:7])), "cache_control") {
@@ -666,7 +666,7 @@ func TestDroppedSummaryNamesTheChangeAndReopensTheWindow(t *testing.T) {
 	if strings.Contains(f.last(), "THE GIST") {
 		t.Fatal("a changed history must go without the summary")
 	}
-	if !strings.Contains(logBuf.String(), "message 2 of 4 changed") {
+	if !strings.Contains(logBuf.String(), "message 2 of 7 changed") {
 		t.Fatalf("the log must name the changed message:\n%s", logBuf.String())
 	}
 	// Still over the threshold: a new summary starts on that same request,
@@ -683,7 +683,7 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	waitFor(t, func() bool { return s.compactionReady("S") })
 
 	got := strings.Join(s.PromptNotices("S", false), "\n")
-	if !strings.Contains(got, "450k context: summarising 4 messages") {
+	if !strings.Contains(got, "450k context: summarising 7 messages") {
 		t.Fatalf("want the start line, got:\n%s", got)
 	}
 	// Ready gets no line of its own: "done" follows on the next request.
@@ -702,7 +702,7 @@ func TestPromptNoticesFollowACompaction(t *testing.T) {
 	f.mu.Unlock()
 	send(t, s, "S", all[:9])
 	got = strings.Join(s.PromptNotices("S", false), "\n")
-	if !strings.Contains(got, "Burst compaction: done, 87% smaller: 450k → 60k (4 messages summarised)") {
+	if !strings.Contains(got, "Burst compaction: done, 87% smaller: 450k → 60k (7 messages summarised)") {
 		t.Fatalf("want the result of the swap, got:\n%s", got)
 	}
 	// Claude Code still holds the whole history: the session shows it, larger
@@ -804,7 +804,7 @@ func TestCompactAsyncStartsASummaryNow(t *testing.T) {
 	withCmd := append(append([]json.RawMessage(nil), all[:8]...), cmd)
 	send(t, s, "S", withCmd)
 	waitFor(t, func() bool { return s.compactionReady("S") })
-	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "/compact-async: summarising 8 messages") {
+	if got := strings.Join(s.PromptNotices("S", false), "\n"); !strings.Contains(got, "/compact-async: summarising 9 messages") {
 		t.Fatalf("want the /compact-async start line, got:\n%s", got)
 	}
 
@@ -857,7 +857,7 @@ func sendCode(t *testing.T, s *Server, sid string, history []json.RawMessage) in
 	return rec.Code
 }
 
-// readyMidTurn brings session S to a ready summary of messages [0, 4) while
+// readyMidTurn brings session S to a ready summary of messages [0, 7) while
 // the turn started by the "second task" prompt (message 4) is still running.
 func readyMidTurn(t *testing.T, f *fakeAnthropic, midTurn bool) (*Server, []json.RawMessage) {
 	t.Helper()
@@ -879,9 +879,10 @@ func TestMidTurnSwapIsOffByDefault(t *testing.T) {
 	}
 }
 
-// On, the next request swaps even inside a turn: everything before the
-// running turn's prompt is summarised, and the running turn goes exactly
-// as Claude Code sent it, thinking and all.
+// On, the next request swaps even inside a turn. The summary was written
+// from the request of 7 messages, so the running turn is kept from the
+// reply to it (message 7), thinking and all; the prompt that started the
+// turn is carried word for word beside the summary.
 func TestMidTurnSwapKeepsTheRunningTurn(t *testing.T) {
 	f := &fakeAnthropic{context: 450_000}
 	s, all := readyMidTurn(t, f, true)
@@ -892,10 +893,10 @@ func TestMidTurnSwapKeepsTheRunningTurn(t *testing.T) {
 	if !strings.Contains(got, "THE GIST OF THE FIRST TASK") {
 		t.Fatalf("mid-turn request must carry the summary:\n%s", got)
 	}
-	if strings.Contains(got, "old file") || strings.Contains(got, `"signature":"s1"`) {
-		t.Fatalf("the summarised turn must be gone:\n%s", got)
+	if strings.Contains(got, "old file") || strings.Contains(got, `"signature":"s1"`) || strings.Contains(got, `"signature":"s2"`) || strings.Contains(got, `"content":"output"`) {
+		t.Fatalf("everything the summary was written from must be gone:\n%s", got)
 	}
-	for _, want := range []string{"second task", `"signature":"s2"`, `"signature":"s3"`, "done with second"} {
+	for _, want := range []string{"latest-user-message\\u003e\\nsecond task", `"signature":"s3"`, "done with second"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("the running turn must go as sent, missing %s:\n%s", want, got)
 		}
@@ -909,7 +910,7 @@ func TestMidTurnSwapKeepsTheRunningTurn(t *testing.T) {
 	}
 	// The next prompt keeps the swap; the turn that was running keeps its thinking.
 	send(t, s, "S", all[:9])
-	if got := f.last(); !strings.Contains(got, "THE GIST") || !strings.Contains(got, `"signature":"s2"`) {
+	if got := f.last(); !strings.Contains(got, "THE GIST") || !strings.Contains(got, `"signature":"s3"`) {
 		t.Fatalf("after the turn, the swap stays and so does that turn's thinking:\n%s", got)
 	}
 }
@@ -946,7 +947,7 @@ func TestMidTurnSwapRejectedIsUndoneAndResent(t *testing.T) {
 	if code := sendCode(t, s, "S", all[:9]); code != http.StatusOK {
 		t.Fatalf("status %d", code)
 	}
-	if got := f.last(); !strings.Contains(got, "THE GIST") || strings.Contains(got, `"signature":"s2"`) {
+	if got := f.last(); !strings.Contains(got, "THE GIST") || strings.Contains(got, `"signature":"s3"`) {
 		t.Fatalf("the next prompt swaps as before mid-turn existed:\n%s", got)
 	}
 	// Saving the settings again re-arms it.
@@ -1182,5 +1183,133 @@ func TestLearnedCompactAtAndTheOutcomeLog(t *testing.T) {
 	out := autocompact.ReadOutcomes(log, time.Time{})
 	if len(out) != 1 || out[0].Session != "S" || out[0].Kind != autocompact.OutcomeUnused {
 		t.Fatalf("outcomes %+v, want one unused summary for S", out)
+	}
+}
+
+// The cut is right after the request the summary was written from: the
+// reply to it is the first message kept, nothing of the turn before it is
+// re-sent, and the prompt that started the turn rides beside the summary.
+// Until 5 Oct 2026 the tail started at the latest plain prompt, so a long
+// turn was kept whole: a session compacted at 175k was back at 191k
+// twenty-five minutes later, inside the 30 minutes that held off the next.
+func TestCutIsRightAfterTheRequestTheSummaryWasWrittenFrom(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(f.last()), &req); err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("want the summary, the reply and the new prompt, got %d messages:\n%s", len(req.Messages), f.last())
+	}
+	lead := string(req.Messages[0])
+	for _, want := range []string{`"role":"user"`, "THE GIST", "never push without asking", "latest-user-message\\u003e\\nsecond task\\n\\u003c/latest-user-message"} {
+		if !strings.Contains(lead, want) {
+			t.Fatalf("the summary message lacks %s:\n%s", want, lead)
+		}
+	}
+	if strings.Count(lead, "second task") != 1 {
+		t.Fatalf("the latest prompt is carried once, without Claude Code's reminders:\n%s", lead)
+	}
+	if !strings.Contains(string(req.Messages[1]), "done with second") || strings.Contains(string(req.Messages[1]), "thinking") {
+		t.Fatalf("the reply is kept, without thinking from before the swap:\n%s", req.Messages[1])
+	}
+	if !jsonEqual(t, req.Messages[2], all[8]) {
+		t.Fatalf("the new prompt must go as sent:\n%s", req.Messages[2])
+	}
+	// A later request of the same turn keeps the same start, so the cache
+	// entry the swap wrote is read again.
+	more := append(append([]json.RawMessage(nil), all...),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"t9","name":"Read","input":{}}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t9","content":"more"}]}`))
+	send(t, s, "S", more)
+	var again struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(f.last()), &again); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Messages) != 5 || !jsonEqual(t, again.Messages[0], req.Messages[0]) || !jsonEqual(t, again.Messages[1], req.Messages[1]) {
+		t.Fatalf("the start of the request must not change between requests:\n%s", f.last())
+	}
+}
+
+// When the newest message of the request the summary was written from has
+// changed by the next request, the cut right after it cannot be trusted:
+// the cut moves back to the latest plain prompt before it, which still
+// matches. The summary overlaps what is kept and nothing is lost.
+func TestCutMovesBackToThePromptWhenTheNewestMessageChanged(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	var logBuf strings.Builder
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	s.logger.SetOutput(io.MultiWriter(testLogWriter{t}, &logBuf))
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	changed := append([]json.RawMessage(nil), all[:9]...)
+	changed[6] = json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"output, rewritten"}]}`)
+	send(t, s, "S", changed)
+	got := f.last()
+	if !strings.Contains(got, "THE GIST") || !strings.Contains(got, "output, rewritten") || strings.Contains(got, "old file") {
+		t.Fatalf("want the summary with the tail kept from the second task's prompt:\n%s", got)
+	}
+	if strings.Contains(got, "latest-user-message") {
+		t.Fatalf("the prompt itself is kept, so it is not carried a second time:\n%s", got)
+	}
+	if !strings.Contains(logBuf.String(), "compaction cut moved back") || !strings.Contains(logBuf.String(), "message 6 of 7 changed") {
+		t.Fatalf("the log must say the cut moved and which message changed:\n%s", logBuf.String())
+	}
+}
+
+// The request the summary was written from, sent again (a retry), is not a
+// changed history: the summary keeps waiting and applies afterwards.
+func TestSummaryWaitsThroughAResentRequest(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	h := msgs(t, `[
+ {"role":"user","content":"hi"},
+ {"role":"assistant","content":[{"type":"text","text":"hello"}]},
+ {"role":"user","content":"big task"},
+ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"`+strings.Repeat("x", 20000)+`"}]},
+ {"role":"assistant","content":[{"type":"text","text":"read it"}]},
+ {"role":"user","content":"next"}]`)
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	send(t, s, "S", h[:3])
+	// No plain prompt leaves 30% before it: only the cut after the request exists.
+	send(t, s, "S", h[:5])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", h[:5])
+	if !s.compactionReady("S") || strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("a resent request must neither drop the summary nor carry it")
+	}
+	send(t, s, "S", h)
+	if got := f.last(); !strings.Contains(got, "THE GIST") || strings.Contains(got, "xxxx") || !strings.Contains(got, "latest-user-message\\u003e\\nbig task") {
+		t.Fatalf("the summary must replace the long turn and carry its prompt:\n%s", got)
+	}
+}
+
+func TestLatestPromptText(t *testing.T) {
+	h := msgs(t, `[
+ {"role":"user","content":[{"type":"text","text":"<system-reminder>ctx</system-reminder>"},{"type":"text","text":"do the thing"},{"type":"text","text":"and this"}]},
+ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}]`)
+	if got := latestPromptText(h); got != "do the thing\n\nand this" {
+		t.Fatalf("got %q", got)
+	}
+	long := msgs(t, `[{"role":"user","content":"`+strings.Repeat("a", 9000)+`END"}]`)
+	got := latestPromptText(long)
+	if len(got) > latestPromptMax+100 || !strings.HasSuffix(got, "END") || !strings.Contains(got, "middle left out") {
+		t.Fatalf("a long prompt keeps its start and end: %d bytes", len(got))
+	}
+	if got := latestPromptText(h[1:]); got != "" {
+		t.Fatalf("no plain prompt, got %q", got)
 	}
 }
