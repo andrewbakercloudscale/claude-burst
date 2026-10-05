@@ -36,6 +36,35 @@ let showBar = true // the context bar under the band; /context-bar toggles it
 let band = true // the band above the prompt; off where the sidebar has it
 const BAND_KEY = 'band'
 
+// The way out when Burst is the problem. Both are immediate, so no request
+// is made: they work while the gateway is down and Claude Code cannot reach
+// the model. Each runs a script install.sh put on the PATH, in a Terminal
+// window, where macOS can ask for the password and the output can be read.
+// Neither needs the gateway, the dashboard or the checkout.
+const RESCUE = {
+  revert: {
+    name: 'claude-burst-revert', script: 'burst-off',
+    description: 'Turn Claude Burst off and send Claude Code straight to Anthropic again. Works while the gateway is down',
+    started: 'Turning Burst off in a Terminal window. Undo: /claude-burst-reinstall',
+  },
+  reinstall: {
+    name: 'claude-burst-reinstall', script: 'burst-reinstall',
+    description: 'Fetch the newest Claude Burst from GitHub and install it again. Works while the gateway is down',
+    started: 'Reinstalling the newest Burst in a Terminal window',
+  },
+}
+
+async function rescue($, c) {
+  const path = (home || (await $.env.get('HOME')) || '') + '/.local/bin/' + c.script
+  try {
+    const r = await $.process.run(['open', '-a', 'Terminal', path])
+    if (r && r.exitCode) throw new Error((r.stderr || 'exit ' + r.exitCode).trim())
+    $.ui.toast(c.started)
+  } catch (err) {
+    $.ui.toast('Could not run ' + path + ' (' + err + '). Run ./install.sh in the claude-burst checkout')
+  }
+}
+
 export function register(on) {
   on('session.start', async ($, e, next) => {
     sid = await $.session.id()
@@ -66,8 +95,22 @@ export function register(on) {
     } catch (err) {
       $.ui.log('could not add /context-bar: ' + err)
     }
+    for (const c of Object.values(RESCUE)) {
+      try {
+        await $.command.register({ name: c.name, description: c.description, immediate: true })
+      } catch (err) {
+        $.ui.log('could not add /' + c.name + ': ' + err)
+      }
+    }
     return next(e)
   })
+
+  for (const c of Object.values(RESCUE)) {
+    on('command.run', { command: c.name }, async ($) => {
+      await rescue($, c)
+      return {}
+    })
+  }
 
   on('command.run', { command: 'burst' }, async ($, e) => {
     if (String((e && e.args) || '').trim().toLowerCase() === 'band') {

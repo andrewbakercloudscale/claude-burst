@@ -37,15 +37,16 @@ function mod(over: Record<string, unknown> = {}) {
 // (an object, or null for a dashboard that is down).
 // What the Mac outside the mod is, for a test: `claimed` are alert ids a
 // panel's pop-up already took, `lines` what the gateway's notice queue holds
-// (handed over once), `runs` and `posts` what the mod ran and posted.
-type World = { claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[] }
+// (handed over once), `runs` and `posts` what the mod ran and posted,
+// `commands` the slash commands it added, `missing` a program that is not there.
+type World = { claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; commands?: string[]; missing?: string }
 
 function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}, world: World = {}) {
   const clock = mock.clock(on, { now: 1_000_000_000_000 })
   mock.env(on, { HOME: '/Users/me' })
   on('session.start', () => ({ cwd: '/work' }))
   on('session.id', () => ({ value: 'S1' }))
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', ($, e) => { world.commands?.push(e.name); return { value: undefined } })
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
   on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
   on('ui.status', ($, e) => { status.push(e.text); return { value: undefined } })
@@ -59,6 +60,7 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
   // The claim is a mkdir on the real Mac unless it is answered here.
   on('process.run', ($, e) => {
     world.runs?.push(e.argv)
+    if (world.missing && e.argv.includes(world.missing)) return { value: { exitCode: 1, stdout: '', stderr: 'The file ' + world.missing + ' does not exist.' } }
     const id = e.argv[e.argv.length - 1]
     return { value: { exitCode: (world.claimed || []).includes(id) ? 1 : 0, stdout: '', stderr: '' } }
   })
@@ -306,4 +308,29 @@ test('a remembered choice of the band wins over the sidebar being there', async 
   expect(status).toEqual([undefined])
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: '⚡ PRIMARY' })).toBeDefined()
+})
+
+test('/claude-burst-revert and /claude-burst-reinstall run the installed scripts in Terminal, with the dashboard down', async ($, on) => {
+  const toasts: string[] = []
+  const world: World = { runs: [], commands: [] }
+  stubs(on, [null], toasts, [], false, [], {}, world)
+  await start($)
+  expect(world.commands).toContain('claude-burst-revert')
+  expect(world.commands).toContain('claude-burst-reinstall')
+  expect(await $.command.run({ command: 'claude-burst-revert', args: '' })).toEqual({})
+  expect(await $.command.run({ command: 'claude-burst-reinstall', args: '' })).toEqual({})
+  expect(world.runs).toEqual([
+    ['open', '-a', 'Terminal', '/Users/me/.local/bin/burst-off'],
+    ['open', '-a', 'Terminal', '/Users/me/.local/bin/burst-reinstall'],
+  ])
+  expect(toasts).toContain('Turning Burst off in a Terminal window. Undo: /claude-burst-reinstall')
+  expect(toasts).toContain('Reinstalling the newest Burst in a Terminal window')
+})
+
+test('a rescue command whose script is not installed says what to run instead', async ($, on) => {
+  const toasts: string[] = []
+  stubs(on, [mod()], toasts, [], false, [], {}, { missing: '/Users/me/.local/bin/burst-off' })
+  await start($)
+  await $.command.run({ command: 'claude-burst-revert', args: '' })
+  expect(toasts.some((t) => t.startsWith('Could not run /Users/me/.local/bin/burst-off') && t.includes('./install.sh'))).toBe(true)
 })

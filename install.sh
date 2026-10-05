@@ -264,7 +264,7 @@ uninstall() {
   "$ROOT/scripts/codex-unroute.sh" || echo "WARNING: Codex's config still routes to Burst: run scripts/codex-unroute.sh" >&2
 
   # 4. The LaunchAgent and the binary.
-  rm -f "$PLIST" "$TARGET" "$INSTALL_DIR/burst-off"
+  rm -f "$PLIST" "$TARGET" "$INSTALL_DIR/burst-off" "$INSTALL_DIR/burst-reinstall"
   rm -rf "$OFF_DIR"
   zsh "$ROOT/scripts/update-mod.sh" uninstall
   appnap_restore_original

@@ -166,13 +166,15 @@ EOF
 chmod +x ~/burst-bypass.sh && ~/burst-bypass.sh
 ```
 
-With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass script, and `scripts/rollback.sh` does it from a checkout.## Quickstart
+With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass script, and `scripts/rollback.sh` does it from a checkout. From v0.19, `burst-reinstall` (also on your PATH) fetches the newest Burst and installs it again, and both are slash commands inside Claude Code: `/claude-burst-revert` and `/claude-burst-reinstall`. They make no request to the model, so they work while the gateway is down, and each opens a Terminal window where macOS can ask for your password.
+
+## Quickstart
 
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.18.0 at the time of writing)
-git clone --branch v0.18.0 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.19.0 at the time of writing)
+git clone --branch v0.19.0 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 # 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
