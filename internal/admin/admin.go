@@ -31,9 +31,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/autocompact"
 	"github.com/andrewbakercloudscale/claude-burst/internal/claudesettings"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/handover"
@@ -54,8 +56,11 @@ var indexHTML []byte
 const mutationHeader = "X-Claude-Burst-Admin"
 
 type Server struct {
-	gateway     *router.Server
-	modNotices  modNotices
+	gateway    *router.Server
+	modNotices modNotices
+	// learned is Intelligent Compaction Mode's state, under learnMu.
+	learnMu     sync.Mutex
+	learned     autocompact.State
 	metricsPath string
 	version     string
 	// extraHost is an optional friendly hostname accepted in addition to the
@@ -144,6 +149,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/inspect/remove", s.mutating(s.handleInspectRemove))
 	mux.HandleFunc("/api/automask-save", s.mutating(s.handleAutomaskSave))
 	mux.HandleFunc("/api/compaction/repo", s.mutating(s.handleCompactionRepo))
+	mux.HandleFunc("/api/intelligent-compaction", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			s.mutating(s.handleIntelligent)(w, r)
+			return
+		}
+		s.readOnly(s.handleIntelligent)(w, r)
+	})
+	// The usage panel's call, named as it is asked for.
+	mux.HandleFunc("/api/GetAutoCompactionThreshold", s.readOnly(s.handleThreshold))
 	mux.HandleFunc("/api/prompt-notice", s.mutating(s.handlePromptNotice))
 	mux.HandleFunc("/api/prompt-notice-test", s.mutating(s.handlePromptNoticeTest))
 	mux.HandleFunc("/api/coordination", s.readOnly(s.handleCoordination))

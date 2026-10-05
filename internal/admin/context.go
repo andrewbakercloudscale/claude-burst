@@ -224,6 +224,12 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 	case req.WindowMinutes < 0 || res.WindowMinutes > maxWindow:
 		http.Error(w, fmt.Sprintf("window must be between 1 and %d minutes", maxWindow), http.StatusBadRequest)
 		return
+	case req.Mode != "" && req.Mode != config.CompactionIntelligent:
+		http.Error(w, "mode must be fixed or intelligent", http.StatusBadRequest)
+		return
+	case req.FloorTokens < 0 || res.FloorTokens < minCompactAt || res.FloorTokens > res.CompactAtTokens:
+		http.Error(w, fmt.Sprintf("the floor must be between %dk and Compact at (%dk)", minCompactAt/1000, res.CompactAtTokens/1000), http.StatusBadRequest)
+		return
 	}
 	cfg, ok := updateConfig(w, func(c *config.Config) error {
 		// Repository overrides have their own endpoint; this form never
@@ -236,6 +242,9 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.gateway.SetCompaction(req)
+	// The mode, the floor and Compact at all bear on what is learned: the
+	// thresholds follow at once, not at the learner's next look.
+	learned := s.learnCompaction(cfg, time.Now())
 	state := "compaction off"
 	if req.Enabled {
 		state = fmt.Sprintf("compaction on: compact at %dk, warn at %d%% (%dk), at least %d minutes between compactions of a session", res.CompactAtTokens/1000, res.WarnAtPercent, res.WarnAtTokens/1000, res.WindowMinutes)
@@ -244,6 +253,9 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.MidTurn {
 			state += ", swapped in mid-turn (experimental)"
+		}
+		if req.Intelligent() {
+			state += fmt.Sprintf("; Intelligent Compaction Mode on: %d repositories on a learned Compact at, never below %dk", len(learned.Thresholds()), res.FloorTokens/1000)
 		}
 	}
 	if err := SyncPromptNoticeHook(cfg); err != nil {

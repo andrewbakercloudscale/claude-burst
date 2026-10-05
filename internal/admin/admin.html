@@ -1152,6 +1152,23 @@
         <button class="primary" id="compactSave">&#x2713; Save</button>
       </div>
       <div class="hint" style="margin-top:6px"><strong>Compact at</strong>: the context that triggers a summary (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default threshold). <strong>Delay between compactions</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
+      <h3 class="mac-h">Intelligent Compaction Mode <span class="pill" id="icState">off</span></h3>
+      <div class="hint" style="font-size:13.5px;line-height:1.55">One <em>Compact at</em> does not suit every repository. In this mode Burst learns one for each, from the last 14 days of that repository's own compactions: what a compaction leaves behind, how fast the context grows again, and what a compaction costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is where the two add up to the least, and it is adjusted once a day, by a tenth at most. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. Failures are counted for each repository and push its size up; where most compactions lose money it goes back to <em>Compact at</em>.
+        <br><br>Guards: never below the floor, never above <em>Compact at</em>, nothing learned from fewer than 3 compactions, and <em>Delay between compactions</em> above still spaces a session's compactions (default: at most one every 30 minutes). A repository override below always wins.</div>
+      <div class="row" style="align-items:flex-end;margin-top:8px">
+        <div>
+          <label for="icMode">Mode</label>
+          <select id="icMode" style="width:auto"><option value="">Fixed: one Compact at</option><option value="intelligent">Intelligent Compaction Mode</option></select>
+        </div>
+        <div>
+          <label for="icFloor">Floor (k tokens)</label>
+          <input type="number" id="icFloor" min="50" max="900" step="10" style="width:110px">
+        </div>
+        <button class="primary" id="icSave">&#x2713; Save</button>
+        <button id="icLearn">Learn now</button>
+        <span class="hint" id="icNote"></span>
+      </div>
+      <div id="icTable" style="margin-top:8px"></div>
       <h3 class="mac-h">Repository overrides</h3>
       <div class="hint">Sessions in these repositories compact at their own size instead of <em>Compact at</em> above, or never on their own (<code>/compact-async</code> still works). <em>Warn when at</em> and the delay apply to each repository's own size. A repository is the folder holding <code>.git</code> above where Claude Code was started; every other repository uses <em>Compact at</em>.</div>
       <div id="roList" style="margin-top:6px"></div>
@@ -2943,7 +2960,11 @@ function renderCompaction(s) {
       $("compactAt").value = Math.round((k.compact_at_tokens || 300000) / 1000);
       $("compactWindow").value = k.window_minutes || 30;
     }
+    if (document.activeElement !== $("icFloor")) $("icFloor").value = Math.round((k.floor_tokens || 100000) / 1000);
+    $("icMode").value = k.mode || "";
   }
+  setPill("icState", !k.enabled ? "compaction off" : k.mode === "intelligent" ? "on" : "off", k.enabled && k.mode === "intelligent" ? "ok" : "");
+  loadLearned(false);
   setPill("compactState", k.enabled ? "on" : "off", k.enabled ? "ok" : "");
   setPill("compactMidTurnState", !k.mid_turn ? "off" : c.mid_turn_off ? "refused by the API: off until you save again" : "on",
     !k.mid_turn ? "" : c.mid_turn_off ? "warn" : "ok");
@@ -3074,6 +3095,8 @@ async function saveCompaction() {
     compact_at_tokens: (parseInt($("compactAt").value, 10) || 0) * 1000,
     warn_at_percent: parseInt($("compactWarn").value, 10) || 0,
     window_minutes: parseInt($("compactWindow").value, 10) || 0,
+    mode: $("icMode").value,
+    floor_tokens: (parseInt($("icFloor").value, 10) || 0) * 1000,
   };
   compactBusy = true;
   try {
@@ -3081,13 +3104,78 @@ async function saveCompaction() {
     compactDirty = false;
     $("compactPending").textContent = "";
     note($("compactNote"), "ok", r.ok);
+    $("icNote").textContent = "Saved.";
+    loadLearned(true);
   } catch (e) {
     note($("compactNote"), "bad", e.message);
+    $("icNote").textContent = e.message;
   } finally {
     compactBusy = false;
     refresh();
   }
 }
+
+// Intelligent Compaction Mode's table: each repository's learned Compact at,
+// what it was learned from, and the compactions that lost money. Read at
+// most every 30 seconds; the learner itself looks every half hour.
+let learnedAt = 0, learnedBusy = false;
+async function loadLearned(now, learn) {
+  if (learnedBusy || (!now && Date.now() - learnedAt < 30000)) return;
+  learnedBusy = true;
+  try {
+    const v = learn ? await post("/api/intelligent-compaction", {}) : await fetch("/api/intelligent-compaction").then(r => r.json());
+    learnedAt = Date.now();
+    renderLearned(v);
+  } catch (e) {
+    $("icTable").innerHTML = `<div class="hint">Could not read the learned sizes: ${esc(e.message)}</div>`;
+  } finally {
+    learnedBusy = false;
+  }
+}
+function renderLearned(v) {
+  const k = n => n ? Math.round(n / 1000) + "k" : "-", on = v.enabled && v.mode === "intelligent";
+  const rows = v.repos || [];
+  if (!rows.length) {
+    $("icTable").innerHTML = `<div class="hint">No repository has been compacted in the last ${v.window_days} days, so there is nothing to learn from yet. Every repository compacts at ${k(v.fixed)}.</div>`;
+    return;
+  }
+  const src = {learned: ["learned", "p"], override: ["your override", "s"], off: ["never", "s"], fixed: ["fixed", ""]};
+  $("icTable").innerHTML = `<div class="hint" style="margin-bottom:4px">${on
+      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, at most once every ${v.delay_minutes} minutes.`
+      : `Off: every repository compacts at ${k(v.fixed)}. <b>Would be</b> shows what this mode would use.`}</div>
+    <table><thead><tr><th>Repository</th><th class="num">Compact at now</th><th class="num">${on ? "Target" : "Would be"}</th>
+      <th class="num" title="The context a compaction leaves behind (median)">Leaves</th>
+      <th class="num" title="How fast the context grows, per request (median)">Grows / turn</th>
+      <th class="num" title="Summary call and cache rewrite (median)">Cost each</th>
+      <th class="num" title="Turns one needs to save what it cost, at the target">Pays back in</th>
+      <th class="num" title="Compactions in the last ${v.window_days} days">Compactions</th>
+      <th class="num" title="Compactions that did not save what they cost, or whose summary was paid for and never used">Lost money</th>
+      <th>Why</th></tr></thead><tbody>${rows.map(r => {
+        const f = r.failures || {}, lost = (f.unpaid || 0) + (f.summary_failed || 0) + (f.unused || 0), s = src[r.source] || src.fixed;
+        const moved = r.source === "learned" && r.previous && r.previous !== r.threshold ? ` <span class="hint">was ${k(r.previous)}</span>` : "";
+        return `<tr><td class="mono" title="${esc(r.root)}">${esc(r.name)}</td>
+          <td class="num"><b>${k(r.in_force)}</b> <span class="pill ${s[1]}">${s[0]}</span>${moved}</td>
+          <td class="num">${k(r.target)}${r.target && r.saved_per_turn_usd > 0 ? ` <span class="hint" title="Less per turn than at ${k(v.fixed)}, by the model">${esc(smallUSD(r.saved_per_turn_usd))}/turn less</span>` : ""}</td>
+          <td class="num">${k(r.after_tokens)}</td>
+          <td class="num">${r.growth_per_turn ? (r.growth_per_turn / 1000).toFixed(1) + "k" : "-"}</td>
+          <td class="num">${r.cost_usd ? "$" + r.cost_usd.toFixed(2) : "-"}</td>
+          <td class="num">${r.payback_turns ? r.payback_turns + " turns" : "-"}</td>
+          <td class="num">${r.compactions || 0}</td>
+          <td class="num" title="${esc(`${f.unpaid || 0} did not save what they cost, ${f.summary_failed || 0} summary calls paid for and failed, ${f.unused || 0} summaries never used; ${f.ended || 0} ended early by /clear, /compact or a rewind`)}">${lost
+            ? `<span class="neg">${lost} of ${f.attempts || lost}</span>${f.lost_usd ? ` <span class="hint">$${f.lost_usd.toFixed(2)}</span>` : ""}` : `0 of ${f.attempts || 0}`}</td>
+          <td class="hint">${esc(r.reason || "")}</td></tr>`;
+      }).join("")}</tbody></table>`;
+}
+for (const id of ["icMode", "icFloor"]) $(id).addEventListener("input", () => {
+  compactDirty = true;
+  $("icNote").textContent = "Not saved yet: press Save to apply.";
+});
+$("icSave").onclick = saveCompaction;
+$("icLearn").onclick = async () => {
+  $("icNote").textContent = "Learning...";
+  await loadLearned(true, true);
+  $("icNote").textContent = "Learned from the last 14 days.";
+};
 // Ticking only changes the form; Save applies it, here or at the bottom.
 for (const id of ["compactOn", "compactNotice", "compactMidTurn"]) $(id).onchange = () => {
   compactDirty = true;
