@@ -2,7 +2,9 @@
 
 > **Broken?** Open the [**support console**](#support-console) at http://127.0.0.1:7789/: what happened, the log around it, and Restart and Repair buttons, up even when the gateway is not. Or paste one line into Terminal: [**Repair**](#repair-burst) fixes the common problems, [**Diagnose**](#diagnose-burst) copies a report to the clipboard. Also: [**Update and reinstall**](#update-and-reinstall-burst) · [**Bypass Burst**](#bypass-burst)
 
-The ops layer for running Claude Code all day on a Mac, and now OpenAI's Codex too: subscription-first routing with overflow to GLM/OpenRouter/Bedrock, pauseless compaction, session coordination and handover across parallel sessions, lid-shut keep-awake with automatic hotspot join for Remote Control, a dashboard for cost, health and guards, and an audit of every alert and action.
+The ops layer for running Claude Code all day on a Mac, and now OpenAI's Codex too: subscription-first routing with overflow to GLM/OpenRouter/Bedrock, pauseless compaction that learns the right size for each repository, session coordination and handover across parallel sessions, lid-shut keep-awake with automatic hotspot join for Remote Control, a dashboard for cost, health and guards, and an audit of every alert and action.
+
+**Intelligent Compaction Mode: Burst learns when to compact, for each repository.** Compact too early and you pay for summaries you did not need; too late and every turn in between re-reads a context that is bigger than it had to be. The right size differs from one repository to the next, so Burst works it out from each repository's own last 14 days (what a compaction leaves, how fast the context grows back, what a summary costs), adjusts it a little each day, and backs off at once when a compaction loses money. Nothing to tune, and every number comes with its reason in words. See [how it decides](#intelligent-compaction-mode).
 
 **Now supports Codex.** Codex (the CLI and the ChatGPT desktop app, signed in with ChatGPT) can route through Burst with one click on the dashboard's Codex tab or `claude-burst codex enable`: tokens per turn, each session's context against its window, the ChatGPT plan's limits, a path trace and a test turn. Requests reach ChatGPT unchanged. See [Codex](docs/codex.md).
 
@@ -220,6 +222,18 @@ Anthropic receives and bills:     139k tokens
 - **The trade.** Claude Code's copy keeps growing, so a request that bypasses Burst sends all of it, uncached. Burst shows that figure and alerts on a bypass.
 
 The details, with five worked examples, are in [Two copies of the conversation](docs/compaction.md#two-copies-of-the-conversation-what-claude-code-keeps-and-what-burst-sends).
+
+<a id="intelligent-compaction-mode"></a>
+**Intelligent Compaction Mode: the size is learned, not guessed.** One *Compact at* for every repository is a guess, and it is wrong in both directions: a repository of small edits is compacted later than it should be, and one of long tool runs is summarised over and over. Set **Compaction mode** to **Intelligent** and Burst finds the size for each repository where the two costs add up to the least:
+
+![Intelligent Compaction Mode on the dashboard: each repository with the size in force, the target, what a compaction leaves, growth per turn, cost, payback, the compactions that lost money, and the reason in words](docs/screenshots/intelligent-compaction.png)
+
+- **It is arithmetic on your own log, not a model's opinion.** With a compaction leaving `A` tokens, the context growing `g` a turn and a compaction costing `c`, the cheapest size is `A + sqrt(2 * g * (A + c))`. In the screenshot, `claude-burst` (35 compactions in 14 days) leaves 64k, grows 1.4k a turn and pays $0.39 a summary, so its cheapest size is 132k, not the fixed 300k.
+- **It is careful with your money.** A buffer (20%) sits on top of the cheapest size, a floor (100k) under it and your fixed *Compact at* above it. It moves a tenth a day at most, and learns nothing from fewer than 3 compactions.
+- **It never loses money twice.** A compaction that did not pay for itself raises that repository's size by 10% at once, and a repository where most of them lose goes back to the fixed size.
+- **It tells you why.** Every row ends with its reasoning in a sentence, so no number has to be taken on trust. **Learn now** recalculates on the spot, and a per-repository override always wins.
+
+The usage panel's sidebar shows the learned size for the session's own repository, in cyan, on the context bar. The full rules are in [Intelligent Compaction Mode](docs/compaction.md#intelligent-compaction-mode-a-limit-learned-for-each-repository).
 
 **Codex too.** OpenAI's Codex, signed in with ChatGPT, can go through Burst as well: one button on the dashboard's Codex tab (or `claude-burst codex enable`). Requests reach ChatGPT unchanged; the Codex tab shows tokens, each session's context against its window, and the ChatGPT plan's limits. See [Codex](docs/codex.md).
 
