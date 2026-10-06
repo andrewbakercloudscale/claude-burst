@@ -594,3 +594,116 @@ func TestFinderPlainTerminalShortcut(t *testing.T) {
 func (st finderStatus) finderStatusBrief() string {
 	return st.Key + " found=" + map[bool]string{true: "yes", false: "no"}[st.ToolFound] + " missing=" + st.Missing
 }
+
+// The dashboard has one row per tool: every shortcut names its row and its
+// tick, and no two ticks on a row read the same.
+func TestEveryFinderShortcutHasARowAndATick(t *testing.T) {
+	seen := map[string]bool{}
+	for _, f := range finderShortcuts {
+		if f.Group == "" || f.Option == "" {
+			t.Errorf("%s: group %q, option %q", f.Key, f.Group, f.Option)
+		}
+		if seen[f.Group+"|"+f.Option] {
+			t.Errorf("%s: a second %q tick on the %q row", f.Key, f.Option, f.Group)
+		}
+		seen[f.Group+"|"+f.Option] = true
+	}
+}
+
+// A row's one bypass tick is every shortcut of it that has such a flag: the
+// page sends them together, and a launcher that cannot read the tick does
+// not stop the others.
+func TestFinderBypassTickCoversTheRowsShortcuts(t *testing.T) {
+	r := newFinderRig(t, true)
+	h := newTestServer(t).Handler()
+	t.Setenv("HOME", r.home)
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "http://x/api/finder-install", strings.NewReader(body))
+		req.Host = "127.0.0.1:7788"
+		req.Header.Set("X-Claude-Burst-Admin", "1")
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr
+	}
+	on := func() string {
+		var keys []string
+		for _, st := range readFinder().Shortcuts {
+			if st.BypassOn {
+				keys = append(keys, st.Key)
+			}
+		}
+		return strings.Join(keys, ",")
+	}
+	if rr := post(`{"action":"bypass","keys":["claude-continue","claude-resume"],"on":true}`); rr.Code != http.StatusOK {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	if got := on(); got != "claude-continue,claude-resume" {
+		t.Fatalf("ticked the Claude row: on for %q", got)
+	}
+	// One of the row's launchers is somebody's own: the other still follows.
+	os.MkdirAll(filepath.Join(r.home, ".local", "bin"), 0o755)
+	os.WriteFile(r.launcher("ghostty-claude-resume-launcher"), []byte("#!/bin/bash\nexec claude --resume\n"), 0o755)
+	if rr := post(`{"action":"bypass","keys":["claude-continue","claude-resume"],"on":false}`); rr.Code != http.StatusOK {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	rr := post(`{"action":"bypass","keys":["claude-continue","claude-resume"],"on":true}`)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "changed by hand") {
+		t.Fatalf("one launcher cannot read the tick: %d %s", rr.Code, rr.Body.String())
+	}
+	if got := on(); got != "claude-continue" {
+		t.Fatalf("on for %q, want the launcher that reads it alone", got)
+	}
+	if rr := post(`{"action":"bypass","keys":["claude-resume"],"on":true}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("nothing could be saved: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := post(`{"action":"bypass","keys":[],"on":true}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("no shortcuts: %d", rr.Code)
+	}
+}
+
+// The page draws a row per tool with its shortcuts as ticks on it, and one
+// bypass tick for the row that names every shortcut it covers.
+func TestFinderRowsAreOnePerTool(t *testing.T) {
+	var got struct {
+		HTML string `json:"html"`
+	}
+	runPageJS(t, []string{"renderFinder"}, `
+const els = {}; const $ = id => (els[id] = els[id] || {});
+const setDot = () => {};
+const finderPick = {};
+const finderTicked = x => finderPick[x.key] ?? (x.installed || x.tool_found);
+let finderState = {ghostty: true, shortcuts: [
+  {key:"claude", name:"Launch Claude Code in Ghostty", group:"Launch Claude Code", option:"New session", tool:"claude", tool_found:true, installed:true, ours:true},
+  {key:"claude-continue", name:"Continue", group:"Launch Claude Code", option:"Continue last", tool:"claude", tool_found:true, bypass_flag:"--x", bypass_ok:true, bypass_on:true},
+  {key:"claude-resume", name:"Resume", group:"Launch Claude Code", option:"Pick a session", tool:"claude", tool_found:true, bypass_flag:"--x", bypass_ok:true},
+  {key:"codex", name:"Launch Codex in Ghostty", group:"Launch Codex", option:"New session", tool:"codex", tool_found:false, missing:"codex", bypass_flag:"--y", bypass_ok:true, bypass_on:true},
+  {key:"omc", name:"OMC", group:"Launch OMC", option:"New session", tool:"omc", tool_found:true},
+  {key:"omc-interop", name:"Interop", group:"Launch OMC", option:"Side by side with Codex", tool:"omc", tool_found:false, missing:"codex"},
+  {key:"opencode", name:"Launch OpenCode in Ghostty", group:"Launch OpenCode", option:"New session", tool:"opencode", tool_found:true}]};
+renderFinder();
+out({html: els.finderStatus.innerHTML});`, &got)
+	h := got.HTML
+	if n := strings.Count(h, `class="finder-name"`); n != 4 {
+		t.Errorf("want four rows, one per tool, got %d: %s", n, h)
+	}
+	for _, want := range []string{
+		"<b>Launch Claude Code</b>", "<b>Launch Codex</b>", "<b>Launch OpenCode</b>",
+		`data-finder="claude-resume" checked> Pick a session`,
+		// One tick for the two session shortcuts, half on, and saying which.
+		`data-finder-bypass="claude-continue,claude-resume" data-mixed> bypass permissions (Continue last, Pick a session)`,
+		`data-finder-bypass="codex" checked> bypass permissions</label>`,
+		// A tool the whole row lacks is said on the row, one a single
+		// shortcut lacks beside that shortcut.
+		"<b>Launch Codex</b> <span class=\"hint\"><code>codex</code> is not installed",
+		"<b>Launch OMC</b></div>",
+		"needs <code>codex</code>",
+	} {
+		if !strings.Contains(h, want) {
+			t.Errorf("missing %q in %s", want, h)
+		}
+	}
+	if n := strings.Count(h, "data-finder-bypass="); n != 2 {
+		t.Errorf("want a bypass tick on the Claude and Codex rows only, got %d", n)
+	}
+}

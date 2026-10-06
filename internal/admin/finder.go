@@ -19,7 +19,8 @@ import (
 // Finder shortcuts: right-click a folder, Services, "Launch Claude Code in
 // Ghostty" (or a session of it, OMC, Codex, OpenCode, a plain terminal). Each is an
 // Automator Quick Action in ~/Library/Services that runs a launcher script
-// in ~/.local/bin. The dashboard ticks which ones to install or remove.
+// in ~/.local/bin. The dashboard has a row per tool, and on it a tick per
+// shortcut: which ones to install or remove.
 //
 // Install only adds what is missing: an existing Quick Action or launcher is
 // never overwritten, because the usage panel's setup patches the Claude
@@ -30,7 +31,11 @@ import (
 type finderShortcut struct {
 	Key  string `json:"key"`
 	Name string `json:"name"` // the menu item, and the .workflow name
-	Tool string `json:"tool"` // the command the launcher runs; "" for a plain shell
+	// Group is the dashboard row the shortcut is a tick on, one per tool, and
+	// Option is what its tick is called there.
+	Group  string `json:"group"`
+	Option string `json:"option"`
+	Tool   string `json:"tool"` // the command the launcher runs; "" for a plain shell
 	// Also is a second command the shortcut is no use without.
 	Also string `json:"also,omitempty"`
 	Note string `json:"note,omitempty"`
@@ -75,28 +80,28 @@ const claudeBypass = "--dangerously-skip-permissions"
 // The Claude launcher has no bypass tick: the usage panel patches that file
 // and gives it the dashboard's "Start with bypass permissions" option.
 var finderShortcuts = []finderShortcut{
-	{Key: "claude", Name: "Launch Claude Code in Ghostty", Tool: "claude", launcher: "ghostty-claude-launcher", script: claudeLauncher},
-	{Key: "claude-continue", Name: "Continue last Claude Code session in Ghostty", Tool: "claude", Note: "claude --continue: the folder's most recent conversation",
+	{Key: "claude", Name: "Launch Claude Code in Ghostty", Group: "Launch Claude Code", Option: "New session", Tool: "claude", launcher: "ghostty-claude-launcher", script: claudeLauncher},
+	{Key: "claude-continue", Name: "Continue last Claude Code session in Ghostty", Group: "Launch Claude Code", Option: "Continue last", Tool: "claude", Note: "claude --continue: the folder's most recent conversation",
 		BypassFlag: claudeBypass, launcher: "ghostty-claude-continue-launcher",
 		script: plainLauncher("claude-continue", "claude", "Claude Code", "--continue", claudeBypass),
 		was:    [][]byte{plainLauncherV1("claude", "Claude Code", "--continue"), plainLauncherV2("claude-continue", "claude", "Claude Code", "--continue", claudeBypass)}},
-	{Key: "claude-resume", Name: "Resume a Claude Code session in Ghostty", Tool: "claude", Note: "claude --resume: pick from the folder's conversations",
+	{Key: "claude-resume", Name: "Resume a Claude Code session in Ghostty", Group: "Launch Claude Code", Option: "Pick a session", Tool: "claude", Note: "claude --resume: pick from the folder's conversations",
 		BypassFlag: claudeBypass, launcher: "ghostty-claude-resume-launcher",
 		script: plainLauncher("claude-resume", "claude", "Claude Code", "--resume", claudeBypass),
 		was:    [][]byte{plainLauncherV2("claude-resume", "claude", "Claude Code", "--resume", claudeBypass)}},
-	{Key: "omc", Name: "Launch Claude Code with OMC in Ghostty", Tool: "omc", Note: "oh-my-claudecode: Claude Code inside tmux",
+	{Key: "omc", Name: "Launch Claude Code with OMC in Ghostty", Group: "Launch OMC", Option: "New session", Tool: "omc", Note: "oh-my-claudecode: Claude Code inside tmux",
 		BypassFlag: "--madmax", launcher: "ghostty-omc-launcher",
 		script: plainLauncher("omc", "omc", "OMC (oh-my-claudecode)", "", "--madmax"),
 		was:    [][]byte{plainLauncherV1("omc", "OMC (oh-my-claudecode)", ""), plainLauncherV2("omc", "omc", "OMC (oh-my-claudecode)", "", "--madmax")}},
-	{Key: "omc-interop", Name: "Launch OMC and Codex side by side in Ghostty", Tool: "omc", Also: "codex", Note: "omc interop: Claude Code and Codex in one tmux window",
+	{Key: "omc-interop", Name: "Launch OMC and Codex side by side in Ghostty", Group: "Launch OMC", Option: "Side by side with Codex", Tool: "omc", Also: "codex", Note: "omc interop: Claude Code and Codex in one tmux window",
 		launcher: "ghostty-omc-interop-launcher", script: plainLauncher("omc-interop", "omc", "OMC (oh-my-claudecode)", "interop", ""),
 		was: [][]byte{plainLauncherV2("omc-interop", "omc", "OMC (oh-my-claudecode)", "interop", "")}},
-	{Key: "codex", Name: "Launch Codex in Ghostty", Tool: "codex",
+	{Key: "codex", Name: "Launch Codex in Ghostty", Group: "Launch Codex", Option: "New session", Tool: "codex",
 		BypassFlag: "--dangerously-bypass-approvals-and-sandbox", launcher: "ghostty-codex-launcher",
 		script: plainLauncher("codex", "codex", "Codex", "", "--dangerously-bypass-approvals-and-sandbox"),
 		was:    [][]byte{plainLauncherV1("codex", "Codex", ""), plainLauncherV2("codex", "codex", "Codex", "", "--dangerously-bypass-approvals-and-sandbox")}},
-	{Key: "opencode", Name: "Launch OpenCode in Ghostty", Tool: "opencode", launcher: "ghostty-opencode-launcher", script: opencodeLauncher, was: [][]byte{opencodeLauncherV1}},
-	{Key: "ghostty", Name: "Open Ghostty here", Note: "a plain terminal window in the folder", launcher: "ghostty-here-launcher", script: shellLauncher},
+	{Key: "opencode", Name: "Launch OpenCode in Ghostty", Group: "Launch OpenCode", Option: "New session", Tool: "opencode", launcher: "ghostty-opencode-launcher", script: opencodeLauncher, was: [][]byte{opencodeLauncherV1}},
+	{Key: "ghostty", Name: "Open Ghostty here", Group: "Open Ghostty", Option: "Plain terminal", Note: "a plain terminal window in the folder", launcher: "ghostty-here-launcher", script: shellLauncher},
 }
 
 // shellLauncher opens the user's own shell in the folder Finder passed.
@@ -365,7 +370,8 @@ func (s *Server) handleFinderInstall(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 		// Keys are the ticked shortcuts. Left out, it is every one.
 		Keys []string `json:"keys"`
-		// On is the tick, for "bypass": Keys is then the one row it is on.
+		// On is the tick, for "bypass": Keys are then the shortcuts of the
+		// row it is on.
 		On *bool `json:"on"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Action != "install" && req.Action != "remove" && req.Action != "bypass") {
@@ -391,16 +397,25 @@ func (s *Server) handleFinderInstall(w http.ResponseWriter, r *http.Request) {
 	var done []string
 	var err error
 	if req.Action == "bypass" {
-		if len(req.Keys) != 1 || req.On == nil {
-			http.Error(w, "bypass needs one shortcut in keys, and on true or false", http.StatusBadRequest)
+		if len(req.Keys) == 0 || req.On == nil {
+			http.Error(w, "bypass needs the row's shortcuts in keys, and on true or false", http.StatusBadRequest)
 			return
 		}
-		msg, err := setFinderBypass(req.Keys[0], *req.On)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		// A launcher that cannot read the tick does not stop the row's others.
+		saved := false
+		for _, k := range req.Keys {
+			msg, err := setFinderBypass(k, *req.On)
+			if err != nil {
+				msg = err.Error()
+			}
+			saved = saved || err == nil
+			done = append(done, msg)
+		}
+		if !saved {
+			http.Error(w, strings.Join(done, "\n"), http.StatusBadRequest)
 			return
 		}
-		writeJSON(w, map[string]any{"done": []string{msg}, "finder": readFinder()})
+		writeJSON(w, map[string]any{"done": done, "finder": readFinder()})
 		return
 	}
 	if req.Action == "install" {
