@@ -159,6 +159,9 @@ whole history:
   summarised, in the path or not, at any size, it compacts with Burst's summary. It is
   never Claude Code's own compaction: with no summary held, or one that does not fit,
   nothing is compacted and a line says so. The automatic hand-offs are this command.
+  The transcript shows it as `/compact`, because that is the command the mod has Claude
+  Code run: a toast, "Compacted with Burst's summary", says whose summary went in. Run
+  again with nothing newer written, it answers "Already compacted".
 - **Near the 1M window it is compacted with Burst still in the path** (on by
   default). Past 1M a bypass is refused as too long, not just expensive. With **Also from
   800k held, with Burst still in the path** ticked on the dashboard (`handoff_in_path` in

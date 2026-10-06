@@ -210,6 +210,10 @@ async function reopenedNow($) {
 // /compact behind a running turn, so it is kept until the compaction comes:
 // one the mod asked for is never Claude Code's own, paid summary.
 let asked = ''
+// tookIn: this session has taken a summary of Burst's in, so with none on
+// offer the reason is that one, not that Burst never wrote any.
+let tookIn = false
+const ALREADY = "Already compacted: Burst's latest summary is in this session and it has written nothing newer, so there was nothing to hand over"
 async function leaveBurst($) {
   if (asking || !(await handoffOn($))) return
   const h = await readHandoff($)
@@ -249,7 +253,7 @@ async function compactFast($) {
   if (asking) return
   if (!(await handoffOn($))) return $.ui.toast("/" + FAST + " is off: turn on Hand Burst's summary to Claude Code on the dashboard", { timeoutMs: TOAST_MS.warn })
   const h = await readHandoff($)
-  if (!h) return $.ui.toast('Burst holds no summary of this session yet: nothing compacted', { timeoutMs: TOAST_MS.warn })
+  if (!h) return $.ui.toast(tookIn ? ALREADY : 'Burst holds no summary of this session yet: nothing compacted', { timeoutMs: TOAST_MS.warn })
   handed = h.of
   try {
     await handOver($, h)
@@ -274,10 +278,12 @@ export function register(on) {
     // writing a summary of the whole history is the user's to ask for.
     const mine = asking || (h !== null && asked === h.of && e.trigger === 'manual')
     asked = ''
-    if (cut < 1 && mine) return { skip: "Burst's summary does not fit this session as Claude Code holds it, or is in it already, so nothing was compacted. /compact has Claude Code write its own" }
+    if (cut < 1 && mine && h && String((e.messages && e.messages[0] && e.messages[0].text) || '').includes(h.lead)) return { skip: ALREADY }
+    if (cut < 1 && mine) return { skip: "Burst's summary does not fit this session as Claude Code holds it, so nothing was compacted. /compact has Claude Code write its own" }
     if (cut < 1) return next(e)
     handed = h.of
-    $.ui.toast("Burst's summary handed to Claude Code: " + cut + ' messages replaced, no summary request', { timeoutMs: TOAST_MS.info })
+    tookIn = true
+    $.ui.toast("Compacted with Burst's summary: " + cut + ' messages replaced, nothing written by Claude Code', { timeoutMs: TOAST_MS.info })
     return { messages: [{ role: 'user', text: h.lead, toolUses: [] }, ...e.messages.slice(cut)] }
   })
 
@@ -288,6 +294,7 @@ export function register(on) {
     toastsMarked = 0
     handed = ''
     asked = ''
+    tookIn = false
     reopened = false
     heldSeen = 0
     band = !(await hasSidebar($))
