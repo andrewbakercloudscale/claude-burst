@@ -1909,4 +1909,7 @@ func TestTheHistoryAskedForAfterARestartIsCompactedAtOnce(t *testing.T) {
 	long = append(long, json.RawMessage(`{"role":"user","content":[{"type":"text","text":"and now this"}]}`))
 	send(t, s, "S", long)
 	waitFor(t, func() bool { return a.summaries() == 1 })
+	if got := rowsOf(s, "S"); len(got) != 1 || got[0].Thread {
+		t.Fatalf("the thread known only by its response is this conversation now, got %+v", got)
+	}
 }
