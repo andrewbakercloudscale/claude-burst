@@ -139,9 +139,9 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch f.Result = q.Get("result"); f.Result {
-	case "", metrics.ResultOK, metrics.ResultError, metrics.ResultCancelled, metrics.ResultUnknown:
+	case "", metrics.ResultOK, metrics.ResultError, metrics.ResultCancelled, metrics.ResultOffline, metrics.ResultUnknown:
 	default:
-		http.Error(w, "result must be ok, error, cancelled or unknown", http.StatusBadRequest)
+		http.Error(w, "result must be ok, error, cancelled, offline or unknown", http.StatusBadRequest)
 		return
 	}
 	if f.Limit, err = boundedInt(q.Get("limit"), 50, 1, usageMaxLimit); err != nil {

@@ -315,7 +315,11 @@ type Day struct {
 	// Errors counts responses with a 4xx/5xx status. Kept per-day rather
 	// than as one window figure because the question a chart answers is
 	// "when did this start", and a single percentage cannot.
-	Errors           int     `json:"errors"`
+	Errors int `json:"errors"`
+	// Offline and Cancelled are what Errors leaves out: requests refused
+	// while this Mac had no network, and ones the client gave up on.
+	Offline          int     `json:"offline"`
+	Cancelled        int     `json:"cancelled"`
 	InputTokens      int64   `json:"input_tokens"`
 	OutputTokens     int64   `json:"output_tokens"`
 	APIEquivalentUSD float64 `json:"api_equivalent_usd"`
@@ -492,8 +496,13 @@ func Daily(path string, days int) (History, error) {
 				d.PrunedTokens += e.PrunedBytes / BytesPerToken
 				d.PrunedUSD += e.PrunedUSD
 			}
-			if IsError(e) {
+			switch {
+			case IsError(e):
 				d.Errors++
+			case IsOffline(e):
+				d.Offline++
+			case e.HTTPStatus == StatusClientClosed:
+				d.Cancelled++
 			}
 			d.InputTokens += e.InputTokens
 			d.OutputTokens += e.OutputTokens
@@ -693,8 +702,21 @@ func percentile(v []int64, p float64) int64 {
 // pressing Esc in Claude Code is not a gateway error.
 const StatusClientClosed = 499
 
+// offlineNote opens the note of a request the gateway answered itself with
+// a 502 because this Mac had no network (the router writes it).
+const offlineNote = "local network unavailable"
+
+// IsOffline is a request refused here because the Mac was offline. It says
+// nothing about Burst or the provider: with the lid shut or between
+// networks, Claude Code's heartbeats, event streams and telemetry retry
+// every few seconds, and on 2026-10-06 those were 1,851 of the day's 1,937
+// "errors" and kept the dashboard's error rate amber for a fortnight.
+func IsOffline(e Event) bool {
+	return e.HTTPStatus == 502 && strings.HasPrefix(e.Note, offlineNote)
+}
+
 // IsError is a request that failed for a reason other than the client
-// leaving.
+// leaving or this Mac being offline.
 func IsError(e Event) bool {
-	return e.HTTPStatus >= 400 && e.HTTPStatus != StatusClientClosed
+	return e.HTTPStatus >= 400 && e.HTTPStatus != StatusClientClosed && !IsOffline(e)
 }

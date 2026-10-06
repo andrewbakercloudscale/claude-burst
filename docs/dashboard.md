@@ -20,7 +20,7 @@ Three tabs at the top of the menu split the page: **Claude** (Claude Code: every
 
 The menu down the left follows you as you scroll, grouped by job:
 
-- **Observe**: Overview, Activity, Analytics (latency and error rate), Spend by model, **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in), and [Usage](#usage).
+- **Observe**: Overview, Activity, Analytics (latency and error rate: of requests that failed, not the ones refused while this Mac was offline or that Claude Code cancelled, which the check counts beside it), Spend by model, **Spend by repository** (each session filed under the repository its Claude Code transcript says it ran in), and [Usage](#usage).
 - **Context**: [Pauseless Compaction](compaction.md), Context & cache.
 - **Routing**: failover strategy and intercept mode, Secondary, [Failover & pricing](#failover--pricing).
 - **Sessions**: [Session handover](handover.md), [Session coordination](coordination.md), [Session options](#session-options-and-the-usage-panel), [Usage panel](#session-options-and-the-usage-panel).
