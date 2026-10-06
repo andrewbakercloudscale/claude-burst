@@ -449,9 +449,29 @@ func TestNetworkNotPassingTrafficDoesNotFailOver(t *testing.T) {
 		}
 	}
 	mu.Lock()
-	defer mu.Unlock()
 	if secondaryHits != 0 {
 		t.Fatalf("failed over %d times on a network that passes nothing", secondaryHits)
+	}
+	mu.Unlock()
+
+	// An answer from long ago says nothing about now.
+	s.healthMu.Lock()
+	s.health.LastAnswer = time.Now().Add(-time.Minute)
+	s.healthMu.Unlock()
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, messagesRequest("claude-sonnet-5"))
+	if !strings.Contains(rr.Body.String(), "not passing traffic") {
+		t.Fatalf("an old answer overruled the control request: %d %q", rr.Code, rr.Body.String())
+	}
+	// A reply from Anthropic moments ago is traffic passing: a control
+	// request that failed on a slow network does not make it "cut".
+	s.healthMu.Lock()
+	s.health.LastAnswer = time.Now()
+	s.healthMu.Unlock()
+	rr = httptest.NewRecorder()
+	s.ServeHTTP(rr, messagesRequest("claude-sonnet-5"))
+	if strings.Contains(rr.Body.String(), "not passing traffic") {
+		t.Fatalf("a network that answered a moment ago was called cut: %d %q", rr.Code, rr.Body.String())
 	}
 }
 
