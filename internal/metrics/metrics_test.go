@@ -518,3 +518,30 @@ func TestSummarizeReadsRotatedFiles(t *testing.T) {
 		t.Fatalf("got $%.2f over %d requests, err %v", s.APIEquivalentUSD, s.Requests, err)
 	}
 }
+
+// A request refused because this Mac had no network, or given up by Claude
+// Code, is not an error of Burst's or the provider's: the day counts each
+// apart, so the error rate is of requests that failed.
+func TestDailyLeavesOfflineAndCancelledOutOfErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	now := time.Now()
+	writeEvents(t, path,
+		Event{Time: now, Slot: "primary", HTTPStatus: 200},
+		Event{Time: now, Slot: "primary", HTTPStatus: 502, Note: `local network unavailable; not failed over: Post "https://api.anthropic.com/v1/code/sessions/x/worker/heartbeat"`},
+		Event{Time: now, Slot: "primary", HTTPStatus: 502, Note: "local network unavailable; not failed over: dial tcp"},
+		Event{Time: now, Slot: "primary", HTTPStatus: StatusClientClosed, Note: "client cancelled: context canceled"},
+		// A 502 for any other reason is an error.
+		Event{Time: now, Slot: "primary", HTTPStatus: 502, Note: "upstream call failed: EOF"},
+	)
+	h, err := Daily(path, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dayByDate(t, h, now.Format("2006-01-02"))
+	if d.Requests != 5 || d.Errors != 1 || d.Offline != 2 || d.Cancelled != 1 {
+		t.Fatalf("requests %d, errors %d, offline %d, cancelled %d; want 5, 1, 2, 1", d.Requests, d.Errors, d.Offline, d.Cancelled)
+	}
+	if got := ResultOf(Event{HTTPStatus: 502, Note: "local network unavailable; not failed over: x"}); got != ResultOffline {
+		t.Fatalf("result = %q, want offline", got)
+	}
+}

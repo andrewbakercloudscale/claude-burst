@@ -1090,7 +1090,7 @@
         <div><label for="ugModel">Model</label><select id="ugModel"><option value="">All models</option></select></div>
         <div><label for="ugProvider">Provider</label><select id="ugProvider"><option value="">All providers</option><option value="primary">primary (slot)</option><option value="secondary">secondary (slot)</option></select></div>
         <div><label for="ugRepo">Repository</label><select id="ugRepo"><option value="">All repositories</option></select></div>
-        <div><label for="ugResult">Result</label><select id="ugResult"><option value="">All results</option><option value="ok">ok</option><option value="error">error</option><option value="cancelled">cancelled</option><option value="unknown">unknown</option></select></div>
+        <div><label for="ugResult">Result</label><select id="ugResult"><option value="">All results</option><option value="ok">ok</option><option value="error">error</option><option value="cancelled">cancelled</option><option value="offline">offline</option><option value="unknown">unknown</option></select></div>
         <div><label for="ugTraffic">Traffic</label><select id="ugTraffic"><option value="">Model requests</option><option value="all">All traffic</option></select></div>
         <div><label for="ugSession">Session</label><input id="ugSession" placeholder="session id"></div>
         <div><button id="ugReset">Reset</button></div>
@@ -3802,6 +3802,16 @@ function axisMoney(n) {
 // primaryHealthCheck is the "Anthropic answering" check, from live primary
 // health: failing while the last failure is under 10 minutes old and no
 // answer has come since. Pure, for page_script_test.go.
+// leftOut says what an error rate does not count, or "" when that is nothing.
+function leftOut(days) {
+  const off = (days || []).reduce((a, d) => a + (d.offline || 0), 0);
+  const gone = (days || []).reduce((a, d) => a + (d.cancelled || 0), 0);
+  const parts = [];
+  if (off) parts.push(`${num(off)} sent while this Mac was offline`);
+  if (gone) parts.push(`${num(gone)} Claude Code cancelled`);
+  return parts.length ? `; not counted: ${parts.join(" and ")}` : "";
+}
+
 function primaryHealthCheck(ph, now) {
   if (!ph) return null;
   // Go sends a never-set time as year 1, not as a missing field.
@@ -3917,7 +3927,9 @@ function readinessChecks(s, verdict) {
   const primary = primaryHealthCheck(s.primary_health, Date.now());
   if (primary) out.push(primary);
 
-  // Error rate over the charted window. Uses the same numbers the chart
+  // Error rate over the charted window, of requests that failed: not the
+  // ones refused while this Mac was offline, nor the ones Claude Code gave
+  // up on (leftOut says how many). Uses the same numbers the chart
   // draws, so the check and the picture below it can never disagree.
   if (lastHistory && lastHistory.window && lastHistory.window.Requests > 0) {
     const errs = lastHistory.days.reduce((a, d) => a + d.errors, 0);
@@ -3925,7 +3937,7 @@ function readinessChecks(s, verdict) {
     out.push({
       key: "errors", label: "Error rate", target: "sec-activity",
       ok: pct < 2, critical: false,
-      detail: `${pct.toFixed(1)}% of ${num(lastHistory.window.Requests)} requests in the window returned 4xx/5xx`,
+      detail: `${pct.toFixed(1)}% of ${num(lastHistory.window.Requests)} requests in the window failed${leftOut(lastHistory.days)}`,
     });
   }
   return out;
@@ -4603,7 +4615,7 @@ function renderActivity() {
     {k: "p95 latency", v: h.latency_p95_ms ? num(h.latency_p95_ms) + " ms" : "-",
      h: "1 in 20 took longer"},
     {k: "Error rate", v: reqs ? errPct.toFixed(1) + "%" : "-",
-     h: `${num(errs)} of ${num(reqs)} returned 4xx/5xx`,
+     h: `${num(errs)} of ${num(reqs)} failed${leftOut(h.days)}`,
      cls: errPct >= 5 ? "bad" : errPct >= 2 ? "warn" : ""},
     {k: "Busiest day", v: busiest && busiest.requests ? dayLabel(busiest.date) : "-",
      h: busiest && busiest.requests ? `${num(busiest.requests)} requests` : ""},
@@ -6638,7 +6650,7 @@ loadBand();
     if (!r) return;
     const t = r.totals;
     const tiles = [
-      {k: "Requests", v: num(t.requests), h: `${num(t.ok)} ok, ${num(t.errors)} errors, ${num(t.cancelled)} cancelled${t.unknown ? ", " + num(t.unknown) + " unknown" : ""}`},
+      {k: "Requests", v: num(t.requests), h: `${num(t.ok)} ok, ${num(t.errors)} errors, ${num(t.cancelled)} cancelled${t.offline ? ", " + num(t.offline) + " while offline" : ""}${t.unknown ? ", " + num(t.unknown) + " unknown" : ""}`},
       {k: "Success rate", v: pct(t.success_rate), h: "cancelled (Esc) and unknown left out",
        cls: t.success_rate != null && t.success_rate < 0.95 ? "bad" : t.success_rate != null && t.success_rate < 0.98 ? "warn" : ""},
       {k: "Tokens", v: short(t.input_tokens + t.output_tokens + t.cache_read_tokens + t.cache_write_tokens),

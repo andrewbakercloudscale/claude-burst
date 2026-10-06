@@ -24,7 +24,9 @@ const (
 	ResultOK        = "ok"
 	ResultError     = "error"
 	ResultCancelled = "cancelled"
-	ResultUnknown   = "unknown"
+	// ResultOffline: refused here because this Mac had no network.
+	ResultOffline = "offline"
+	ResultUnknown = "unknown"
 )
 
 // ResultOf classifies one event.
@@ -32,6 +34,8 @@ func ResultOf(e Event) string {
 	switch {
 	case e.HTTPStatus == StatusClientClosed:
 		return ResultCancelled
+	case IsOffline(e):
+		return ResultOffline
 	case e.HTTPStatus == 0:
 		return ResultUnknown
 	case IsError(e):
@@ -69,9 +73,10 @@ type UsageTotals struct {
 	OK        int `json:"ok"`
 	Errors    int `json:"errors"`
 	Cancelled int `json:"cancelled"`
+	Offline   int `json:"offline"`
 	Unknown   int `json:"unknown"`
-	// SuccessRate is OK / (OK + Errors), as a fraction; cancelled and
-	// unknown requests are in neither. Nil when there is nothing to divide.
+	// SuccessRate is OK / (OK + Errors), as a fraction; cancelled, offline
+	// and unknown requests are in neither. Nil when there is nothing to divide.
 	SuccessRate      *float64 `json:"success_rate"`
 	InputTokens      int64    `json:"input_tokens"`
 	OutputTokens     int64    `json:"output_tokens"`
@@ -282,6 +287,8 @@ func Usage(path string, f UsageFilter, repoOf func(session string) string) (Usag
 				t.Errors++
 			case ResultCancelled:
 				t.Cancelled++
+			case ResultOffline:
+				t.Offline++
 			default:
 				t.Unknown++
 			}
