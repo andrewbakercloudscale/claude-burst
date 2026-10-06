@@ -125,14 +125,15 @@ func (s *Server) readSettings() (settingsView, error) {
 		}
 		pricing = append(pricing, mp)
 	}
-	// Unpriced first, then most used, then by name.
+	// Unpriced first, then by name, whatever the case: a table to look a
+	// model up in. The 30 days column says which are used most.
 	sort.Slice(pricing, func(i, j int) bool {
 		a, b := pricing[i], pricing[j]
 		if a.Unpriced != b.Unpriced {
 			return a.Unpriced
 		}
-		if a.Requests != b.Requests {
-			return a.Requests > b.Requests
+		if la, lb := strings.ToLower(a.Model), strings.ToLower(b.Model); la != lb {
+			return la < lb
 		}
 		return a.Model < b.Model
 	})
