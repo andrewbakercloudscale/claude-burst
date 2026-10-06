@@ -154,7 +154,9 @@ await context.route('**/api/**', async (route) => {
 async function open(tab) {
   const page = await context.newPage()
   await page.goto(DASH + '/')
-  await page.waitForTimeout(3500)
+  // The sections fill as their answers arrive: wait for the last of them.
+  await page.waitForLoadState('networkidle').catch(() => {})
+  await page.waitForTimeout(2500)
   if (tab) {
     await page.click(`button.tab[data-tab="${tab}"]`)
     await page.waitForTimeout(1500)

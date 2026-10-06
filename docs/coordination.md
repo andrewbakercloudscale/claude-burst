@@ -125,7 +125,7 @@ Everything coordination does is one line in `~/.config/claude-burst/coord/coord.
 
 Each tile shows the count for the chosen window and, under it, the all-time count. With 7 or 14 days a per-day table follows, newest day first.
 
-![The Issues table: four sessions that stopped with uncommitted work, all resolved](screenshots/coordination-issues.png)
+![The Issues table: four stops with uncommitted work, all resolved. Illustration: example sessions and files](screenshots/coordination-issues.png)
 
 **Issues** lists what went wrong in the chosen window, newest first:
 

@@ -218,7 +218,7 @@ A compacted request does not record what it would have sent without Burst, so th
 
 The dashboard shows the net figure in the Pauseless Compaction section (per session, with the parts on hover), in the **Saved, net** tile under Analytics, and per day in the Saved chart's tooltip. The same explanation is on the page under *How the savings are calculated*.
 
-![The Pauseless Compaction section: headline results, settings, and each session's context before and after, with the saving per turn](screenshots/pauseless-compaction.png)
+![The Pauseless Compaction section: headline results over 7 days and its three switches, with what each one does](screenshots/pauseless-compaction.png)
 
 ![The Saved view of Daily activity: tokens removed by compaction and by pruning, per day. Illustration: an example month built from real data](screenshots/saved-chart.png)
 

@@ -23,7 +23,7 @@ The ops layer for running Claude Code all day on a Mac, and now OpenAI's Codex t
 
 Claude Burst is a local gateway that sits between Claude Code and Anthropic. **It is for** people who use Claude Code heavily on a Mac, on a Pro, Max or Enterprise plan (or a metered API key), and want to keep working through limits, long sessions and closed lids. Claude Code talks to it exactly as it talks to Anthropic: nothing in your workflow changes, and **Revert to normal Claude** on the dashboard takes it out of the path in one click. It is young (macOS only, experimental): try it on a non-critical development account first.
 
-![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](docs/screenshots/overview.png)
+![Dashboard overview: health checks, the totals for 14 days, what needs attention and the setup tests](docs/screenshots/overview.png)
 
 ## Fix or update Burst: copy-paste scripts
 
