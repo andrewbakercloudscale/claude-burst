@@ -1284,6 +1284,7 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 // ListenAndServe runs the admin UI. It never returns nil early: a bind failure
 // is reported to the caller rather than silently leaving no admin server.
 func (s *Server) ListenAndServe(addr string) error {
+	refreshLaunchers()
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           s.Handler(),

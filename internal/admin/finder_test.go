@@ -155,7 +155,7 @@ func TestEmbeddedClaudeLauncherMatchesThePanelPatch(t *testing.T) {
 	if !strings.Contains(last, `"$CLAUDE"`) {
 		t.Fatalf("last line %q does not run \"$CLAUDE\"; claude-panel-setup.sh could not pin --session-id", last)
 	}
-	for _, b := range [][]byte{claudeLauncher, opencodeLauncher} {
+	for _, b := range [][]byte{claudeLauncher, opencodeLauncher, plainLauncher("codex", "codex", "Codex", "", "--x")} {
 		if !bytes.HasPrefix(b, []byte("#!/bin/bash\n")) {
 			t.Error("launcher must start with #!/bin/bash")
 		}
@@ -449,6 +449,80 @@ func TestFinderBypassTickChangesWhatTheLauncherRuns(t *testing.T) {
 		if _, err := setFinderBypass(k, true); err == nil {
 			t.Errorf("%s: want a refusal", k)
 		}
+	}
+}
+
+// The keep-awake options are read by the launcher when it runs: awake with
+// no options file (no usage panel), the screen kept on when that is ticked,
+// and no caffeinate at all when keep-awake is turned off.
+func TestFinderLaunchersFollowTheKeepAwakeOptions(t *testing.T) {
+	r := newFinderRig(t, true)
+	if _, err := installFinderShortcuts(false, "codex", "opencode"); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(r.home, "fakebin")
+	os.MkdirAll(bin, 0o755)
+	ran := filepath.Join(r.home, "ran")
+	os.WriteFile(filepath.Join(bin, "caffeinate"), []byte("#!/bin/bash\nprintf 'caffeinate %s\\n' \"$1\" > \""+ran+"\"\n"), 0o755)
+	for _, tool := range []string{"codex", "opencode"} {
+		os.WriteFile(filepath.Join(r.home, ".local", "bin", tool), []byte("#!/bin/bash\necho direct > \""+ran+"\"\n"), 0o755)
+	}
+	opts := filepath.Join(r.home, ".config", "claude-panel", "options")
+	os.MkdirAll(filepath.Dir(opts), 0o755)
+	run := func(launcher string) string {
+		t.Helper()
+		os.Remove(ran)
+		cmd := exec.Command("/bin/bash", r.launcher(launcher), t.TempDir())
+		cmd.Env = []string{"HOME=" + r.home, "PATH=" + bin + ":/usr/bin:/bin"}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v: %s", launcher, err, out)
+		}
+		b, _ := os.ReadFile(ran)
+		return strings.TrimSpace(string(b))
+	}
+	for _, l := range []string{"ghostty-codex-launcher", "ghostty-opencode-launcher"} {
+		os.Remove(opts)
+		if got := run(l); got != "caffeinate -i" {
+			t.Errorf("%s, no options file: %q, want caffeinate -i", l, got)
+		}
+		os.WriteFile(opts, []byte("CLAUDE_PANEL_CAFFEINATE=true\nCLAUDE_PANEL_KEEP_SCREEN_ON=false\n"), 0o644)
+		if got := run(l); got != "caffeinate -i" {
+			t.Errorf("%s, awake on: %q, want caffeinate -i", l, got)
+		}
+		os.WriteFile(opts, []byte("CLAUDE_PANEL_CAFFEINATE=true\nCLAUDE_PANEL_KEEP_SCREEN_ON=true\n"), 0o644)
+		if got := run(l); got != "caffeinate -di" {
+			t.Errorf("%s, screen on: %q, want caffeinate -di", l, got)
+		}
+		os.WriteFile(opts, []byte("CLAUDE_PANEL_CAFFEINATE=false\nCLAUDE_PANEL_KEEP_SCREEN_ON=true\n"), 0o644)
+		if got := run(l); got != "direct" {
+			t.Errorf("%s, awake off: %q, want the tool started as it is", l, got)
+		}
+	}
+}
+
+// A launcher an earlier version wrote always ran caffeinate -i. Untouched,
+// it is brought up to date so it reads the options; changed by hand, it is
+// left alone.
+func TestLaunchersFromBeforeTheKeepAwakeOptionsAreBroughtUpToDate(t *testing.T) {
+	r := newFinderRig(t, true)
+	os.MkdirAll(filepath.Join(r.home, ".local", "bin"), 0o755)
+	os.WriteFile(r.launcher("ghostty-claude-resume-launcher"), plainLauncherV2("claude-resume", "claude", "Claude Code", "--resume", claudeBypass), 0o755)
+	os.WriteFile(r.launcher("ghostty-opencode-launcher"), opencodeLauncherV1, 0o755)
+	mine := []byte("#!/bin/bash\nexec my-own-codex\n")
+	os.WriteFile(r.launcher("ghostty-codex-launcher"), mine, 0o755)
+	patched := []byte("#!/bin/bash\n# patched by claude-panel-setup.sh\ncaffeinate -i \"$CLAUDE\" --session-id \"$PIN_SID\"\n")
+	os.WriteFile(r.launcher("ghostty-claude-launcher"), patched, 0o755)
+	refreshLaunchers()
+	for _, l := range []string{"ghostty-claude-resume-launcher", "ghostty-opencode-launcher"} {
+		if b, _ := os.ReadFile(r.launcher(l)); !bytes.Contains(b, []byte("CLAUDE_PANEL_KEEP_SCREEN_ON")) {
+			t.Errorf("%s was not brought up to date", l)
+		}
+	}
+	if b, _ := os.ReadFile(r.launcher("ghostty-codex-launcher")); !bytes.Equal(b, mine) {
+		t.Error("a launcher changed by hand must be left alone")
+	}
+	if b, _ := os.ReadFile(r.launcher("ghostty-claude-launcher")); !bytes.Equal(b, patched) {
+		t.Error("the Claude launcher is the usage panel's to patch")
 	}
 }
 

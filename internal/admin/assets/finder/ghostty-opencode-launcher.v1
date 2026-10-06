@@ -32,15 +32,5 @@ fi
 # doesn't delay OpenCode starting.
 [ -x "$HOME/.local/bin/opencode-panel-launch.sh" ] && "$HOME/.local/bin/opencode-panel-launch.sh" &
 
-# Keep-awake, as the dashboard's Session options set it. Read here, so a
-# tick needs no reinstall. Awake unless it is turned off: caffeinate -i stops
-# idle sleep, and -d also keeps the screen on, so it never locks.
-panel_opt() {
-  local v
-  v="$(grep -E "^$1=" "$HOME/.config/claude-panel/options" 2>/dev/null | tail -1)"
-  printf '%s' "${v#*=}" | tr -d "\"' " | tr '[:upper:]' '[:lower:]'
-}
-AWAKE=(caffeinate -i)
-case "$(panel_opt CLAUDE_PANEL_KEEP_SCREEN_ON)" in true|1|yes|on) AWAKE=(caffeinate -di) ;; esac
-case "$(panel_opt CLAUDE_PANEL_CAFFEINATE)" in false|0|no|off) AWAKE=() ;; esac
-"${AWAKE[@]}" "$OPENCODE"
+# caffeinate -i keeps the Mac awake while a session is running.
+caffeinate -i "$OPENCODE"

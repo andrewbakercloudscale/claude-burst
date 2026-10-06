@@ -217,6 +217,7 @@ const panelRepoURL = "https://github.com/andrewbakercloudscale/claude-code-cost-
 var panelOptions = map[string]string{
 	"remote_control": "CLAUDE_PANEL_REMOTE_CONTROL",
 	"caffeinate":     "CLAUDE_PANEL_CAFFEINATE",
+	"keep_screen_on": "CLAUDE_PANEL_KEEP_SCREEN_ON",
 	"session_title":  "CLAUDE_PANEL_SESSION_TITLE",
 	"cost_alerts":    "CLAUDE_PANEL_COST_ALERTS",
 	"close_button":   "CLAUDE_PANEL_CLOSE_BUTTON",
@@ -238,7 +239,7 @@ var panelNumbers = map[string]struct {
 }
 
 // panelDefaults are what the panel does when a key is absent.
-var panelDefaults = map[string]bool{"remote_control": false, "caffeinate": false, "session_title": true, "cost_alerts": true, "close_button": true, "compact_notice": true, "loading_notice": true, "alerts": true}
+var panelDefaults = map[string]bool{"remote_control": false, "caffeinate": false, "keep_screen_on": false, "session_title": true, "cost_alerts": true, "close_button": true, "compact_notice": true, "loading_notice": true, "alerts": true}
 
 type panelView struct {
 	Installed bool               `json:"installed"`
@@ -496,6 +497,7 @@ func (s *Server) handlePanelOptions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	refreshLaunchers()
 	writeJSON(w, map[string]string{"detail": "saved; applies to the next Claude Code session you start"})
 }
 

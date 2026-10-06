@@ -59,7 +59,8 @@ Times are local. Status 0 requests are counted as "unknown": they come from befo
 
 - **Start with Remote Control**: every interactive `claude` starts with `--remote-control`.
 - **Name the session after its folder**: new sessions are titled with the repo's folder name instead of "Claude Code". Resumed sessions keep their name.
-- **Keep the Mac awake while a session runs**: `caffeinate -i` while the panel runs. Stops idle sleep, not lid-close sleep.
+- **Keep the Mac awake while a session runs**: sessions started from a Finder shortcut or by typing `claude` run under `caffeinate -i`. Stops idle sleep, not the screen turning off and locking, and not lid-close sleep.
+- **Keep the screen on too**: `caffeinate -di`, so the screen never turns off or locks while a session is open. Uses more battery.
 - **Write a handover when a session closes**: the same switch as in [Session handover](handover.md).
 - **Show gateway alerts on screen** (on by default, `CLAUDE_PANEL_ALERTS`): see below. **Send a test alert** shows one.
 
