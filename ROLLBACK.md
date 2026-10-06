@@ -4,9 +4,12 @@ Every change Claude Burst can make, where it lives, and the command that undoes 
 can be removed on its own. To remove everything at once, use `./install.sh uninstall` (normal
 case) or `scripts/rollback.sh` (emergency case, below).
 
-**Stuck right now?** Run `burst-off` in any terminal. install.sh puts it on the PATH as a
-copy of `scripts/rollback.sh`, so it works even if the checkout has moved. It also stops
-anything holding Burst's ports. `claude-burst enable` turns Burst back on.
+**Stuck right now?** Type `/claude-burst-revert` in Claude Code: it makes no request to the
+model, so it works while the gateway is down, and it opens a Terminal window that does the
+rest. Or run `burst-off` in any terminal, which is what the command runs. install.sh puts
+it on the PATH as a copy of `scripts/rollback.sh`, so it works even if the checkout has
+moved. It also stops anything holding Burst's ports. `claude-burst enable` turns Burst back
+on.
 
 ## Remove everything
 
