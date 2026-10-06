@@ -62,6 +62,10 @@ func TestHandoffFileFollowsTheSummaryInForce(t *testing.T) {
 	if h.Raw <= 0 {
 		t.Fatalf("the file must say how much Claude Code holds: %+v", h.Raw)
 	}
+	// Still 450k after the swap, over the limit: the full compaction is asked for.
+	if !h.Full {
+		t.Fatalf("a session still over its limit after the summary must be handed over at once: %+v", h.Full)
+	}
 	if fi, err := os.Stat(filepath.Join(handoffDir(s.compaction.path), "S.json")); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("the file holds the conversation's summary: mode %v, %v", fi.Mode().Perm(), err)
 	}
@@ -99,5 +103,32 @@ func TestAnchorsNameAMessageByToolCallOrText(t *testing.T) {
 	}
 	if h := buildHandoff("S", all, "x", 5, 0, time.Now()); h == nil || h.First.Tool != "t2" {
 		t.Errorf("want a hand-off at a reply with a tool call: %+v", h)
+	}
+}
+
+// The usual case: the summary took the session under its limit, and Claude
+// Code's own history is left alone.
+func TestNoFullCompactionWhenTheSummaryBroughtTheSessionUnderItsLimit(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	f.mu.Lock()
+	f.context = 90_000
+	f.mu.Unlock()
+	send(t, s, "S", all[:9])
+	h, ok := readHandoff(t, s, "S")
+	if !ok || h.Full {
+		t.Fatalf("want a hand-off on offer and not asked for, got %+v %v", h, ok)
+	}
+	// Growing back over the limit later is the next summary's business.
+	f.mu.Lock()
+	f.context = 450_000
+	f.mu.Unlock()
+	send(t, s, "S", all[:9])
+	if h, _ := readHandoff(t, s, "S"); h.Full {
+		t.Fatal("only the first answer after the swap is judged")
 	}
 }
