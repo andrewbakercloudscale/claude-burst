@@ -184,9 +184,9 @@ and no summary request was made.
 
 **Burst works out when to compact each repository, from that repository's own history, and shows its reasoning.** Compacting early costs summaries; compacting late costs every turn in between. Where the two add up to the least is different for every repository, and it moves as the work changes.
 
-![Intelligent Compaction Mode on the dashboard: each repository with the size in force, the target, what a compaction leaves, growth per turn, cost, payback, the compactions that lost money, and the reason in words](screenshots/intelligent-compaction.png)
+![Intelligent Compaction Mode on the dashboard: each repository with the size in force, the target, what a compaction leaves, growth per turn, cost, payback, the compactions that lost money, and the reason in words. Illustration: example repositories](screenshots/intelligent-compaction.png)
 
-In the screenshot `claude-burst` has 35 compactions in its 14 days: one leaves 64k and costs $0.39, and the context grows 1.4k a turn, so the cheapest size is 132k. The 20% buffer makes that 158k, and three compactions that lost money add 10% each: a target of 206k, against the fixed 300k. The size in force is 250k: it moves towards the target by a tenth a day at most, and a compaction that loses money lifts it by a tenth at once (it was 225k the day before). The other three repositories have had 2 of the 3 compactions needed, so they stay on the fixed size and say so.
+The repositories in the picture are examples. `web-shop` has 22 compactions in its 14 days: one leaves 60k and costs $0.35, and the context grows 1.2k a turn, so the cheapest size is 120k, and the 20% buffer makes the target 144k. The size in force (160k, 178k the day before) moves towards it by a tenth a day at most. `data-pipeline` grows 3.1k a turn, so it is cheapest at 202k; the buffer makes that 243k, and two compactions that lost money add 10% each, at once: 294k. `docs-site` has had 2 of the 3 compactions needed, so it stays on the fixed size and says so.
 
 One *Compact at* does not suit every repository. With **Mode** set to **Intelligent Compaction Mode** (dashboard, Pauseless Compaction), Burst learns a *Compact at* for each repository from the last 14 days of that repository's own compactions:
 
