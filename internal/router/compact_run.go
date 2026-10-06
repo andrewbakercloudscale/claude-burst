@@ -199,10 +199,19 @@ const maxThreads = 4096
 // hash otherwise). A thread goes on from the history the API holds, so a
 // thread that began before a summary was swapped in still carries
 // everything the summary replaced.
+//
+// removedMsgs and removedBytes are what that summary took out of the request
+// it went into. Each request that continues the thread goes without them
+// too, and is logged so: with nothing logged, the request after a swap read
+// as the summary dropped, every compaction of a thread as lasting one turn,
+// and on 6 Oct 2026 a repository's learned Compact at went back to the fixed
+// one because "sessions go on 1 turns after a compaction".
 type threadResponse struct {
-	key     string
-	context int64
-	summary string
+	key          string
+	context      int64
+	summary      string
+	removedMsgs  int
+	removedBytes int64
 }
 
 // noteThread remembers the response msgID. Caller holds c.mu.
@@ -280,6 +289,9 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 	}
 	ci := compactInfo{key: key, thread: true, threadSummary: from.summary, limit: cfg.CompactAtTokens,
 		inForce: st.summary != "" && st.swapAt > 0}
+	if from.summary != "" {
+		ci.removedMsgs, ci.removedBytes = from.removedMsgs, from.removedBytes
+	}
 	behind := from.key != "" && st.summary != "" && st.swapAt > 0 && from.summary != st.hash
 	ask := s.compaction.asks[prefix]
 	window := time.Duration(cfg.WindowMinutes) * time.Minute
@@ -905,7 +917,11 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 			with = st.hash
 		}
 	}
-	s.compaction.noteThread(tok.msgID, threadResponse{key: ci.key, context: ctxTokens, summary: with})
+	tr := threadResponse{key: ci.key, context: ctxTokens, summary: with}
+	if with != "" {
+		tr.removedMsgs, tr.removedBytes = ci.removedMsgs, ci.removedBytes
+	}
+	s.compaction.noteThread(tok.msgID, tr)
 	st.lastContext = ctxTokens
 	if ci.parts != nil {
 		st.parts = scaleParts(ci.parts, ctxTokens)

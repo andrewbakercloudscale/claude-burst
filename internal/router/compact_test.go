@@ -1985,3 +1985,76 @@ func TestRequestBesideTheConversationDoesNotDropTheSummary(t *testing.T) {
 		t.Fatal("a dropped summary must not be sent")
 	}
 }
+
+// A request that continues a thread sends no history, so nothing was logged
+// of the summary its thread was sent with: the request after a swap read as
+// the summary dropped, and on 6 Oct 2026 a repository's learned Compact at
+// went back to the fixed one because "sessions go on 1 turns after a
+// compaction", of a session 30 turns into one.
+func TestAThreadThatGoesOnFromASummaryIsLoggedWithIt(t *testing.T) {
+	a := &threadAPI{ctx: 250_000}
+	up := httptest.NewServer(http.HandlerFunc(a.handler))
+	t.Cleanup(up.Close)
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = up.URL
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60}
+	dir := t.TempDir()
+	metricsPath := filepath.Join(dir, "metrics.jsonl")
+	s, err := New(cfg, filepath.Join(dir, "state.json"), metricsPath, log.New(testLogWriter{t}, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.compaction.running.Wait)
+	all := msgs(t, session)
+	since := time.Now().Add(-time.Minute)
+
+	send(t, s, "S", all[:5]) // msg_01, over the limit
+	send(t, s, "S", all[:7]) // msg_02: the summary starts
+	waitFor(t, func() bool { return a.summaries() == 1 })
+	s.compaction.running.Wait()
+	a.holds(60_000)
+	send(t, s, "S", all[:9]) // msg_03: the swap
+	if _, last := a.turns(); !strings.Contains(last, "THE GIST OF THE THREAD") {
+		t.Fatalf("the summary must be swapped in first:\n%s", last)
+	}
+	a.holds(62_000)
+	if rec := continueThread(t, s, "S", "msg_03", toolResult("one")); rec.Code != http.StatusOK { // msg_04
+		t.Fatalf("got %d %s", rec.Code, rec.Body)
+	}
+	a.holds(64_000)
+	if rec := continueThread(t, s, "S", "msg_04", toolResult("two")); rec.Code != http.StatusOK { // msg_05
+		t.Fatalf("got %d %s", rec.Code, rec.Body)
+	}
+
+	b, _ := os.ReadFile(metricsPath)
+	var turns []metrics.Event
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var e metrics.Event
+		if err := json.Unmarshal([]byte(l), &e); err != nil {
+			t.Fatal(err)
+		}
+		if e.Note == "" {
+			turns = append(turns, e)
+		}
+	}
+	if len(turns) != 5 {
+		t.Fatalf("want 5 turns logged, got %d", len(turns))
+	}
+	swap := turns[2]
+	if swap.CompactedMessages <= 0 || swap.CompactedBytes <= 0 {
+		t.Fatalf("the swapped request must say what the summary removed: %+v", swap)
+	}
+	for _, e := range turns[3:] {
+		if e.CompactedMessages != swap.CompactedMessages || e.CompactedBytes != swap.CompactedBytes {
+			t.Fatalf("a request that continues the compacted thread goes without the same messages: %+v, swap %+v", e, swap)
+		}
+	}
+	// What the learned Compact at is worked out from.
+	runs, _, err := metrics.CompactionRunsSince(metricsPath, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || !runs[1].Swapped || runs[1].Turns != 3 || runs[1].End != 64_005 {
+		t.Fatalf("the compaction is one run of 3 turns, got %+v", runs)
+	}
+}
