@@ -250,31 +250,60 @@ func TestStateAndOutcomesSurviveTheFile(t *testing.T) {
 	}
 }
 
-// "We never want to lose money": a compaction that lost money raises the
-// repository's Compact at by a tenth, at once, not at tomorrow's step.
-func TestALossRaisesTheThresholdATenthAtOnce(t *testing.T) {
-	good := []metrics.CompactionRun{
-		swapped("a1", 400_000, 70_000, 0.40, 120, 2_000),
-		swapped("a2", 400_000, 70_000, 0.40, 120, 2_000),
-		swapped("a3", 400_000, 70_000, 0.40, 120, 2_000),
+// One loss among compactions that paid is a failure rate, not an alarm: the
+// threshold stays where the day's step left it. Two in a row are a size
+// that is wrong now: a tenth more, once, at once. A compaction that pays
+// ends the streak.
+func TestOnlyAStreakOfLossesRaisesTheThresholdAtOnce(t *testing.T) {
+	at := func(r metrics.CompactionRun, hoursAgo int) metrics.CompactionRun {
+		r.At = now.Add(-time.Duration(hoursAgo) * time.Hour)
+		r.Last = r.At.Add(time.Hour)
+		return r
 	}
+	paid := swapped("a1", 400_000, 70_000, 0.40, 120, 2_000)
+	lost := swapped("a4", 400_000, 70_000, 0.40, 2, 2_000) // 2 turns: it did not save what it cost
+	good := []metrics.CompactionRun{at(paid, 90), at(paid, 80), at(paid, 70)}
 	wide := Bounds{Floor: 100_000, Ceiling: 600_000}
 	st := Learn(empty(), inputs(good...), wide, true)
 	before := st.Repos["/src/repo-a"].Threshold
 	if before <= 0 || before >= wide.Ceiling {
 		t.Fatalf("want a learned threshold below the ceiling, got %d", before)
 	}
-	// One more compaction, 2 turns long: it did not save what it cost.
-	lost := append(append([]metrics.CompactionRun(nil), good...), swapped("a4", 400_000, 70_000, 0.40, 2, 2_000))
-	st = Learn(st, inputs(lost...), wide, false)
-	r := st.Repos["/src/repo-a"]
-	if r.Failures.Unpaid != 1 {
-		t.Fatalf("want 1 compaction that lost money, got %+v", r.Failures)
+
+	one := append(append([]metrics.CompactionRun(nil), good...), at(lost, 60))
+	r := Learn(st, inputs(one...), wide, false).Repos["/src/repo-a"]
+	if r.Failures.Unpaid != 1 || r.Failures.Streak != 1 {
+		t.Fatalf("want 1 loss, a streak of 1, got %+v", r.Failures)
 	}
-	if r.Threshold < before*110/100-round || r.Threshold != r.Target || r.Previous != before {
-		t.Fatalf("want at least a tenth above %d at once, got threshold %d target %d previous %d", before, r.Threshold, r.Target, r.Previous)
+	if r.Threshold != before || strings.Contains(r.Reason, "lost money") {
+		t.Fatalf("one loss must not move the threshold at once: %d then %d (%s)", before, r.Threshold, r.Reason)
 	}
-	if !strings.Contains(r.Reason, "plus 10% for each of the 1 compactions that lost money") {
+	// The failure rate alone moves the target, and by far less than a tenth.
+	if clean := st.Repos["/src/repo-a"].Target; r.Target < clean || r.Target >= clean*110/100 {
+		t.Fatalf("one loss of four: target %d then %d", clean, r.Target)
+	}
+
+	two := append(append([]metrics.CompactionRun(nil), one...), at(lost, 50))
+	r = Learn(st, inputs(two...), wide, false).Repos["/src/repo-a"]
+	if r.Failures.Streak != 2 || r.Threshold <= before || r.Threshold != r.Target || r.Previous != before {
+		t.Fatalf("two in a row: want the threshold up at once from %d, got threshold %d target %d previous %d (%+v)", before, r.Threshold, r.Target, r.Previous, r.Failures)
+	}
+	if !strings.Contains(r.Reason, "plus 10% because the last 2 compactions lost money") {
 		t.Fatalf("the reason must say so: %s", r.Reason)
+	}
+	twoTarget := r.Target
+
+	// A third loss adds no second tenth: only what the failure rate says.
+	three := append(append([]metrics.CompactionRun(nil), two...), at(lost, 40))
+	r = Learn(st, inputs(three...), wide, false).Repos["/src/repo-a"]
+	if r.Failures.Streak != 3 || r.Target >= twoTarget*110/100 {
+		t.Fatalf("a longer streak must not add a tenth each time: %d then %d", twoTarget, r.Target)
+	}
+
+	// A compaction that pays ends the streak: no tenth, nothing at once.
+	ended := append(append([]metrics.CompactionRun(nil), two...), at(paid, 40))
+	r = Learn(st, inputs(ended...), wide, false).Repos["/src/repo-a"]
+	if r.Failures.Streak != 0 || r.Failures.Unpaid != 2 || r.Threshold != before || strings.Contains(r.Reason, "lost money") {
+		t.Fatalf("after one that paid: %+v threshold %d (%s)", r.Failures, r.Threshold, r.Reason)
 	}
 }
