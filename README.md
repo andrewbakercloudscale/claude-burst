@@ -110,7 +110,25 @@ chmod +x ~/burst-update.sh && ~/burst-update.sh
 
 ### Bypass Burst
 
-Claude Code talks to Anthropic directly; sessions already open keep working:
+Claude Code talks to Anthropic directly; sessions already open keep working. The quickest way is from inside Claude Code:
+
+```
+/claude-burst-revert
+```
+
+It makes no request to the model, so it works while the gateway is down and Claude Code cannot get an answer. It opens a Terminal window, where macOS can ask for your password (transparent mode only) and you can read what it did. `/claude-burst-reinstall` is the way back: it fetches the newest Burst and installs it again, and works with the gateway down too. Both need Burst v0.19 or later and its Claude Code mod, which `install.sh` adds unless `CLAUDE_BURST_MOD=no`.
+
+No Claude Code session open, or the commands are not there? In any terminal:
+
+```sh
+burst-off            # the same thing; on your PATH from v0.11. Undo: claude-burst enable
+burst-reinstall      # fetch the newest Burst and install it again; from v0.19
+```
+
+`scripts/rollback.sh` does the same from a checkout, and **Turn Burst off** on the [support console](#support-console) does it from a browser.
+
+<details>
+<summary>None of those work (an install older than v0.11, or a broken one): the same steps as one script</summary>
 
 ```sh
 cat > ~/burst-bypass.sh <<'EOF'
@@ -168,7 +186,7 @@ EOF
 chmod +x ~/burst-bypass.sh && ~/burst-bypass.sh
 ```
 
-With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass script, and `scripts/rollback.sh` does it from a checkout. From v0.19, `burst-reinstall` (also on your PATH) fetches the newest Burst and installs it again, and both are slash commands inside Claude Code: `/claude-burst-revert` and `/claude-burst-reinstall`. They make no request to the model, so they work while the gateway is down, and each opens a Terminal window where macOS can ask for your password.
+</details>
 
 ## Quickstart
 
