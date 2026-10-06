@@ -94,6 +94,202 @@ type compactState struct {
 	// cut that cannot be handed over is not tried on every request.
 	hand   *Handoff
 	handOf string
+	// tail: hash, nextHash and nextTightHash leave the first message out
+	// (hashOf). Claude Code rewrites the context it puts in the first
+	// message, and a summary replaces that message anyway. A state saved
+	// before 6 Oct 2026 has hashes of the whole prefix and moves over at
+	// the first request they all still fit (useTailHashes).
+	tail bool
+	// firstRaw is the first message of the latest request, memory only, to
+	// say what changed in it; firstLogged keeps that to one line a minute.
+	firstRaw    json.RawMessage
+	firstLogged time.Time
+}
+
+// hashOf identifies messages [0, n) for this state's summaries: without the
+// first message once the state is on tail hashes, when there is anything
+// after it to tell one history from another.
+func (st *compactState) hashOf(msgs []json.RawMessage, n int) string {
+	if st.tail && n >= minTailMessages && len(msgs) >= 1 {
+		return prefixHash(msgs[1:], n-1)
+	}
+	return prefixHash(msgs, n)
+}
+
+// longHistory is a request too long to be a subagent starting.
+const longHistory = 20
+
+// minTailMessages is the shortest prefix identified without its first
+// message: a shorter one has too little after it to name a conversation.
+const minTailMessages = 3
+
+// useTailHashes moves a state saved with hashes of the whole prefix to tail
+// hashes, at a request every one of them still fits, which is what proves
+// the new hash names the same history. Caller holds c.mu.
+func (st *compactState) useTailHashes(msgs []json.RawMessage) bool {
+	if st.tail || st.pending {
+		return false
+	}
+	tailOf := func(n int) string { return (&compactState{tail: true}).hashOf(msgs, n) }
+	hash, nextHash, tightHash := "", "", ""
+	if st.summary != "" {
+		if len(msgs) <= st.p0 || prefixHash(msgs, st.p0) != st.hash {
+			return false
+		}
+		hash = tailOf(st.p0)
+	}
+	if st.next != "" {
+		if st.nextP0 > 0 {
+			if len(msgs) <= st.nextP0 || prefixHash(msgs, st.nextP0) != st.nextHash {
+				return false
+			}
+			nextHash = tailOf(st.nextP0)
+		}
+		if st.nextTightP0 > 0 {
+			if len(msgs) < st.nextTightP0 || prefixHash(msgs, st.nextTightP0) != st.nextTightHash {
+				return false
+			}
+			tightHash = tailOf(st.nextTightP0)
+		}
+	}
+	st.tail = true
+	if st.summary != "" {
+		st.hash = hash
+	}
+	if st.next != "" {
+		st.nextHash, st.nextTightHash = nextHash, tightHash
+	}
+	return true
+}
+
+// fits: msgs is the history this state's summary, waiting summary or
+// summary in flight was made from, whatever its first message says now.
+func (st *compactState) fits(msgs []json.RawMessage) bool {
+	if !st.tail {
+		return false
+	}
+	switch {
+	case st.summary != "":
+		return st.p0 >= minTailMessages && len(msgs) > st.p0 && st.hashOf(msgs, st.p0) == st.hash
+	case st.next != "":
+		if tp := st.nextTightP0; tp >= minTailMessages && len(msgs) >= tp && st.hashOf(msgs, tp) == st.nextTightHash {
+			return true
+		}
+		return st.nextP0 >= minTailMessages && len(msgs) > st.nextP0 && st.hashOf(msgs, st.nextP0) == st.nextHash
+	case st.pending:
+		n := min(len(st.pendingMarks), len(msgs))
+		if n < minTailMessages {
+			return false
+		}
+		for i := 1; i < n; i++ {
+			if prefixHash(msgs[i:i+1], 1) != st.pendingMarks[i] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// resolve gives the key of the conversation a request belongs to. That is
+// its own key, session, model and first message, unless nothing is held
+// under it and another conversation of the same session and model holds a
+// summary this history fits: then the first message is what changed, and
+// the conversation is that one. On 6 Oct 2026 a session Burst held at 95k
+// sent its turns whole, at 300k to 343k, for eleven minutes: each arrived
+// under a first message of its own, so under a key with no summary.
+// Caller holds c.mu.
+func (c *compactor) resolve(key string, msgs []json.RawMessage) string {
+	own := c.sessions[key]
+	if own != nil && (own.summary != "" || own.next != "" || own.pending) {
+		return key
+	}
+	prefix := key[:strings.LastIndex(key, "|")+1]
+	best := ""
+	for k, d := range c.sessions {
+		if k == key || !strings.HasPrefix(k, prefix) || !d.fits(msgs) {
+			continue
+		}
+		if best == "" || d.seen.After(c.sessions[best].seen) {
+			best = k
+		}
+	}
+	if best == "" {
+		return key
+	}
+	if own != nil {
+		// It held a size and nothing else: a request of this conversation
+		// seen before this one was known to be it.
+		delete(c.sessions, key)
+	}
+	return best
+}
+
+// firstMessageChange says what differs between two first messages: which
+// block, its kind and size, and for a block Claude Code writes itself (a
+// system reminder) the first line that changed. Never what the user typed.
+func firstMessageChange(was, now json.RawMessage) string {
+	blocks := func(m json.RawMessage) []map[string]any {
+		var msg struct {
+			Content json.RawMessage `json:"content"`
+		}
+		_ = json.Unmarshal(m, &msg)
+		var list []map[string]any
+		if json.Unmarshal(msg.Content, &list) == nil {
+			return list
+		}
+		var text string
+		if json.Unmarshal(msg.Content, &text) == nil {
+			return []map[string]any{{"type": "text", "text": text}}
+		}
+		return nil
+	}
+	a, b := blocks(was), blocks(now)
+	var out []string
+	if len(a) != len(b) {
+		out = append(out, fmt.Sprintf("%d blocks, was %d", len(b), len(a)))
+	}
+	clip := func(l string) string {
+		if r := []rune(l); len(r) > 120 {
+			return string(r[:120]) + "..."
+		}
+		return l
+	}
+	for i := 0; i < len(a) && i < len(b) && len(out) < 4; i++ {
+		ja, _ := json.Marshal(hashForm(a[i]))
+		jb, _ := json.Marshal(hashForm(b[i]))
+		if bytes.Equal(ja, jb) {
+			continue
+		}
+		kind, _ := b[i]["type"].(string)
+		ta, _ := a[i]["text"].(string)
+		tb, _ := b[i]["text"].(string)
+		if kind != "text" || ta == "" || tb == "" {
+			out = append(out, fmt.Sprintf("block %d (%s) changed", i, kind))
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(ta), "<system-reminder>") || !strings.HasPrefix(strings.TrimSpace(tb), "<system-reminder>") {
+			out = append(out, fmt.Sprintf("block %d (text, %d characters, was %d) changed", i, len(tb), len(ta)))
+			continue
+		}
+		la, lb := strings.Split(ta, "\n"), strings.Split(tb, "\n")
+		line := 0
+		for line < len(la) && line < len(lb) && la[line] == lb[line] {
+			line++
+		}
+		oldLine, newLine := "(nothing: the block ends)", "(nothing: the block ends)"
+		if line < len(la) {
+			oldLine = clip(la[line])
+		}
+		if line < len(lb) {
+			newLine = clip(lb[line])
+		}
+		out = append(out, fmt.Sprintf("block %d (system reminder, %d characters, was %d) from line %d: was %q, now %q", i, len(tb), len(ta), line+1, oldLine, newLine))
+	}
+	if len(out) == 0 {
+		return "nothing a reader would see"
+	}
+	return strings.Join(out, "; ")
 }
 
 // swapUndo is the summary state from before a mid-turn swap.
@@ -180,6 +376,8 @@ type savedCompaction struct {
 	SwappedFrom int64    `json:"swapped_from,omitempty"`
 	SwappedMsgs int      `json:"swapped_msgs,omitempty"`
 	Hand        *Handoff `json:"hand,omitempty"`
+	// Tail: the hashes leave the first message out (compactState.tail).
+	Tail bool `json:"tail,omitempty"`
 }
 
 // savedTTL drops sessions not seen for this long when state is saved.
@@ -204,7 +402,9 @@ func (c *compactor) load() {
 		st := &compactState{lastContext: v.LastContext, warnedAt: v.WarnedAt, startedAt: v.StartedAt,
 			summary: v.Summary, p0: v.P0, hash: v.Hash, swapAt: v.SwapAt,
 			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, nextTightP0: v.NextTightP0, nextTightHash: v.NextTightHash, seen: v.Seen,
-			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs, exposureWarned: v.ExposureWarned, hand: v.Hand}
+			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs, exposureWarned: v.ExposureWarned, hand: v.Hand,
+			// With no hash saved there is nothing made the old way.
+			tail: v.Tail || (v.Hash == "" && v.NextHash == "" && v.NextTightHash == "")}
 		if st.hand != nil {
 			st.handOf = st.hand.Of
 		}
@@ -240,7 +440,7 @@ func (c *compactor) save() {
 		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
 			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt,
 			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, NextTightP0: st.nextTightP0, NextTightHash: st.nextTightHash, Seen: st.seen,
-			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned, Hand: st.hand}
+			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned, Hand: st.hand, Tail: st.tail}
 	}
 	c.writeHandoffs()
 	b, err := json.Marshal(out)
@@ -258,7 +458,7 @@ func (c *compactor) save() {
 func (c *compactor) state(key string) *compactState {
 	st := c.sessions[key]
 	if st == nil {
-		st = &compactState{}
+		st = &compactState{tail: true}
 		c.sessions[key] = st
 	}
 	return st
@@ -290,7 +490,7 @@ func (c *compactor) adopt(st *compactState, key string, msgs []json.RawMessage) 
 		if donor != nil && d.p0 <= donor.p0 {
 			continue
 		}
-		if prefixHash(msgs, d.p0) == d.hash {
+		if d.hashOf(msgs, d.p0) == d.hash {
 			from, donor = k, d
 		}
 	}
@@ -298,6 +498,7 @@ func (c *compactor) adopt(st *compactState, key string, msgs []json.RawMessage) 
 		return ""
 	}
 	st.summary, st.p0, st.hash, st.swapAt = donor.summary, donor.p0, donor.hash, min(donor.swapAt, len(msgs))
+	st.tail = donor.tail
 	st.marks = donor.marks
 	st.startedAt = donor.startedAt
 	return from
@@ -522,11 +723,41 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	rid := requestIDFrom(in.Context())
 
 	s.compaction.mu.Lock()
+	asSent := key
+	key = s.compaction.resolve(key, msgs)
+	ci.key = key
 	st := s.compaction.state(key)
 	first := st.seen.IsZero()
 	st.seen = now
-	dirty := false
+	dirty := st.useTailHashes(msgs)
 	quietStart := false
+	if key != asSent && now.Sub(st.firstLogged) >= time.Minute {
+		st.firstLogged = now
+		what := "what changed is unknown (nothing to compare it with since the restart)"
+		if st.firstRaw != nil {
+			what = firstMessageChange(st.firstRaw, msgs[0])
+		}
+		s.logger.Printf("req=%s compaction first message changed session=%s: this request came as %s and its history is the one the summary was made from, so the summary stays; %s", rid, key, asSent[strings.LastIndex(asSent, "|")+1:], what)
+	}
+	if first && key == asSent && len(msgs) >= longHistory {
+		// A long history nobody has seen, in a session that holds a
+		// summary: say why the summary is not this history's.
+		prefix := key[:strings.LastIndex(key, "|")+1]
+		for k, d := range s.compaction.sessions {
+			if k == key || !strings.HasPrefix(k, prefix) || d.summary == "" || now.Sub(d.firstLogged) < time.Minute {
+				continue
+			}
+			d.firstLogged = now
+			why := divergence(msgs, d.p0, d.marks)
+			if !d.tail {
+				why = "that summary was saved when a first message could not change, and is tried again when its own comes back"
+			}
+			s.logger.Printf("req=%s compaction not shared session=%s: %d messages under a first message not seen before, and the summary held as %s does not fit them (%s)", rid, key, len(msgs), k[strings.LastIndex(k, "|")+1:], why)
+		}
+	}
+	if st.firstRaw == nil || !bytes.Equal(st.firstRaw, msgs[0]) {
+		st.firstRaw = append(json.RawMessage(nil), msgs[0]...)
+	}
 	if first {
 		if from := s.compaction.adopt(st, key, msgs); from != "" {
 			s.logger.Printf("req=%s compaction adopted session=%s: the same conversation under another session id (%s), whose summary of %d messages fits this history", rid, key, from, st.p0)
@@ -538,7 +769,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// A dropped summary also reopens the window: the session is back to its
 	// full history, and on 2026-09-30 the window kept it there, at 450k and
 	// growing, for the rest of the hour after a drop.
-	if st.summary != "" && (len(msgs) <= st.p0 || prefixHash(msgs, st.p0) != st.hash) {
+	if st.summary != "" && (len(msgs) <= st.p0 || st.hashOf(msgs, st.p0) != st.hash) {
 		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches (cleared, compacted or rewound; %s); window reopened", rid, key, divergence(msgs, st.p0, st.marks))
 		st.summary, st.hash, st.p0, st.swapAt, st.marks = "", "", 0, 0, nil
 		st.startedAt = time.Time{}
@@ -554,7 +785,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	nextCut, nextCutHash := 0, ""
 	if st.next != "" {
 		if tp := st.nextTightP0; tp > 0 && len(msgs) > tp {
-			if h := prefixHash(msgs, tp); h == st.nextTightHash && messageRole(msgs[tp]) == "assistant" {
+			if h := st.hashOf(msgs, tp); h == st.nextTightHash && messageRole(msgs[tp]) == "assistant" {
 				nextCut, nextCutHash = tp, h
 			} else {
 				s.logger.Printf("req=%s compaction cut moved back session=%s: the request the summary was written from is no longer the start of the history (%s, then %s); cutting at the latest prompt before it instead",
@@ -563,13 +794,13 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 				dirty = true
 			}
 		}
-		if nextCut == 0 && st.nextP0 > 0 && len(msgs) > st.nextP0 && prefixHash(msgs, st.nextP0) == st.nextHash {
+		if nextCut == 0 && st.nextP0 > 0 && len(msgs) > st.nextP0 && st.hashOf(msgs, st.nextP0) == st.nextHash {
 			nextCut, nextCutHash = st.nextP0, st.nextHash
 		}
 	}
 	// A request no longer than the one the summary was written from, and
 	// the same as far as it goes, is that request sent again: wait.
-	resent := st.next != "" && nextCut == 0 && st.nextTightP0 > 0 && len(msgs) == st.nextTightP0 && prefixHash(msgs, len(msgs)) == st.nextTightHash
+	resent := st.next != "" && nextCut == 0 && st.nextTightP0 > 0 && len(msgs) == st.nextTightP0 && st.hashOf(msgs, len(msgs)) == st.nextTightHash
 	if st.next != "" && nextCut == 0 && !resent {
 		at := st.nextP0
 		if st.nextTightP0 > 0 {
@@ -644,10 +875,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			st.pending = true
 			dirty = true
 			history := append([]json.RawMessage(nil), view...)
-			hash := prefixHash(msgs, p)
+			hash := st.hashOf(msgs, p)
 			safeHash := ""
 			if safeP > 0 {
-				safeHash = prefixHash(msgs, safeP)
+				safeHash = st.hashOf(msgs, safeP)
 			}
 			st.pendingMarks = messageMarks(msgs, p)
 			why := ""
@@ -799,9 +1030,19 @@ func isSideRequest(msgs []json.RawMessage) bool {
 func (s *Server) applySideRequest(in *http.Request, top map[string]json.RawMessage, body []byte, msgs []json.RawMessage, key string) ([]byte, *http.Request) {
 	s.compaction.mu.Lock()
 	st := s.compaction.sessions[key]
+	if st == nil || st.summary == "" {
+		// Read only: a side request is never what a conversation is known by.
+		prefix := key[:strings.LastIndex(key, "|")+1]
+		for k, d := range s.compaction.sessions {
+			if strings.HasPrefix(k, prefix) && d.summary != "" && d.fits(msgs) {
+				st = d
+				break
+			}
+		}
+	}
 	var summary string
 	var p0, swapAt int
-	if st != nil && st.summary != "" && st.swapAt > 0 && len(msgs) > st.p0 && prefixHash(msgs, st.p0) == st.hash {
+	if st != nil && st.summary != "" && st.swapAt > 0 && len(msgs) > st.p0 && st.hashOf(msgs, st.p0) == st.hash {
 		summary, p0, swapAt = st.summary, st.p0, st.swapAt
 	}
 	s.compaction.mu.Unlock()
@@ -1500,7 +1741,10 @@ func divergence(msgs []json.RawMessage, p0 int, marks []string) string {
 	if len(marks) == 0 {
 		return "which message changed is unknown (summary made before a restart)"
 	}
-	for i := 0; i < len(marks) && i < len(msgs); i++ {
+	// The first message last: it changes without the history changing, so
+	// a later one that differs is the news.
+	for n := 1; n <= len(marks) && n <= len(msgs); n++ {
+		i := n % min(len(marks), len(msgs))
 		if prefixHash(msgs[i:i+1], 1) != marks[i] {
 			return fmt.Sprintf("message %d of %d changed, now %s", i, p0, lastMessageShape(msgs[i:i+1]))
 		}
