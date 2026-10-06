@@ -987,6 +987,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// see only the masked history.
 	body = s.applyAutomask(r, body)
 	body, r = s.applyCompaction(r, body)
+	// A thread with a compaction to make is asked for its history.
+	if compactInfoFrom(r.Context()).replay != "" {
+		s.askForHistory(w, r)
+		return
+	}
 	// After compaction, so a removal never changes the history compaction
 	// hashes: it only changes what is sent.
 	body = s.applyRemovals(r.Header.Get("x-claude-code-session-id"), body)

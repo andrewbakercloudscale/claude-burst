@@ -129,9 +129,16 @@ func (st *compactState) hashOf(msgs []json.RawMessage, n int) string {
 // one conversation Burst did know was whatever sent a whole history last,
 // which was Claude Code's side requests and not the session's turns.
 //
-// A thread is compacted where its history is sent whole: Claude Code does
-// that when a request fails, and the thread then goes on from the response
-// to the request Burst swapped the summary into.
+// A thread is compacted where its history is sent whole, and the thread
+// then goes on from the response to the request Burst swapped the summary
+// into. Claude Code sends it whole when the API answers 404 thread_not_found,
+// which the API does by itself when a thread's state has expired (11 times
+// in three and a half hours on 6 Oct 2026, each followed within the second
+// by the whole conversation, read from cache). So when a thread is over its
+// limit, or its summary is ready, Burst gives that answer itself
+// (askForHistory): until it did, a session on threads was compacted only
+// when a thread happened to expire, and one sat at 347k over a 300k limit
+// with its summary written and waiting.
 
 // threadContinues is the message id a request continues, "" when it sends
 // its own history.
@@ -150,14 +157,25 @@ func threadContinues(top map[string]json.RawMessage) string {
 // continue them: a session continues its latest one.
 const maxThreads = 4096
 
-// noteThread remembers that the response msgID belongs to conversation key.
-// Caller holds c.mu.
-func (c *compactor) noteThread(msgID, key string) {
+// threadResponse is what is kept of a response for the request that
+// continues it: the conversation it belongs to, the context it reported,
+// and the summary its history was sent with ("" for none; the summary's
+// hash otherwise). A thread goes on from the history the API holds, so a
+// thread that began before a summary was swapped in still carries
+// everything the summary replaced.
+type threadResponse struct {
+	key     string
+	context int64
+	summary string
+}
+
+// noteThread remembers the response msgID. Caller holds c.mu.
+func (c *compactor) noteThread(msgID string, r threadResponse) {
 	if msgID == "" {
 		return
 	}
 	if c.threads == nil {
-		c.threads = map[string]string{}
+		c.threads = map[string]threadResponse{}
 	}
 	if _, known := c.threads[msgID]; !known {
 		c.threadIDs = append(c.threadIDs, msgID)
@@ -166,25 +184,124 @@ func (c *compactor) noteThread(msgID, key string) {
 			c.threadIDs = c.threadIDs[1:]
 		}
 	}
-	c.threads[msgID] = key
+	c.threads[msgID] = r
 }
+
+// threadAsk is the latest time a session and model were asked for their
+// history (askForHistory).
+type threadAsk struct {
+	at   time.Time
+	prev string // the response the refused request continued
+	// context is what the thread held, for the history that comes back: it
+	// can arrive under a conversation nobody has measured (after a restart
+	// the thread is known only by its last response).
+	context int64
+	// deaf: the same request came again instead of the history, so this
+	// client does not replay and is not asked again.
+	deaf bool
+}
+
+// The least time between two requests for a session's history: to start a
+// summary, and to swap in one that is ready. Each is one request refused
+// and one sent whole from cache, so neither is dear, but a history that
+// comes back and still cannot be compacted must not be asked for on every
+// tool call.
+const (
+	askToStartGap = 10 * time.Minute
+	askToSwapGap  = 30 * time.Second
+)
 
 // applyThreadRequest passes a request that continues a message thread
 // through as it is, under the conversation whose response it continues, so
 // the context its response reports is that conversation's. A response from
 // before a restart is not known: the thread is then a conversation of its
-// own, named by that response, until its history is next sent whole.
-func (s *Server) applyThreadRequest(in *http.Request, body []byte, prefix, prev string) ([]byte, *http.Request) {
+// own, named by that response, until its history is next sent whole. When
+// that conversation has a compaction to make, the request is marked to be
+// answered with a request for the history instead (compactInfo.replay).
+func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.RawMessage, cfg config.CompactionConfig, prefix, prev string) ([]byte, *http.Request) {
+	now := time.Now()
+	// Only where the request would go to Anthropic: the secondary has no
+	// thread to lose, and takes a request that continues one as it comes.
+	primary := !s.forcedOverflow(now) && !s.modelInOverflow(requestModel(body), now)
 	s.compaction.mu.Lock()
-	key := s.compaction.threads[prev]
+	from := s.compaction.threads[prev]
+	key := from.key
 	if key == "" || !strings.HasPrefix(key, prefix) {
-		key = prefix + "thread-" + prev[max(0, len(prev)-12):]
+		key, from = prefix+"thread-"+prev[max(0, len(prev)-12):], threadResponse{}
 	}
 	st := s.compaction.state(key)
-	st.seen = time.Now()
+	st.seen = now
 	st.thread = true
+	// The thread's own size: Claude Code's side requests send the same
+	// conversation whole, compacted, and their responses report that size.
+	// On 6 Oct 2026 a panel read "115k, compacted" over a thread at 408k.
+	if from.context > 0 {
+		st.lastContext = from.context
+	}
+	ci := compactInfo{key: key, thread: true, threadSummary: from.summary}
+	behind := from.key != "" && st.summary != "" && st.swapAt > 0 && from.summary != st.hash
+	ask := s.compaction.asks[prefix]
+	window := time.Duration(cfg.WindowMinutes) * time.Minute
+	gap, why := time.Duration(0), ""
+	switch {
+	case !primary, ask != nil && ask.deaf, st.pending:
+	case ask != nil && ask.prev == prev:
+		ask.deaf = true
+		s.logger.Printf("req=%s compaction cannot ask for the history session=%s: the request refused %s ago came again as it was, so this client does not send its conversation whole when a thread is gone; its threads are left alone until the gateway restarts",
+			requestIDFrom(in.Context()), key, now.Sub(ask.at).Round(time.Second))
+	case behind:
+		// The summary went into a request that was not this thread's (a
+		// side request sent whole takes it first), or into one the thread
+		// did not go on from.
+		gap, why = askToSwapGap, "its summary is in force, and this thread began before it"
+	case st.next != "" && (endsInPrompt(msgs) || cfg.MidTurn && !s.compaction.midTurnOff):
+		gap, why = askToSwapGap, "its summary is ready to swap in"
+	case st.next == "" && st.lastContext >= cfg.CompactAtTokens && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window):
+		gap, why = askToStartGap, fmt.Sprintf("it holds %dk, over its limit of %dk", st.lastContext/1000, cfg.CompactAtTokens/1000)
+	}
+	if why != "" && (ask == nil || now.Sub(ask.at) >= gap) {
+		if s.compaction.asks == nil {
+			s.compaction.asks = map[string]*threadAsk{}
+		}
+		s.compaction.asks[prefix] = &threadAsk{at: now, prev: prev, context: st.lastContext}
+		ci.replay = why
+		if behind {
+			// What comes back is sent with the summary: its size is not
+			// known until the response, and the thread's is no longer it.
+			s.compaction.asks[prefix].context, st.lastContext = 0, 0
+		}
+	}
 	s.compaction.mu.Unlock()
-	return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, compactInfo{key: key}))
+	return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
+}
+
+// askForHistory answers a request that continues a thread the way the API
+// does when the thread's state has expired: 404 thread_not_found, to which
+// Claude Code sends the conversation whole, starting a new thread. Nothing
+// goes upstream, so it is no failure of Anthropic's and counts as none.
+func (s *Server) askForHistory(w http.ResponseWriter, in *http.Request) {
+	ci := compactInfoFrom(in.Context())
+	rid := requestIDFrom(in.Context())
+	s.logger.Printf("req=%s compaction asked for the history session=%s: %s, and a request that continues a thread holds nothing to compact; answered 404 thread_not_found, as the API does for a thread that has expired, so Claude Code sends the conversation whole",
+		rid, ci.key, ci.replay)
+	id := "req_burst_" + rid
+	type detail struct {
+		Code string `json:"error_code"`
+	}
+	type apiError struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+		Details detail `json:"details"`
+	}
+	b, _ := json.Marshal(struct {
+		Type      string   `json:"type"`
+		Error     apiError `json:"error"`
+		RequestID string   `json:"request_id"`
+	}{"error", apiError{"not_found_error", "No thread state was found for the requested `previous_message_id`. Replay the full conversation with `thread: {\"type\": \"create\"}` to start a new Thread.", detail{"thread_not_found"}}, id})
+	w.Header().Set("content-type", "application/json")
+	w.Header().Set("request-id", id)
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write(b)
 }
 
 // longHistory is a request too long to be a subagent starting.
@@ -406,8 +523,11 @@ type compactor struct {
 	// threads is which conversation each response belongs to, by its
 	// message id, for the request that continues it (threadOf); threadIDs
 	// is the order they came in, to forget the oldest.
-	threads   map[string]string
+	threads   map[string]threadResponse
 	threadIDs []string
+	// asks is the latest request for its history made to each session and
+	// model, by session id + "|" + model + "|".
+	asks map[string]*threadAsk
 	// midTurnOff: the API rejected a mid-turn swap, so none are tried again
 	// until the settings are saved again (SetCompaction). One rejection is
 	// taken as the API's answer: retrying each turn would cost a wasted
@@ -600,6 +720,14 @@ type compactInfo struct {
 	// rawBytes is what Claude Code sent, sentBytes what went upstream: their
 	// ratio scales the reported context to Claude Code's own history.
 	rawBytes, sentBytes int64
+	// thread: this request continues a thread, and threadSummary is the
+	// summary that thread's history was sent with (threadResponse).
+	thread        bool
+	threadSummary string
+	// replay: this request continues a thread whose conversation has a
+	// compaction to make, and this is why. It is answered with a request
+	// for the history (askForHistory) and not sent.
+	replay string
 }
 
 type compactInfoKey struct{}
@@ -700,8 +828,15 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		return
 	}
 	s.compaction.mu.Lock()
-	s.compaction.noteThread(tok.msgID, ci.key)
 	st := s.compaction.state(ci.key)
+	with := ci.threadSummary
+	if !ci.thread {
+		with = ""
+		if ci.applied {
+			with = st.hash
+		}
+	}
+	s.compaction.noteThread(tok.msgID, threadResponse{key: ci.key, context: ctxTokens, summary: with})
 	st.lastContext = ctxTokens
 	if ci.parts != nil {
 		st.parts = scaleParts(ci.parts, ctxTokens)
@@ -782,9 +917,12 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// them, a 2-message and a 53-message history, were taken for the main
 	// conversation being cleared, dropping its summary twice in two minutes.
 	// The first message tells them apart.
-	key := sid + "|" + requestModel(body) + "|" + conversationID(msgs[0])
+	prefix := sid + "|" + requestModel(body) + "|"
+	key := prefix + conversationID(msgs[0])
 	if prev := threadContinues(top); prev != "" {
-		return s.applyThreadRequest(in, body, sid+"|"+requestModel(body)+"|", prev)
+		_, root := s.repos.Resolve(sid)
+		cfg, _ := cfg.ForRepo(root)
+		return s.applyThreadRequest(in, body, msgs, cfg, prefix, prev)
 	}
 	if isSideRequest(msgs) {
 		return s.applySideRequest(in, top, body, msgs, key)
@@ -813,6 +951,16 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	first := st.seen.IsZero()
 	st.seen = now
 	st.thread = false
+	// The history Burst asked for, under a conversation nobody has measured:
+	// it is the thread's, so it holds what the thread held. Once, and only
+	// for a history long enough to be the conversation and not a subagent
+	// starting in the same minute.
+	if ask := s.compaction.asks[prefix]; ask != nil && ask.context > 0 && len(msgs) >= longHistory {
+		if st.lastContext == 0 && st.summary == "" && now.Sub(ask.at) < time.Minute {
+			st.lastContext = ask.context
+		}
+		ask.context = 0
+	}
 	dirty := st.useTailHashes(msgs)
 	quietStart := false
 	if key != asSent && now.Sub(st.firstLogged) >= time.Minute {
@@ -1740,7 +1888,7 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			state = "compacted"
 		case st.summary != "":
 			state = "summary ready, applies at next prompt"
-		case st.thread && st.lastContext >= cfg.CompactAtTokens:
+		case st.thread && st.lastContext >= cfg.CompactAtTokens && s.compaction.asks[sid+"|"+model+"|"] != nil && s.compaction.asks[sid+"|"+model+"|"].deaf:
 			state = "over threshold, compacts when Claude Code next sends its whole history"
 		case st.lastContext >= cfg.CompactAtTokens && !st.startedAt.IsZero() && time.Since(st.startedAt) < time.Duration(cfg.WindowMinutes)*time.Minute:
 			state = "over threshold, next compaction after " + st.startedAt.Add(time.Duration(cfg.WindowMinutes)*time.Minute).Format("15:04")

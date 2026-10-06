@@ -1538,85 +1538,375 @@ func TestASummarySavedTheOldWayMovesToTailHashes(t *testing.T) {
 	}
 }
 
-// Claude Code 2.1.289 sends a turn as the new message alone, continuing the
-// response before it. On 6 Oct 2026 every such request was a conversation
-// of its own: 29 on record for one session, and its real size nowhere.
-func TestARequestThatContinuesAThreadIsItsConversation(t *testing.T) {
-	var mu sync.Mutex
-	n, context := 0, int64(90_000)
-	var bodies []string
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		n++
-		id, ctx := fmt.Sprintf("msg_%02d", n), context
-		context += 60_000
-		bodies = append(bodies, string(b))
-		mu.Unlock()
-		w.Header().Set("content-type", "text/event-stream")
-		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":%q,\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":%d}}}\n\n", id, ctx)
-		fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
-	}))
-	defer up.Close()
+// threadAPI answers /v1/messages the way the API does for message threads:
+// each response has an id for the next request to continue, and reports the
+// context set in ctx. A summary request is answered with a summary.
+type threadAPI struct {
+	mu     sync.Mutex
+	n      int
+	ctx    int64
+	bodies []string
+}
+
+func (a *threadAPI) handler(w http.ResponseWriter, r *http.Request) {
+	b, _ := io.ReadAll(r.Body)
+	// A summary takes no number: the turns are msg_01, msg_02, ... in the
+	// order the test sends them, whenever the summary is written.
+	summary := strings.Contains(string(b), "Summarize the transcript inside")
+	a.mu.Lock()
+	if !summary {
+		a.n++
+	}
+	id, ctx := fmt.Sprintf("msg_%02d", a.n), a.ctx
+	a.bodies = append(a.bodies, string(b))
+	a.mu.Unlock()
+	text := "ok"
+	if summary {
+		id, text, ctx = "msg_summary", "<summary>THE GIST OF THE THREAD</summary>", 1000
+	}
+	w.Header().Set("content-type", "text/event-stream")
+	fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":%q,\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":%d}}}\n\n", id, ctx)
+	fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", text)
+	fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+	fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+}
+
+// turns is how many requests that were not summaries reached the API, and
+// the last of them.
+func (a *threadAPI) turns() (int, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n, last := 0, ""
+	for _, b := range a.bodies {
+		if !strings.Contains(b, "Summarize the transcript inside") {
+			n, last = n+1, b
+		}
+	}
+	return n, last
+}
+
+func (a *threadAPI) summaries() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, b := range a.bodies {
+		if strings.Contains(b, "Summarize the transcript inside") {
+			n++
+		}
+	}
+	return n
+}
+
+// holds sets what the next responses report as the context.
+func (a *threadAPI) holds(ctx int64) {
+	a.mu.Lock()
+	a.ctx = ctx
+	a.mu.Unlock()
+}
+
+func threadServer(t *testing.T, a *threadAPI, c config.CompactionConfig) *Server {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(a.handler))
+	t.Cleanup(up.Close)
 	cfg := config.Default()
 	cfg.AnthropicBaseURL = up.URL
-	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60}
+	cfg.PrimaryCompaction = c
 	dir := t.TempDir()
 	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(testLogWriter{t}, "", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.compaction.running.Wait)
-	cont := func(prev, result string) {
-		t.Helper()
-		b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "stream": true, "max_tokens": 100, "system": "sys",
-			"thread":   map[string]any{"type": "continue", "previous_message_id": prev},
-			"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "t9", "content": result}}}}})
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", bytes.NewReader(b))
-		req.Header.Set("x-claude-code-session-id", "S")
-		req.Header.Set("authorization", "Bearer oauth")
-		s.ServeHTTP(httptest.NewRecorder(), req)
-	}
-	rows := func() []CompactionSession {
-		var out []CompactionSession
-		for _, cs := range s.CompactionSessions() {
-			if cs.Session == "S" {
-				out = append(out, cs)
-			}
+	return s
+}
+
+// continueThread sends what Claude Code sends for a turn on a thread: the
+// new message alone, continuing the response prev.
+func continueThread(t *testing.T, s *Server, sid, prev string, message any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "stream": true, "max_tokens": 100, "system": "sys",
+		"thread": map[string]any{"type": "continue", "previous_message_id": prev}, "messages": []any{message}})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", bytes.NewReader(b))
+	req.Header.Set("x-claude-code-session-id", sid)
+	req.Header.Set("authorization", "Bearer oauth")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	return rec
+}
+
+func toolResult(text string) any {
+	return map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "t9", "content": text}}}
+}
+
+func rowsOf(s *Server, sid string) []CompactionSession {
+	var out []CompactionSession
+	for _, cs := range s.CompactionSessions() {
+		if cs.Session == sid {
+			out = append(out, cs)
 		}
-		return out
 	}
+	return out
+}
+
+// askedForHistory is whether rec is the API's own answer for a thread whose
+// state is gone, which Claude Code answers with the conversation whole.
+func askedForHistory(rec *httptest.ResponseRecorder) bool {
+	var v struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Details struct {
+				Code string `json:"error_code"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	return rec.Code == http.StatusNotFound && json.Unmarshal(rec.Body.Bytes(), &v) == nil &&
+		v.Type == "error" && v.Error.Type == "not_found_error" && v.Error.Details.Code == "thread_not_found"
+}
+
+// Claude Code 2.1.289 sends a turn as the new message alone, continuing the
+// response before it. On 6 Oct 2026 every such request was a conversation
+// of its own: 29 on record for one session, and its real size nowhere.
+func TestARequestThatContinuesAThreadIsItsConversation(t *testing.T) {
+	a := &threadAPI{ctx: 90_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60})
 
 	send(t, s, "S", msgs(t, session)[:5]) // msg_01, 90k
-	cont("msg_01", "one")                 // msg_02, 150k
-	cont("msg_02", "two")                 // msg_03, 210k: over the limit
-	cont("msg_03", "three")               // msg_04, 270k
-	got := rows()
-	if len(got) != 1 || got[0].Context != 270_005 || !got[0].Thread {
-		t.Fatalf("want one conversation, a thread at 270k, got %+v", got)
+	a.holds(120_000)
+	continueThread(t, s, "S", "msg_01", toolResult("one")) // msg_02, 120k
+	a.holds(140_000)
+	continueThread(t, s, "S", "msg_02", toolResult("two")) // msg_03, 140k
+	continueThread(t, s, "S", "msg_03", toolResult("three"))
+	got := rowsOf(s, "S")
+	if len(got) != 1 || got[0].Context != 140_005 || !got[0].Thread || got[0].State != "ok" {
+		t.Fatalf("want one conversation, a thread at 140k, got %+v", got)
 	}
-	if !strings.Contains(got[0].State, "when Claude Code next sends its whole history") {
-		t.Fatalf("a thread over the limit cannot be compacted from a request with one message in it: state %q", got[0].State)
+	n, last := a.turns()
+	if n != 4 || !strings.Contains(last, `"previous_message_id":"msg_03"`) || !strings.Contains(last, "three") {
+		t.Fatalf("a thread request under the limit must go as it came, got %d turns, the last:\n%s", n, last)
 	}
-	s.compaction.running.Wait()
-	mu.Lock()
-	for _, b := range bodies {
-		if strings.Contains(b, "Summarize the transcript inside") {
-			t.Fatal("a summary was started from a request that holds no history")
-		}
+	if a.summaries() != 0 {
+		t.Fatal("a summary was started from a request that holds no history")
 	}
-	if last := bodies[len(bodies)-1]; !strings.Contains(last, `"previous_message_id":"msg_03"`) || !strings.Contains(last, "three") {
-		t.Fatalf("a thread request must go as it came:\n%s", last)
-	}
-	mu.Unlock()
 
 	// A response from before a restart: a conversation of its own, once.
-	cont("msg_from_before_the_restart", "four") // msg_05
-	cont("msg_05", "five")
-	if got := rows(); len(got) != 2 {
+	continueThread(t, s, "S", "msg_from_before_the_restart", toolResult("four")) // msg_05
+	continueThread(t, s, "S", "msg_05", toolResult("five"))
+	if got := rowsOf(s, "S"); len(got) != 2 {
 		t.Fatalf("want the thread nobody knows as one more conversation, got %d: %+v", len(got), got)
 	}
 	if main := MainConversation(s.CompactionSessions(), "S"); main == nil || !main.Thread {
 		t.Fatalf("the thread speaks for the session, got %+v", main)
 	}
+}
+
+// A request that continues a thread holds nothing to summarise or replace,
+// so until 6 Oct 2026 a session on threads was compacted only when a thread
+// happened to expire: one sat at 347k over a 300k limit, its summary written
+// and waiting. Burst now asks for the history the way the API does.
+func TestAThreadOverItsLimitIsAskedForItsHistoryAndCompacted(t *testing.T) {
+	a := &threadAPI{ctx: 90_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60})
+	all := msgs(t, session)
+
+	send(t, s, "S", all[:5]) // msg_01: the conversation, whole, at 90k
+	a.holds(210_000)
+	if rec := continueThread(t, s, "S", "msg_01", all[6]); rec.Code != http.StatusOK { // msg_02: over the limit
+		t.Fatalf("a thread under its limit goes to the API, got %d", rec.Code)
+	}
+	if got := rowsOf(s, "S"); len(got) != 1 || !strings.HasPrefix(got[0].State, "over threshold, compacts at the next") {
+		t.Fatalf("a thread over its limit is compacted like any session, got %+v", got)
+	}
+
+	// Over the limit: the next request is refused as the API refuses a
+	// thread that has expired, and nothing is sent.
+	before, _ := a.turns()
+	rec := continueThread(t, s, "S", "msg_02", toolResult("more"))
+	if !askedForHistory(rec) {
+		t.Fatalf("want 404 thread_not_found, got %d %s", rec.Code, rec.Body)
+	}
+	if rec.Header().Get("content-type") != "application/json" || !strings.Contains(rec.Body.String(), `Replay the full conversation with `+"`"+`thread: {\"type\": \"create\"}`+"`") {
+		t.Fatalf("the answer must be the API's own, word for word: %s", rec.Body)
+	}
+	if after, _ := a.turns(); after != before {
+		t.Fatal("a request Burst refuses must not reach the API")
+	}
+
+	// Claude Code sends the conversation whole: the summary starts from it.
+	send(t, s, "S", all[:7]) // msg_03
+	waitFor(t, func() bool { return a.summaries() == 1 })
+	s.compaction.running.Wait()
+
+	// Mid-turn swaps are off: the summary waits for a prompt, and a tool
+	// result goes to the API as it came.
+	if rec := continueThread(t, s, "S", "msg_03", toolResult("still working")); rec.Code != http.StatusOK { // msg_04
+		t.Fatalf("a summary that waits for a prompt must not stop a tool result, got %d %s", rec.Code, rec.Body)
+	}
+	// The next prompt: asked again, and the history that comes back is
+	// sent with the summary in place of what it covers. (A summary takes
+	// longer to write than the gap between two requests for the history.)
+	s.compaction.mu.Lock()
+	s.compaction.asks["S|claude-opus-5-5|"].at = time.Now().Add(-askToSwapGap)
+	s.compaction.mu.Unlock()
+	if rec := continueThread(t, s, "S", "msg_04", all[8]); !askedForHistory(rec) {
+		t.Fatalf("a ready summary must ask for the history at the next prompt, got %d %s", rec.Code, rec.Body)
+	}
+	a.holds(60_000)
+	send(t, s, "S", all) // msg_05
+	_, last := a.turns()
+	if !strings.Contains(last, "THE GIST OF THE THREAD") || strings.Contains(last, "old file") || !strings.Contains(last, "third task") {
+		t.Fatalf("the history must go with the summary swapped in:\n%s", last)
+	}
+	if got := rowsOf(s, "S"); len(got) != 1 || got[0].State != "compacted" || got[0].Context != 60_005 {
+		t.Fatalf("want the session compacted at 60k, got %+v", got)
+	}
+
+	// The thread goes on from the compacted response, untouched.
+	if rec := continueThread(t, s, "S", "msg_05", toolResult("after")); rec.Code != http.StatusOK {
+		t.Fatalf("a compacted thread under its limit goes to the API, got %d %s", rec.Code, rec.Body)
+	}
+	if a.summaries() != 1 {
+		t.Fatalf("one compaction, one summary: got %d", a.summaries())
+	}
+}
+
+// Claude Code's side requests send the conversation whole, and one of them
+// can take the swap before the thread is asked: on 6 Oct 2026 a summary went
+// into those alone, and the thread carried on from its old response at 408k
+// under a panel that read "115k, compacted".
+func TestAThreadThatBeganBeforeItsSummaryIsAskedForItsHistory(t *testing.T) {
+	a := &threadAPI{ctx: 210_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60})
+	all := msgs(t, session)
+	past := func() {
+		s.compaction.mu.Lock()
+		s.compaction.asks["S|claude-opus-5-5|"].at = time.Now().Add(-askToSwapGap)
+		s.compaction.mu.Unlock()
+	}
+	send(t, s, "S", all[:5]) // msg_01, 210k
+	if !askedForHistory(continueThread(t, s, "S", "msg_01", all[6])) {
+		t.Fatal("want the history asked for")
+	}
+	send(t, s, "S", all[:7]) // msg_02: the thread's history, and the summary starts
+	waitFor(t, func() bool { return a.summaries() == 1 })
+	s.compaction.running.Wait()
+	// A request that is not the thread's sends the history whole, ending
+	// in a prompt: the summary swaps into it, and it reports its own size.
+	a.holds(60_000)
+	send(t, s, "S", all) // msg_03
+	if got := rowsOf(s, "S"); len(got) != 1 || got[0].State != "compacted" || got[0].Context != 60_005 || got[0].Thread {
+		t.Fatalf("want the other request compacted at 60k, got %+v", got)
+	}
+	// The thread goes on from msg_02, which holds everything: its size is
+	// its own again, and it is asked for its history.
+	past()
+	if rec := continueThread(t, s, "S", "msg_02", toolResult("still the old thread")); !askedForHistory(rec) {
+		t.Fatalf("a thread that began before the summary must be asked for its history, got %d %s", rec.Code, rec.Body)
+	}
+	send(t, s, "S", all) // msg_04: the thread's history, sent with the summary
+	if _, last := a.turns(); !strings.Contains(last, "THE GIST OF THE THREAD") || strings.Contains(last, "old file") {
+		t.Fatalf("the thread's history must go with the summary:\n%s", last)
+	}
+	// From there the thread holds the summary, and is left alone.
+	past()
+	a.holds(70_000)
+	if rec := continueThread(t, s, "S", "msg_04", toolResult("the new thread")); rec.Code != http.StatusOK {
+		t.Fatalf("a thread sent with the summary goes to the API, got %d %s", rec.Code, rec.Body)
+	}
+	if got := rowsOf(s, "S"); len(got) != 1 || got[0].Context != 70_005 || !got[0].Thread || got[0].State != "compacted" {
+		t.Fatalf("want the thread compacted at 70k, got %+v", got)
+	}
+	if a.summaries() != 1 {
+		t.Fatalf("one compaction, one summary: got %d", a.summaries())
+	}
+}
+
+// With mid-turn swaps on, a ready summary is swapped in at the next request
+// of any kind, so that is when the history is asked for.
+func TestAThreadIsAskedForItsHistoryMidTurnWhereThatIsOn(t *testing.T) {
+	a := &threadAPI{ctx: 210_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60, MidTurn: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])                                           // msg_01, 210k
+	if !askedForHistory(continueThread(t, s, "S", "msg_01", all[6])) { // over the limit
+		t.Fatal("want the history asked for")
+	}
+	send(t, s, "S", all[:7]) // msg_02: the summary starts
+	waitFor(t, func() bool { return a.summaries() == 1 })
+	s.compaction.running.Wait()
+	s.compaction.mu.Lock()
+	s.compaction.asks["S|claude-opus-5-5|"].at = time.Now().Add(-time.Minute) // past the gap between two
+	s.compaction.mu.Unlock()
+	if rec := continueThread(t, s, "S", "msg_02", toolResult("mid-turn")); !askedForHistory(rec) {
+		t.Fatalf("mid-turn swaps are on: a tool result must ask for the history, got %d %s", rec.Code, rec.Body)
+	}
+}
+
+// The history is not asked for on every tool call: once, then not again
+// until the gap has passed, however far over the limit the thread is.
+func TestAThreadIsNotAskedForItsHistoryOverAndOver(t *testing.T) {
+	a := &threadAPI{ctx: 250_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60})
+	// A thread from before a restart: Burst knows it only by its response.
+	continueThread(t, s, "S", "msg_old", toolResult("one")) // msg_01, 250k
+	if !askedForHistory(continueThread(t, s, "S", "msg_01", toolResult("two"))) {
+		t.Fatal("want the history asked for")
+	}
+	// Claude Code does not answer with its history (a first message alone
+	// is no history to compact): the thread goes on, and is left alone.
+	for i, prev := range []string{"msg_01x", "msg_02", "msg_03"} {
+		if rec := continueThread(t, s, "S", prev, toolResult("more")); rec.Code != http.StatusOK {
+			t.Fatalf("request %d inside the gap must go to the API, got %d %s", i, rec.Code, rec.Body)
+		}
+	}
+	s.compaction.mu.Lock()
+	s.compaction.asks["S|claude-opus-5-5|"].at = time.Now().Add(-askToStartGap)
+	s.compaction.mu.Unlock()
+	if !askedForHistory(continueThread(t, s, "S", "msg_04", toolResult("later"))) {
+		t.Fatal("past the gap, a thread still over its limit is asked again")
+	}
+}
+
+// A client that sends the refused request again, and not its history, is
+// not asked a second time: it would never get an answer.
+func TestAClientThatDoesNotReplayIsLeftAlone(t *testing.T) {
+	a := &threadAPI{ctx: 250_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60})
+	send(t, s, "S", msgs(t, session)[:5]) // msg_01, 250k
+	if !askedForHistory(continueThread(t, s, "S", "msg_01", toolResult("one"))) {
+		t.Fatal("want the history asked for")
+	}
+	if rec := continueThread(t, s, "S", "msg_01", toolResult("one")); rec.Code != http.StatusOK { // msg_02
+		t.Fatalf("the same request again must go to the API, got %d %s", rec.Code, rec.Body)
+	}
+	s.compaction.mu.Lock()
+	s.compaction.asks["S|claude-opus-5-5|"].at = time.Now().Add(-time.Hour)
+	s.compaction.mu.Unlock()
+	if rec := continueThread(t, s, "S", "msg_02", toolResult("two")); rec.Code != http.StatusOK {
+		t.Fatalf("a client that does not replay is not asked again, got %d %s", rec.Code, rec.Body)
+	}
+	if got := rowsOf(s, "S"); len(got) != 1 || !strings.Contains(got[0].State, "when Claude Code next sends its whole history") {
+		t.Fatalf("the state must say why it is not compacted, got %+v", got)
+	}
+}
+
+// After a restart a thread is known only by its last response, and the
+// history that comes back arrives under a conversation nobody has measured:
+// it holds what the thread held, so the summary starts from it at once.
+func TestTheHistoryAskedForAfterARestartIsCompactedAtOnce(t *testing.T) {
+	a := &threadAPI{ctx: 250_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60})
+	continueThread(t, s, "S", "msg_old", toolResult("one")) // msg_01, 250k
+	if !askedForHistory(continueThread(t, s, "S", "msg_01", toolResult("two"))) {
+		t.Fatal("want the history asked for")
+	}
+	long := msgs(t, session)[:8]
+	for i := 0; len(long) < longHistory+1; i++ {
+		long = append(long,
+			json.RawMessage(fmt.Sprintf(`{"role":"user","content":[{"type":"text","text":"task %d"}]}`, i)),
+			json.RawMessage(fmt.Sprintf(`{"role":"assistant","content":[{"type":"text","text":"done %d"}]}`, i)))
+	}
+	long = append(long, json.RawMessage(`{"role":"user","content":[{"type":"text","text":"and now this"}]}`))
+	send(t, s, "S", long)
+	waitFor(t, func() bool { return a.summaries() == 1 })
 }
