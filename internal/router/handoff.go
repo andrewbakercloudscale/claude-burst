@@ -146,6 +146,10 @@ func buildHandoff(sid string, msgs []json.RawMessage, summary string, p0 int, ra
 	return &Handoff{Session: sid, Lead: lead, Last: last, First: first, Messages: p0, Raw: raw, At: now, Of: handoffOf(summary, p0)}
 }
 
+// handoffLeftBehind: a conversation of a session not asked for this long,
+// while another of its conversations was, is no longer the session's.
+const handoffLeftBehind = 30 * time.Minute
+
 func handoffDir(statePath string) string {
 	if statePath == "" {
 		return ""
@@ -201,11 +205,23 @@ func (c *compactor) writeHandoffs() {
 		return
 	}
 	best := map[string]*Handoff{}
+	// A conversation the session left behind (Claude Code took its summary
+	// in, and the history has a new first message) is not asked for again
+	// while the session goes on: its hand-off must not outlast it.
+	latest := map[string]time.Time{}
+	for k, st := range c.sessions {
+		if sid, _, _ := strings.Cut(k, "|"); st.seen.After(latest[sid]) {
+			latest[sid] = st.seen
+		}
+	}
 	for k, st := range c.sessions {
 		if st.hand == nil || st.summary == "" || st.swapAt == 0 || st.hand.Of != handoffOf(st.summary, st.p0) {
 			continue
 		}
 		sid, _, _ := strings.Cut(k, "|")
+		if latest[sid].Sub(st.seen) > handoffLeftBehind {
+			continue
+		}
 		if st.rawContext > st.hand.Raw {
 			st.hand.Raw = st.rawContext
 		}

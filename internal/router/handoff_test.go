@@ -184,3 +184,29 @@ func TestASummaryClaudeCodeTookInIsNoLongerOnOffer(t *testing.T) {
 		t.Fatalf("first kept = %+v, want %+v", h.First, want)
 	}
 }
+
+// A conversation the session has moved on from keeps no hand-off on offer,
+// however many messages its summary covered.
+func TestAConversationLeftBehindHandsNothingOver(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	if _, ok := readHandoff(t, s, "S"); !ok {
+		t.Fatal("want a hand-off file once the summary is in force")
+	}
+	s.compaction.mu.Lock()
+	now := time.Now()
+	for _, st := range s.compaction.sessions {
+		st.seen = now.Add(-time.Hour)
+	}
+	s.compaction.sessions["S|claude-opus-5-5|another"] = &compactState{seen: now}
+	s.compaction.save()
+	s.compaction.mu.Unlock()
+	if h, ok := readHandoff(t, s, "S"); ok {
+		t.Fatalf("the session is in another conversation now: %d messages still on offer", h.Messages)
+	}
+}
