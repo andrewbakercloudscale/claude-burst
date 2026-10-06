@@ -817,6 +817,7 @@
 
   <div class="navgroup" data-tab="codex">Codex</div>
   <a class="navlink" data-target="sec-codex"><span class="nd" id="nd-codex"></span><span class="label">Overview</span></a>
+  <a class="navlink" data-target="sec-codex-insights"><span class="nd" id="nd-codex-insights"></span><span class="label">Insights</span></a>
   <a class="navlink" data-target="sec-codex-context"><span class="nd" id="nd-codex-context"></span><span class="label">Context</span><span class="count" id="nc-codex-context"></span></a>
   <a class="navlink" data-target="sec-codex-inspect"><span class="nd" id="nd-cx-inspect"></span><span class="label">Context inspector</span></a>
   <a class="navlink" data-target="sec-codex-requests"><span class="nd"></span><span class="label">Requests</span><span class="count" id="nc-codex-requests"></span></a>
@@ -1901,6 +1902,34 @@
       <h3 class="cx-h3">ChatGPT plan limits <span class="hint">as ChatGPT reported them on Codex's last turn</span></h3>
       <div id="codexLimits"><div class="empty">No Codex turn has passed through yet.</div></div>
     </div>
+  </section>
+
+  <!-- Codex's Daily activity, Analytics and model split, as the Claude tab
+       has them for Claude Code. Tokens, never money: Burst has no price for
+       Codex's models. -->
+  <section id="sec-codex-insights" style="scroll-margin-top:70px">
+    <h2>Codex insights <span class="hint" id="cxInsWindow">turns, tokens, latency and errors per day, and which models the tokens go to</span></h2>
+    <div class="chart-head">
+      <strong style="font-size:13px;font-weight:620">Daily activity</strong>
+      <span class="seg" id="cxInsMetric">
+        <button data-m="tokens" class="on">Tokens</button>
+        <button data-m="turns">Turns</button>
+      </span>
+      <span class="seg" id="cxInsDays">
+        <button data-days="7">7d</button>
+        <button data-days="14" class="on">14d</button>
+        <button data-days="30">30d</button>
+      </span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="legend" id="cxInsLegend"></span>
+    </div>
+    <div class="chart-wrap" id="cxInsChartWrap">
+      <div id="cxInsChart"></div>
+      <div class="chart-tip" id="cxInsTip"></div>
+    </div>
+    <div class="tiles" id="cxInsTiles"></div>
+    <div id="cxInsModels"></div>
+    <div class="hint" style="padding:8px 16px 12px" id="cxInsCoverage"></div>
   </section>
 
   <section id="sec-codex-context" style="scroll-margin-top:70px">
@@ -4281,21 +4310,28 @@ function dayLabel(iso) {
 }
 
 function drawChart() {
-  const host = $("chart");
   // A redraw replaces every hit target, so a tooltip that was open over the
   // old ones never receives its mouseleave and stays pinned to the chart --
   // showing one day's numbers over a chart that is now showing a different
   // metric, or a different window.
   $("chartTip").style.opacity = "0";
-  if (!lastHistory) { host.innerHTML = ""; return; }
-  const days = lastHistory.days;
+  if (!lastHistory) { $("chart").innerHTML = ""; return; }
   const M = METRICS[chartMetric];
-  const S = seriesOf(M);
   renderLegend();
+  drawDayBars({host: $("chart"), tip: $("chartTip"), wrap: $("chartWrap"), pattern: "nodata",
+    days: lastHistory.days, earliest: lastHistory.earliest, series: seriesOf(M), M});
+}
+
+// drawDayBars draws one stacked bar per day: the Daily activity chart, and
+// Codex's. o.days is the days (each with date, sessions and errors),
+// o.series the stack, bottom first, o.M the metric's label, fmt, axis and
+// optional extra tooltip rows, o.earliest the oldest record there is.
+function drawDayBars(o) {
+  const {host, tip, wrap, days, M} = o, S = o.series;
   // Days before the oldest surviving event are not zero days -- they are
   // days this machine has no record of, because metrics.jsonl rotated. They
   // are drawn as a hatched band, never as an empty bar.
-  const firstKnown = lastHistory.earliest ? lastHistory.earliest.slice(0, 10) : null;
+  const firstKnown = o.earliest ? o.earliest.slice(0, 10) : null;
   const unknown = d => firstKnown !== null && d.date < firstKnown;
 
   const W = Math.max(320, host.clientWidth || 640), H = 200;
@@ -4317,7 +4353,7 @@ function drawChart() {
   days.forEach((d, i) => {
     const cx = padL + band * i + band / 2;
     if (unknown(d)) {
-      parts.push(`<rect x="${cx - band / 2}" y="${padT}" width="${band}" height="${plotH}" fill="url(#nodata)"/>`);
+      parts.push(`<rect x="${cx - band / 2}" y="${padT}" width="${band}" height="${plotH}" fill="url(#${o.pattern})"/>`);
       return;
     }
     const vals = S.map(x => Math.max(0, x.v(d)));
@@ -4357,14 +4393,13 @@ function drawChart() {
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"
       aria-label="${esc(M.label)} per day, ${esc(S.map(x => x.name).join(", "))} stacked">
     <defs>
-      <pattern id="nodata" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <pattern id="${o.pattern}" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
         <line x1="0" y1="0" x2="0" y2="6" stroke="var(--grid)" stroke-width="3"/>
       </pattern>
     </defs>
     ${parts.join("")}
   </svg>`;
 
-  const tip = $("chartTip"), wrap = $("chartWrap");
   host.querySelectorAll("rect.hit").forEach(r => {
     r.addEventListener("mouseenter", () => {
       const d = days[+r.dataset.i];
@@ -4793,7 +4828,7 @@ refresh();
 // group headings follow their sections, so a tab never shows an empty
 // heading or an entry that scrolls nowhere.
 const TAB_GENERAL = ["sec-finder", "sec-mac", "sec-notify", "guardsSection", "sec-audit", "sec-actions", "sec-advanced"];
-const TAB_CODEX = ["sec-codex", "sec-codex-context", "sec-codex-inspect", "sec-codex-requests"];
+const TAB_CODEX = ["sec-codex", "sec-codex-insights", "sec-codex-context", "sec-codex-inspect", "sec-codex-requests"];
 function tabOf(id) {
   if (TAB_CODEX.includes(id)) return "codex";
   if (TAB_GENERAL.includes(id)) return "general";
@@ -4858,6 +4893,7 @@ async function loadCodex() {
     if (!r.ok) throw new Error(await r.text() || r.statusText);
     codexState = await r.json();
     renderCodex(codexState);
+    loadCodexInsights();
   } catch (e) {
     $("codexRoute").innerHTML = `<div class="note bad">Could not read Codex's state from the gateway: ${esc(e.message)}</div>`;
     setDot("nd-codex", "bad");
@@ -4999,6 +5035,140 @@ function renderCodex(c) {
   setCount("nc-codex-requests", (c.recent || []).length || null);
   renderRequests(c.recent || [], "codexRequests");
 }
+
+// Codex insights: /api/codex/insights over the window picked here.
+let cxIns = null, cxInsText = "", cxInsDays = 14, cxInsMetric = "tokens";
+const CX_INS_METRICS = {
+  tokens: {label: "Tokens", fmt: n => num(Math.round(n)), axis: compact, series: [
+    {name: "Cached input", color: "var(--s-primary)", v: d => d.cached_tokens || 0},
+    {name: "Uncached input", color: "var(--s-secondary)", v: d => d.input_tokens || 0},
+    {name: "Output", color: "var(--pc-a)", v: d => d.output_tokens || 0},
+  ]},
+  turns: {label: "Turns", fmt: n => num(Math.round(n)), axis: compact, series: [
+    {name: "Answered", color: "var(--s-primary)", v: d => Math.max(0, (d.turns || 0) - (d.errors || 0))},
+    {name: "Failed", color: "var(--bad)", v: d => d.errors || 0},
+  ]},
+};
+
+// codexInsightTiles words the Analytics tiles of the Codex tab from
+// /api/codex/insights. Pure, for page_script_test.go.
+function codexInsightTiles(x) {
+  const turns = x.turns || 0, errs = x.errors || 0;
+  const sent = (x.input_tokens || 0) + (x.cached_tokens || 0);
+  const total = sent + (x.output_tokens || 0);
+  const errPct = turns ? errs / turns * 100 : 0;
+  const cachePct = sent ? (x.cached_tokens || 0) / sent * 100 : 0;
+  const secs = ms => ms >= 10000 ? (ms / 1000).toFixed(0) + " s" : ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : num(ms) + " ms";
+  const big = n => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(Math.round(n));
+  const busiest = (x.daily || []).reduce((a, d) => (d.turns > (a ? a.turns : 0) ? d : a), null);
+  const hour = h => String(h).padStart(2, "0") + ":00";
+  return [
+    {k: "Median latency", v: x.latency_p50_ms ? secs(x.latency_p50_ms) : "-", h: "answered turns only"},
+    {k: "p95 latency", v: x.latency_p95_ms ? secs(x.latency_p95_ms) : "-", h: "1 in 20 took longer"},
+    {k: "Error rate", v: turns ? errPct.toFixed(1) + "%" : "-", h: `${num(errs)} of ${num(turns)} turns returned 4xx/5xx`,
+     cls: errPct >= 5 ? "bad" : errPct >= 2 ? "warn" : ""},
+    // Low means Codex is sending most of each conversation uncached, which
+    // is what uses the plan up fastest.
+    {k: "Cached input", v: sent ? cachePct.toFixed(0) + "%" : "-",
+     h: sent ? `${big(x.cached_tokens || 0)} of ${big(sent)} input tokens were read from cache` : "",
+     cls: sent && turns >= 20 && cachePct < 50 ? "warn" : ""},
+    {k: "Tokens per turn", v: turns ? big(total / turns) : "-", h: turns ? `${big(total)} over ${num(turns)} turns` : ""},
+    {k: "Turns per session", v: x.sessions ? (turns / x.sessions).toFixed(turns / x.sessions >= 10 ? 0 : 1) : "-",
+     h: x.sessions ? `${num(x.sessions)} ${x.sessions === 1 ? "session" : "sessions"}` : ""},
+    {k: "Largest context", v: x.largest_context ? big(x.largest_context) : "-",
+     h: x.largest_context ? `one turn's input and output${x.largest_context_model ? ", " + x.largest_context_model : ""}` : ""},
+    {k: "Busiest day", v: busiest ? busiest.date : "-", h: busiest ? `${num(busiest.turns)} turns` : "", day: !!busiest},
+    {k: "Busiest hour", v: x.busiest_hour >= 0 && turns ? hour(x.busiest_hour) : "-",
+     h: x.busiest_hour >= 0 && turns ? `${num(x.busiest_hour_turns)} turns started in that hour, over the window` : ""},
+  ];
+}
+
+function drawCodexInsightChart() {
+  $("cxInsTip").style.opacity = "0";
+  if (!cxIns) { $("cxInsChart").innerHTML = ""; return; }
+  const M = CX_INS_METRICS[cxInsMetric];
+  $("cxInsLegend").innerHTML = M.series.map(S => `<span><i style="background:${S.color}"></i>${esc(S.name)}</span>`).join("");
+  drawDayBars({host: $("cxInsChart"), tip: $("cxInsTip"), wrap: $("cxInsChartWrap"), pattern: "cxnodata",
+    days: cxIns.daily, earliest: cxIns.earliest, series: M.series, M});
+}
+
+function renderCodexInsights() {
+  const x = cxIns;
+  if (!x) return;
+  drawCodexInsightChart();
+  $("cxInsWindow").textContent = `turns, tokens, latency and errors over the last ${x.days} days, and which models the tokens go to`;
+  $("cxInsTiles").innerHTML = codexInsightTiles(x).map(t => `<div class="tile"><div class="k">${esc(t.k)}</div>
+      <div class="v"${t.cls ? ` style="color:var(--${t.cls})"` : ""}>${esc(t.day ? dayLabel(t.v) : t.v)}</div>
+      <div class="h">${esc(t.h || "")}</div></div>`).join("");
+  const errPct = x.turns ? x.errors / x.turns * 100 : 0;
+  setDot("nd-codex-insights", !x.turns ? "" : errPct >= 5 ? "bad" : errPct >= 2 ? "warn" : "ok");
+
+  const tok = m => (m.input_tokens || 0) + (m.cached_tokens || 0) + (m.output_tokens || 0);
+  const models = (x.models || []).slice(0, 8);
+  const all = models.reduce((t, m) => t + tok(m), 0);
+  const sumOf = k => models.reduce((t, m) => t + (m[k] || 0), 0);
+  $("cxInsModels").innerHTML = !models.length ? "" : shareTable("Model", "Share of tokens",
+    [{h: "Turns"}, {h: "Tokens"}, {h: "Per turn", title: "Tokens divided by turns: what one turn on this model sends and receives on average"},
+     {h: "Cached", title: "Share of the input that was read from cache"}, {h: "Output"},
+     {h: "Median", title: "Median time to finish a turn, answered turns only"}, {h: "Failed"}],
+    models.map(m => {
+      const sent = (m.input_tokens || 0) + (m.cached_tokens || 0);
+      return {
+        name: esc(m.model), title: m.model, share: all ? tok(m) / all : 0, color: "var(--s-primary)",
+        cells: [esc(num(m.turns)), esc(compact(tok(m))), esc(m.turns ? compact(tok(m) / m.turns) : ""),
+          esc(sent ? Math.round((m.cached_tokens || 0) / sent * 100) + "%" : "-"), esc(compact(m.output_tokens || 0)),
+          esc(m.latency_p50_ms ? (m.latency_p50_ms / 1000).toFixed(1) + " s" : "-"), esc(num(m.errors))],
+        cls: ["", "", "", "", "", "", m.errors ? "bad" : "dim"],
+      };
+    }),
+    {name: "Total", cells: [esc(num(sumOf("turns"))), esc(compact(all)), esc(sumOf("turns") ? compact(all / sumOf("turns")) : ""), "",
+      esc(compact(sumOf("output_tokens"))), "", esc(num(sumOf("errors")))]});
+
+  // The same coverage sentence as the Claude tab's chart, stated every time.
+  const files = `${x.files} metrics file${x.files === 1 ? "" : "s"}`;
+  $("cxInsCoverage").textContent = (!x.earliest
+    ? `No Codex turn recorded yet (read ${files}).`
+    : x.covered
+      ? `Complete for this window, data goes back to ${stamp(x.earliest)} (read ${files}).`
+      : `Incomplete: Codex's records here begin ${stamp(x.earliest)}, so the hatched days before it are "no data", not "no traffic" (read ${files}).`) +
+    " Tokens only: Burst has no API-equivalent price for Codex's models.";
+}
+
+async function loadCodexInsights() {
+  try {
+    const r = await fetch("/api/codex/insights?days=" + cxInsDays);
+    if (!r.ok) throw new Error(await r.text() || r.statusText);
+    // The tab reloads every 15s: redrawing an unchanged chart would drop
+    // the tooltip under the pointer.
+    const text = await r.text();
+    if (cxIns && text === cxInsText) return;
+    cxInsText = text;
+    cxIns = JSON.parse(text);
+    renderCodexInsights();
+  } catch (e) {
+    $("cxInsCoverage").textContent = "Could not read Codex's insights from the gateway: " + e.message;
+  }
+}
+$("cxInsMetric").onclick = e => {
+  const b = e.target.closest("button[data-m]");
+  if (!b) return;
+  cxInsMetric = b.dataset.m;
+  [...$("cxInsMetric").children].forEach(x => x.classList.toggle("on", x === b));
+  drawCodexInsightChart();
+};
+$("cxInsDays").onclick = e => {
+  const b = e.target.closest("button[data-days]");
+  if (!b) return;
+  cxInsDays = +b.dataset.days;
+  [...$("cxInsDays").children].forEach(x => x.classList.toggle("on", x === b));
+  loadCodexInsights();
+};
+// Drawn at a measured width, as the Claude tab's chart is: redraw on resize.
+let cxInsResize = null;
+window.addEventListener("resize", () => {
+  clearTimeout(cxInsResize);
+  cxInsResize = setTimeout(() => { if (cxIns && currentTab === "codex") drawCodexInsightChart(); }, 120);
+});
 
 function ctxBar(x) {
   if (!x.window) return `<span class="mono">${compact(x.context)}</span> <span class="hint">(window unknown for this model)</span>`;

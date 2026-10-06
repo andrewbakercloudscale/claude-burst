@@ -123,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/mod-action", s.mutating(s.handleModAction))
 	mux.HandleFunc("/api/requests", s.readOnly(s.handleRequests))
 	mux.HandleFunc("/api/codex", s.readOnly(s.handleCodex))
+	mux.HandleFunc("/api/codex/insights", s.readOnly(s.handleCodexInsights))
 	mux.HandleFunc("/api/codex/enable", s.mutating(s.handleCodexRoute(true)))
 	mux.HandleFunc("/api/codex/disable", s.mutating(s.handleCodexRoute(false)))
 	mux.HandleFunc("/api/codex/trace", s.mutating(s.handleCodexTrace))

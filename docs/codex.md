@@ -38,6 +38,11 @@ Checked against codex-cli 0.159.2. The other route, `chatgpt_base_url`, was reje
   - **Gateway watchdog**: one gateway serves Codex and Claude Code.
   - **Error rate**: amber at 2% of Codex turns over 14 days.
 - **Overview**: whether Codex goes through Burst, the gateway's listener (with the reason if it is not listening), the last request, 14-day turns, sessions, tokens and errors, and the **ChatGPT plan limits** as bars (for example the weekly window, percent used, when it resets).
+- **Insights**: what the Claude tab's Daily activity and Analytics are for Claude Code, over 7, 14 or 30 days.
+  - **Daily activity**: a bar per day, as **Tokens** (cached input, uncached input and output, stacked) or **Turns** (answered and failed). Days older than the log are hatched as "no data", never drawn as empty.
+  - **Tiles**: median and p95 latency (answered turns only), error rate (amber at 2%, red at 5%), the share of input read from cache (amber under half: Codex is sending most of each conversation uncached, which uses the plan fastest), tokens per turn, turns per session, the largest context any turn reached, the busiest day and the busiest hour of the day.
+  - **By model**: each model's share of the tokens, with its turns, tokens per turn, cached share, output, median latency and failed turns.
+  - Tokens only: there is no API-equivalent price for Codex's models. The same figures as JSON: `curl -s 'http://127.0.0.1:7788/api/codex/insights?days=14'`.
 - **Context**: each recent session's context after its latest turn against its model's window, as a bar: green, amber from 60%, red from 85%. Codex compacts on its own as it nears the limit.
 - **Context inspector**: a Codex session's context item by item, as Burst last forwarded it: Codex's instructions, skills, the developer reminders, AGENTS.md, your prompts, Codex's replies and tool calls, every tool output, and the encrypted reasoning (size only). **Remove** leaves AGENTS.md, skills, a reminder or a tool output out of every later turn of that session, a one-line note in its place; **Restore** puts it back. See [the dashboard](dashboard.md) for how removal works.
 - **Requests**: the recent model calls, with uncached input, cached input and output apart.

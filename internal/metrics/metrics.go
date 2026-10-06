@@ -586,6 +586,32 @@ func historyFiles(path string, start time.Time) []string {
 	return append(files, path)
 }
 
+// Scan calls fn with every event at or after start, oldest first, across
+// the rotated files too. It returns the oldest event read, before start or
+// not, which is what says whether the window is covered, and how many files
+// were read.
+func Scan(path string, start time.Time, fn func(Event)) (earliest time.Time, files int, err error) {
+	for _, f := range historyFiles(path, start) {
+		files++
+		err := scanEvents(f, func(e Event) {
+			if earliest.IsZero() || e.Time.Before(earliest) {
+				earliest = e.Time
+			}
+			if !e.Time.Before(start) {
+				fn(e)
+			}
+		})
+		if err != nil {
+			return earliest, files, err
+		}
+	}
+	return earliest, files, nil
+}
+
+// Percentile is the nearest-rank percentile the dashboard's latencies use.
+// It sorts v in place.
+func Percentile(v []int64, p float64) int64 { return percentile(v, p) }
+
 func scanEvents(path string, fn func(Event)) error {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
