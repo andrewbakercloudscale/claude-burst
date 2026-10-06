@@ -470,8 +470,14 @@ func TestNetworkNotPassingTrafficDoesNotFailOver(t *testing.T) {
 	s.healthMu.Unlock()
 	rr = httptest.NewRecorder()
 	s.ServeHTTP(rr, messagesRequest("claude-sonnet-5"))
-	if strings.Contains(rr.Body.String(), "not passing traffic") {
-		t.Fatalf("a network that answered a moment ago was called cut: %d %q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), "slow or dropping") {
+		t.Fatalf("a network that answered a moment ago: want a 502 that says slow, got %d %q", rr.Code, rr.Body.String())
+	}
+	// Slow or cut, it is the network: never the paid secondary.
+	mu.Lock()
+	defer mu.Unlock()
+	if secondaryHits != 0 {
+		t.Fatalf("failed over %d times on a slow network", secondaryHits)
 	}
 }
 

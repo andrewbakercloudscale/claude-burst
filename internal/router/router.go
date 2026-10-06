@@ -1197,22 +1197,25 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
 		}
-		if np.webDown && s.primaryAnsweredWithin(webDownGrace) {
-			// The control request failed, but Anthropic answered another
-			// request moments ago: the network is slow, not cut. On
-			// 2026-10-06 a congested phone hotspot took 7 to 12 seconds over
-			// replies that take half a second, the control request ran out
-			// its 4, and "connections from this Mac are cut" went up on
-			// screen in the same second a reply arrived.
-			s.logger.Printf("req=%s network slow, not blocked route=%s: control HTTPS failed (%v) but the primary answered within %s", rid, p.Name(), np.webErr, webDownGrace)
-			np.webDown = false
-		}
 		if np.webDown && !isClientCancellation(err) {
-			// Names resolve but nothing gets through, Anthropic or not: a
-			// phone out of data, a captive portal, a dead uplink. A reset
-			// counts here too, unlike above: the carrier sends it, not
-			// Anthropic, and the control request proves it.
+			// Names resolve but the control request got nowhere either: the
+			// fault is this Mac's network, and the secondary is behind the
+			// same network, so nothing fails over. A reset counts here too,
+			// unlike above: the carrier sends it, not Anthropic, and the
+			// control request proves it.
 			s.notePrimaryFailure(slot, err)
+			if s.primaryAnsweredWithin(webDownGrace) {
+				// Anthropic answered another request moments ago: slow, not
+				// cut. On 2026-10-06 a congested phone hotspot took 7 to 12
+				// seconds over replies that take half a second, the control
+				// request ran out its 4, and "connections from this Mac are
+				// cut" went up on screen in the same second a reply arrived.
+				// No alert. Still no failover: it is the network.
+				s.logger.Printf("req=%s no_failover route=%s reason=%q (control HTTPS failed: %v, but the primary answered within %s: no alert)", rid, p.Name(), "network slow", np.webErr, webDownGrace)
+				http.Error(w, "this Mac's network is slow or dropping connections -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
+				s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network slow; not failed over: "+err.Error(), destination)
+				return
+			}
 			s.alertNetworkBlocked()
 			s.logger.Printf("req=%s no_failover route=%s reason=%q (local network not passing traffic: control HTTPS failed: %v)", rid, p.Name(), "network blocked", np.webErr)
 			http.Error(w, "this Mac's network is not passing traffic (a phone out of data, a captive portal or a dead uplink) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
