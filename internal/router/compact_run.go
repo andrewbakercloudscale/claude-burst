@@ -880,8 +880,8 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		st.judged = h.Of
 		if ctxTokens >= ci.limit {
 			h.Full = true
-			s.logger.Printf("req=%s compaction still over session=%s: %dk after the summary went in, limit %dk; Claude Code's own history is to be compacted with the same summary now", requestIDFrom(in.Context()), ci.key, ctxTokens/1000, ci.limit/1000)
-			st.notice("still %dk after the summary, over the %dk limit: compacting Claude Code's own history with it now", ctxTokens/1000, ci.limit/1000)
+			s.logger.Printf("req=%s compaction still over session=%s: %dk after the summary went in, limit %dk; /compact-async-full follows now, with the same summary", requestIDFrom(in.Context()), ci.key, ctxTokens/1000, ci.limit/1000)
+			st.notice("still %dk after the summary, over the %dk limit: /compact-async-full follows now", ctxTokens/1000, ci.limit/1000)
 			s.compaction.save()
 		}
 	}

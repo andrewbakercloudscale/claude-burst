@@ -224,7 +224,9 @@ async function leaveBurst($) {
   if (!out && !again && !h.full && (raw < HANDOFF_ALWAYS_AT || !(await handoffInPathOn($)))) return
   handed = h.of
   try {
-    await handOver($, h)
+    // Still over its limit after the summary: /compact-async-full itself.
+    if (h.full) await compactFast($)
+    else await handOver($, h)
   } catch (err) {
     $.ui.toast((out ? 'This session no longer goes through Burst and sends its whole history (' + kTokens(raw) + ')' : 'Claude Code holds ' + kTokens(raw) + ' of history for this session, close to more than it could send without Burst') + '. /compact shortens it with the summary Burst already wrote', { timeoutMs: TOAST_MS.warn })
   }
