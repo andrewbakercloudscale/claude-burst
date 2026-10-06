@@ -90,7 +90,7 @@ Anthropic receives and bills:     139k tokens
 Claude Code's transcript after:   still 664 messages, plus the reply
 ```
 
-**Example 2, the summary missed something.** You ask about a detail from three hours ago and the summary does not have it. The detail is still in Claude Code's transcript. **Drop summary**, beside the session in the dashboard's compaction table, sends the full history on the next request, and the model can read it again. The price is one uncached read of the full history, and no new summary starts for one delay. After `/compact` in Claude Code, or a mod that answers it, the detail is gone from the session for good.
+**Example 2, the summary missed something.** You ask about a detail from three hours ago and the summary does not have it. The detail is still in Claude Code's transcript. **Drop summary**, beside the session in the dashboard's compaction table, sends the full history on the next request, and the model can read it again. The price is one uncached read of the full history, and no new summary starts for one delay. After `/compact` in Claude Code, or a mod that answers it, the detail is out of the session for good; it is still in the transcript file on disk, for you to read, not for the model.
 
 **Example 3, you rewind.** Rewinding to a message that was summarised changes the start of the request. The summary no longer fits, Burst drops it, and the request goes as Claude Code sent it, in full. Nothing is lost, and a new summary starts at once.
 
@@ -156,12 +156,20 @@ whole history:
   800k held, with Burst still in the path** ticked on the dashboard (`handoff_in_path` in
   `~/.config/claude-burst/mod.json`), the mod runs the same `/compact` from 800k held
   while Burst is working normally. It can be turned off because it has costs: the turn
-  after it is read uncached, and the replaced messages are gone from Claude Code's copy.
+  after it is read uncached, and the model no longer has the replaced messages, only the
+  summary.
   Turned off, `/compact-async-full` does it for one session when you choose.
-- After a hand-off the replaced messages are gone from Claude Code's copy too, so
-  **Drop summary** can no longer bring them back, and with Burst still in the path the
+- After a hand-off the replaced messages are out of the session Claude Code sends too,
+  so **Drop summary** can no longer bring them back, and with Burst still in the path the
   session is a new, short conversation to it: its old summary is retired and the window
   starts again.
+- **Nothing is deleted.** Claude Code's transcript file for the session,
+  `~/.claude/projects/<folder>/<session>.jsonl`, is only ever added to: a compaction
+  writes a boundary line and the summary after the messages it replaced, and they stay
+  in the file before it. A session compacted by Claude Code at 967k on 12 September
+  still has its 1,815 earlier messages there. The model cannot see them and no command
+  loads them back; they are a record to read or search. Burst itself keeps only
+  summaries, not the messages.
 - Turn it off under **When Burst is out of the path** in the same section (on by
   default, `handoff` in `~/.config/claude-burst/mod.json`, which the mod reads itself
   because the gateway may not be there to ask).
