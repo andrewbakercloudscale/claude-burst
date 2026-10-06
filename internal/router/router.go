@@ -103,6 +103,9 @@ type Server struct {
 	// now. A graceful restart waits for it to reach zero; see InFlight.
 	inflight atomic.Int64
 
+	// held are the control-plane streams open now (held.go).
+	held heldStreams
+
 	// compaction is proxy-side compaction of long primary sessions
 	// (compact.go, compact_run.go). Always present; off unless enabled.
 	compaction *compactor
@@ -817,6 +820,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), requestIDKey, rid)
 	r = r.WithContext(ctx)
 	start := time.Now()
+	if isHeldStream(r) {
+		var done func()
+		r, done = s.held.hold(r)
+		defer done()
+	}
 
 	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 

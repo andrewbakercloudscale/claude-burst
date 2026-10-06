@@ -68,6 +68,12 @@ With the lid shut macOS does not join a phone's hotspot by itself (Instant Hotsp
 - **Test: join it now** opens a checklist of what to set on the phone first, and will not start without a password. The test then tries up to **3 times**, 5 seconds apart, showing each attempt as it happens, to join the network selected in the dropdown, saved or not, and reports each step: the join, internet through it, and after a failure getting back on a network (Burst turns Wi-Fi off and on if macOS has not rejoined within ten seconds). Failures say what to do: not found means the phone is not broadcasting; error -3900 usually means a wrong password, so press Show to check it.
 - Log: `~/.config/claude-burst/hotspot.log`, also shown on the page.
 
+## Remote Control after a wake or a change of network
+
+Always on, nothing to set. Remote Control hears your phone on one request Claude Code holds open for the life of the session. After the Mac sleeps, or moves to another network (the lid opened onto a hotspot), that request is left on a dead connection and nothing says so: the session's heartbeats are still answered, so it reads as connected, but nothing sent from the phone arrives until something makes Claude Code open the request again.
+
+The gateway looks every 5 seconds for the two things that cause it: the clock having jumped more than 30 seconds (the Mac slept), and the address this Mac reaches the internet from having changed. On either it ends every such request itself and closes its idle connections to Anthropic. Claude Code opens the request again within seconds, from the event it had reached, on a connection made now. Going offline ends nothing, and coming back on the same network at the same address is no change. Each time, the gateway log has a line starting `remote control:` saying why and how many requests it ended.
+
 ## Notifications
 
 Burst's notifications are the pop-ups the usage panel floats over Claude Code's Ghostty window, in the same style as its loading notice: failover to the secondary and back, limits, failures, the network, guards repairing the redirect, compaction and the rest listed under [Dashboard](dashboard.md). Each stays at least 10 seconds while Ghostty is in front (warnings 15, errors until they clear); the clock stops while another app is in front. Switch them on or off under **Session options, Show gateway alerts on screen**, and use **Send a test alert** to see one.
