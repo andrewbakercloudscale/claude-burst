@@ -4911,7 +4911,7 @@ function setTab(tab) {
   });
   // The header's badges and buttons are Claude Code's routing; on the other
   // tabs they would read as Codex's. Check version and Refresh are Burst's.
-  ["activeBadge", "routeBadge", "resetTop", "installTop", "installRevealBtn", "revertTop"].forEach(id => {
+  ["activeBadge", "routeBadge", "resetTop", "forceTop", "installTop", "installRevealBtn", "revertTop"].forEach(id => {
     const el = $(id);
     if (el) el.classList.toggle("tab-off", tab !== "claude");
   });
