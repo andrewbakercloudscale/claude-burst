@@ -105,6 +105,8 @@ type compactState struct {
 	firstRaw    json.RawMessage
 	firstLogged time.Time
 	msgCount    int // messages in the latest request, memory only
+	// thread: the latest request continued a message thread (threadOf).
+	thread bool
 }
 
 // hashOf identifies messages [0, n) for this state's summaries: without the
@@ -115,6 +117,74 @@ func (st *compactState) hashOf(msgs []json.RawMessage, n int) string {
 		return prefixHash(msgs[1:], n-1)
 	}
 	return prefixHash(msgs, n)
+}
+
+// A message thread. Claude Code 2.1.289 (beta message-threads-2026-08-12)
+// sends a turn as the new message alone, with
+// thread: {"type":"continue","previous_message_id":"msg_..."}: the API
+// holds the history and goes on from the response named. There is nothing
+// in such a request to summarise or to replace, and it is not a new
+// conversation: until 6 Oct 2026 each one was taken for one, so a session
+// had a conversation on record for every tool call, each seen once, and the
+// one conversation Burst did know was whatever sent a whole history last,
+// which was Claude Code's side requests and not the session's turns.
+//
+// A thread is compacted where its history is sent whole: Claude Code does
+// that when a request fails, and the thread then goes on from the response
+// to the request Burst swapped the summary into.
+
+// threadContinues is the message id a request continues, "" when it sends
+// its own history.
+func threadContinues(top map[string]json.RawMessage) string {
+	var th struct {
+		Type string `json:"type"`
+		Prev string `json:"previous_message_id"`
+	}
+	if json.Unmarshal(top["thread"], &th) != nil || th.Type != "continue" {
+		return ""
+	}
+	return th.Prev
+}
+
+// maxThreads is how many responses are remembered for the requests that
+// continue them: a session continues its latest one.
+const maxThreads = 4096
+
+// noteThread remembers that the response msgID belongs to conversation key.
+// Caller holds c.mu.
+func (c *compactor) noteThread(msgID, key string) {
+	if msgID == "" {
+		return
+	}
+	if c.threads == nil {
+		c.threads = map[string]string{}
+	}
+	if _, known := c.threads[msgID]; !known {
+		c.threadIDs = append(c.threadIDs, msgID)
+		if len(c.threadIDs) > maxThreads {
+			delete(c.threads, c.threadIDs[0])
+			c.threadIDs = c.threadIDs[1:]
+		}
+	}
+	c.threads[msgID] = key
+}
+
+// applyThreadRequest passes a request that continues a message thread
+// through as it is, under the conversation whose response it continues, so
+// the context its response reports is that conversation's. A response from
+// before a restart is not known: the thread is then a conversation of its
+// own, named by that response, until its history is next sent whole.
+func (s *Server) applyThreadRequest(in *http.Request, body []byte, prefix, prev string) ([]byte, *http.Request) {
+	s.compaction.mu.Lock()
+	key := s.compaction.threads[prev]
+	if key == "" || !strings.HasPrefix(key, prefix) {
+		key = prefix + "thread-" + prev[max(0, len(prev)-12):]
+	}
+	st := s.compaction.state(key)
+	st.seen = time.Now()
+	st.thread = true
+	s.compaction.mu.Unlock()
+	return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, compactInfo{key: key}))
 }
 
 // longHistory is a request too long to be a subagent starting.
@@ -196,10 +266,10 @@ func (st *compactState) fits(msgs []json.RawMessage) bool {
 // its own key, session, model and first message, unless nothing is held
 // under it and another conversation of the same session and model holds a
 // summary this history fits: then the first message is what changed, and
-// the conversation is that one. On 6 Oct 2026 a session Burst held at 95k
-// sent its turns whole, at 300k to 343k, for eleven minutes: each arrived
-// under a first message of its own, so under a key with no summary.
-// Caller holds c.mu.
+// the conversation is that one. Claude Code keeps CLAUDE.md, the memory
+// index and its other context in the first message and writes it again
+// when one of them changes, which until 6 Oct 2026 put the session under a
+// key with no summary and sent it whole. Caller holds c.mu.
 func (c *compactor) resolve(key string, msgs []json.RawMessage) string {
 	own := c.sessions[key]
 	if own != nil && (own.summary != "" || own.next != "" || own.pending) {
@@ -333,6 +403,11 @@ type compactor struct {
 	// newFirstLogged is when a session and model's latest "new first
 	// message" line was logged, to keep it to one a minute.
 	newFirstLogged map[string]time.Time
+	// threads is which conversation each response belongs to, by its
+	// message id, for the request that continues it (threadOf); threadIDs
+	// is the order they came in, to forget the oldest.
+	threads   map[string]string
+	threadIDs []string
 	// midTurnOff: the API rejected a mid-turn swap, so none are tried again
 	// until the settings are saved again (SetCompaction). One rejection is
 	// taken as the API's answer: retrying each turn would cost a wasted
@@ -625,6 +700,7 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		return
 	}
 	s.compaction.mu.Lock()
+	s.compaction.noteThread(tok.msgID, ci.key)
 	st := s.compaction.state(ci.key)
 	st.lastContext = ctxTokens
 	if ci.parts != nil {
@@ -707,6 +783,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// conversation being cleared, dropping its summary twice in two minutes.
 	// The first message tells them apart.
 	key := sid + "|" + requestModel(body) + "|" + conversationID(msgs[0])
+	if prev := threadContinues(top); prev != "" {
+		return s.applyThreadRequest(in, body, sid+"|"+requestModel(body)+"|", prev)
+	}
 	if isSideRequest(msgs) {
 		return s.applySideRequest(in, top, body, msgs, key)
 	}
@@ -733,6 +812,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	st := s.compaction.state(key)
 	first := st.seen.IsZero()
 	st.seen = now
+	st.thread = false
 	dirty := st.useTailHashes(msgs)
 	quietStart := false
 	if key != asSent && now.Sub(st.firstLogged) >= time.Minute {
@@ -759,11 +839,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			s.logger.Printf("req=%s compaction not shared session=%s: %d messages under a first message not seen before, and the summary held as %s does not fit them (%s)", rid, key, len(msgs), k[strings.LastIndex(k, "|")+1:], why)
 		}
 	}
-	if first && key == asSent && len(msgs) > 2 {
-		// A history nobody has seen, though this session and model sent
-		// another a moment ago: a subagent starting, or the same
-		// conversation under a first message that changed. The line says
-		// which, and what changed.
+	if first && key == asSent && len(msgs) >= longHistory {
+		// A long history nobody has seen, though this session and model
+		// sent another a moment ago: the line says how they differ.
 		prefix := key[:strings.LastIndex(key, "|")+1]
 		var near *compactState
 		nearKey := ""
@@ -777,7 +855,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 				s.compaction.newFirstLogged = map[string]time.Time{}
 			}
 			s.compaction.newFirstLogged[prefix] = now
-			s.logger.Printf("req=%s compaction new first message session=%s: %d messages, %d bytes; %s was seen %s ago with %d messages; first message: %s", rid, key, len(msgs), len(body), nearKey[strings.LastIndex(nearKey, "|")+1:], now.Sub(near.seen).Round(time.Second), near.msgCount, firstMessageChange(near.firstRaw, msgs[0]))
+			s.logger.Printf("req=%s compaction new first message session=%s: %d messages, %d bytes, the first %d bytes of %s, the last %s; %s was seen %s ago with %d messages; first message: %s", rid, key, len(msgs), len(body), len(msgs[0]), lastMessageShape(msgs[:1]), lastMessageShape(msgs[len(msgs)-1:]), nearKey[strings.LastIndex(nearKey, "|")+1:], now.Sub(near.seen).Round(time.Second), near.msgCount, firstMessageChange(near.firstRaw, msgs[0]))
 		}
 	}
 	st.msgCount = len(msgs)
@@ -1600,8 +1678,11 @@ type CompactionSession struct {
 	State       string    `json:"state"`
 	CompactedAt time.Time `json:"compacted_at,omitempty"`
 	Summarised  int       `json:"summarised_messages,omitempty"`
-	// Seen is the conversation's latest request.
-	Seen time.Time `json:"seen"`
+	// Seen is the conversation's latest request, and Thread says that one
+	// continued a message thread: it carried the new message alone, and
+	// the history is the API's to hold.
+	Seen   time.Time `json:"seen"`
+	Thread bool      `json:"thread,omitempty"`
 	// Repo is the session's repository, and CompactAt the limit that applies
 	// to it: 0 when compaction is off for that repository. Override says
 	// the limit is the repository's own, not the default.
@@ -1659,6 +1740,8 @@ func (s *Server) CompactionSessions() []CompactionSession {
 			state = "compacted"
 		case st.summary != "":
 			state = "summary ready, applies at next prompt"
+		case st.thread && st.lastContext >= cfg.CompactAtTokens:
+			state = "over threshold, compacts when Claude Code next sends its whole history"
 		case st.lastContext >= cfg.CompactAtTokens && !st.startedAt.IsZero() && time.Since(st.startedAt) < time.Duration(cfg.WindowMinutes)*time.Minute:
 			state = "over threshold, next compaction after " + st.startedAt.Add(time.Duration(cfg.WindowMinutes)*time.Minute).Format("15:04")
 		case st.lastContext >= cfg.CompactAtTokens && cfg.MidTurn && !s.compaction.midTurnOff:
@@ -1668,7 +1751,7 @@ func (s *Server) CompactionSessions() []CompactionSession {
 		case st.lastContext >= cfg.WarnAtTokens:
 			state = "warning"
 		}
-		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0, Seen: st.seen,
+		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0, Seen: st.seen, Thread: st.thread,
 			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil && !override.Learned, Learned: override != nil && override.Learned, Parts: st.parts, DelayMinutes: cfg.WindowMinutes}
 		if cs.Learned {
 			cs.BufferPercent = *cfg.BufferPercent
@@ -1695,29 +1778,43 @@ const mainConversationWindow = 30 * time.Minute
 
 // MainConversation picks the row that speaks for session sid from rows,
 // which are largest first: its main conversation and not a subagent's. The
-// largest is that, until the session is compacted. Then the conversation
-// with the summary is the small one, and a request the session sent under
-// another first message, whole, is the largest for as long as it is kept:
-// on 6 Oct 2026 the panel read "343k, over threshold, compacts at the next
-// request" for half an hour over a session that was sending 95k. So a
-// conversation with a summary, in use lately, comes first.
+// largest is that, among those in use lately, unless one of them is a
+// message thread or holds a summary: a thread is what the session is
+// sending turn by turn, and a compacted conversation is the small one. On
+// 6 Oct 2026 the panel read "343k, over threshold, compacts at the next
+// request" for half an hour over a session that was sending 95k: the
+// largest row was a conversation last heard of an hour before.
 func MainConversation(rows []CompactionSession, sid string) *CompactionSession {
-	var largest *CompactionSession
 	var newest time.Time
 	for i := range rows {
-		if rows[i].Session != sid {
-			continue
-		}
-		if largest == nil {
-			largest = &rows[i]
-		}
-		if rows[i].Seen.After(newest) {
+		if rows[i].Session == sid && rows[i].Seen.After(newest) {
 			newest = rows[i].Seen
 		}
 	}
+	var largest, live, thread, compacted *CompactionSession
 	for i := range rows {
 		r := &rows[i]
-		if r.Session == sid && (r.State == "compacted" || r.State == "summarising" || strings.HasPrefix(r.State, "summary ready")) && newest.Sub(r.Seen) < mainConversationWindow {
+		if r.Session != sid {
+			continue
+		}
+		if largest == nil {
+			largest = r
+		}
+		if newest.Sub(r.Seen) >= mainConversationWindow {
+			continue
+		}
+		if live == nil {
+			live = r
+		}
+		if thread == nil && r.Thread {
+			thread = r
+		}
+		if compacted == nil && (r.State == "compacted" || r.State == "summarising" || strings.HasPrefix(r.State, "summary ready")) {
+			compacted = r
+		}
+	}
+	for _, r := range []*CompactionSession{thread, compacted, live} {
+		if r != nil {
 			return r
 		}
 	}
