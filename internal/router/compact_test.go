@@ -1452,3 +1452,88 @@ func TestDropSummarySendsTheFullHistoryAgain(t *testing.T) {
 		t.Fatal("nothing left to drop")
 	}
 }
+
+// 6 Oct 2026: a session Burst held at 95k sent turn after turn whole, at
+// 300k to 343k, each under a first message of its own. The summary is of
+// the history, and the first message is the part it replaces.
+func TestASummarySurvivesAFirstMessageThatChanges(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
+	var logged bytes.Buffer
+	s.logger = log.New(io.MultiWriter(&logged, testLogWriter{t}), "", 0)
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return f.summaryCount() == 1 })
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST OF THE FIRST TASK") {
+		t.Fatalf("the session must be compacted:\n%s", f.last())
+	}
+
+	// Claude Code rewrites the context it keeps in the first message.
+	changed := append([]json.RawMessage(nil), all[:9]...)
+	changed[0] = json.RawMessage(`{"role":"user","content":[{"type":"text","text":"<system-reminder>CLAUDE.md: never push without asking\nand one more rule</system-reminder>"},{"type":"text","text":"first task"}]}`)
+	send(t, s, "S", changed)
+	if got := f.last(); !strings.Contains(got, "THE GIST OF THE FIRST TASK") || strings.Contains(got, "old file") {
+		t.Fatalf("a changed first message must not send the history whole:\n%s", got)
+	}
+	if l := logged.String(); !strings.Contains(l, "compaction first message changed") || !strings.Contains(l, "block 0 (system reminder") || !strings.Contains(l, "from line 1") {
+		t.Fatalf("the log must say what changed in the first message:\n%s", l)
+	}
+	if strings.Contains(logged.String(), "compaction dropped") {
+		t.Fatalf("nothing was dropped:\n%s", logged.String())
+	}
+	// One conversation, not two, and no second summary paid for.
+	n := 0
+	for _, cs := range s.CompactionSessions() {
+		if cs.Session == "S" {
+			n++
+		}
+	}
+	s.compaction.running.Wait()
+	if n != 1 || f.summaryCount() != 1 {
+		t.Fatalf("want one conversation and one summary, got %d and %d", n, f.summaryCount())
+	}
+
+	// A history that parted from the summarised one is still not it.
+	parted := append([]json.RawMessage(nil), changed...)
+	parted[1] = json.RawMessage(`{"role":"assistant","content":"something else was said"}`)
+	send(t, s, "S", parted)
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("a history the summary was not made from must go as it is")
+	}
+	// And the summary is still there for the history it was made from.
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST OF THE FIRST TASK") {
+		t.Fatalf("the summary must still be in force:\n%s", f.last())
+	}
+}
+
+// A summary saved before first messages could change has a hash of the
+// whole prefix. It still applies, and moves to the new hash at the first
+// request it fits.
+func TestASummarySavedTheOldWayMovesToTailHashes(t *testing.T) {
+	all := msgs(t, session)
+	st := &compactState{summary: "x", p0: 4, swapAt: 5, hash: prefixHash(all, 4)}
+	changed := append([]json.RawMessage(nil), all...)
+	changed[0] = json.RawMessage(`{"role":"user","content":"another first message"}`)
+	if st.fits(changed) || st.useTailHashes(changed) || st.tail {
+		t.Fatal("an old hash proves nothing about a history with another first message")
+	}
+	if !st.useTailHashes(all) || !st.tail || st.hash == prefixHash(all, 4) {
+		t.Fatal("the request it fits must move it to tail hashes")
+	}
+	if !st.fits(changed) || !st.fits(all) {
+		t.Fatal("once moved, the first message no longer matters")
+	}
+	changed[2] = json.RawMessage(`{"role":"user","content":"a different result"}`)
+	if st.fits(changed) {
+		t.Fatal("a later message that changed is another history")
+	}
+	// A summary of fewer than three messages keeps its first message.
+	short := &compactState{tail: true, summary: "x", p0: 2}
+	if short.hashOf(all, 2) != prefixHash(all, 2) || short.fits(all) {
+		t.Fatal("two messages are too few to name a conversation without the first")
+	}
+}
