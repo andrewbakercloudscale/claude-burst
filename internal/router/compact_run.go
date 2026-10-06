@@ -621,6 +621,16 @@ type savedCompaction struct {
 	Hand        *Handoff `json:"hand,omitempty"`
 	// Tail: the hashes leave the first message out (compactState.tail).
 	Tail bool `json:"tail,omitempty"`
+	// What a request that carries the whole conversation tells Burst, kept
+	// so a restart does not lose it: a session on message threads may not
+	// send another for a long time. Parts is the context bar's make-up
+	// (on 6 Oct 2026 an upgrade left a panel with no legend), Raw is
+	// Claude Code's own history, and the marks name each message a summary
+	// covers, to tell a history that changed from a request beside it.
+	Parts     []ContextPart `json:"parts,omitempty"`
+	Raw       int64         `json:"raw,omitempty"`
+	Marks     []string      `json:"marks,omitempty"`
+	NextMarks []string      `json:"next_marks,omitempty"`
 }
 
 // savedTTL drops sessions not seen for this long when state is saved.
@@ -647,7 +657,8 @@ func (c *compactor) load() {
 			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, nextTightP0: v.NextTightP0, nextTightHash: v.NextTightHash, seen: v.Seen,
 			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs, exposureWarned: v.ExposureWarned, hand: v.Hand,
 			// With no hash saved there is nothing made the old way.
-			tail: v.Tail || (v.Hash == "" && v.NextHash == "" && v.NextTightHash == "")}
+			tail:  v.Tail || (v.Hash == "" && v.NextHash == "" && v.NextTightHash == ""),
+			parts: v.Parts, rawContext: v.Raw, marks: v.Marks, nextMarks: v.NextMarks}
 		if st.hand != nil {
 			st.handOf = st.hand.Of
 		}
@@ -683,7 +694,8 @@ func (c *compactor) save() {
 		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
 			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt,
 			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, NextTightP0: st.nextTightP0, NextTightHash: st.nextTightHash, Seen: st.seen,
-			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned, Hand: st.hand, Tail: st.tail}
+			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned, Hand: st.hand, Tail: st.tail,
+			Parts: st.parts, Raw: st.rawContext, Marks: st.marks, NextMarks: st.nextMarks}
 	}
 	c.writeHandoffs()
 	b, err := json.Marshal(out)
@@ -783,6 +795,15 @@ type compactInfoKey struct{}
 func compactInfoFrom(ctx context.Context) compactInfo {
 	ci, _ := ctx.Value(compactInfoKey{}).(compactInfo)
 	return ci
+}
+
+// SaveCompaction writes the compaction state as it stands, for a gateway
+// about to exit: it is otherwise saved on transitions only, so each
+// session's size and make-up on disk are those of its last transition.
+func (s *Server) SaveCompaction() {
+	s.compaction.mu.Lock()
+	s.compaction.save()
+	s.compaction.mu.Unlock()
 }
 
 // SetCompaction applies c to the running gateway; the admin page's toggle.

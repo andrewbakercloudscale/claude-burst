@@ -343,7 +343,7 @@ func serve(args []string) {
 	if codexGW != nil {
 		inflight = func() int64 { return srv.InFlight() + codexGW.InFlight() }
 	}
-	go exitWhenIdleOnSignal(inflight, logger)
+	go exitWhenIdleOnSignal(inflight, logger, srv.SaveCompaction)
 	if tlsConfig != nil {
 		err = server.ServeTLS(ln, "", "") // certificates come from TLSConfig; ln is already bound above
 	} else {
