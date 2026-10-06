@@ -3960,7 +3960,7 @@ function readinessChecks(s, verdict) {
     out.push({
       key: "errors", label: "Error rate", target: "sec-activity",
       ok: pct < 2, critical: false,
-      detail: `${pct.toFixed(1)}% of ${num(lastHistory.window.Requests)} requests in the window failed${leftOut(lastHistory.days)}`,
+      detail: `${pct.toFixed(1)}% of ${num(lastHistory.window.Requests)} requests in the last ${lastHistory.days.length} days failed${leftOut(lastHistory.days)}`,
     });
   }
   return out;
