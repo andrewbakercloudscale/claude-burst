@@ -254,6 +254,7 @@ uninstall() {
   #    says so if not.
   if [[ -x "$TARGET" ]]; then
     "$TARGET" uninstall-hooks || echo "WARNING: claude-burst uninstall-hooks failed" >&2
+    "$TARGET" app remove >/dev/null || echo "WARNING: the Claude Burst app in ~/Applications was not removed" >&2
     "$TARGET" disable >/dev/null || echo "WARNING: claude-burst disable failed" >&2
   else
     echo "WARNING: $TARGET is already gone, so Claude Code's hooks could not be removed by it" >&2
@@ -327,7 +328,7 @@ $(grep -n claude-burst "$SETTINGS" | sed 's/^/      /')
     echo " Check it with: sudo pfctl -a claude-burst -s nat   which should print nothing.)"
   fi
   echo "Removed: the redirect and root daemons (if any), the self-heal watchdog, the token-shunting,"
-  echo "coordination, handover and prompt-notice hooks, /compact-async, the Burst mod, the LaunchAgent and the binary."
+  echo "coordination, handover and prompt-notice hooks, /compact-async, the Burst mod, the Claude Burst app, the LaunchAgent and the binary."
   if (( purge )); then
     echo "Purged $CONFIG_DIR."
   else
@@ -388,6 +389,10 @@ install() {
 
   # burst-off: the one-command off switch, on the PATH (see the script).
   zsh "$ROOT/scripts/install-burst-off.sh"
+
+  # The Claude Burst app (Spotlight, Dock) that opens the dashboard. Never
+  # fails the install: an app of that name that is not ours is left alone.
+  "$TARGET" app install || echo "WARNING: the Claude Burst app was not installed; run: claude-burst app install" >&2
 
   ZPROFILE="$HOME/.zprofile"
   PATH_LINE='export PATH="$HOME/.local/bin:$PATH" # claude-burst'

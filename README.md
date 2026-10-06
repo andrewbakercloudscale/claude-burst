@@ -194,6 +194,8 @@ launchctl kickstart -k gui/$UID/ninja.andrewbaker.claude-burst   # routing is re
 claude-burst status
 curl -s http://127.0.0.1:7777/healthz        # base-url mode only
 open http://127.0.0.1:7788                   # the dashboard
+claude-burst open                            # the same, or the support console when the gateway is down
+                                             # (also the Claude Burst app: Cmd-Space, "burst")
 
 # Undo
 ./install.sh uninstall
