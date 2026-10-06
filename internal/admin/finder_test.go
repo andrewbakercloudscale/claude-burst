@@ -707,3 +707,34 @@ out({html: els.finderStatus.innerHTML});`, &got)
 		t.Errorf("want a bypass tick on the Claude and Codex rows only, got %d", n)
 	}
 }
+
+// Codex and OpenCode have a shortcut for their last session too: Codex's
+// takes the row's bypass tick, and OpenCode's is its own launcher, usage
+// panel and all, with --continue.
+func TestFinderContinuesTheLastCodexAndOpenCodeSession(t *testing.T) {
+	r := newFinderRig(t, true)
+	if _, err := installFinderShortcuts(false, "codex-continue", "opencode-continue"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Continue last Codex session in Ghostty", "Continue last OpenCode session in Ghostty"} {
+		if _, err := os.Stat(r.workflow(name)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	folder, _ := filepath.EvalSymlinks(t.TempDir())
+	if got := r.runLauncher(t, "ghostty-codex-continue-launcher", "codex", folder); !strings.HasSuffix(got, "/codex resume --last") || !strings.HasPrefix(got, folder+"|") {
+		t.Errorf("codex: ran %q", got)
+	}
+	if _, err := setFinderBypass("codex-continue", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.runLauncher(t, "ghostty-codex-continue-launcher", "codex", folder); !strings.HasSuffix(got, "/codex resume --last "+codexBypass) {
+		t.Errorf("codex with the bypass tick: ran %q", got)
+	}
+	if got := r.runLauncher(t, "ghostty-opencode-continue-launcher", "opencode", folder); !strings.HasSuffix(got, "/opencode --continue") || !strings.HasPrefix(got, folder+"|") {
+		t.Errorf("opencode: ran %q", got)
+	}
+	if bytes.Equal(opencodeContinueLauncher, opencodeLauncher) || !bytes.Contains(opencodeContinueLauncher, []byte("opencode-panel-launch.sh")) {
+		t.Error("the continue launcher is the OpenCode launcher with --continue, usage panel included")
+	}
+}

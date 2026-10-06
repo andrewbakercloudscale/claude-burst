@@ -75,7 +75,15 @@ case "$(panel_opt CLAUDE_PANEL_KEEP_SCREEN_ON)" in true|1|yes|on) AWAKE=(caffein
 case "$(panel_opt CLAUDE_PANEL_CAFFEINATE)" in false|0|no|off) AWAKE=() ;; esac
 `
 
-const claudeBypass = "--dangerously-skip-permissions"
+const (
+	claudeBypass = "--dangerously-skip-permissions"
+	codexBypass  = "--dangerously-bypass-approvals-and-sandbox"
+)
+
+// opencodeContinueLauncher is the OpenCode launcher, usage panel and all,
+// starting it on its last session.
+var opencodeContinueLauncher = bytes.Replace(opencodeLauncher,
+	[]byte(`"${AWAKE[@]}" "$OPENCODE"`), []byte(`"${AWAKE[@]}" "$OPENCODE" --continue`), 1)
 
 // The Claude launcher has no bypass tick: the usage panel patches that file
 // and gives it the dashboard's "Start with bypass permissions" option.
@@ -100,7 +108,12 @@ var finderShortcuts = []finderShortcut{
 		BypassFlag: "--dangerously-bypass-approvals-and-sandbox", launcher: "ghostty-codex-launcher",
 		script: plainLauncher("codex", "codex", "Codex", "", "--dangerously-bypass-approvals-and-sandbox"),
 		was:    [][]byte{plainLauncherV1("codex", "Codex", ""), plainLauncherV2("codex", "codex", "Codex", "", "--dangerously-bypass-approvals-and-sandbox")}},
+	{Key: "codex-continue", Name: "Continue last Codex session in Ghostty", Group: "Launch Codex", Option: "Continue last", Tool: "codex", Note: "codex resume --last: the most recent conversation",
+		BypassFlag: codexBypass, launcher: "ghostty-codex-continue-launcher",
+		script: plainLauncher("codex-continue", "codex", "Codex", "resume --last", codexBypass)},
 	{Key: "opencode", Name: "Launch OpenCode in Ghostty", Group: "Launch OpenCode", Option: "New session", Tool: "opencode", launcher: "ghostty-opencode-launcher", script: opencodeLauncher, was: [][]byte{opencodeLauncherV1}},
+	{Key: "opencode-continue", Name: "Continue last OpenCode session in Ghostty", Group: "Launch OpenCode", Option: "Continue last", Tool: "opencode", Note: "opencode --continue: the last session",
+		launcher: "ghostty-opencode-continue-launcher", script: opencodeContinueLauncher},
 	{Key: "ghostty", Name: "Open Ghostty here", Group: "Open Ghostty", Option: "Plain terminal", Note: "a plain terminal window in the folder", launcher: "ghostty-here-launcher", script: shellLauncher},
 }
 
