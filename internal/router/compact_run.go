@@ -687,6 +687,9 @@ func (c *compactor) load() {
 		}
 		c.sessions[k] = st
 	}
+	// The files are what the mod reads, and the rules for which summary a
+	// session offers may have changed with this build.
+	c.writeHandoffs()
 }
 
 // save writes every live session to disk. Called with c.mu held, only on
