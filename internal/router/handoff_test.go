@@ -132,3 +132,55 @@ func TestNoFullCompactionWhenTheSummaryBroughtTheSessionUnderItsLimit(t *testing
 		t.Fatal("only the first answer after the swap is judged")
 	}
 }
+
+// Claude Code takes the summary in (/compact-async-full) and its history
+// then opens with it: that summary is in the session, and must not stay on
+// offer over the summary made of the history that follows.
+func TestASummaryClaudeCodeTookInIsNoLongerOnOffer(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	old, ok := readHandoff(t, s, "S")
+	if !ok {
+		t.Fatal("want a hand-off file once the summary is in force")
+	}
+
+	lead, err := json.Marshal(map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": old.Lead}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken := append([]json.RawMessage{lead}, all[old.Messages:]...)
+	taken = append(taken, msgs(t, `[
+ {"role":"assistant","content":[{"type":"text","text":"done with third"}]},
+ {"role":"user","content":[{"type":"text","text":"fourth task"}]}
+]`)...)
+	send(t, s, "S", taken)
+	if h, ok := readHandoff(t, s, "S"); ok && h.Of == old.Of {
+		t.Fatalf("the summary Claude Code holds already must not be handed to it again: %d messages", h.Messages)
+	}
+
+	// The summary of the new history covers fewer messages than the old
+	// one did, and is the one on offer all the same.
+	taken = append(taken, msgs(t, `[
+ {"role":"assistant","content":[{"type":"text","text":"done with fourth"}]},
+ {"role":"user","content":[{"type":"text","text":"fifth task, which is to read the whole file and say what it does"}]}
+]`)...)
+	send(t, s, "S", taken)
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	taken = append(taken, msgs(t, `[
+ {"role":"assistant","content":[{"type":"text","text":"done with fifth, the file sets the gateway up and starts it"}]},
+ {"role":"user","content":[{"type":"text","text":"sixth task"}]}
+]`)...)
+	send(t, s, "S", taken)
+	h, ok := readHandoff(t, s, "S")
+	if !ok || h.Of == old.Of {
+		t.Fatalf("want the new summary on offer: %v %+v", ok, h)
+	}
+	if want := anchorOf(taken[h.Messages]); h.First != want {
+		t.Fatalf("first kept = %+v, want %+v", h.First, want)
+	}
+}
