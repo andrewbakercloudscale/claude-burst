@@ -31,7 +31,7 @@ func TestCompactionRunsFollowTheMainConversation(t *testing.T) {
 		`{"time":"` + at.Add(9*time.Minute).Format(time.RFC3339) + `","session_id":"S","slot":"primary","model":"m","http_status":502,"note":"compaction summary failed: dial"}`,
 		ev(`"input_tokens":2,"cache_write_tokens":60000,"compacted_messages":40`), // the swap
 		ctx(70, `,"compacted_messages":40`), ctx(80, `,"compacted_messages":40`),
-		ctx(90, ""), // the summary no longer fits: a new run
+		ctx(270, ""), // the summary no longer fits: a new run, with what it replaced back
 	}
 	p := filepath.Join(t.TempDir(), "m.jsonl")
 	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
@@ -60,7 +60,7 @@ func TestCompactionRunsFollowTheMainConversation(t *testing.T) {
 	if want := 0.2 + 60_000*5.75/1e6; swap.CostUSD < want-1e-9 || swap.CostUSD > want+1e-9 {
 		t.Fatalf("the swap cost $%.4f, want $%.4f", swap.CostUSD, want)
 	}
-	if last.Swapped || last.Start != 90_002 || last.Turns != 1 {
+	if last.Swapped || last.Start != 270_002 || last.Turns != 1 {
 		t.Fatalf("the run after the summary was dropped: %+v", last)
 	}
 	// The summary cut short was paid for; the one that never connected is
@@ -89,5 +89,51 @@ func TestAConversationThatShrinksStartsANewRun(t *testing.T) {
 	runs, _, err := CompactionRunsSince(p, at.Add(-time.Minute))
 	if err != nil || len(runs) != 2 || runs[0].End != 210_000 || runs[1].Start != 32_000 || runs[1].End != 33_000 {
 		t.Fatalf("runs %+v err %v", runs, err)
+	}
+}
+
+// Until 0.20.7 a request that continues a message thread was logged without
+// its summary's count. Such a log must not read as the summary dropped at
+// the second request of every compaction: on 6 Oct 2026 that was "sessions
+// go on 1 turns after a compaction" for a session 30 turns into one, and
+// the repository's learned Compact at went back to the fixed one.
+func TestARunLoggedWithoutItsThreadsSummaryGoesOn(t *testing.T) {
+	at := time.Now().Add(-3 * time.Hour)
+	n := 0
+	ctx := func(k int, rest string) string {
+		n++
+		return fmt.Sprintf(`{"time":%q,"session_id":"S","slot":"primary","model":"m","http_status":200,"input_tokens":2,"cache_read_tokens":%d%s}`,
+			at.Add(time.Duration(n)*time.Minute).Format(time.RFC3339), k*1000, rest)
+	}
+	lines := []string{
+		ctx(120, ""), ctx(148, ""),
+		ctx(50, `,"compacted_messages":45`),                  // the swap
+		ctx(56, ""), ctx(68, ""), ctx(100, ""), ctx(138, ""), // the thread, with no count
+		ctx(20, ""),  // a side call
+		ctx(240, ""), // the thread expired with its summary gone: the history whole
+		ctx(241, ""),
+		ctx(47, `,"compacted_messages":120`), // the next swap
+		ctx(48, `,"compacted_messages":120`), // a thread logged with its count
+	}
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runs, _, err := CompactionRunsSince(p, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 4 {
+		t.Fatalf("runs %+v, want 4", runs)
+	}
+	first, whole, second := runs[1], runs[2], runs[3]
+	if !first.Swapped || first.Before != 148_002 || first.Start != 50_002 || first.End != 138_002 || first.Turns != 5 {
+		t.Fatalf("the first compaction is one run of 5 turns: %+v", first)
+	}
+	if whole.Swapped || whole.Start != 240_002 || whole.Turns != 2 {
+		t.Fatalf("the history sent whole is a run of its own: %+v", whole)
+	}
+	if !second.Swapped || second.Before != 241_002 || second.Turns != 2 {
+		t.Fatalf("the second compaction: %+v", second)
 	}
 }
