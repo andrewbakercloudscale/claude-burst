@@ -76,6 +76,7 @@ That alone restores Anthropic access machine-wide; everything else is tidy-up.
 |---|---|---|
 | The binary | `~/.local/bin/claude-burst` | `rm ~/.local/bin/claude-burst` |
 | A `PATH` line | `~/.zprofile`, the line ending `# claude-burst` | delete that line |
+| The Claude Burst app (opens the dashboard) | `~/Applications/Claude Burst.app` | `claude-burst app remove`, or move it to the Bin |
 | The gateway LaunchAgent | `~/Library/LaunchAgents/ninja.andrewbaker.claude-burst.plist` | `launchctl bootout gui/$UID/ninja.andrewbaker.claude-burst`, then delete the plist |
 | The support console LaunchAgent (127.0.0.1:7789) | `~/Library/LaunchAgents/ninja.andrewbaker.claude-burst-console.plist` | `scripts/install-console.sh uninstall`. `burst-off` leaves it running on purpose: it is how you turn Burst back on |
 | Codex routing | Burst's marked block at the top of `~/.codex/config.toml`, only when routed | `claude-burst codex disable` (or `scripts/codex-unroute.sh`) |

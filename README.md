@@ -14,6 +14,7 @@ The ops layer for running Claude Code all day on a Mac, and now OpenAI's Codex t
 > |---|---|---|
 > | Entries in `~/.claude/settings.json`: hooks for the features you switch on, and `ANTHROPIC_BASE_URL` in base-url mode | always (hooks only for features you turn on) | [Claude Code settings and hooks](ROLLBACK.md#claude-code-settings-and-hooks-claude) |
 > | A LaunchAgent that runs the gateway, one for the support console, plus the binary in `~/.local/bin` | always | [Always installed](ROLLBACK.md#always-installed) |
+> | The **Claude Burst** app in `~/Applications`, which opens the dashboard | always | `claude-burst app remove` |
 > | Burst's block at the top of `~/.codex/config.toml` | only when you route Codex through Burst | `claude-burst codex disable` |
 > | An `/etc/hosts` entry, a pf redirect and a trusted root CA (name-constrained to `api.anthropic.com`, in the System keychain) | transparent mode only, which you choose | [Transparent mode](ROLLBACK.md#transparent-mode-machine-wide-root) |
 > | `pmset disablesleep` and a root LaunchDaemon | lid keep-awake only, off by default | [Lid shut and hotspot](ROLLBACK.md#lid-shut-and-hotspot) |
@@ -22,6 +23,12 @@ The ops layer for running Claude Code all day on a Mac, and now OpenAI's Codex t
 > `./install.sh uninstall` removes all of it and checks that it is gone ([Uninstall](#uninstall)). What this means for your security: [Trust and risk](#trust-and-risk).
 
 Claude Burst is a local gateway that sits between Claude Code and Anthropic. **It is for** people who use Claude Code heavily on a Mac, on a Pro, Max or Enterprise plan (or a metered API key), and want to keep working through limits, long sessions and closed lids. Claude Code talks to it exactly as it talks to Anthropic: nothing in your workflow changes, and **Revert to normal Claude** on the dashboard takes it out of the path in one click. It is young (macOS only, experimental): try it on a non-critical development account first.
+
+<img src="docs/screenshots/app-icon.png" alt="The Claude Burst app icon: a yellow lightning bolt on blue" width="64" align="left">
+
+**There is an app.** The installer puts **Claude Burst** in `~/Applications`, so the dashboard is one Spotlight search away: Cmd-Space, type "burst", Return. Launchpad shows it too, and you can drag it to the Dock. It opens the dashboard, or the support console when the gateway is down, and needs no root, certificate or hosts entry. `claude-burst app remove` deletes it and `claude-burst app install` puts it back. More in [Dashboard](docs/dashboard.md).
+
+<br clear="left">
 
 ![Dashboard overview: health checks, the totals for 14 days, what needs attention and the setup tests](docs/screenshots/overview.png)
 
@@ -311,6 +318,8 @@ claude-burst keychain-set --provider together --service my-service   # store und
 claude-burst enable
 claude-burst disable                         # off; sessions already open keep working (a pass-through on the port)
 claude-burst status
+claude-burst open                            # the dashboard, or the support console when the gateway is down
+claude-burst app install                     # the Claude Burst app in ~/Applications (the installer does this); app remove deletes it
 claude-burst reset                           # back to primary now
 claude-burst force-secondary --minutes 15    # route to the secondary on purpose (testing)
 claude-burst stats --days 30
