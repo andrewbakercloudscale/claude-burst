@@ -69,7 +69,7 @@ func waitIdle(inflight func() int64, deadline, poll time.Duration) (remaining in
 // exitWhenIdleOnSignal runs in the background for the life of the gateway.
 // A second SIGTERM or SIGINT skips the wait, so an impatient Ctrl-C in a
 // foreground `claude-burst serve` still stops it at once.
-func exitWhenIdleOnSignal(inflight func() int64, logger *log.Logger) {
+func exitWhenIdleOnSignal(inflight func() int64, logger *log.Logger, beforeExit func()) {
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigs
@@ -91,6 +91,7 @@ func exitWhenIdleOnSignal(inflight func() int64, logger *log.Logger) {
 	case sig := <-sigs:
 		logger.Printf("received %s again: exiting now with %d inference request(s) in flight", sig, inflight())
 	}
+	beforeExit()
 	notice.Flush(2 * time.Second)
 	os.Exit(0)
 }

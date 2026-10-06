@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -623,6 +624,30 @@ func TestCompactionStateSurvivesARestart(t *testing.T) {
 	send(t, s2, "S", all[:9])
 	if !strings.Contains(f.last(), "THE GIST OF THE FIRST TASK") {
 		t.Fatalf("the restarted gateway must apply the saved summary:\n%s", f.last())
+	}
+	// What only a whole-history request tells Burst survives the next
+	// restart: the context bar's make-up, how much Claude Code holds, and
+	// the mark of each message the summary covers.
+	var was *compactState
+	s2.compaction.mu.Lock()
+	for k, st := range s2.compaction.sessions {
+		if strings.HasPrefix(k, "S|") && st.summary != "" {
+			was = st
+		}
+	}
+	s2.compaction.mu.Unlock()
+	if was == nil || len(was.parts) == 0 || len(was.marks) == 0 {
+		t.Fatalf("want a compacted session with its make-up and marks, got %+v", was)
+	}
+	s3 := start()
+	var kept *compactState
+	for k, st := range s3.compaction.sessions {
+		if strings.HasPrefix(k, "S|") && st.summary != "" {
+			kept = st
+		}
+	}
+	if kept == nil || !reflect.DeepEqual(kept.parts, was.parts) || !reflect.DeepEqual(kept.marks, was.marks) || kept.rawContext != was.rawContext || kept.rawContext == 0 {
+		t.Fatalf("a restart must keep the make-up, the size held and the marks:\nwas  %+v %d %v\nkept %+v", was.parts, was.rawContext, was.marks, kept)
 	}
 	s2.compaction.running.Wait()
 	if n := f.summaryCount(); n != 1 {
