@@ -55,6 +55,10 @@ type Handoff struct {
 	At  time.Time `json:"at"`
 	// Of ties the hand-off to the summary it was built from.
 	Of string `json:"of"`
+	// Full: the summary went in and the session still sends its limit or
+	// more, so the mod is to compact Claude Code's own history with it now
+	// (noteSessionContext).
+	Full bool `json:"full,omitempty"`
 }
 
 // handAnchorText is how much of a message's text names it.

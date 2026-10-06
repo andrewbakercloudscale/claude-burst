@@ -215,11 +215,13 @@ async function leaveBurst($) {
   const h = await readHandoff($)
   if (!h || h.of === handed) return
   const raw = Math.max((burst && burst.session && burst.session.raw) || 0, heldSeen, h.raw || 0)
-  if (raw < HANDOFF_AT) return
+  // full: Burst's summary went in and the session still sends its limit or
+  // more, so the gateway asks for this at any size, in the path or not.
+  if (raw < HANDOFF_AT && !h.full) return
   const out = (await inPath($)) === false
   const again = reopened
   reopened = false
-  if (!out && !again && (raw < HANDOFF_ALWAYS_AT || !(await handoffInPathOn($)))) return
+  if (!out && !again && !h.full && (raw < HANDOFF_ALWAYS_AT || !(await handoffInPathOn($)))) return
   handed = h.of
   try {
     await handOver($, h)

@@ -149,6 +149,12 @@ whole history:
   its way out, and a shut window or a crash never closes at all. A reload of the mod
   (`/reload-plugins`) is not a restart, and a summary written after the session opened
   waits for the next one.
+- **A summary that did not bring the session under its limit is followed by this at
+  once.** When the first answer after a summary goes in still reports the session's
+  **Compact at** or more, the gateway marks the hand-off `full` and the mod runs the same
+  `/compact` within a few seconds, at any size and with Burst in the path. Once per
+  summary. It is not a second summary: Claude Code's own history is cut to the one
+  Burst already wrote.
 - **`/compact-async-full` does it on request.** Typed in any session Burst has
   summarised, in the path or not, at any size, it compacts with Burst's summary. It is
   never Claude Code's own compaction: with no summary held, or one that does not fit,

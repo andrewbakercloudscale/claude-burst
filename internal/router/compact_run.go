@@ -107,6 +107,10 @@ type compactState struct {
 	msgCount    int // messages in the latest request, memory only
 	// thread: the latest request continued a message thread (threadOf).
 	thread bool
+	// judged is the hand-off (Handoff.Of) whose first answer after the
+	// swap has been compared with the limit. Memory only: after a restart
+	// the next answer is judged again, and the mod acts once per summary.
+	judged string
 }
 
 // hashOf identifies messages [0, n) for this state's summaries: without the
@@ -192,6 +196,10 @@ func (c *compactor) noteThread(msgID string, r threadResponse) {
 type threadAsk struct {
 	at   time.Time
 	prev string // the response the refused request continued
+	// orphan is the thread's conversation when it was known only by its
+	// last response (after a restart), "" otherwise: the history that comes
+	// back is that conversation under its real name, and this one is gone.
+	orphan string
 	// context is what the thread held, for the history that comes back: it
 	// can arrive under a conversation nobody has measured (after a restart
 	// the thread is known only by its last response).
@@ -238,7 +246,8 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 	if from.context > 0 {
 		st.lastContext = from.context
 	}
-	ci := compactInfo{key: key, thread: true, threadSummary: from.summary}
+	ci := compactInfo{key: key, thread: true, threadSummary: from.summary, limit: cfg.CompactAtTokens,
+		inForce: st.summary != "" && st.swapAt > 0}
 	behind := from.key != "" && st.summary != "" && st.swapAt > 0 && from.summary != st.hash
 	ask := s.compaction.asks[prefix]
 	window := time.Duration(cfg.WindowMinutes) * time.Minute
@@ -264,6 +273,9 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 			s.compaction.asks = map[string]*threadAsk{}
 		}
 		s.compaction.asks[prefix] = &threadAsk{at: now, prev: prev, context: st.lastContext}
+		if strings.HasPrefix(key, prefix+"thread-") {
+			s.compaction.asks[prefix].orphan = key
+		}
 		ci.replay = why
 		if behind {
 			// What comes back is sent with the summary: its size is not
@@ -724,6 +736,10 @@ type compactInfo struct {
 	// summary that thread's history was sent with (threadResponse).
 	thread        bool
 	threadSummary string
+	// limit is the session's Compact at, and inForce says a thread request
+	// came with a summary already in force for its conversation.
+	limit   int64
+	inForce bool
 	// replay: this request continues a thread whose conversation has a
 	// compaction to make, and this is why. It is answered with a request
 	// for the history (askForHistory) and not sent.
@@ -854,6 +870,21 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		st.midTurnUnproven, st.undo = false, nil
 		s.logger.Printf("req=%s compaction mid-turn accepted session=%s: the API answered the swapped request normally", requestIDFrom(in.Context()), ci.key)
 	}
+	// A summary that went in and left the session at its limit or over did
+	// not do its job: the turns still carry the old history (a thread that
+	// went on from before the swap) or what was kept is that large. Then
+	// Claude Code's own history is compacted with the same summary, at
+	// once and once per summary, rather than a second summary being paid
+	// for an hour later. Judged at the first answer after the swap.
+	if h := st.hand; h != nil && st.summary != "" && st.swapAt > 0 && h.Of == handoffOf(st.summary, st.p0) && st.judged != h.Of && (ci.applied || ci.thread && ci.inForce) && ci.limit > 0 {
+		st.judged = h.Of
+		if ctxTokens >= ci.limit {
+			h.Full = true
+			s.logger.Printf("req=%s compaction still over session=%s: %dk after the summary went in, limit %dk; Claude Code's own history is to be compacted with the same summary now", requestIDFrom(in.Context()), ci.key, ctxTokens/1000, ci.limit/1000)
+			st.notice("still %dk after the summary, over the %dk limit: compacting Claude Code's own history with it now", ctxTokens/1000, ci.limit/1000)
+			s.compaction.save()
+		}
+	}
 	if st.swappedFrom > 0 && ci.applied {
 		cut := 0
 		if st.swappedFrom > 0 && ctxTokens < st.swappedFrom {
@@ -938,7 +969,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			limit += ", learned"
 		}
 	}
-	ci := compactInfo{key: key}
+	ci := compactInfo{key: key, limit: cfg.CompactAtTokens}
 	now := time.Now()
 	window := time.Duration(cfg.WindowMinutes) * time.Minute
 	rid := requestIDFrom(in.Context())
@@ -960,6 +991,13 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			st.lastContext = ask.context
 		}
 		ask.context = 0
+	}
+	// The thread known only by its last response is this conversation now.
+	// Left on record, on 6 Oct 2026 it kept the panel at "422k, over
+	// threshold" over a session whose history had come back and gone at 116k.
+	if ask := s.compaction.asks[prefix]; ask != nil && ask.orphan != "" && ask.orphan != key && len(msgs) >= longHistory && now.Sub(ask.at) < time.Minute {
+		delete(s.compaction.sessions, ask.orphan)
+		ask.orphan = ""
 	}
 	dirty := st.useTailHashes(msgs)
 	quietStart := false

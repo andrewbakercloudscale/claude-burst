@@ -624,3 +624,20 @@ test('base-url mode set in Claude Code\'s settings is in the path too', async ($
   await clock.advance(5000)
   expect(calls).toEqual([])
 })
+
+test('a session still over its limit after the summary is compacted at once, small and in the path', async ($, on) => {
+  const toasts: string[] = []
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 90000 }), '/etc/hosts': HOSTS_IN } }
+  const clock = stubs(on, [null], toasts, [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  await clock.advance(6000)
+  expect(calls).toEqual([])
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 90000, full: true }), '/etc/hosts': HOSTS_IN }
+  await clock.advance(6000)
+  expect(calls).toEqual(['/compact'])
+  // Once per summary.
+  await clock.advance(12000)
+  expect(calls).toEqual(['/compact'])
+})
