@@ -39,9 +39,10 @@ type finderShortcut struct {
 	BypassFlag string `json:"bypass_flag,omitempty"`
 	launcher   string // file name in ~/.local/bin
 	script     []byte // launcher written when none exists
-	// was is the launcher 0.19.2 wrote, which knew no bypass tick: a file
-	// still equal to it is ours and unchanged, so it is brought up to date.
-	was []byte
+	// was are the launchers earlier versions wrote (0.19.2 knew no bypass
+	// tick, and none before 0.20.4 read the keep-awake options): a file still
+	// equal to one is ours and unchanged, so it is brought up to date.
+	was [][]byte
 }
 
 //go:embed assets/finder/ghostty-claude-launcher
@@ -49,6 +50,25 @@ var claudeLauncher []byte
 
 //go:embed assets/finder/ghostty-opencode-launcher
 var opencodeLauncher []byte
+
+//go:embed assets/finder/ghostty-opencode-launcher.v1
+var opencodeLauncherV1 []byte
+
+// awakeSnippet is how a launcher reads the keep-awake options of the
+// dashboard's Session options. The key absent, or no file (no usage panel),
+// is awake, as every launcher was before there was an option.
+const awakeSnippet = `# Keep-awake, as the dashboard's Session options set it. Read here, so a
+# tick needs no reinstall. Awake unless it is turned off: caffeinate -i stops
+# idle sleep, and -d also keeps the screen on, so it never locks.
+panel_opt() {
+  local v
+  v="$(grep -E "^$1=" "$HOME/.config/claude-panel/options" 2>/dev/null | tail -1)"
+  printf '%s' "${v#*=}" | tr -d "\"' " | tr '[:upper:]' '[:lower:]'
+}
+AWAKE=(caffeinate -i)
+case "$(panel_opt CLAUDE_PANEL_KEEP_SCREEN_ON)" in true|1|yes|on) AWAKE=(caffeinate -di) ;; esac
+case "$(panel_opt CLAUDE_PANEL_CAFFEINATE)" in false|0|no|off) AWAKE=() ;; esac
+`
 
 const claudeBypass = "--dangerously-skip-permissions"
 
@@ -58,19 +78,24 @@ var finderShortcuts = []finderShortcut{
 	{Key: "claude", Name: "Launch Claude Code in Ghostty", Tool: "claude", launcher: "ghostty-claude-launcher", script: claudeLauncher},
 	{Key: "claude-continue", Name: "Continue last Claude Code session in Ghostty", Tool: "claude", Note: "claude --continue: the folder's most recent conversation",
 		BypassFlag: claudeBypass, launcher: "ghostty-claude-continue-launcher",
-		script: plainLauncher("claude-continue", "claude", "Claude Code", "--continue", claudeBypass), was: plainLauncherV1("claude", "Claude Code", "--continue")},
+		script: plainLauncher("claude-continue", "claude", "Claude Code", "--continue", claudeBypass),
+		was:    [][]byte{plainLauncherV1("claude", "Claude Code", "--continue"), plainLauncherV2("claude-continue", "claude", "Claude Code", "--continue", claudeBypass)}},
 	{Key: "claude-resume", Name: "Resume a Claude Code session in Ghostty", Tool: "claude", Note: "claude --resume: pick from the folder's conversations",
 		BypassFlag: claudeBypass, launcher: "ghostty-claude-resume-launcher",
-		script: plainLauncher("claude-resume", "claude", "Claude Code", "--resume", claudeBypass)},
+		script: plainLauncher("claude-resume", "claude", "Claude Code", "--resume", claudeBypass),
+		was:    [][]byte{plainLauncherV2("claude-resume", "claude", "Claude Code", "--resume", claudeBypass)}},
 	{Key: "omc", Name: "Launch Claude Code with OMC in Ghostty", Tool: "omc", Note: "oh-my-claudecode: Claude Code inside tmux",
 		BypassFlag: "--madmax", launcher: "ghostty-omc-launcher",
-		script: plainLauncher("omc", "omc", "OMC (oh-my-claudecode)", "", "--madmax"), was: plainLauncherV1("omc", "OMC (oh-my-claudecode)", "")},
+		script: plainLauncher("omc", "omc", "OMC (oh-my-claudecode)", "", "--madmax"),
+		was:    [][]byte{plainLauncherV1("omc", "OMC (oh-my-claudecode)", ""), plainLauncherV2("omc", "omc", "OMC (oh-my-claudecode)", "", "--madmax")}},
 	{Key: "omc-interop", Name: "Launch OMC and Codex side by side in Ghostty", Tool: "omc", Also: "codex", Note: "omc interop: Claude Code and Codex in one tmux window",
-		launcher: "ghostty-omc-interop-launcher", script: plainLauncher("omc-interop", "omc", "OMC (oh-my-claudecode)", "interop", "")},
+		launcher: "ghostty-omc-interop-launcher", script: plainLauncher("omc-interop", "omc", "OMC (oh-my-claudecode)", "interop", ""),
+		was: [][]byte{plainLauncherV2("omc-interop", "omc", "OMC (oh-my-claudecode)", "interop", "")}},
 	{Key: "codex", Name: "Launch Codex in Ghostty", Tool: "codex",
 		BypassFlag: "--dangerously-bypass-approvals-and-sandbox", launcher: "ghostty-codex-launcher",
-		script: plainLauncher("codex", "codex", "Codex", "", "--dangerously-bypass-approvals-and-sandbox"), was: plainLauncherV1("codex", "Codex", "")},
-	{Key: "opencode", Name: "Launch OpenCode in Ghostty", Tool: "opencode", launcher: "ghostty-opencode-launcher", script: opencodeLauncher},
+		script: plainLauncher("codex", "codex", "Codex", "", "--dangerously-bypass-approvals-and-sandbox"),
+		was:    [][]byte{plainLauncherV1("codex", "Codex", ""), plainLauncherV2("codex", "codex", "Codex", "", "--dangerously-bypass-approvals-and-sandbox")}},
+	{Key: "opencode", Name: "Launch OpenCode in Ghostty", Tool: "opencode", launcher: "ghostty-opencode-launcher", script: opencodeLauncher, was: [][]byte{opencodeLauncherV1}},
 	{Key: "ghostty", Name: "Open Ghostty here", Note: "a plain terminal window in the folder", launcher: "ghostty-here-launcher", script: shellLauncher},
 }
 
@@ -120,8 +145,52 @@ func writeFinderBypass(on map[string]bool) error {
 }
 
 // plainLauncher is the Claude launcher's shape for another tool: find it
-// however we were started, go to the folder Finder passed, run it awake.
+// however we were started, go to the folder Finder passed, run it awake
+// or not as Session options say.
 func plainLauncher(key, tool, label, args, bypass string) []byte {
+	run := `ARGS=(` + args + `)
+`
+	if bypass != "" {
+		run += `# The dashboard's bypass tick for this shortcut (Finder shortcuts).
+grep -qx 'bypass=` + key + `' "$HOME/.config/claude-burst/` + finderConfName + `" 2>/dev/null && ARGS+=(` + bypass + `)
+`
+	}
+	return []byte(`#!/bin/bash
+# Source login files so ` + "`" + tool + "`" + ` is on PATH no matter how we were launched.
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+  [ -f "$rc" ] && source "$rc" 2>/dev/null || true
+done
+
+TOOL="$(command -v ` + tool + ` 2>/dev/null || true)"
+case "$TOOL" in /*) ;; *) TOOL="" ;; esac # a shell function or alias is no use to caffeinate
+if [ -z "$TOOL" ]; then
+  for candidate in \
+    "$HOME/.local/bin/` + tool + `" \
+    "$HOME/.npm-global/bin/` + tool + `" \
+    "/opt/homebrew/bin/` + tool + `" \
+    "/usr/local/bin/` + tool + `" \
+    "/usr/bin/` + tool + `"; do
+    if [ -x "$candidate" ]; then TOOL="$candidate"; break; fi
+  done
+fi
+if [ -z "$TOOL" ]; then
+  osascript -e 'display alert "` + label + ` not found" message "Install it, or make sure the ` + tool + ` command is on your PATH."'
+  exit 1
+fi
+
+# First argument is the folder Finder passed in.
+FOLDER="$1"
+if [ -n "$FOLDER" ] && [ -d "$FOLDER" ]; then
+  cd "$FOLDER"
+fi
+
+` + awakeSnippet + run + `"${AWAKE[@]}" "$TOOL" "${ARGS[@]}"
+`)
+}
+
+// plainLauncherV2 is what 0.19.3 to 0.20.3 wrote, which always ran its tool
+// under caffeinate -i: kept to recognise its files.
+func plainLauncherV2(key, tool, label, args, bypass string) []byte {
 	run := `ARGS=(` + args + `)
 `
 	if bypass != "" {
@@ -280,7 +349,7 @@ func readFinder() finderView {
 		}
 		if f.BypassFlag != "" {
 			b, err := os.ReadFile(f.launcherPath())
-			st.BypassOK = err != nil || bytes.Contains(b, []byte("bypass="+f.Key)) || (f.was != nil && bytes.Equal(b, f.was))
+			st.BypassOK = err != nil || bytes.Contains(b, []byte("bypass="+f.Key)) || f.wrote(b)
 		}
 		v.Shortcuts = append(v.Shortcuts, st)
 	}
@@ -363,16 +432,33 @@ func finderPicked(keys []string) []finderStatus {
 	return out
 }
 
-// refreshLauncher brings a launcher 0.19.2 wrote up to date. Any other
-// file is somebody's and is left alone.
-func refreshLauncher(f finderShortcut) error {
-	if f.was == nil {
-		return nil
+// wrote is whether b is a launcher an earlier version wrote, unchanged.
+func (f finderShortcut) wrote(b []byte) bool {
+	for _, w := range f.was {
+		if bytes.Equal(b, w) {
+			return true
+		}
 	}
-	if b, err := os.ReadFile(f.launcherPath()); err != nil || !bytes.Equal(b, f.was) {
+	return false
+}
+
+// refreshLauncher brings a launcher an earlier version wrote up to date.
+// Any other file is somebody's and is left alone.
+func refreshLauncher(f finderShortcut) error {
+	if b, err := os.ReadFile(f.launcherPath()); err != nil || !f.wrote(b) {
 		return nil
 	}
 	return os.WriteFile(f.launcherPath(), f.script, 0o755)
+}
+
+// refreshLaunchers does that for every shortcut, so the launchers read the
+// keep-awake options: when the gateway starts and when those are saved.
+func refreshLaunchers() {
+	finderMu.Lock()
+	defer finderMu.Unlock()
+	for _, f := range finderShortcuts {
+		_ = refreshLauncher(f)
+	}
 }
 
 // setFinderBypass saves one row's bypass tick. It takes effect the next
