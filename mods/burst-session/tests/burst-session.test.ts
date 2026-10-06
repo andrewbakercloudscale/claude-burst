@@ -636,6 +636,8 @@ test('a session still over its limit after the summary is compacted at once, sma
   expect(calls).toEqual([])
   world.files = { [HANDOFF_FILE]: handoff({ raw: 90000, full: true }), '/etc/hosts': HOSTS_IN }
   await clock.advance(6000)
+  await new Promise((r) => setTimeout(r, 0))
+  // What ran is /compact-async-full, which has Claude Code compact with the summary.
   expect(calls).toEqual(['/compact'])
   // Once per summary.
   await clock.advance(12000)

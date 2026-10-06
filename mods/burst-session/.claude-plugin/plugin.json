@@ -1,6 +1,6 @@
 {
   "name": "burst-session",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "description": "Claude Burst inside the session: route, real context, a context bar (/context-bar) and compaction above the prompt, standing aside where the usage sidebar shows them (/burst band puts it back), the usage panel's summary in /burst, Burst's alerts and compaction lines as toasts, /compact-async-full, which compacts with the summary Burst already wrote, and /claude-burst-revert and /claude-burst-reinstall, which work with the gateway down",
   "author": { "name": "Andrew Baker" }
 }
