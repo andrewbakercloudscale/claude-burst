@@ -153,6 +153,45 @@ func handoffDir(statePath string) string {
 	return filepath.Join(filepath.Dir(statePath), "handoff")
 }
 
+// supersede takes the hand-off from every other conversation of this session
+// whose summary this history opens with: Claude Code took that summary in
+// (/compact-async-full), so it is in the session already and the mod would
+// refuse it. A session's file is the hand-off covering the most messages, and
+// on 2026-10-06 that kept a summary of 524 messages on offer after Claude
+// Code had adopted it, over the summary of 169 made of the history that
+// followed, so the next full compaction had nothing to give. Reports whether
+// anything changed. Caller holds c.mu.
+func (c *compactor) supersede(key string, first json.RawMessage) bool {
+	sid, _, _ := strings.Cut(key, "|")
+	text, read := "", false
+	changed := false
+	for k, d := range c.sessions {
+		if k == key || d.hand == nil || d.summary == "" || !strings.HasPrefix(k, sid+"|") {
+			continue
+		}
+		if !read {
+			read = true
+			var msg map[string]any
+			if json.Unmarshal(first, &msg) != nil {
+				return false
+			}
+			var b strings.Builder
+			for _, blk := range contentBlocks(msg["content"]) {
+				bm, _ := blk.(map[string]any)
+				t, _ := bm["text"].(string)
+				b.WriteString(t)
+				b.WriteByte('\n')
+			}
+			text = b.String()
+		}
+		if strings.Contains(text, d.summary) {
+			d.hand = nil
+			changed = true
+		}
+	}
+	return changed
+}
+
 // writeHandoffs makes the handoff directory hold exactly the summaries in
 // force: one file per session, and none for a session whose summary was
 // dropped, which must never be handed to Claude Code. Caller holds c.mu.

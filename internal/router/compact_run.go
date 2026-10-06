@@ -1123,6 +1123,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	if st.firstRaw == nil || !bytes.Equal(st.firstRaw, msgs[0]) {
 		st.firstRaw = append(json.RawMessage(nil), msgs[0]...)
 	}
+	if s.compaction.supersede(key, msgs[0]) {
+		dirty = true
+	}
 	if first {
 		if from := s.compaction.adopt(st, key, msgs); from != "" {
 			s.logger.Printf("req=%s compaction adopted session=%s: the same conversation under another session id (%s), whose summary of %d messages fits this history", rid, key, from, st.p0)
