@@ -29,6 +29,19 @@ func TestTheConversationWithTheSummarySpeaksForTheSession(t *testing.T) {
 	if got := MainConversation(rows, "s"); got == nil || got.Context != 343_000 {
 		t.Fatalf("want the largest over a summary long unused, got %+v", got)
 	}
+	// Nor is a large conversation last heard of long ago: the largest in use.
+	rows[0].Seen = now.Add(-2 * time.Hour)
+	if got := MainConversation(rows, "s"); got == nil || got.Context != 5_000 {
+		t.Fatalf("want the one in use, got %+v", got)
+	}
+	// A thread is what the session sends turn by turn: before a compacted
+	// conversation its side requests keep alive.
+	rows[0].Seen, rows[2].Seen = now, now
+	rows = append(rows, CompactionSession{Session: "s", Context: 4_000, State: "ok", Seen: now, Thread: true})
+	rows[0].Thread = true
+	if got := MainConversation(rows, "s"); got == nil || got.Context != 343_000 {
+		t.Fatalf("want the largest thread, got %+v", got)
+	}
 	if MainConversation(rows, "nobody") != nil {
 		t.Fatal("a session with no rows has none")
 	}

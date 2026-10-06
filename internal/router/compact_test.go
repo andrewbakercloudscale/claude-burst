@@ -1453,9 +1453,9 @@ func TestDropSummarySendsTheFullHistoryAgain(t *testing.T) {
 	}
 }
 
-// 6 Oct 2026: a session Burst held at 95k sent turn after turn whole, at
-// 300k to 343k, each under a first message of its own. The summary is of
-// the history, and the first message is the part it replaces.
+// Claude Code writes the first message again when CLAUDE.md or the memory
+// index changes. The summary is of the history, and the first message is
+// the part it replaces.
 func TestASummarySurvivesAFirstMessageThatChanges(t *testing.T) {
 	f := &fakeAnthropic{context: 450_000}
 	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
@@ -1535,5 +1535,88 @@ func TestASummarySavedTheOldWayMovesToTailHashes(t *testing.T) {
 	short := &compactState{tail: true, summary: "x", p0: 2}
 	if short.hashOf(all, 2) != prefixHash(all, 2) || short.fits(all) {
 		t.Fatal("two messages are too few to name a conversation without the first")
+	}
+}
+
+// Claude Code 2.1.289 sends a turn as the new message alone, continuing the
+// response before it. On 6 Oct 2026 every such request was a conversation
+// of its own: 29 on record for one session, and its real size nowhere.
+func TestARequestThatContinuesAThreadIsItsConversation(t *testing.T) {
+	var mu sync.Mutex
+	n, context := 0, int64(90_000)
+	var bodies []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		n++
+		id, ctx := fmt.Sprintf("msg_%02d", n), context
+		context += 60_000
+		bodies = append(bodies, string(b))
+		mu.Unlock()
+		w.Header().Set("content-type", "text/event-stream")
+		fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":%q,\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":%d}}}\n\n", id, ctx)
+		fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
+	}))
+	defer up.Close()
+	cfg := config.Default()
+	cfg.AnthropicBaseURL = up.URL
+	cfg.PrimaryCompaction = config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60}
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(testLogWriter{t}, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.compaction.running.Wait)
+	cont := func(prev, result string) {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "stream": true, "max_tokens": 100, "system": "sys",
+			"thread":   map[string]any{"type": "continue", "previous_message_id": prev},
+			"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "t9", "content": result}}}}})
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", bytes.NewReader(b))
+		req.Header.Set("x-claude-code-session-id", "S")
+		req.Header.Set("authorization", "Bearer oauth")
+		s.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	rows := func() []CompactionSession {
+		var out []CompactionSession
+		for _, cs := range s.CompactionSessions() {
+			if cs.Session == "S" {
+				out = append(out, cs)
+			}
+		}
+		return out
+	}
+
+	send(t, s, "S", msgs(t, session)[:5]) // msg_01, 90k
+	cont("msg_01", "one")                 // msg_02, 150k
+	cont("msg_02", "two")                 // msg_03, 210k: over the limit
+	cont("msg_03", "three")               // msg_04, 270k
+	got := rows()
+	if len(got) != 1 || got[0].Context != 270_005 || !got[0].Thread {
+		t.Fatalf("want one conversation, a thread at 270k, got %+v", got)
+	}
+	if !strings.Contains(got[0].State, "when Claude Code next sends its whole history") {
+		t.Fatalf("a thread over the limit cannot be compacted from a request with one message in it: state %q", got[0].State)
+	}
+	s.compaction.running.Wait()
+	mu.Lock()
+	for _, b := range bodies {
+		if strings.Contains(b, "Summarize the transcript inside") {
+			t.Fatal("a summary was started from a request that holds no history")
+		}
+	}
+	if last := bodies[len(bodies)-1]; !strings.Contains(last, `"previous_message_id":"msg_03"`) || !strings.Contains(last, "three") {
+		t.Fatalf("a thread request must go as it came:\n%s", last)
+	}
+	mu.Unlock()
+
+	// A response from before a restart: a conversation of its own, once.
+	cont("msg_from_before_the_restart", "four") // msg_05
+	cont("msg_05", "five")
+	if got := rows(); len(got) != 2 {
+		t.Fatalf("want the thread nobody knows as one more conversation, got %d: %+v", len(got), got)
+	}
+	if main := MainConversation(s.CompactionSessions(), "S"); main == nil || !main.Thread {
+		t.Fatalf("the thread speaks for the session, got %+v", main)
 	}
 }

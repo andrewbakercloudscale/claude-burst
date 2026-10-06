@@ -1700,6 +1700,9 @@ type tokenUsage struct {
 	input, output, cacheRead, cacheWrite         int64
 	prunedBytes, prunedResults, truncatedResults int64
 	repeatedCalls, rerunsAfterStub               int64
+	// msgID is the response's message id: what the next request of a
+	// message thread names as the one it continues.
+	msgID string
 }
 
 func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string) tokenUsage {
@@ -1783,12 +1786,13 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 // top-level input_tokens that is not a billed request and must stay zero.
 func usageFromMessageJSON(body []byte) tokenUsage {
 	var v struct {
+		ID    string         `json:"id"`
 		Usage map[string]any `json:"usage"`
 	}
 	if json.Unmarshal(body, &v) != nil || v.Usage == nil {
 		return tokenUsage{}
 	}
-	tok := tokenUsage{input: number(v.Usage["input_tokens"]), output: number(v.Usage["output_tokens"])}
+	tok := tokenUsage{input: number(v.Usage["input_tokens"]), output: number(v.Usage["output_tokens"]), msgID: v.ID}
 	readCacheUsage(v.Usage, &tok)
 	return tok
 }
@@ -1808,6 +1812,9 @@ func parseSSEUsage(line string, tok *tokenUsage) {
 	}
 	// message_start: {message:{usage:{input_tokens:...}}}
 	if m, ok := v["message"].(map[string]any); ok {
+		if id, _ := m["id"].(string); id != "" {
+			tok.msgID = id
+		}
 		if u, ok := m["usage"].(map[string]any); ok {
 			if n := number(u["input_tokens"]); n > tok.input {
 				tok.input = n
