@@ -335,6 +335,7 @@ func serve(args []string) {
 	// and present as Remote Control dropping repeatedly for no visible reason.
 	// Joins the chosen hotspot when offline; idle unless one is chosen.
 	go superviseHotspot(logger)
+	go srv.WatchNetwork(context.Background())
 	// ReadHeaderTimeout bounds only the request headers, never a long
 	// streaming reply, so it cannot cut a slow model off; it stops a client
 	// that opens a connection and never finishes its headers from holding it.
