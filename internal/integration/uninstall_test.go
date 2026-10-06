@@ -334,7 +334,13 @@ func TestInstallScriptUninstallStopsWhenTheRedirectStays(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("must fail while /etc/hosts still redirects:\n%s", out)
 	}
-	contains(t, "uninstall output", out, "UNINSTALL STOPPED", "still redirects api.anthropic.com", "sudo "+filepath.Join(repoRoot(t), "scripts", "transparent-root.sh")+" remove")
+	// install.sh names its scripts by its own path with symlinks resolved
+	// (${0:A:h}), and the tests can be run from a path that has one: deploy.sh
+	// --only-committed builds in a worktree under /var/folders, which is
+	// /private/var/folders, and on 6 Oct 2026 this refused the deploy.
+	root, err := filepath.EvalSymlinks(repoRoot(t))
+	must(t, err)
+	contains(t, "uninstall output", out, "UNINSTALL STOPPED", "still redirects api.anthropic.com", "sudo "+filepath.Join(root, "scripts", "transparent-root.sh")+" remove")
 	if strings.Contains(out, "Uninstalled Claude Burst") {
 		t.Errorf("success printed after a failure:\n%s", out)
 	}
