@@ -1333,6 +1333,8 @@ type CompactionSession struct {
 	State       string    `json:"state"`
 	CompactedAt time.Time `json:"compacted_at,omitempty"`
 	Summarised  int       `json:"summarised_messages,omitempty"`
+	// Seen is the conversation's latest request.
+	Seen time.Time `json:"seen"`
 	// Repo is the session's repository, and CompactAt the limit that applies
 	// to it: 0 when compaction is off for that repository. Override says
 	// the limit is the repository's own, not the default.
@@ -1399,7 +1401,7 @@ func (s *Server) CompactionSessions() []CompactionSession {
 		case st.lastContext >= cfg.WarnAtTokens:
 			state = "warning"
 		}
-		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0,
+		cs := CompactionSession{Session: sid, Model: model, Context: st.lastContext, State: state, Summarised: st.p0, Seen: st.seen,
 			Repo: repos[sid].name, RepoRoot: repos[sid].root, CompactAt: cfg.CompactAtTokens, Override: override != nil && !override.Learned, Learned: override != nil && override.Learned, Parts: st.parts, DelayMinutes: cfg.WindowMinutes}
 		if cs.Learned {
 			cs.BufferPercent = *cfg.BufferPercent
@@ -1418,6 +1420,41 @@ func (s *Server) CompactionSessions() []CompactionSession {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Context > out[j].Context })
 	return out
+}
+
+// mainConversationWindow is how long before a session's latest request a
+// conversation holding a summary still counts as the one in use.
+const mainConversationWindow = 30 * time.Minute
+
+// MainConversation picks the row that speaks for session sid from rows,
+// which are largest first: its main conversation and not a subagent's. The
+// largest is that, until the session is compacted. Then the conversation
+// with the summary is the small one, and a request the session sent under
+// another first message, whole, is the largest for as long as it is kept:
+// on 6 Oct 2026 the panel read "343k, over threshold, compacts at the next
+// request" for half an hour over a session that was sending 95k. So a
+// conversation with a summary, in use lately, comes first.
+func MainConversation(rows []CompactionSession, sid string) *CompactionSession {
+	var largest *CompactionSession
+	var newest time.Time
+	for i := range rows {
+		if rows[i].Session != sid {
+			continue
+		}
+		if largest == nil {
+			largest = &rows[i]
+		}
+		if rows[i].Seen.After(newest) {
+			newest = rows[i].Seen
+		}
+	}
+	for i := range rows {
+		r := &rows[i]
+		if r.Session == sid && (r.State == "compacted" || r.State == "summarising" || strings.HasPrefix(r.State, "summary ready")) && newest.Sub(r.Seen) < mainConversationWindow {
+			return r
+		}
+	}
+	return largest
 }
 
 // conversationID is a short hash of a conversation's first message, which

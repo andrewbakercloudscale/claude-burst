@@ -54,15 +54,7 @@ func (s *Server) handleMod(w http.ResponseWriter, r *http.Request) {
 		resp.TodayUSD, resp.TodayRequests = today.APIEquivalentUSD, today.Requests
 	}
 	if sid != "" {
-		// Largest context first, so the first row is the main conversation
-		// and not one of its subagents.
-		for _, cs := range s.gateway.CompactionSessions() {
-			if cs.Session == sid {
-				cs := cs
-				resp.Session = &cs
-				break
-			}
-		}
+		resp.Session = router.MainConversation(s.gateway.CompactionSessions(), sid)
 	}
 	if p := notice.Default(); p != nil {
 		evs, _ := notice.Read(p.Path())
