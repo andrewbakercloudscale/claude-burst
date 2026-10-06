@@ -1913,3 +1913,50 @@ func TestTheHistoryAskedForAfterARestartIsCompactedAtOnce(t *testing.T) {
 		t.Fatalf("the thread known only by its response is this conversation now, got %+v", got)
 	}
 }
+
+// On 6 Oct 2026 a request with the summarised history and a last message of
+// its own came in the second the summary was swapped in. It was taken for
+// the conversation rewound and the summary was dropped, so when the thread
+// expired 39 minutes later its history went whole, 240k where 138k had been
+// going.
+func TestRequestBesideTheConversationDoesNotDropTheSummary(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	st := stateFor(s, "S")
+	if st.summary == "" || st.p0 < 3 || !strings.Contains(f.last(), "THE GIST") {
+		t.Fatalf("the summary must be in force first: summary=%q p0=%d", st.summary, st.p0)
+	}
+	p0 := st.p0
+
+	// The summarised history with another last message: sent as it came.
+	own := msgs(t, `[{"role":"user","content":[{"type":"text","text":"a question beside the work"}]}]`)
+	beside := append(append([]json.RawMessage(nil), all[:p0-1]...), own...)
+	send(t, s, "S", beside)
+	if st := stateFor(s, "S"); st.summary == "" || st.p0 != p0 {
+		t.Fatal("a request beside the conversation dropped the summary")
+	}
+	if strings.Contains(f.last(), "THE GIST") || !strings.Contains(f.last(), "a question beside the work") {
+		t.Fatal("it has nothing after the cut, so it goes as Claude Code sent it")
+	}
+	// The conversation goes on with its summary.
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the conversation's next request must still carry the summary")
+	}
+
+	// Rewound to before the cut, the new prompt is where a summarised
+	// message was by the request after it: dropped then.
+	reply := msgs(t, `[{"role":"assistant","content":[{"type":"text","text":"answered"}]},{"role":"user","content":[{"type":"text","text":"and then"}]}]`)
+	send(t, s, "S", append(append([]json.RawMessage(nil), beside...), reply...))
+	if st := stateFor(s, "S"); st.summary != "" {
+		t.Fatal("a history that went on from before the cut is not the summary's")
+	}
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("a dropped summary must not be sent")
+	}
+}

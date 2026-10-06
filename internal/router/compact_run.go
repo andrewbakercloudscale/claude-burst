@@ -123,6 +123,38 @@ func (st *compactState) hashOf(msgs []json.RawMessage, n int) string {
 	return prefixHash(msgs, n)
 }
 
+// besideSummary reports whether msgs stops at or before the summary's cut
+// and is, up to its last message, the history the summary was made from: a
+// request Claude Code makes beside the conversation, or one sent again. It
+// has nothing after the cut to put a summary before, and it is not the
+// conversation cleared or rewound. On 6 Oct 2026 one came in the second a
+// summary of 46 messages was swapped in mid-turn, 46 messages with a last
+// one of its own, and the summary was dropped as "cleared, compacted or
+// rewound". The thread went on compacted from the swapped request, at 138k,
+// and when it expired 39 minutes later its history came back whole, 240k,
+// with no summary to send it with. A conversation that really was rewound
+// to before the cut is dropped at its next request, which has the new
+// prompt where a summarised message was.
+func (st *compactState) besideSummary(msgs []json.RawMessage) bool {
+	n := len(msgs)
+	if st.summary == "" || st.p0 == 0 || n > st.p0 || n-1 > len(st.marks) {
+		return false
+	}
+	from := 0
+	if st.tail && n >= minTailMessages {
+		from = 1
+	}
+	if n-1 <= from {
+		return false
+	}
+	for i := from; i < n-1; i++ {
+		if prefixHash(msgs[i:i+1], 1) != st.marks[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // A message thread. Claude Code 2.1.289 (beta message-threads-2026-08-12)
 // sends a turn as the new message alone, with
 // thread: {"type":"continue","previous_message_id":"msg_..."}: the API
@@ -977,6 +1009,12 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	s.compaction.mu.Lock()
 	asSent := key
 	key = s.compaction.resolve(key, msgs)
+	if d := s.compaction.sessions[key]; d != nil && d.besideSummary(msgs) {
+		s.logger.Printf("req=%s compaction kept session=%s: %d messages, the history the summary of %d was made from as far as it goes and a last message of its own (%s), so a request beside the conversation and not the conversation cleared or rewound; sent as it came, and nothing noted from it",
+			rid, key, len(msgs), d.p0, lastMessageShape(msgs))
+		s.compaction.mu.Unlock()
+		return body, in
+	}
 	ci.key = key
 	st := s.compaction.state(key)
 	first := st.seen.IsZero()
