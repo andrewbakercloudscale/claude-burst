@@ -80,7 +80,8 @@ const HANDOFF_AT = 300000
 // requests go, unless the dashboard turns that off. Past the 1M window a
 // bypass is refused as too long. It can be turned off, since it has costs
 // with Burst working: the next turn is read uncached, and the replaced
-// messages are gone from Claude Code's copy.
+// messages are out of the session Claude Code sends (its transcript file
+// on disk keeps them).
 const HANDOFF_ALWAYS_AT = 800000
 
 let heldSeen = 0 // the most this session was last seen to hold, kept for when the gateway is gone

@@ -39,7 +39,8 @@ const modPlugin = "burst-session@burst"
 // compacted that way with Burst still in the path, since past the 1M window
 // it can no longer leave Burst. It can be turned off because it has costs
 // Burst working normally does not: the turn after it is read uncached, and
-// the replaced messages are gone from Claude Code's copy.
+// the replaced messages are out of the session Claude Code sends (its
+// transcript file on disk keeps them).
 type modSettings struct {
 	Toasts        bool `json:"toasts"`
 	Handoff       bool `json:"handoff"`
