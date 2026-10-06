@@ -104,6 +104,7 @@ type compactState struct {
 	// say what changed in it; firstLogged keeps that to one line a minute.
 	firstRaw    json.RawMessage
 	firstLogged time.Time
+	msgCount    int // messages in the latest request, memory only
 }
 
 // hashOf identifies messages [0, n) for this state's summaries: without the
@@ -329,6 +330,9 @@ type compactor struct {
 	// outcomes is the log of summaries that were dropped, for the learner
 	// (internal/autocompact); "" keeps none.
 	outcomes string
+	// newFirstLogged is when a session and model's latest "new first
+	// message" line was logged, to keep it to one a minute.
+	newFirstLogged map[string]time.Time
 	// midTurnOff: the API rejected a mid-turn swap, so none are tried again
 	// until the settings are saved again (SetCompaction). One rejection is
 	// taken as the API's answer: retrying each turn would cost a wasted
@@ -755,6 +759,28 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			s.logger.Printf("req=%s compaction not shared session=%s: %d messages under a first message not seen before, and the summary held as %s does not fit them (%s)", rid, key, len(msgs), k[strings.LastIndex(k, "|")+1:], why)
 		}
 	}
+	if first && key == asSent && len(msgs) > 2 {
+		// A history nobody has seen, though this session and model sent
+		// another a moment ago: a subagent starting, or the same
+		// conversation under a first message that changed. The line says
+		// which, and what changed.
+		prefix := key[:strings.LastIndex(key, "|")+1]
+		var near *compactState
+		nearKey := ""
+		for k, d := range s.compaction.sessions {
+			if k != key && strings.HasPrefix(k, prefix) && d.firstRaw != nil && now.Sub(d.seen) < 2*time.Minute && (near == nil || d.seen.After(near.seen)) {
+				near, nearKey = d, k
+			}
+		}
+		if near != nil && now.Sub(s.compaction.newFirstLogged[prefix]) >= time.Minute {
+			if s.compaction.newFirstLogged == nil {
+				s.compaction.newFirstLogged = map[string]time.Time{}
+			}
+			s.compaction.newFirstLogged[prefix] = now
+			s.logger.Printf("req=%s compaction new first message session=%s: %d messages, %d bytes; %s was seen %s ago with %d messages; first message: %s", rid, key, len(msgs), len(body), nearKey[strings.LastIndex(nearKey, "|")+1:], now.Sub(near.seen).Round(time.Second), near.msgCount, firstMessageChange(near.firstRaw, msgs[0]))
+		}
+	}
+	st.msgCount = len(msgs)
 	if st.firstRaw == nil || !bytes.Equal(st.firstRaw, msgs[0]) {
 		st.firstRaw = append(json.RawMessage(nil), msgs[0]...)
 	}
