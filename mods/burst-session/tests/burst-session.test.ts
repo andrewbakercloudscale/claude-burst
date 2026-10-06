@@ -24,6 +24,13 @@ const PANEL_FILE =
   `  📅 Today: ${ESC}[38;5;196m$6.72${ESC}[0m (by EOD: $17.48)\n` +
   `  🔀 Proxy State: ${ESC}[32mPRIMARY (oauth)${ESC}[0m ${ESC}[1;38;2;0;0;0;48;2;125;249;255m[View]${ESC}[0m\n`
 
+// Whether a Text showing `text` is drawn in `color`. find() and findAll()
+// match on type, key and text alone: a colour put in the query is ignored,
+// so it has to be read off what they return.
+async function coloured(ui, text: string | RegExp, color: string) {
+  return (await ui.findAll({ type: 'Text', text })).some((n) => n.props && n.props.color === color)
+}
+
 function mod(over: Record<string, unknown> = {}) {
   return {
     version: '0.10.0', route: 'PRIMARY', overflow: false, primary_failing: 0,
@@ -262,8 +269,7 @@ test('the context bar shows what the context is made of, and /context-bar hides 
   let ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: '70k of 300k (23%)' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Tool results 30k' })).toBeDefined()
-  const results = await ui.find({ type: 'Text', text: /^█+$/, color: 'green' })
-  expect(results).toBeDefined()
+  expect(await coloured(ui, /^█+$/, 'green')).toBe(true)
   expect(await $.command.run({ command: 'context-bar', args: '' })).toEqual({})
   ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: 'Tool results 30k' })).toBeUndefined()
