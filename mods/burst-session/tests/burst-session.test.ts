@@ -397,7 +397,7 @@ test("Claude Code's compaction is answered with Burst's summary: no summary requ
   // The cut is the start of the reply, not of its tool call: "Looking." is kept.
   expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h5', 'h6', 'h7', 'h8'])
   expect(r.messages[0]).toEqual({ role: 'user', text: LEAD, toolUses: [] })
-  expect(toasts).toContain("Burst's summary handed to Claude Code: 5 messages replaced, no summary request")
+  expect(toasts).toContain("Compacted with Burst's summary: 5 messages replaced, nothing written by Claude Code")
 })
 
 test('a hand-off that does not fit the transcript, or is turned off, leaves the compaction to Claude Code', async ($, on) => {
@@ -493,6 +493,19 @@ test('asked for by the mod, a summary that does not fit compacts nothing', async
   expect(calls).toEqual([])
 })
 
+test('/compact-async-full with no summary written yet says so and runs nothing', async ($, on) => {
+  const toasts: string[] = []
+  const calls: string[] = []
+  const world: World = { files: { '/etc/hosts': HOSTS_IN } }
+  stubs(on, [null], toasts, [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  await $.command.run({ command: 'compact-async-full', args: '' })
+  await new Promise((r) => setTimeout(r, 0))
+  expect(calls).toEqual([])
+  expect(toasts.some((t) => t.includes('Burst holds no summary of this session'))).toBe(true)
+})
+
 test("/compact-async-full hands Burst's summary over with Burst in the path, and never has Claude Code write one", async ($, on) => {
   const toasts: string[] = []
   const calls: string[] = []
@@ -510,12 +523,18 @@ test("/compact-async-full hands Burst's summary over with Burst in the path, and
   await new Promise((r) => setTimeout(r, 0))
   expect((await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT })).messages[0].text).toBe(LEAD)
   expect(calls).toEqual(['/compact', '/compact'])
-  // No summary held: it says so and runs nothing.
+  // Asked for again while the session opens with that summary: said as what it is.
+  await $.command.run({ command: 'compact-async-full', args: '' })
+  await new Promise((r) => setTimeout(r, 0))
+  const taken = [{ role: 'user', text: LEAD, toolUses: [], handle: 'l0' }, ...TRANSCRIPT.slice(5)]
+  expect(String((await $.session.compact({ trigger: 'manual', messages: taken })).skip)).toContain('Already compacted')
+  // No summary on offer after one was taken in: the same, and nothing runs.
   world.files = { '/etc/hosts': HOSTS_IN }
   await $.command.run({ command: 'compact-async-full', args: '' })
   await new Promise((r) => setTimeout(r, 0))
-  expect(calls).toEqual(['/compact', '/compact'])
-  expect(toasts.some((t) => t.includes('Burst holds no summary of this session'))).toBe(true)
+  expect(calls).toEqual(['/compact', '/compact', '/compact'])
+  expect(toasts.some((t) => t.includes('Already compacted'))).toBe(true)
+  expect(toasts.some((t) => t.includes('Burst holds no summary of this session'))).toBe(false)
 })
 
 test('the size the gateway last reported counts once the gateway is gone', async ($, on) => {
