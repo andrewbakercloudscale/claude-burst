@@ -1,5 +1,7 @@
 # Claude Burst: the missing control plane for Claude Code (and Codex)
 
+Written and designed by [Andrew Baker](https://github.com/andrewbakercloudscale), Group Chief Information Officer at [Capitec Bank](https://www.capitecbank.co.za/). Blog: [andrewbaker.ninja](https://andrewbaker.ninja/). LinkedIn: [andrew-baker-ninja](https://www.linkedin.com/in/andrew-baker-ninja/).
+
 > **Broken?** Open the [**support console**](#support-console) at http://127.0.0.1:7789/: what happened, the log around it, and Restart and Repair buttons, up even when the gateway is not. Or paste one line into Terminal: [**Repair**](#repair-burst) fixes the common problems, [**Diagnose**](#diagnose-burst) copies a report to the clipboard. Also: [**Update and reinstall**](#update-and-reinstall-burst) · [**Bypass Burst**](#bypass-burst)
 
 The ops layer for running Claude Code all day on a Mac, and now OpenAI's Codex too: subscription-first routing with overflow to GLM/OpenRouter/Bedrock, pauseless compaction that learns the right size for each repository, session coordination and handover across parallel sessions, lid-shut keep-awake with automatic hotspot join for Remote Control, a dashboard for cost, health and guards, and an audit of every alert and action.
