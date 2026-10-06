@@ -868,14 +868,14 @@ func (s *Server) handleForce(w http.ResponseWriter, r *http.Request) {
 	if req.Model != "" {
 		until := s.gateway.ForceModelOverflow(req.Model, time.Duration(req.Minutes)*time.Minute, "forced from the admin UI")
 		writeJSON(w, map[string]string{
-			"ok": fmt.Sprintf("%s now goes to %s (%s) until %s; other models stay on the primary. Clear it any time with Back to primary.",
+			"ok": fmt.Sprintf("%s now goes to %s (%s) until %s; other models stay on the primary. Clear it any time with Force primary.",
 				req.Model, cfg.Secondary.Provider, cfg.Secondary.Model, until.Format("15:04:05")),
 		})
 		return
 	}
 	until := s.gateway.ForceOverflow(time.Duration(req.Minutes)*time.Minute, "forced from the admin UI")
 	writeJSON(w, map[string]string{
-		"ok": fmt.Sprintf("inference now goes to %s (%s) until %s. Clear it any time with Back to primary.",
+		"ok": fmt.Sprintf("inference now goes to %s (%s) until %s. Clear it any time with Force primary.",
 			cfg.Secondary.Provider, cfg.Secondary.Model, until.Format("15:04:05")),
 	})
 }

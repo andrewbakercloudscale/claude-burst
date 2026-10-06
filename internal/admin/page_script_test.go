@@ -112,7 +112,37 @@ out({
 	}
 }
 
-// Back to primary is always in the header; it is enabled exactly while
+// Force secondary in the header is greyed out with the reason while there is
+// no secondary or everything is on it already, and otherwise says what it
+// will send where and for how long.
+func TestForceTopSaysWhatItWillDo(t *testing.T) {
+	type st struct {
+		Disabled bool   `json:"disabled"`
+		Title    string `json:"title"`
+	}
+	var got map[string]st
+	runPageJS(t, []string{"forceTopState"}, `
+out({
+  none: forceTopState({secondary_ready: false}, "15 minutes", ""),
+  ready: forceTopState({secondary_ready: true}, "15 minutes", ""),
+  already: forceTopState({secondary_ready: true, overflow: true}, "15 minutes", ""),
+  one: forceTopState({secondary_ready: true, overflow: true}, "1 hour", "claude-sonnet-5"),
+});`, &got)
+	if !got["none"].Disabled || !strings.Contains(got["none"].Title, "No secondary") {
+		t.Errorf("no secondary: %+v", got["none"])
+	}
+	if got["ready"].Disabled || !strings.Contains(got["ready"].Title, "every model to the secondary for 15 minutes") {
+		t.Errorf("ready: %+v", got["ready"])
+	}
+	if !got["already"].Disabled || !strings.Contains(got["already"].Title, "already") {
+		t.Errorf("everything on the secondary: %+v", got["already"])
+	}
+	if got["one"].Disabled || !strings.Contains(got["one"].Title, "claude-sonnet-5 to the secondary for 1 hour") {
+		t.Errorf("one model: %+v", got["one"])
+	}
+}
+
+// Force primary is always in the header; it is enabled exactly while
 // something goes to the secondary, and its tooltip says what it will do.
 func TestResetTopEnabledOnlyWhileOnSecondary(t *testing.T) {
 	now := time.Now()
