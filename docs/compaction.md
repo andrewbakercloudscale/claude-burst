@@ -4,6 +4,8 @@
 
 **Claude Code's `/compact` stops the session while it summarises. Burst's compaction never does.**
 
+**And it learns when.** [Intelligent Compaction Mode](#intelligent-compaction-mode-a-limit-learned-for-each-repository) finds the cheapest size to compact at for each repository, from that repository's own compactions, and adjusts it daily.
+
 **What is pauseless compaction?** Claude Code has no pauseless compaction mode of its own: its `/compact`, and the auto-compact near the end of its context window, stop the session while the conversation is summarised. Pauseless compaction is Claude Burst's alternative. A local gateway between Claude Code and Anthropic writes the summary in a background request while you keep working, then swaps it in on your next prompt. Claude Code is unchanged, your place in the conversation is kept, and there is nothing to type: it fires by itself, or on demand with [`/compact-async`](#compact-now-compact-async). Turn it on in the dashboard under **Pauseless Compaction**.
 
 **You see it in Claude Code itself.** A line appears under the prompt you send, for example `⚡ Burst compaction: done, 88% smaller: 666k → 78k (1074 messages summarised)`. There are lines for when a summary starts, when it is ready, when it has cut the context, and when it fails or no longer fits. They come from a hook the dashboard installs (on by default, with a switch): under each prompt (`UserPromptSubmit`), and after each tool call inside a long turn (`PostToolUse`). A summary that is ready mid-turn waits for your next prompt, and the hook says so once, so a long turn never looks like compaction has not fired. Claude does not see these lines, so they cost no context.
@@ -179,6 +181,12 @@ one both replaced the transcript with the handed summary, the session answered f
 and no summary request was made.
 
 ## Intelligent Compaction Mode: a limit learned for each repository
+
+**Burst works out when to compact each repository, from that repository's own history, and shows its reasoning.** Compacting early costs summaries; compacting late costs every turn in between. Where the two add up to the least is different for every repository, and it moves as the work changes.
+
+![Intelligent Compaction Mode on the dashboard: each repository with the size in force, the target, what a compaction leaves, growth per turn, cost, payback, the compactions that lost money, and the reason in words](screenshots/intelligent-compaction.png)
+
+In the screenshot `claude-burst` has 35 compactions in its 14 days: one leaves 64k and costs $0.39, and the context grows 1.4k a turn, so the cheapest size is 132k. The 20% buffer makes that 158k, and three compactions that lost money add 10% each: a target of 206k, against the fixed 300k. The size in force is 250k: it moves towards the target by a tenth a day at most, and a compaction that loses money lifts it by a tenth at once (it was 225k the day before). The other three repositories have had 2 of the 3 compactions needed, so they stay on the fixed size and say so.
 
 One *Compact at* does not suit every repository. With **Mode** set to **Intelligent Compaction Mode** (dashboard, Pauseless Compaction), Burst learns a *Compact at* for each repository from the last 14 days of that repository's own compactions:
 
