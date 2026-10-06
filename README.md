@@ -175,8 +175,8 @@ With v0.11 or later, `burst-off` (on your PATH) does the same as the bypass scri
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.20.6 at the time of writing)
-git clone --branch v0.20.6 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.20.7 at the time of writing)
+git clone --branch v0.20.7 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 # 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
