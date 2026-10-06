@@ -531,6 +531,16 @@ func (s *Server) notePrimaryAnswered(slot string) {
 	s.alertNetworkUp()
 }
 
+// webDownGrace is how recent a reply from the primary must be to overrule a
+// control request that failed: a reply is traffic passing.
+const webDownGrace = 15 * time.Second
+
+func (s *Server) primaryAnsweredWithin(d time.Duration) bool {
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	return !s.health.LastAnswer.IsZero() && time.Since(s.health.LastAnswer) < d
+}
+
 func (s *Server) notePrimaryFailure(slot string, err error) {
 	if slot != "primary" || err == nil {
 		return
@@ -1186,6 +1196,16 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
+		}
+		if np.webDown && s.primaryAnsweredWithin(webDownGrace) {
+			// The control request failed, but Anthropic answered another
+			// request moments ago: the network is slow, not cut. On
+			// 2026-10-06 a congested phone hotspot took 7 to 12 seconds over
+			// replies that take half a second, the control request ran out
+			// its 4, and "connections from this Mac are cut" went up on
+			// screen in the same second a reply arrived.
+			s.logger.Printf("req=%s network slow, not blocked route=%s: control HTTPS failed (%v) but the primary answered within %s", rid, p.Name(), np.webErr, webDownGrace)
+			np.webDown = false
 		}
 		if np.webDown && !isClientCancellation(err) {
 			// Names resolve but nothing gets through, Anthropic or not: a
