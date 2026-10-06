@@ -35,10 +35,11 @@ const modPlugin = "burst-session@burst"
 // session that has left Burst is compacted with it. The mod reads this file
 // itself, since the option matters most when the gateway is not running.
 //
-// HandoffInPath is off by default: from 800k held, a session is compacted
-// that way with Burst still in the path. It has costs Burst working
-// normally does not: the turn after it is read uncached, and the replaced
-// messages are gone from Claude Code's copy.
+// HandoffInPath is on by default as well: from 800k held, a session is
+// compacted that way with Burst still in the path, since past the 1M window
+// it can no longer leave Burst. It can be turned off because it has costs
+// Burst working normally does not: the turn after it is read uncached, and
+// the replaced messages are gone from Claude Code's copy.
 type modSettings struct {
 	Toasts        bool `json:"toasts"`
 	Handoff       bool `json:"handoff"`
@@ -50,7 +51,7 @@ func modSettingsPath() string {
 }
 
 func readModSettings() modSettings {
-	m := modSettings{Toasts: true, Handoff: true}
+	m := modSettings{Toasts: true, Handoff: true, HandoffInPath: true}
 	if b, err := os.ReadFile(modSettingsPath()); err == nil {
 		_ = json.Unmarshal(b, &m)
 	}

@@ -542,20 +542,21 @@ test('no hand-off while Burst is in the path, the history is short, or nothing s
 
 const MOD_FILE = '/Users/me/.config/claude-burst/mod.json'
 
-test('a history near the 1M window is compacted with Burst in the path only where the dashboard turns that on, once', async ($, on) => {
+test('a history near the 1M window is compacted with Burst in the path unless the dashboard turns that off, once', async ($, on) => {
   const calls: string[] = []
-  // Off by default: it has costs with Burst working.
-  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 994000 }), '/etc/hosts': HOSTS_IN } }
+  // Turned off on the dashboard: it has costs with Burst working.
+  const off = JSON.stringify({ handoff_in_path: false })
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 994000 }), '/etc/hosts': HOSTS_IN, [MOD_FILE]: off } }
   const clock = stubs(on, [null], [], [], false, [], {}, world)
   core(on, calls)
   await start($)
   await clock.advance(5000)
   expect(calls).toEqual([])
-  const inPath = JSON.stringify({ handoff_in_path: true })
-  world.files = { [HANDOFF_FILE]: handoff({ raw: 799999 }), '/etc/hosts': HOSTS_IN, [MOD_FILE]: inPath }
+  // On by default: no mod.json, or one that does not name the option.
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 799999 }), '/etc/hosts': HOSTS_IN }
   await clock.advance(5000)
   expect(calls).toEqual([])
-  world.files = { [HANDOFF_FILE]: handoff({ raw: 800000 }), '/etc/hosts': HOSTS_IN, [MOD_FILE]: inPath }
+  world.files = { [HANDOFF_FILE]: handoff({ raw: 800000 }), '/etc/hosts': HOSTS_IN, [MOD_FILE]: '{"toasts":true}' }
   await clock.advance(5000)
   await clock.advance(5000)
   expect(calls).toEqual(['/compact'])
@@ -564,7 +565,7 @@ test('a history near the 1M window is compacted with Burst in the path only wher
 test('a session opened again is compacted with the summary as it opens, in the path, and a reload of the mod is not a restart', async ($, on) => {
   const calls: string[] = []
   const store: Record<string, unknown> = {}
-  // 600k: under what the in-path option needs, and that option is off.
+  // 600k: under what the in-path option needs.
   const world: World = { files: { [HANDOFF_FILE]: handoff({ raw: 600000 }), '/etc/hosts': HOSTS_IN }, pid: '4242' }
   const clock = stubs(on, [null], [], [], false, [], store, world)
   core(on, calls)
