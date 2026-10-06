@@ -89,7 +89,7 @@ toggle that turns the whole thing off live, without a config edit or a restart, 
 which models are currently refused and where their traffic is actually going. `claude-burst
 status` prints the same thing as `refused:` lines.
 
-The forced window (`claude-burst force-secondary`, or **Force → secondary** on the
+The forced window (`claude-burst force-secondary`, or **Force secondary** on the
 dashboard) is still account-wide and deliberately bypasses the chain: its only purpose is to
 exercise the secondary, and quietly serving a different Claude model instead would defeat
 the only test that path ever gets.

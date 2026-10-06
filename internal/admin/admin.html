@@ -889,9 +889,10 @@
     <span id="routeBadge"></span>
     <!-- Beside the route badge, always there so it can be found: on
          2026-09-30 it was four cards down under Actions while Opus went to
-         GLM. Enabled only while something is on the secondary; otherwise it
-         says why it is greyed out. -->
-    <button class="warn" id="resetTop" style="margin-left:10px" disabled title="Already on primary: nothing is going to the secondary">↩ Back to primary</button>
+         GLM. Each is enabled only while it would change something; otherwise
+         it says why it is greyed out. -->
+    <button class="warn" id="resetTop" style="margin-left:10px" disabled title="Already on primary: nothing is going to the secondary">↩ Force primary</button>
+    <button class="warn" id="forceTop" disabled title="No secondary with a key is set up, so there is nothing to force traffic onto">⇉ Force secondary</button>
     <span class="spacer"></span>
     <!-- Shown only while Claude Burst is actually in the traffic path, where
          the Install panel below is hidden: with nothing to fix, a permanent
@@ -1818,13 +1819,13 @@
             <option value="claude-haiku-4-5">claude-haiku-4-5 only</option>
           </select>
         </div>
-        <button class="warn" id="force">⇉ Force → secondary</button>
-        <button class="primary" id="reset">↩ Back to primary</button>
+        <button class="warn" id="force">⇉ Force secondary</button>
+        <button class="primary" id="reset">↩ Force primary</button>
         <button class="warn" id="restart">⟳ Restart gateway</button>
         <button class="success" id="testConn">⇌ Test connection</button>
         <button id="viewLog">▤ View log file</button>
       </div>
-      <div class="hint" style="margin-top:6px"><strong>Which models</strong>: forcing a single model sends only requests for that model to the secondary; everything else stays on your subscription. That is how to test overflow pruning on purpose: run a test session with <code>claude --model claude-sonnet-5</code> while your normal sessions carry on untouched. Back to primary clears it.</div>
+      <div class="hint" style="margin-top:6px"><strong>Which models</strong>: forcing a single model sends only requests for that model to the secondary; everything else stays on your subscription. That is how to test overflow pruning on purpose: run a test session with <code>claude --model claude-sonnet-5</code> while your normal sessions carry on untouched. Force primary clears it.</div>
       <div class="hint" style="margin-top:6px">Test connection checks whether Claude Code's real traffic is actually reaching this gateway right now. The config above can look correct while requests quietly go straight to Anthropic instead.</div>
       <div id="actNote"></div>
 
@@ -2353,6 +2354,9 @@ function renderActiveBadge(s, verdict) {
   const rt = resetTopState(s, now);
   $("resetTop").disabled = rt.disabled;
   $("resetTop").title = rt.title;
+  const ft = forceTopState(s, $("forceMins").selectedOptions[0].textContent, $("forceModel").value);
+  $("forceTop").disabled = ft.disabled;
+  $("forceTop").title = ft.title;
   $("routeBadge").innerHTML = routeBadgeHTML(s, verdict, now);
 }
 
@@ -2366,7 +2370,15 @@ function secondaryModels(s, now) {
     .filter(r => Date.parse(r.until) > now).map(r => r.model);
 }
 
-// resetTopState: the header's Back to primary is always there, and enabled
+// forceTopState: the header's Force secondary does what the one under
+// Actions does, with the time and models chosen there, and says so.
+function forceTopState(s, forLabel, model) {
+  if (!s.secondary_ready) return {disabled: true, title: "No secondary with a key is set up, so there is nothing to force traffic onto"};
+  if (s.overflow && !model) return {disabled: true, title: "Every model is going to the secondary already"};
+  return {disabled: false, title: "Send " + (model || "every model") + " to the secondary for " + forLabel + " (the time and the models are chosen under Actions)"};
+}
+
+// resetTopState: the header's Force primary is always there, and enabled
 // only while something is going to the secondary.
 function resetTopState(s, now) {
   const onSecondary = secondaryModels(s, now);
@@ -3600,7 +3612,18 @@ $("resetTop").onclick = async () => {
   b.disabled = true;
   try { await post("/api/reset"); b.textContent = "\u2713 Back on primary"; }
   catch (e) { b.textContent = "\u26a0 " + e.message; }
-  setTimeout(() => { b.textContent = "\u21a9 Back to primary"; refresh(); }, 2500);
+  setTimeout(() => { b.textContent = "\u21a9 Force primary"; refresh(); }, 2500);
+};
+$("forceTop").onclick = async () => {
+  const b = $("forceTop");
+  b.disabled = true;
+  try {
+    const r = await post("/api/force", {minutes: parseInt($("forceMins").value, 10), model: $("forceModel").value});
+    note($("actNote"), "warn", r.ok);
+    $("actNote").dataset.overflowClaim = "1";
+    b.textContent = "\u2713 On secondary";
+  } catch (e) { b.textContent = "\u26a0 " + e.message; }
+  setTimeout(() => { b.textContent = "\u21c9 Force secondary"; refresh(); }, 2500);
 };
 
 $("restart").onclick = async () => {
