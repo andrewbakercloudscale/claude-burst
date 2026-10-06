@@ -249,6 +249,9 @@ if [[ -x "$TARGET" ]] && { [[ "$(cat "$SHA_FILE" 2>/dev/null)" == "$BUILD_SHA" ]
   zsh "$ROOT/scripts/update-mod.sh"
   # burst-off is a copy of rollback.sh: refresh it with every deploy.
   zsh "$ROOT/scripts/install-burst-off.sh"
+  # The Claude Burst app (Spotlight, Dock) runs the installed binary: write
+  # it on a Mac that predates it. Never fails the deploy.
+  "$TARGET" app install >/dev/null || log "WARNING: the Claude Burst app was not installed; run: claude-burst app install"
   # The support console runs the installed binary: restart it on the new one
   # (and install it on a Mac that predates it). Never fails the deploy.
   zsh "$ROOT/scripts/install-console.sh" >/dev/null || log "WARNING: the support console did not restart; run scripts/install-console.sh"
@@ -361,6 +364,9 @@ if wait_healthy; then
   zsh "$ROOT/scripts/update-mod.sh"
   # burst-off is a copy of rollback.sh: refresh it with every deploy.
   zsh "$ROOT/scripts/install-burst-off.sh"
+  # The Claude Burst app (Spotlight, Dock) runs the installed binary: write
+  # it on a Mac that predates it. Never fails the deploy.
+  "$TARGET" app install >/dev/null || log "WARNING: the Claude Burst app was not installed; run: claude-burst app install"
   # The support console runs the installed binary: restart it on the new one
   # (and install it on a Mac that predates it). Never fails the deploy.
   zsh "$ROOT/scripts/install-console.sh" >/dev/null || log "WARNING: the support console did not restart; run scripts/install-console.sh"
