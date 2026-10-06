@@ -12,7 +12,7 @@ open http://127.0.0.1:7788
 
 It binds loopback only and needs no login (see [the admin UI](#the-local-admin-ui) for how it is protected). Change the address with `claude-burst configure --admin-listen 127.0.0.1:PORT`, turn it off with `--admin-listen off`, or give it a friendlier name with [a friendlier admin URL](#a-friendlier-admin-url).
 
-![Dashboard overview: health checks, routing, requests, sessions, tokens and spend, and daily activity](screenshots/overview.png)
+![Dashboard overview: health checks, the totals for 14 days, what needs attention and the setup tests](screenshots/overview.png)
 
 Three tabs at the top of the menu split the page: **Claude** (Claude Code: everything below), **[Codex](codex.md)** (Codex's routing, plan limits, context per session and requests), and **General** (this Mac and Burst itself: Finder shortcuts, lid and hotspot, notifications, Guards, Audit, Actions, Advanced). A link to a section on another tab, such as a check pointing at Guards, switches to that tab. The tab you last used is remembered.
 
@@ -34,7 +34,7 @@ Every control section says where it is saved and when it applies, as a chip besi
 
 A **Needs attention** list above the overview collects everything not doing what it is set to do, each linking to its section: a guard not running, handover hooks half installed, the lid setting not applied as set, another program keeping the Mac awake, a failed usage panel install or removal, and models served without a price.
 
-![Analytics: latency, errors, spend by model and spend by repository, each in its own panel](screenshots/analytics.png)
+![Analytics: latency and errors, compaction savings by day and by repository, spend by model and spend by repository. Example repository names](screenshots/analytics.png)
 
 Screenshots are of a real dashboard with session ids, repository names and dollar figures replaced.
 
