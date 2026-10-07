@@ -526,8 +526,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		route = "SECONDARY"
 	}
 
-	total, _ := metrics.Summarize(s.metricsPath, time.Time{})
-	today, _ := metrics.Summarize(s.metricsPath, time.Now().Add(-24*time.Hour))
+	total, _ := cachedScan("total|"+s.metricsPath, func() (metrics.Summary, error) { return metrics.Summarize(s.metricsPath, time.Time{}) })
+	today, _ := cachedScan("today|"+s.metricsPath, func() (metrics.Summary, error) {
+		return metrics.Summarize(s.metricsPath, time.Now().Add(-24*time.Hour))
+	})
 
 	mode := cfg.Intercept.Mode
 	if mode == "" {

@@ -510,10 +510,18 @@ func plainReason(claim, reason string) string {
 // addFailoverNotice queues a line for Claude Code's window, shown at each
 // session's next prompt: a switch to the secondary spends money, so it is
 // never silent.
+// maxFailoverNotices is how many undelivered lines are kept.
+const maxFailoverNotices = 20
+
 func (s *Server) addFailoverNotice(line string) {
 	s.failoverMu.Lock()
 	defer s.failoverMu.Unlock()
 	s.failoverNotices = append(s.failoverNotices, line)
+	// They wait for the next request to show them. With no session open
+	// nothing takes them, so only the newest are kept.
+	if n := len(s.failoverNotices); n > maxFailoverNotices {
+		s.failoverNotices = append([]string(nil), s.failoverNotices[n-maxFailoverNotices:]...)
+	}
 }
 
 // PrimaryHealth is what the dashboard needs to say "Anthropic is not

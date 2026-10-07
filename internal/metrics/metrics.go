@@ -713,7 +713,10 @@ const StatusClientClosed = 499
 
 // offlineNote opens the note of a request the gateway answered itself with
 // a 502 because this Mac had no network (the router writes it).
-const offlineNote = "local network unavailable"
+// The three notes the router writes for it share this opening: unavailable
+// (no DNS), slow, and not passing traffic (a captive portal, a phone out of
+// data). The last two were counted as real failures until 7 Oct 2026.
+const offlineNote = "local network "
 
 // IsOffline is a request refused here because the Mac was offline. It says
 // nothing about Burst or the provider: with the lid shut or between

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -47,6 +48,11 @@ func runPageJS(t *testing.T, funcs []string, body string, into any) {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
+		// In CI a skip is a pass nobody sees: the dashboard's logic would
+		// go untested for as long as the runner had no Node.
+		if os.Getenv("CI") != "" {
+			t.Fatal("node is not available in CI, so the dashboard's JavaScript is not being tested")
+		}
 		t.Skip("node not available")
 	}
 	var b strings.Builder

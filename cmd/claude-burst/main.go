@@ -651,6 +651,10 @@ func status() {
 	if err != nil {
 		fatal(err)
 	}
+	// What is running, asked of it: everything below is read from the files
+	// and is the same whether or not a gateway is up, which made "status"
+	// say PRIMARY with nothing running at all.
+	fmt.Println(runningLine(cfg))
 	if pid := runningPassthrough(); pid > 0 {
 		fmt.Printf("pass-through: running (pid %d): Burst is off, and sessions started while it was on go straight to %s\n", pid, passthroughTarget(cfg))
 	}
@@ -699,6 +703,34 @@ func status() {
 		fmt.Println("shunt: a token-shunting hook from an earlier install is still in settings.json (the feature was removed). Run: claude-burst shunt disable")
 	}
 	reportKeepAwake(cfg)
+}
+
+// runningLine says whether a gateway is answering and which version it is,
+// beside this binary's: after an upgrade that did not restart it, or a
+// rollback, the two differ and nothing else says so.
+func runningLine(cfg config.Config) string {
+	if cfg.AdminListen == "" || cfg.AdminListen == "off" {
+		return "running: unknown (the dashboard is off, so the gateway cannot be asked); this binary is " + version
+	}
+	u, err := adminURL(cfg.AdminListen, "/api/state")
+	if err != nil {
+		return "running: unknown (" + err.Error() + "); this binary is " + version
+	}
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(u)
+	if err != nil {
+		return "running: NO gateway is answering on " + cfg.AdminListen + " (claude-burst open shows why); this binary is " + version
+	}
+	defer resp.Body.Close()
+	var st struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&st); err != nil || st.Version == "" {
+		return fmt.Sprintf("running: something answers on %s (HTTP %d) but not as Claude Burst; this binary is %s", cfg.AdminListen, resp.StatusCode, version)
+	}
+	if st.Version != version {
+		return "running: version " + st.Version + ", which is NOT this binary (" + version + "): restart the gateway to run it"
+	}
+	return "running: version " + st.Version
 }
 
 // reportIntercept surfaces the facts that decide whether transparent mode is

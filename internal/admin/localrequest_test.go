@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -101,5 +103,33 @@ func TestMovingAStoredKeyToANewHostNeedsTouchID(t *testing.T) {
 	}
 	if code := post("https://other.example/v4", "sk-second"); code != http.StatusOK || asked != "" {
 		t.Fatalf("a new host with its own key typed in: status %d, asked %q", code, asked)
+	}
+}
+
+// Every API route answers a POST without the mutation header with a
+// refusal: 403 from mutating, or 405 from readOnly. A route registered with
+// neither would let any page on this Mac's browser change things with a
+// plain form post. The routes are read from the source, so a new one is
+// covered the day it is added.
+func TestNoRouteAcceptsAPostWithoutTheMutationHeader(t *testing.T) {
+	s, _, _ := newSecondaryTestServer(t)
+	c, _, _ := newTestConsole(t)
+	route := regexp.MustCompile(`mux\.HandleFunc\("(/api/[^"]+)"`)
+	for file, h := range map[string]http.Handler{"admin.go": s.Handler(), "console.go": c.Handler()} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths := route.FindAllStringSubmatch(string(src), -1)
+		if len(paths) < 5 {
+			t.Fatalf("%s: found %d routes, the pattern no longer matches how they are registered", file, len(paths))
+		}
+		for _, m := range paths {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, localRequest("POST", "http://127.0.0.1:7788"+m[1], strings.NewReader("{}")))
+			if w.Code != http.StatusForbidden && w.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s: a POST without the header got %d, want 403 or 405", file, m[1], w.Code)
+			}
+		}
 	}
 }

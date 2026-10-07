@@ -309,6 +309,17 @@ RESULT="$(curl --connect-timeout 8 -sS -o /dev/null -w '%{http_code}|%{remote_ip
 HTTP="${RESULT%%|*}"
 REMOTE="${RESULT#*|}"
 
+# The network is half of it. Claude Code in base-url mode is sent to the
+# gateway by settings.json, and a rollback that left that line behind points
+# every new session at a port nothing listens on, with this check green.
+LEFT="$(grep -nE '"ANTHROPIC_BASE_URL" *: *"https?://(127\.0\.0\.1|localhost)' "$HOME/.claude/settings.json" 2>/dev/null || true)"
+if [[ -n "$LEFT" ]] && ! pgrep -f 'claude-burst passthrough' >/dev/null 2>&1; then
+  echo "WARNING: ~/.claude/settings.json still sends Claude Code to this Mac, and nothing stands in for the gateway:" >&2
+  echo "  $LEFT" >&2
+  echo "  Remove that ANTHROPIC_BASE_URL line (or run: claude-burst disable), then start a new session." >&2
+  exit 2
+fi
+
 if [[ "$HTTP" != "000" && -n "$REMOTE" && "$REMOTE" != 127.* ]]; then
   echo "verified: api.anthropic.com reachable directly (HTTP $HTTP via $REMOTE)"
   echo "rollback complete: sessions already open keep working, new ones go straight to Anthropic"
