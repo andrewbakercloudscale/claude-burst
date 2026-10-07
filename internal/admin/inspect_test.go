@@ -48,3 +48,24 @@ func TestInspectRemoveRefusesUnknownItems(t *testing.T) {
 		t.Errorf("stored %v", got)
 	}
 }
+
+// Prune needs a session and a word (or restore), and a session with no
+// request seen has nothing to prune.
+func TestInspectPruneRefusesWhatItCannotDo(t *testing.T) {
+	s := newTestServer(t)
+	h := s.Handler()
+	for body, want := range map[string]int{
+		`{"what":"repo"}`:                http.StatusBadRequest,
+		`{"session":"S","what":"  "}`:    http.StatusBadRequest,
+		`{"session":"S","what":"repo"}`:  http.StatusNotFound,
+		`{"session":"S","restore":true}`: http.StatusOK,
+	} {
+		req := localRequest(http.MethodPost, "http://127.0.0.1/api/inspect/prune", strings.NewReader(body))
+		req.Header.Set(mutationHeader, "1")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("%s: %d %s, want %d", body, rec.Code, rec.Body, want)
+		}
+	}
+}

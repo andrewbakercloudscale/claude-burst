@@ -108,6 +108,8 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 	// Only where the request would go to Anthropic: the secondary has no
 	// thread to lose, and takes a request that continues one as it comes.
 	primary := !s.forcedOverflow(now) && !s.modelInOverflow(requestModel(body), now)
+	sid := in.Header.Get("x-claude-code-session-id")
+	wanted := s.inspect.wanted(sid)
 	s.compaction.mu.Lock()
 	from := s.compaction.threads[prev]
 	key := from.key
@@ -147,6 +149,11 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 		gap, why = askToSwapGap, "its summary is ready to swap in"
 	case st.next == "" && st.lastContext >= cfg.CompactAtTokens && (st.startedAt.IsZero() || now.Sub(st.startedAt) >= window):
 		gap, why = askToStartGap, fmt.Sprintf("it holds %dk, over its limit of %dk", st.lastContext/1000, cfg.CompactAtTokens/1000)
+	case wanted != "":
+		// /burst-prune and /burst-dump: what was removed is still in the
+		// history the API holds, and the inspector has only what was last
+		// sent whole.
+		gap, why = askToSwapGap, wanted
 	}
 	if why != "" && (ask == nil || now.Sub(ask.at) >= gap) {
 		if s.compaction.asks == nil {
@@ -157,6 +164,9 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 			s.compaction.asks[prefix].orphan = key
 		}
 		ci.replay = why
+		// Whatever the reason, the history that comes back serves the
+		// inspector too.
+		s.inspect.asked(sid)
 		if behind {
 			// What comes back is sent with the summary: its size is not
 			// known until the response, and the thread's is no longer it.

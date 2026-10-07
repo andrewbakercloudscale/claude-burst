@@ -1062,7 +1062,7 @@
       <div class="pc-chart" style="margin:0;border:0">
         <div class="pc-chart-head"><h3>Context cost per day</h3><span class="sum" id="stSum"></span>
           <span class="legend"><span><i style="background:var(--st-default)"></i><span id="stLegDefault">Claude Code alone</span></span><span><i style="background:var(--st-fixed)"></i><span id="stLegFixed">Fixed Compact at</span></span><span><i style="background:var(--st-actual)"></i>Burst, as it ran</span></span></div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:2px 0 8px">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 16px 0">
           <label class="hint" for="stRepo">Repository</label>
           <select id="stRepo" aria-label="Repository to chart"></select>
           <label class="hint" for="stMetric">Show</label>
@@ -1070,10 +1070,10 @@
         </div>
         <div class="chart-wrap" id="stChartWrap"><div id="stChart"></div><div class="chart-tip" id="stTip"></div></div>
         <details><summary>Show as a table</summary><div id="stChartTable"></div></details>
-        <div class="hint" style="margin-top:8px" id="stNote"></div>
+        <div class="hint" style="padding:0 16px 12px" id="stNote"></div>
       </div>
       <div class="pc-chart" style="margin:0;border:0;border-top:1px solid var(--border);border-radius:0">
-        <div class="pc-chart-head"><h3>By repository</h3><span class="sum" id="stRepoSum"></span></div>
+        <div class="pc-chart-head" style="padding-bottom:10px"><h3>By repository</h3><span class="sum" id="stRepoSum"></span></div>
       </div>
       <div id="stRepoSplit" style="padding-bottom:6px"></div>
   </section>

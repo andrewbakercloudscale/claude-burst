@@ -706,3 +706,95 @@ test('a session still over its limit after the summary is compacted at once, sma
   await clock.advance(12000)
   expect(calls).toEqual(['/compact'])
 })
+
+const DUMP_PANE = { ...PANE, requestId: 'burst-dump', props: { ...PANE.props, title: 'Burst context' } } as const
+
+function report() {
+  return {
+    session: 'S1', model: 'claude-opus-5-5', at: '2026-10-07T16:42:00+02:00', context: 60000, estimate: false, prompts: 2, flagged: 1,
+    items: [
+      { group: 'System prompt', name: 'System prompt, part 1', bytes: 40000, tokens: 10000, preview: 'You are Claude Code' },
+      { group: 'Your prompts', name: 'Prompt', turn: 1, turns_ago: 1, bytes: 400, tokens: 100, preview: 'fix the panel in other-repo' },
+      { group: "Claude's replies", name: 'Call: Read /work/other-repo/panel.js', turn: 1, turns_ago: 1, bytes: 80, tokens: 20, preview: '{"file_path":"/work/other-repo/panel.js"}' },
+      { group: 'Tool results', name: 'Read /work/other-repo/panel.js', turn: 1, turns_ago: 1, bytes: 160000, tokens: 40000, preview: 'const a = 1', id: 'ab12', removable: true, flags: ['read again later: this copy is out of date'] },
+      { group: 'Tool results', name: 'Bash: go test ./...', turn: 2, bytes: 39520, tokens: 9880, preview: 'ok', id: 'cd34', removable: true },
+    ],
+  }
+}
+
+test('/burst-dump lists everything Burst last sent, largest part first, and a word narrows it', async ($, on) => {
+  const urls: string[] = []
+  const world: World = { commands: [] }
+  stubs(on, [mod(), report(), report()], [], urls, false, [], {}, world)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await start($)
+  expect(world.commands).toContain('burst-dump')
+  expect(world.commands).toContain('burst-prune')
+  expect(await $.command.run({ command: 'burst-dump', args: '' })).toEqual({})
+  expect(urls[1]).toBe('http://127.0.0.1:7788/api/inspect?session=S1')
+  let ui = await $.ui.mount(DUMP_PANE)
+  expect(await ui.find({ type: 'Text', text: /^What Burst last sent for this session, at \d\d:42: 60k tokens in 5 items\. The cache holds this$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^  Tool results +50k  83%  / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^   2    100  prompt Prompt: fix the panel in other-repo$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^   4    40k  result Read \/work\/other-repo\/panel\.js/ })).toBeDefined()
+  expect(await coloured(ui, '  read again later: this copy is out of date', 'yellow')).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^   5   9\.9k  result Bash: go test/ })).toBeDefined()
+  await ui.unmount()
+  await $.command.run({ command: 'burst-dump', args: 'Other-Repo' })
+  ui = await $.ui.mount(DUMP_PANE)
+  expect(await ui.find({ type: 'Text', text: '3 items with "other-repo" in their name or first lines, 40k tokens' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Bash: go test/ })).toBeUndefined()
+})
+
+test('/burst-dump with a number shows that item in full', async ($, on) => {
+  const urls: string[] = []
+  stubs(on, [mod(), report(), 'line one of the file'], [], urls)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await start($)
+  await $.command.run({ command: 'burst-dump', args: '4' })
+  expect(urls[2]).toBe('http://127.0.0.1:7788/api/inspect-item?session=S1&i=3')
+  const ui = await $.ui.mount(DUMP_PANE)
+  expect(await ui.find({ type: 'Text', text: 'Item 4: Read /work/other-repo/panel.js' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /line one of the file/ })).toBeDefined()
+})
+
+test('/burst-dump says so when the item is not there or the dashboard is down', async ($, on) => {
+  stubs(on, [mod(), report(), null], [])
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await start($)
+  await $.command.run({ command: 'burst-dump', args: '9' })
+  let ui = await $.ui.mount(DUMP_PANE)
+  expect(await ui.find({ type: 'Text', text: 'no item 9: this context has 5' })).toBeDefined()
+  await ui.unmount()
+  await $.command.run({ command: 'burst-dump', args: '' })
+  ui = await $.ui.mount(DUMP_PANE)
+  expect((await ui.findAll({ type: 'Text' })).some((n) => n.props && n.props.color === 'red')).toBe(true)
+})
+
+test('/burst-prune asks the gateway and toasts what it did; with no word it says how', async ($, on) => {
+  const toasts: string[] = []
+  const urls: string[] = []
+  stubs(on, [mod(), { removed: 2, detail: 'Pruned 2 items for "other-repo"' }, { restored: 2, detail: 'Put back 2 items' }, null], toasts, urls)
+  await start($)
+  expect(await $.command.run({ command: 'burst-prune', args: '' })).toEqual({})
+  expect(toasts[0]).toContain('/burst-prune <word>')
+  expect(urls.length).toBe(1)
+  await $.command.run({ command: 'burst-prune', args: 'other-repo' })
+  expect(urls[1]).toBe('http://127.0.0.1:7788/api/inspect/prune')
+  expect(toasts[1]).toBe('Pruned 2 items for "other-repo"')
+  await $.command.run({ command: 'burst-prune', args: 'undo' })
+  expect(toasts[2]).toBe('Put back 2 items')
+  await $.command.run({ command: 'burst-prune', args: 'other-repo' })
+  expect(toasts[3]).toBe('Nothing pruned: the Burst dashboard is not answering')
+})
+
+test('/burst-dump of a session on a message thread says how far behind it is and asks for the whole conversation', async ($, on) => {
+  const urls: string[] = []
+  stubs(on, [mod(), { ...report(), since: 7 }, { detail: 'ok' }], [], urls)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await start($)
+  await $.command.run({ command: 'burst-dump', args: '' })
+  expect(urls[2]).toBe('http://127.0.0.1:7788/api/inspect/refresh')
+  const ui = await $.ui.mount(DUMP_PANE)
+  expect(await coloured(ui, /^7 requests since \d\d:42 added to it and are not listed/, 'yellow')).toBe(true)
+})

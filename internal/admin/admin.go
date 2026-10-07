@@ -138,6 +138,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/inspect", s.readOnly(s.handleInspect))
 	mux.HandleFunc("/api/inspect-item", s.readOnly(s.handleInspectItem))
 	mux.HandleFunc("/api/inspect/remove", s.mutating(s.handleInspectRemove))
+	mux.HandleFunc("/api/inspect/prune", s.mutating(s.handleInspectPrune))
+	mux.HandleFunc("/api/inspect/refresh", s.mutating(s.handleInspectRefresh))
 	mux.HandleFunc("/api/automask-save", s.mutating(s.handleAutomaskSave))
 	mux.HandleFunc("/api/compaction/repo", s.mutating(s.handleCompactionRepo))
 	mux.HandleFunc("/api/compaction/drop", s.mutating(s.handleCompactionDrop))

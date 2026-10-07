@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/codex"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -156,4 +157,57 @@ func (s *Server) handleInspectRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "that item is not in the session's latest request, or cannot be removed; reload", http.StatusNotFound)
+}
+
+// handleInspectPrune removes many items from a Claude Code session's context
+// at once, chosen by a word: {"session", "what"}, or {"session", "restore":
+// true} to put back everything removed. /burst-prune in a session asks.
+func (s *Server) handleInspectPrune(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+		What    string `json:"what"`
+		Restore bool   `json:"restore"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Session == "" || (strings.TrimSpace(req.What) == "" && !req.Restore) {
+		http.Error(w, "need session and what", http.StatusBadRequest)
+		return
+	}
+	if req.Restore {
+		n, err := s.gateway.RestoreContext(req.Session)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		detail := "Nothing was removed from this session's context."
+		if n > 0 {
+			detail = "Put back " + strconv.Itoa(n) + " items: they go into this session's next request, which writes them to the cache again."
+		}
+		writeJSON(w, map[string]any{"restored": n, "detail": detail})
+		return
+	}
+	res, err := s.gateway.PruneContext(req.Session, req.What)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if res == nil {
+		http.Error(w, "no request from that session since the gateway started", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, res)
+}
+
+// handleInspectRefresh has a session's whole conversation asked for with its
+// next request, so the inspector shows a session on a message thread as it
+// is now: {"session"}. /burst-dump asks when what it shows is behind.
+func (s *Server) handleInspectRefresh(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Session == "" {
+		http.Error(w, "need session", http.StatusBadRequest)
+		return
+	}
+	s.gateway.WantHistory(req.Session, "its context was asked for (/burst-dump), and the last request seen whole is behind")
+	writeJSON(w, map[string]string{"detail": "The session's next request brings its whole conversation."})
 }
