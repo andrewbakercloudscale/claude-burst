@@ -50,11 +50,12 @@ pre.tail{margin:0;padding:10px;max-height:320px;overflow:auto;background:var(--c
     <h2>Fix it</h2>
     <div class="actions">
       <button class="act primary" data-act="restart">Restart gateway</button>
+      <button class="act" data-act="restore-config" id="restoreConfig" hidden>Restore last good config</button>
       <button class="act" data-act="repair">Repair</button>
       <button class="act" data-act="diagnose">Diagnostic report</button>
       <button class="act" data-act="off">Turn Burst off</button>
     </div>
-    <p class="explain">Restart starts or restarts the gateway and turns Burst back on if it was turned off. Repair reinstalls what is broken (it asks for your password in a Terminal window). Diagnostic report writes one file with everything support needs, secrets redacted. Turn Burst off sends Claude Code straight to Anthropic.</p>
+    <p class="explain">Restore last good config appears when config.json cannot be read, which stops the gateway starting: it puts back the newest backup that loads and keeps the broken file. Restart starts or restarts the gateway and turns Burst back on if it was turned off. Repair reinstalls what is broken (it asks for your password in a Terminal window). Diagnostic report writes one file with everything support needs, secrets redacted. Turn Burst off sends Claude Code straight to Anthropic.</p>
     <div id="msg"></div>
   </section>
 
@@ -88,7 +89,9 @@ async function load() {
   }
   $("ver").textContent = s.version ? "Version " + s.version + "." : "";
   const checks = s.checks.slice();
-  if (s.config_error) checks.unshift({ name: "Config", ok: false, detail: s.config_error });
+  if (s.config_error) checks.unshift({ name: "Config", ok: false, detail: s.config_error + ". Restore last good config puts back the newest backup that loads." });
+  $("restoreConfig").hidden = !s.config_error;
+  $("restoreConfig").classList.toggle("primary", !!s.config_error);
   $("checks").innerHTML = checks.map((c) =>
     `<li><i class="dot ${c.ok ? "ok" : ""}"></i><b>${esc(c.name)}</b><span>${esc(c.detail)}</span></li>`).join("");
   const b = $("banner");

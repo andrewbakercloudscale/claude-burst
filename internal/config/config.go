@@ -885,11 +885,16 @@ func EnsureDir() error {
 }
 
 func Load() (Config, error) {
-	cfg := Default()
 	p, err := ConfigPath()
 	if err != nil {
-		return cfg, err
+		return Default(), err
 	}
+	return loadFile(p)
+}
+
+// loadFile is Load for the file at p.
+func loadFile(p string) (Config, error) {
+	cfg := Default()
 	b, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
 		cfg.ResolveRoutes()

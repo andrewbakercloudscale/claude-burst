@@ -161,3 +161,45 @@ func TestHookPostsAreNotAudited(t *testing.T) {
 		t.Fatalf("audit = %+v", evs)
 	}
 }
+
+// A config.json that cannot be read stops the gateway starting, and Restart
+// and Repair with it. The console says so, and its one button puts the
+// newest backup that loads back.
+func TestConsoleRestoresAConfigThatWillNotLoad(t *testing.T) {
+	c, _, _ := newTestConsole(t)
+	home, _ := os.UserHomeDir()
+	t.Setenv("CLAUDE_BURST_BACKUP_DIR", filepath.Join(home, "backups"))
+	good := config.Default()
+	good.AdminListen = "127.0.0.1:7999"
+	if err := config.Save(good); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := config.ConfigPath()
+	if err := os.WriteFile(p, []byte(`{"listen": `), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	get := httptest.NewRecorder()
+	c.Handler().ServeHTTP(get, localRequest("GET", "http://127.0.0.1:7789/api/console", nil))
+	var st consoleStatus
+	if err := json.Unmarshal(get.Body.Bytes(), &st); err != nil || st.ConfigError == "" {
+		t.Fatalf("the console must name the config error: %v %s", err, get.Body.String())
+	}
+	req := localRequest("POST", "http://127.0.0.1:7789/api/console/restore-config", nil)
+	req.Header.Set(mutationHeader, "1")
+	w := httptest.NewRecorder()
+	c.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Restored config.json") {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if cfg, err := config.Load(); err != nil || cfg.AdminListen != "127.0.0.1:7999" {
+		t.Fatalf("after the restore: %v, admin_listen %q", err, cfg.AdminListen)
+	}
+	// Pressed again with a config that loads: nothing to do, and said.
+	w = httptest.NewRecorder()
+	req = localRequest("POST", "http://127.0.0.1:7789/api/console/restore-config", nil)
+	req.Header.Set(mutationHeader, "1")
+	c.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "nothing was restored") {
+		t.Fatalf("a second press: status %d: %s", w.Code, w.Body.String())
+	}
+}

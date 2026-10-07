@@ -162,6 +162,23 @@ cp ~/.config/claude-burst/backups/claude-burst-bin.latest.bak ~/.local/bin/claud
 launchctl kickstart -k gui/$UID/ninja.andrewbaker.claude-burst
 ```
 
+`install.sh` (and so Repair and `burst-reinstall`) keeps the binary it replaces in the same
+place, and refuses to install a build that cannot print its own help.
+
+### A `config.json` that cannot be read
+
+The gateway exits on a config it cannot read, and launchd starts it again, for ever. The
+support console names the error and shows **Restore last good config**; from a terminal:
+
+```sh
+claude-burst restore-config
+```
+
+It puts back the newest backup that loads (every save leaves one in
+`~/.config/claude-burst/backups/`), keeps the file that would not load beside them as
+`config.json.would-not-load-<time>.bak`, and does nothing to a config that loads. Repair
+runs it first.
+
 ## Run these scripts by path, not `bash script.sh`
 
 Every script here is `#!/bin/zsh` and several use zsh-only syntax. Invoke by path

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -64,6 +65,7 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("/api/audit/context", readOnly(handleAuditContext))
 	mux.HandleFunc("/api/console", readOnly(c.handleStatus))
 	mux.HandleFunc("/api/console/restart", mutating(audited("console", c.handleRestart)))
+	mux.HandleFunc("/api/console/restore-config", mutating(audited("console", c.handleRestoreConfig)))
 	mux.HandleFunc("/api/console/repair", mutating(audited("console", c.handleTerminal("repair"))))
 	mux.HandleFunc("/api/console/diagnose", mutating(audited("console", c.handleTerminal("diagnose"))))
 	mux.HandleFunc("/api/console/off", mutating(audited("console", c.handleTerminal("off"))))
@@ -269,6 +271,24 @@ func (c *Console) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"detail": "Started the gateway. Checks refresh in a few seconds."})
+}
+
+// handleRestoreConfig puts back the newest backup of config.json that
+// loads. With a config it cannot read the gateway exits, launchd starts it
+// again, and Restart and Repair both stop on the same file: this is the
+// one button that gets out of that.
+func (c *Console) handleRestoreConfig(w http.ResponseWriter, r *http.Request) {
+	res, err := config.RestoreLastGood()
+	if errors.Is(err, config.ErrConfigLoads) {
+		writeJSON(w, map[string]string{"detail": "config.json loads as it is, so nothing was restored."})
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]string{"detail": "Restored config.json from " + filepath.Base(res.From) +
+		". The file that would not load is kept as " + res.Kept + ". Press Restart gateway if the checks are not green in a few seconds."})
 }
 
 // consoleScripts are the fixes that need a password or show a report:

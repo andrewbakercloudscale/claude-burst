@@ -69,6 +69,8 @@ func main() {
 		codexCmd(os.Args[2:])
 	case "console":
 		consoleCmd(os.Args[2:])
+	case "restore-config":
+		restoreConfig(os.Args[2:])
 	case "open":
 		openCmd(os.Args[2:])
 	case "app":
@@ -128,6 +130,7 @@ Commands:
   shunt disable     Remove the hook and skill of token shunting (removed), if an earlier install left them
   coord             Session coordination: status, send, release (see: coord help)
   codex             Codex through Burst: enable, disable, status (gateway on 127.0.0.1:7779)
+  restore-config    Put back the newest backup of config.json that loads, when the one in place does not
   console           support console: audit, log, restart and repair, up when the gateway is not (127.0.0.1:7789)
   open              Open the dashboard in the browser, or the support console when the gateway is down
   app               The Claude Burst app in ~/Applications (Spotlight, Dock) that does the same: install, remove
@@ -277,6 +280,20 @@ func serve(args []string) {
 	logger.Printf("claude-burst %s bound %s (%s) in %s -- accepting connections now", version, cfg.Listen, scheme, time.Since(bindStart))
 	if dir, err := config.ConfigDir(); err == nil {
 		notice.SetDefault(notice.New(notice.Path(dir), logger))
+		// The stderr log: say when the last run ended in a crash, keep the
+		// file to a size, and date what this run writes to it.
+		for _, name := range []string{"launchd.err.log", "launchd.out.log"} {
+			if trimmed, err := trimStderrLog(filepath.Join(dir, name), stderrLogMax, stderrLogKeep); err != nil {
+				logger.Printf("warn stage=startup could not cut back %s: %v", name, err)
+			} else if trimmed {
+				logger.Printf("startup: %s was over %dMB and was cut back to its last %dMB", name, stderrLogMax>>20, stderrLogKeep>>20)
+			}
+		}
+		if crash := previousCrash(filepath.Join(dir, "launchd.err.log")); crash != "" {
+			logger.Printf("error stage=startup the previous run ended in a crash: %s (the stack is in launchd.err.log, before this run's start line)", crash)
+			notice.Record("crash", notice.Warn, "The gateway crashed and was restarted", crash+". The stack is in launchd.err.log.")
+		}
+		fmt.Fprintln(os.Stderr, startLine(version, time.Now()))
 		srv.ResumeAlerts()
 		announceReady(version)
 	}
@@ -1087,14 +1104,32 @@ func scriptPath(name string) string {
 	if wd, err := os.Getwd(); err == nil {
 		candidates = append(candidates, filepath.Join(wd, "scripts", name))
 	}
+	recorded := ""
 	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
+		// Where install.sh and deploy.sh wrote the checkout's path and
+		// copied the scripts the way out needs: the checkout can be
+		// anywhere, and until 7 Oct 2026 only one place was looked in, so
+		// the console's Repair and Diagnose did nothing on any other Mac.
+		share := filepath.Join(home, ".local", "share", "claude-burst")
+		if b, err := os.ReadFile(filepath.Join(share, "repo")); err == nil {
+			if repo := strings.TrimSpace(string(b)); filepath.IsAbs(repo) {
+				recorded = filepath.Join(repo, "scripts", name)
+				candidates = append(candidates, recorded)
+			}
+		}
+		candidates = append(candidates, filepath.Join(share, name),
 			filepath.Join(home, "Desktop", "github", "claude-burst", "scripts", name))
 	}
 	for _, c := range candidates {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {
 			return c
 		}
+	}
+	// macOS can hide a checkout under ~/Desktop or ~/Documents from a
+	// background process, so a path the installer recorded is used unseen:
+	// the Terminal window that runs it can read it.
+	if recorded != "" {
+		return recorded
 	}
 	// Nothing found: name the file rather than a path that would not work.
 	return "scripts/" + name + " (in the claude-burst repo)"
