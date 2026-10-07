@@ -290,6 +290,21 @@ The dashboard shows the net figure in the Pauseless Compaction section (per sess
 
 The Saved view above is also an illustration, not a measured month: the real daily average so far (2026-09-29 to 10-01, about 195M tokens of context compacted per active day) spread over 30 days, weekdays varying by a fixed pattern and weekends at 35%.
 
+### Three strategies side by side
+
+The dashboard's **Compaction strategies** section costs the same sessions three ways over the last 30 days, a line each per day, for every repository or for one:
+
+| Line | What it is |
+| --- | --- |
+| Claude Code alone | A replay that compacts only near the model's window (950k), which is what happens without Burst. |
+| Fixed Compact at | A replay that compacts every repository at the one configured **Compact at**. |
+| Burst, as it ran | What the log recorded, in whichever mode was on that day. With Intelligent Compaction Mode on, this is the learned limit for each repository, so switching it on shows as this line dropping away from the fixed one. |
+
+- All three are costed alike: every request resends its context at the cache-read price, and every compaction pays for its summary and for writing the shorter history to the cache.
+- Burst's compactions are charged what they were billed. A replayed compaction is modelled: it reads the whole context, writes a 3.5k token summary, and leaves what the session's real compactions left (60k when it has none).
+- Output and new input are the same three ways and are left out, so the figures are the cost of context, not the whole bill.
+- The table under the chart gives each repository's average context and cost under each strategy, and what Burst saved against the other two.
+
 ### The other saving: overflow to the secondary
 
 Past the plan's limit Burst sends requests to the secondary. `overflow_stats` in
