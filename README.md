@@ -52,7 +52,7 @@ It asks before stopping any session; stopped ones resume with `claude --continue
 
 ### Diagnose Burst
 
-One line. Changes nothing, needs no password, redacts secrets, and copies the report to the clipboard to paste wherever you are getting help:
+One line. Changes nothing, needs no password, redacts secrets, and copies the report to the clipboard to paste wherever you are getting help. It opens with the checks, one line each (`PASS`, `FAIL` with what to run, or `SKIP`), then a count such as `13 checks, 1 failed`, and exits non-zero when any failed. From a checkout, `scripts/diagnose.sh --check` prints the checks alone:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/scripts/diagnose.sh | bash
