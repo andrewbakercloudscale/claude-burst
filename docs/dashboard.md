@@ -190,6 +190,16 @@ flowchart LR
 | Claude's replies | Text, thinking and tool calls | from that prompt on | no: thinking is signed |
 | Tool results | Files read, command output, search results | from that prompt on | yes |
 
+**Prune** (the row under the session picker) is Remove for many items at once:
+
+| Control | What it removes |
+| --- | --- |
+| A word and **Prune what it names** | Every tool result and instruction file whose file, command or name has the word |
+| **Prune stale** | Out of date copies of files read again later, results for files that no longer exist, large results from ten or more prompts ago |
+| **Prune old tool results** | Every tool result from before the latest prompt |
+| **Undo all** | Nothing: it puts back everything removed from the session |
+| **Bring up to date** | Nothing: shown when the list is behind, it has the whole conversation asked for with the session's next request |
+
 **From inside a session** (mod 0.12.0 or later)
 
 The cache holds exactly what was last sent, so the inspector's list is the content of the cache. Two commands ask for it from the session, without opening the dashboard:
