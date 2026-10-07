@@ -48,7 +48,7 @@ func writeMod(t *testing.T, dir, hook string) {
 func modStatusOf(t *testing.T, s *Server) modStatus {
 	t.Helper()
 	rr := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/mod-status", nil))
+	s.Handler().ServeHTTP(rr, localRequest(http.MethodGet, "http://127.0.0.1/api/mod-status", nil))
 	var st modStatus
 	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
 		t.Fatalf("%v: %s", err, rr.Body.String())

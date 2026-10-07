@@ -52,7 +52,7 @@ func stubPermissions(t *testing.T, codesignOut string, identity bool, readDir fu
 
 func getPermissions(t *testing.T, s *Server) permissionsResponse {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/permissions", nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1/api/permissions", nil)
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {

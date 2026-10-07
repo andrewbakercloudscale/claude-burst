@@ -42,7 +42,7 @@ func newTestConsole(t *testing.T) (*Console, *[]string, *string) {
 
 func consoleDo(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(method, "http://127.0.0.1:7789"+path, nil)
+	req := localRequest(method, "http://127.0.0.1:7789"+path, nil)
 	if method == http.MethodPost {
 		req.Header.Set(mutationHeader, "1")
 	}
@@ -108,13 +108,13 @@ func TestConsoleRepairOpensTerminal(t *testing.T) {
 // dashboard does.
 func TestConsoleGuards(t *testing.T) {
 	c, ran, _ := newTestConsole(t)
-	req := httptest.NewRequest(http.MethodGet, "http://evil.example/api/console", nil)
+	req := localRequest(http.MethodGet, "http://evil.example/api/console", nil)
 	rec := httptest.NewRecorder()
 	c.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("foreign host: %d", rec.Code)
 	}
-	req = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/console/restart", nil)
+	req = localRequest(http.MethodPost, "http://127.0.0.1/api/console/restart", nil)
 	rec = httptest.NewRecorder()
 	c.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden || len(*ran) != 0 {
@@ -153,8 +153,8 @@ func TestHookPostsAreNotAudited(t *testing.T) {
 	newTestConsole(t)
 	dir, _ := config.ConfigDir()
 	h := audited("dashboard", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
-	h(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/prompt-notice", nil))
-	h(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/force", nil))
+	h(httptest.NewRecorder(), localRequest(http.MethodPost, "/api/prompt-notice", nil))
+	h(httptest.NewRecorder(), localRequest(http.MethodPost, "/api/force", nil))
 	notice.Flush(2 * time.Second)
 	evs := notice.ReadAudit(notice.AuditPath(notice.Path(dir)), 5)
 	if len(evs) != 1 || evs[0].Title != "Dashboard: /api/force" {

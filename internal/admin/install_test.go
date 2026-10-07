@@ -103,7 +103,7 @@ func TestInstallScriptTransparentDelegatesAndPrimesSudo(t *testing.T) {
 func TestInstallRejectsUnknownMode(t *testing.T) {
 	s, _ := newInstallServer(t)
 	for _, mode := range []string{"", "wat", "base-url; rm -rf /", "transparent\nrm -rf /"} {
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/install",
+		req := localRequest(http.MethodPost, "http://127.0.0.1/api/install",
 			strings.NewReader(`{"mode":`+strconv.Quote(mode)+`}`))
 		req.Host = "127.0.0.1"
 		req.Header.Set(mutationHeader, "1")
@@ -125,7 +125,7 @@ func TestInstallWritesScriptAndLaunches(t *testing.T) {
 	launchTerminal = func(p string) error { launched = p; return nil }
 	t.Cleanup(func() { launchTerminal = orig })
 
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/install", strings.NewReader(`{"mode":"base-url"}`))
+	req := localRequest(http.MethodPost, "http://127.0.0.1/api/install", strings.NewReader(`{"mode":"base-url"}`))
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()
@@ -164,7 +164,7 @@ func TestInstallReportsScriptPathWhenTerminalFails(t *testing.T) {
 	launchTerminal = func(string) error { return os.ErrPermission }
 	t.Cleanup(func() { launchTerminal = orig })
 
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/install", strings.NewReader(`{"mode":"transparent"}`))
+	req := localRequest(http.MethodPost, "http://127.0.0.1/api/install", strings.NewReader(`{"mode":"transparent"}`))
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()

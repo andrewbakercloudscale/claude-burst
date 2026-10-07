@@ -15,7 +15,7 @@ import (
 func modOf(t *testing.T, s *Server, query string) modResponse {
 	t.Helper()
 	rr := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/mod"+query, nil))
+	s.Handler().ServeHTTP(rr, localRequest(http.MethodGet, "http://127.0.0.1/api/mod"+query, nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("/api/mod status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -52,7 +52,7 @@ func TestModEndpointFiltersAlertsBySessionAndTime(t *testing.T) {
 	}
 	// No alerts is an empty list, not null, so the mod can loop over it.
 	rr := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/mod?since=9999999999", nil))
+	s.Handler().ServeHTTP(rr, localRequest(http.MethodGet, "http://127.0.0.1/api/mod?since=9999999999", nil))
 	if !json.Valid(rr.Body.Bytes()) || !strings.Contains(rr.Body.String(), `"alerts":[]`) {
 		t.Fatalf("body=%s", rr.Body.String())
 	}

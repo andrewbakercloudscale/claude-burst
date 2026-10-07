@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -494,11 +495,12 @@ func firstMessageChange(was, now json.RawMessage) string {
 	if len(a) != len(b) {
 		out = append(out, fmt.Sprintf("%d blocks, was %d", len(b), len(a)))
 	}
+	// A line is named by its length and a short hash, never quoted: the
+	// log holds metadata only, and a reminder carries CLAUDE.md and paths.
+	// The hash still tells one change from another across requests.
 	clip := func(l string) string {
-		if r := []rune(l); len(r) > 120 {
-			return string(r[:120]) + "..."
-		}
-		return l
+		sum := sha256.Sum256([]byte(l))
+		return fmt.Sprintf("%d characters (hash %x)", len([]rune(l)), sum[:4])
 	}
 	for i := 0; i < len(a) && i < len(b) && len(out) < 4; i++ {
 		ja, _ := json.Marshal(hashForm(a[i]))
@@ -529,7 +531,7 @@ func firstMessageChange(was, now json.RawMessage) string {
 		if line < len(lb) {
 			newLine = clip(lb[line])
 		}
-		out = append(out, fmt.Sprintf("block %d (system reminder, %d characters, was %d) from line %d: was %q, now %q", i, len(tb), len(ta), line+1, oldLine, newLine))
+		out = append(out, fmt.Sprintf("block %d (system reminder, %d characters, was %d) from line %d: was %s, now %s", i, len(tb), len(ta), line+1, oldLine, newLine))
 	}
 	if len(out) == 0 {
 		return "nothing a reader would see"

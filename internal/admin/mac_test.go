@@ -46,7 +46,7 @@ func TestPanelOptionsRejectsUnknownKeys(t *testing.T) {
 	s := newTestServer(t)
 	for _, body := range []string{`{"restart_tokens":true}`, `{}`, `not json`} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-options", strings.NewReader(body))
+		req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-options", strings.NewReader(body))
 		req.Header.Set("X-Claude-Burst-Admin", "1")
 		s.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -54,7 +54,7 @@ func TestPanelOptionsRejectsUnknownKeys(t *testing.T) {
 		}
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-options", strings.NewReader(`{"caffeinate":true}`))
+	req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-options", strings.NewReader(`{"caffeinate":true}`))
 	req.Header.Set("X-Claude-Burst-Admin", "1")
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !readPanelOptions(panelOptionsPath())["caffeinate"] {
@@ -99,7 +99,7 @@ func TestKeepAwakeModeIsValidatedAndSaved(t *testing.T) {
 
 	post := func(body string) int {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/keep-awake", strings.NewReader(body))
+		req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/keep-awake", strings.NewReader(body))
 		req.Header.Set("X-Claude-Burst-Admin", "1")
 		s.Handler().ServeHTTP(rec, req)
 		return rec.Code
@@ -159,7 +159,7 @@ func TestPanelInstallRunsOneAtATime(t *testing.T) {
 
 	post := func(body string) int {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-install", strings.NewReader(body))
+		req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-install", strings.NewReader(body))
 		req.Header.Set("X-Claude-Burst-Admin", "1")
 		s.Handler().ServeHTTP(rec, req)
 		return rec.Code
@@ -264,7 +264,7 @@ func TestBypassPermissionsOptionEditsOnlyDefaultMode(t *testing.T) {
 	post := func(body string) {
 		t.Helper()
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-options", strings.NewReader(body))
+		req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/panel-options", strings.NewReader(body))
 		req.Header.Set("X-Claude-Burst-Admin", "1")
 		s.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {

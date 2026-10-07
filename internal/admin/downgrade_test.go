@@ -18,7 +18,7 @@ import (
 
 func mutate(t *testing.T, s *Server, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+path, strings.NewReader(body))
+	req := localRequest(http.MethodPost, "http://127.0.0.1"+path, strings.NewReader(body))
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
@@ -27,7 +27,7 @@ func mutate(t *testing.T, s *Server, path, body string) *httptest.ResponseRecord
 
 func stateOf(t *testing.T, s *Server) stateResponse {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {

@@ -95,7 +95,7 @@ out({checks, state: checksState(checks)});`, js), &got)
 func TestStateReportsClientTLS(t *testing.T) {
 	s := newTestServer(t)
 	get := func() map[string]json.RawMessage {
-		req := httptest.NewRequest(http.MethodGet, "http://x/api/state", nil)
+		req := localRequest(http.MethodGet, "http://x/api/state", nil)
 		req.Host = "127.0.0.1:7788"
 		rr := httptest.NewRecorder()
 		s.Handler().ServeHTTP(rr, req)

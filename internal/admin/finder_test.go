@@ -231,7 +231,7 @@ func TestFinderEndpoints(t *testing.T) {
 	// view by reading whatever HOME is now.
 	h := s.Handler()
 	do := func(method, path, body string, hdr bool) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, "http://x"+path, strings.NewReader(body))
+		req := localRequest(method, "http://x"+path, strings.NewReader(body))
 		req.Host = "127.0.0.1:7788"
 		if hdr {
 			req.Header.Set("X-Claude-Burst-Admin", "1")
@@ -618,7 +618,7 @@ func TestFinderBypassTickCoversTheRowsShortcuts(t *testing.T) {
 	h := newTestServer(t).Handler()
 	t.Setenv("HOME", r.home)
 	post := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("POST", "http://x/api/finder-install", strings.NewReader(body))
+		req := localRequest("POST", "http://x/api/finder-install", strings.NewReader(body))
 		req.Host = "127.0.0.1:7788"
 		req.Header.Set("X-Claude-Burst-Admin", "1")
 		req.Header.Set("Content-Type", "application/json")

@@ -82,7 +82,7 @@ func TestSinglePlanStateAndForce(t *testing.T) {
 	s := newTestServer(t) // config.Default(): no secondary block, no key
 	h := s.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "http://x/api/state", nil)
+	req := localRequest(http.MethodGet, "http://x/api/state", nil)
 	req.Host = "127.0.0.1:7788"
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -96,7 +96,7 @@ func TestSinglePlanStateAndForce(t *testing.T) {
 		t.Fatal("a keyless default secondary must report not ready")
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "http://x/api/force", strings.NewReader(`{"minutes":15}`))
+	req = localRequest(http.MethodPost, "http://x/api/force", strings.NewReader(`{"minutes":15}`))
 	req.Host = "127.0.0.1:7788"
 	req.Header.Set("X-Claude-Burst-Admin", "1")
 	req.Header.Set("Content-Type", "application/json")

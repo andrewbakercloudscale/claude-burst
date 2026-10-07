@@ -193,7 +193,7 @@ func TestTraceEndToEnd(t *testing.T) {
 // Claude Code's own most recent credential wins over the Keychain login.
 func TestTracePrefersClaudeCodesLiveCredential(t *testing.T) {
 	rig := newTraceRig(t, rigOpts{})
-	req := httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(`{"model":"claude-haiku-4-5","messages":[]}`))
+	req := localRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(`{"model":"claude-haiku-4-5","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer live-token")
 	rig.s.gateway.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -389,7 +389,7 @@ func TestTraceEndpointIsGuarded(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
 	do := func(method, host string, header bool) int {
-		req := httptest.NewRequest(method, "http://x/api/trace", nil)
+		req := localRequest(method, "http://x/api/trace", nil)
 		req.Host = host
 		if header {
 			req.Header.Set(mutationHeader, "1")
