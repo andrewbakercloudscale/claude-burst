@@ -486,11 +486,11 @@ func Daily(path string, days int) (History, error) {
 			switch slotOf(e) {
 			case "primary":
 				d.PrimaryRequests++
-				d.PrimaryTokens += e.InputTokens + e.OutputTokens
+				d.PrimaryTokens += allTokens(e)
 				d.PrimaryUSD += e.APIEquivalentUSD
 			case "secondary":
 				d.SecondaryRequests++
-				d.SecondaryTokens += e.InputTokens + e.OutputTokens
+				d.SecondaryTokens += allTokens(e)
 				d.SecondaryUSD += e.APIEquivalentUSD
 				d.SecondarySentTokens += e.InputTokens + e.CacheReadTokens + e.CacheWriteTokens
 				d.PrunedTokens += e.PrunedBytes / BytesPerToken
@@ -537,7 +537,7 @@ func Daily(path string, days int) (History, error) {
 					models[key] = u
 				}
 				u.Requests++
-				u.Tokens += e.InputTokens + e.OutputTokens
+				u.Tokens += allTokens(e)
 				u.USD += e.APIEquivalentUSD
 				u.Unpriced = u.Unpriced || e.PricingUnknown
 			}
@@ -659,6 +659,12 @@ func slotOf(e Event) string {
 	return ""
 }
 
+// allTokens is every token a request was billed for, cached ones too: on a
+// cached prompt input and output alone are a sixtieth of what was read.
+func allTokens(e Event) int64 {
+	return e.InputTokens + e.OutputTokens + e.CacheReadTokens + e.CacheWriteTokens
+}
+
 func addToSummary(s *Summary, e Event) {
 	s.Requests++
 	switch slotOf(e) {
@@ -669,6 +675,9 @@ func addToSummary(s *Summary, e Event) {
 	}
 	s.InputTokens += e.InputTokens
 	s.OutputTokens += e.OutputTokens
+	s.CacheReadTokens += e.CacheReadTokens
+	s.CacheWriteTokens += e.CacheWriteTokens
+	s.PrunedBytes += e.PrunedBytes
 	s.APIEquivalentUSD += e.APIEquivalentUSD
 	if e.PricingUnknown {
 		s.UnpricedRequests++
