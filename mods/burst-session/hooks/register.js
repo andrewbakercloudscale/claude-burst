@@ -187,6 +187,19 @@ function handoffCut(h, msgs) {
   return -1
 }
 
+// A kept tool result handed back with its handle is written to the
+// transcript pointing at its row from before the compaction, and a later
+// claude --resume follows that link back and loads the history the
+// compaction replaced. Found by Capitec's burst-lite (0.2.16), and in this
+// mod's own transcripts: 50, 28 and 4 such rows after three hand-offs of one
+// session. Without the handle Claude Code writes it as a new row after the
+// one before it. Only its text is kept: an image in a kept tool result goes.
+function asNewIfResult(m) {
+  if (!m || m.handle === undefined || (m.toolResults || []).length === 0) return m
+  const { handle, ...rest } = m
+  return rest
+}
+
 // A session that has left Burst is compacted with the summary Burst already
 // wrote, once. It runs /compact, which Claude Code queues until no turn is
 // running, and not $.session.compact(): a plugin's own session.compact hook
@@ -273,11 +286,42 @@ async function compactFast($) {
   }
 }
 
+// enter is everything this mod holds about one session, started afresh.
+async function enter($, id) {
+  sid = id
+  since = Math.floor((await $.clock.now()) / 1000)
+  toastsMarked = 0
+  handed = ''
+  asked = ''
+  tookIn = false
+  reopened = false
+  heldSeen = 0
+}
+
+// Only a session Burst has summarised has a hand-off waiting as it opens.
+async function opened($) {
+  try { reopened = (await reopenedNow($)) && (await readHandoff($)) !== null } catch (err) { reopened = false }
+}
+
+// /clear, /resume and /branch carry on under another session id with no
+// session.start (found by Capitec's burst-lite, 0.2.9). Without this the
+// band went on showing the session that was left, and a hand-off was looked
+// for under its name. Called wherever the session is about to be used.
+async function follow($) {
+  let id = ''
+  try { id = await $.session.id() } catch (err) { return }
+  if (!id || id === sid) return
+  await enter($, id)
+  burst = null
+  await opened($)
+}
+
 export function register(on) {
   on('session.compact', async ($, e, next) => {
     // A subagent's transcript, a precompute and a /compact with the user's
     // own instructions are Claude Code's.
     if (e.trigger === 'precompute' || e.agentId || (e.instructions && e.trigger === 'manual')) return next(e)
+    await follow($)
     let h = null
     try {
       if (await handoffOn($)) h = await readHandoff($)
@@ -295,20 +339,13 @@ export function register(on) {
     handed = h.of
     tookIn = true
     $.ui.toast("Compacted with Burst's summary: " + cut + ' messages replaced, nothing written by Claude Code', { timeoutMs: TOAST_MS.info })
-    return { messages: [{ role: 'user', text: h.lead, toolUses: [] }, ...e.messages.slice(cut)] }
+    return { messages: [{ role: 'user', text: h.lead, toolUses: [] }, ...e.messages.slice(cut).map(asNewIfResult)] }
   })
 
   on('session.start', async ($, e, next) => {
-    sid = await $.session.id()
     home = (await $.env.get('HOME')) || ''
     DASHBOARD = dashboardURL(await readJSON($, home + '/.config/claude-burst/config.json'))
-    since = Math.floor((await $.clock.now()) / 1000)
-    toastsMarked = 0
-    handed = ''
-    asked = ''
-    tookIn = false
-    reopened = false
-    heldSeen = 0
+    await enter($, await $.session.id())
     band = !(await hasSidebar($))
     try {
       const v = await $.store.get(BAND_KEY)
@@ -319,11 +356,11 @@ export function register(on) {
     await refresh($)
     ready = true
     $.ui.invalidate('ui.render')
-    // Only a session Burst has summarised has a hand-off waiting as it opens.
-    try { reopened = (await reopenedNow($)) && (await readHandoff($)) !== null } catch (err) { reopened = false }
+    await opened($)
     // An entry an earlier version of this mod pinned is taken down.
     try { await $.ui.status(undefined) } catch (err) { $.ui.log('could not clear the status line: ' + err) }
     $.clock.every(POLL_MS, async () => {
+      await follow($)
       await refresh($)
       try { await leaveBurst($) } catch (err) { $.ui.log('hand-off did not run: ' + err) }
       $.ui.invalidate('ui.render')
@@ -373,6 +410,7 @@ export function register(on) {
   })
 
   on('command.run', { command: FAST }, async ($) => {
+    await follow($)
     // Not awaited: Claude Code may hold the /compact until the turn ends.
     compactFast($).catch((err) => $.ui.log('/' + FAST + ' did not run: ' + err))
     return {}

@@ -143,6 +143,8 @@ whole history:
   not a bypass: requests fail then, they are not sent whole, and nothing is compacted.
   If the summary does not fit, nothing is compacted and a line says so.
 - **A session opened again is compacted as it opens.** `claude --resume`, `--continue`
+- **A session opened again after a hand-off opens on the summary.** The tool results kept after the summary are written to the transcript as new rows. Before mod 0.11.7 they were written still linked to their rows from before the compaction, so `claude --resume` followed the links and loaded the replaced history again. An image inside a kept tool result is not carried over; its text is.
+- **`/clear`, `/resume` and `/branch` are followed.** They carry on under another session without starting the mod again, so it checks which session it is in at every poll and every compaction.
   or a Finder shortcut on a session Burst had summarised, holding 300k or more: the mod
   runs the same `/compact` within 5 seconds of opening, with Burst in the path or not.
   It is done on opening and not on closing because a closing session is a process on
