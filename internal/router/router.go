@@ -595,13 +595,17 @@ func (s *Server) releaseOutageWindow(model string) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !isOutageClaim(s.state.ModelClaim[model]) || s.state.ModelOverflow[model] == 0 {
+		s.mu.Unlock()
 		return
 	}
 	delete(s.state.ModelOverflow, model)
 	delete(s.state.ModelClaim, model)
 	s.saveStateLocked()
+	// Unlocked before the alert, as activateOverflow does: alertOutcome
+	// holds the alerts lock and then reads the state, so taking the alerts
+	// lock with the state still held is a deadlock that stops every request.
+	s.mu.Unlock()
 	s.logger.Printf("released outage window for model=%q: the secondary also failed at the transport level, so the next request tries the primary", model)
 	s.addFailoverNotice(fmt.Sprintf("\u26a1 Claude Burst: back on Anthropic for %s. The secondary could not answer either, so the outage is being treated as this machine's network.", model))
 	s.alertBackOnPrimary("The secondary could not answer either, so " + model + " goes to Anthropic again.")
@@ -1358,6 +1362,9 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	if resp.StatusCode == http.StatusBadRequest && slot == "primary" && s.rejectMidTurn(in, errorExcerpt(errBody)) {
 		orig := compactInfoFrom(in.Context()).original
 		resent, in2 := s.applyCompaction(in, orig)
+		// As handle does after compaction: what the user removed stays
+		// removed on the resend too.
+		resent = s.applyRemovals(in2.Header.Get("x-claude-code-session-id"), resent)
 		s.logger.Printf("req=%s retry route=%s reason=%q -> resending without the mid-turn compaction swap", rid, p.Name(), "mid-turn swap rejected")
 		s.forward(w, in2, resent, slot, p, fd, allowFailover, note, ladder)
 		return

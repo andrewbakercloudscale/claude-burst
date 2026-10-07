@@ -21,6 +21,7 @@ import (
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/autocompact"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
@@ -873,10 +874,13 @@ func (s *Server) rejectMidTurn(in *http.Request, reason string) bool {
 	s.compaction.mu.Lock()
 	defer s.compaction.mu.Unlock()
 	st := s.compaction.sessions[ci.key]
-	s.compaction.midTurnOff = true
 	if st == nil || !st.midTurnUnproven || st.undo == nil {
+		// No unproven swap of this session's to blame: a 400 of the
+		// request's own (an image too large, a prompt too long) must not
+		// turn mid-turn swaps off for every session.
 		return false
 	}
+	s.compaction.midTurnOff = true
 	u := st.undo
 	st.next, st.nextP0, st.nextHash, st.nextMarks = st.summary, u.nextP0, u.nextHash, u.nextMarks
 	st.nextTightP0, st.nextTightHash = u.nextTightP0, u.nextTightHash
@@ -1525,7 +1529,7 @@ func (s *Server) requestSummary(parent context.Context, in *http.Request, top ma
 	defer cancel()
 	in = in.WithContext(context.WithValue(ctx, requestIDKey, newRequestID()))
 	msgs := withSummaryInstruction(history, cut)
-	summary, blocks, err := s.summaryCall(ctx, in, top, msgs, "compaction summary")
+	summary, blocks, err := s.summaryCall(ctx, in, top, msgs, metrics.NoteSummary)
 	if err != errSummaryCalledTool {
 		return summary, err
 	}
@@ -1539,7 +1543,7 @@ func (s *Server) requestSummary(parent context.Context, in *http.Request, top ma
 		return "", err
 	}
 	s.logger.Printf("req=%s compaction summary: the model called a tool instead; the call is refused and it is asked once more", requestIDFrom(in.Context()))
-	summary, _, err = s.summaryCall(ctx, in, top, again, "compaction summary, asked again after a tool call")
+	summary, _, err = s.summaryCall(ctx, in, top, again, metrics.NoteSummaryRetry)
 	return summary, err
 }
 
@@ -1581,11 +1585,20 @@ func (s *Server) summaryCall(ctx context.Context, in *http.Request, top map[stri
 		return "", nil, fmt.Errorf("summary request: status %d: %s", resp.StatusCode, errorExcerpt(b))
 	}
 	text, stop, tok, blocks, rerr := readSSEBlocks(resp.Body)
-	if rerr != nil {
-		note = "compaction summary incomplete: " + rerr.Error()
+	summary := summaryFromText(text)
+	// The note is what the readers of the metrics log judge the call by, so
+	// it says what came back: a 200 is not a summary.
+	switch {
+	case rerr != nil:
+		note = metrics.NoteSummaryIncomplete + ": " + rerr.Error()
+	case stop == "tool_use":
+		note = metrics.NoteSummaryToolCall
+	case stop == "max_tokens":
+		note = metrics.NoteSummaryIncomplete + ": cut off at max_tokens"
+	case summary == "":
+		note = metrics.NoteSummaryIncomplete + ": empty"
 	}
 	s.writeMetric(in, "primary", s.primary.Name(), model, model, resp.StatusCode, start, tok, "", 0, note, dest)
-	summary := summaryFromText(text)
 	switch {
 	case rerr != nil:
 		return "", nil, rerr
