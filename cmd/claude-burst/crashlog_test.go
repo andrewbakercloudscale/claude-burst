@@ -27,6 +27,11 @@ func TestPreviousCrashIsFoundOnceAndDated(t *testing.T) {
 	if got := previousCrash(p); got != "" {
 		t.Fatalf("a handshake line is not a crash: %q", got)
 	}
+	write("fatal error: an old one, from before start lines existed\n")
+	if got := previousCrash(p); got != "" {
+		t.Fatalf("a crash with no start line before it cannot be dated, so it is not this run's news: %q", got)
+	}
+	write(startLine("1.2.2", time.Now()) + "\n")
 	write("panic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation]\n\ngoroutine 1 [running]:\nmain.serve()\n")
 	if got := previousCrash(p); !strings.HasPrefix(got, "panic: runtime error") {
 		t.Fatalf("the panic's first line: %q", got)

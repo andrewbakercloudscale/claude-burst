@@ -36,11 +36,16 @@ var crashLines = []string{"panic: ", "fatal error: ", "runtime: out of memory", 
 // once however many times the gateway starts after it.
 func previousCrash(path string) string {
 	b := tailBytes(path, 256<<10)
-	if i := bytes.LastIndex(b, []byte(startMarker)); i >= 0 {
-		b = b[i:]
-		if nl := bytes.IndexByte(b, '\n'); nl >= 0 {
-			b = b[nl+1:]
-		}
+	// No start line yet: the file predates them, and whatever crash it holds
+	// could be weeks old. The first start with this code reported one from
+	// a month before as "the previous run".
+	i := bytes.LastIndex(b, []byte(startMarker))
+	if i < 0 {
+		return ""
+	}
+	b = b[i:]
+	if nl := bytes.IndexByte(b, '\n'); nl >= 0 {
+		b = b[nl+1:]
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		for _, c := range crashLines {
