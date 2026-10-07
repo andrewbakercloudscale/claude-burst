@@ -92,7 +92,7 @@ func pruneMatches(items []ContextItem, what string) (hit []int, kept int) {
 // been seen since the gateway started.
 func (s *Server) PruneContext(sid, what string) (*PruneResult, error) {
 	rep := s.InspectContext(sid)
-	if rep == nil {
+	if rep == nil || (len(rep.Items) == 0 && rep.Since > 0) {
 		s.WantHistory(sid, "its context is to be pruned, and nothing of it has been seen whole")
 		return nil, nil
 	}

@@ -34,6 +34,10 @@ type captured struct {
 	msgs    int
 	at      time.Time
 	since   int // requests that continued its thread since: not in body
+	// cont is when a request last continued its thread. A conversation on a
+	// thread is the session's own: body is empty when none of its requests
+	// has been sent whole since the gateway started.
+	cont time.Time
 }
 
 const (
@@ -76,12 +80,27 @@ func (s *Server) captureForInspect(r *http.Request, body []byte) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if ci.thread || top.Thread.Type == "continue" {
-		if c := st.reqs[key]; c != nil {
-			c.since++
+		// With no whole request on record (the gateway restarted under the
+		// session) it is still noted: otherwise a smaller conversation sent
+		// whole, one of the session's own helpers, would stand for it.
+		c := st.reqs[key]
+		if c == nil {
+			c = &captured{session: sid, model: top.Model, at: time.Now()}
+			st.reqs[key] = c
 		}
+		c.since++
+		c.cont = time.Now()
 		return
 	}
 	st.reqs[key] = &captured{session: sid, model: top.Model, body: body, msgs: len(top.Messages), at: time.Now()}
+	// A thread known only by its last response comes back whole under its
+	// real name: the note kept for it has done its work. The model tells it
+	// from a helper's request, which leaves the note alone.
+	for k, c := range st.reqs {
+		if k != key && c.session == sid && len(c.body) == 0 && c.model == top.Model {
+			delete(st.reqs, k)
+		}
+	}
 	if len(st.reqs) > inspectMaxReqs {
 		cut := time.Now().Add(-inspectKeep)
 		var oldest string
@@ -124,6 +143,19 @@ func (st *inspectStore) asked(sid string) {
 	st.mu.Unlock()
 }
 
+// standsFor says c, not b, is the conversation a session is shown by: the
+// one on a message thread (the latest continued, when several), its largest
+// otherwise. A session's subagents and helpers share its id.
+func standsFor(c, b *captured) bool {
+	if b == nil {
+		return true
+	}
+	if !c.cont.IsZero() || !b.cont.IsZero() {
+		return c.cont.After(b.cont)
+	}
+	return len(c.body) > len(b.body)
+}
+
 // InspectSession is one session the inspector can show.
 type InspectSession struct {
 	Session  string    `json:"session"`
@@ -135,12 +167,12 @@ type InspectSession struct {
 }
 
 // InspectSessions lists the sessions with a captured request, newest first.
-// A session's subagents share its id; its largest conversation stands for it.
+// A session's subagents share its id; standsFor picks its conversation.
 func (s *Server) InspectSessions() []InspectSession {
 	s.inspect.mu.Lock()
 	best := map[string]*captured{}
 	for _, c := range s.inspect.reqs {
-		if b := best[c.session]; b == nil || len(c.body) > len(b.body) {
+		if standsFor(c, best[c.session]) {
 			best[c.session] = c
 		}
 	}
@@ -193,7 +225,7 @@ func (s *Server) InspectContext(sid string) *ContextReport {
 	s.inspect.mu.Lock()
 	var c *captured
 	for _, x := range s.inspect.reqs {
-		if x.session == sid && (c == nil || len(x.body) > len(c.body)) {
+		if x.session == sid && standsFor(x, c) {
 			c = x
 		}
 	}
@@ -211,6 +243,11 @@ func (s *Server) InspectContext(sid string) *ContextReport {
 	// compaction the largest is the one the summary replaced.
 	if main := MainConversation(s.CompactionSessions(), sid); main != nil {
 		rep.Context = main.Context
+	}
+	if len(c.body) == 0 {
+		// Nothing sent whole yet: the report says how far behind it is.
+		rep.Items = []ContextItem{}
+		return rep
 	}
 	rep.Items, rep.Prompts = contextItems(c.body)
 	rep.Estimate = ctxview.Scale(rep.Items, rep.Context, rep.Prompts)
