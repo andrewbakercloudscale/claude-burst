@@ -61,6 +61,8 @@ Screenshots are of the real dashboard with repository names, paths, session task
 
 ## Analytics
 
+The address says where you are, as `#tab/section` (`http://127.0.0.1:7788/#claude/context-inspector`): bookmark it to open the dashboard there, and a refresh comes back to the same spot.
+
 The tiles at the top of the page count the charted window: requests, sessions, tokens by kind, spend, and **Money saved**, which is what Pauseless Compaction saved on those days after its own costs. **Home**, the first entry of the menu, goes back to them from anywhere.
 
 Everything under **Observe** reads the same log, `metrics.jsonl`, and every dollar figure is API-equivalent: on a subscription it is what the same tokens would have cost on the API.
@@ -165,9 +167,9 @@ The **support console** at http://127.0.0.1:7789/ (`claude-burst console`, its o
 
 ## Context inspector
 
-**Context inspector** (Sessions menu) shows what a session's context is made of, as Burst last sent it. The bar at the top is the whole context, a colour for each part; each group below carries the same colour, its tokens and its share, and each item has a line as long as its share. Click a group's head (tinted, with an arrow) to open it. Inside is a table, biggest first so what is worth removing is at the top: click **Item**, **Came with** or **Tokens** to sort by name, age or size, and again to turn the order round. "prompt 9, 2 prompts ago" means the item came into the context with your ninth prompt and you have sent two more since. Tick the items to take out (the box in the header ticks the whole group) and **Remove selected** at the bottom removes them in one go.
+**Context inspector** (Sessions menu) shows what a session's context is made of, as Burst last sent it. The bar at the top is the whole context, a colour for each part; each group below carries the same colour, its tokens and its share, and each item has a line as long as its share. Click a group's head (tinted, with an arrow) to open it. Inside is a table, biggest first so what is worth removing is at the top: click **Item**, **Came with** or **Tokens** to sort by name, age or size, and again to turn the order round. "prompt 9, 2 prompts ago" means the item came into the context with your ninth prompt and you have sent two more since. **Remove** on a row takes that item out. A picture (a screenshot Claude read) is sized by its pixels, an estimate.
 
-![Context inspector: a bar of the context by part (tool results, tools, replies, instruction files), three flagged items worth a look, and each group as a table with sortable headers, a box to tick on each item and Remove selected at the bottom. Illustration: an example session](screenshots/context-inspector.png)
+![Context inspector: a bar of the context by part (tool results, tools, replies, instruction files), three flagged items worth a look, and each group as a table with sortable headers and a Remove button on each item. Illustration: an example session](screenshots/context-inspector.png)
 
 ```mermaid
 flowchart LR
@@ -227,7 +229,10 @@ The cache holds exactly what was last sent, so the inspector's list is the conte
 | Flag | Why it is worth a look |
 | --- | --- |
 | Large output from long ago | Tool output over 20 KB from ten or more prompts ago is paid for on every request since |
-| Read again later | A file read again makes the old copy out of date |
+| Read again at prompt N | The file was read again at that prompt, so this is the older copy and the newer one is in the context too |
+| Run again at prompt N | The same command or search was run again, so this is the older output (2 KB or more) |
+| Picture from N prompts ago | A screenshot or image from an earlier prompt, rarely needed once looked at |
+| Big | A removable item that is 5% or more of the whole context |
 | No longer exists | The file has been deleted or moved |
 | From outside this repository | An instruction file loaded from somewhere else |
 | Personal data | Something automask would mask |
@@ -241,6 +246,7 @@ The cache holds exactly what was last sent, so the inspector's list is the conte
 - Removals are applied after Burst's own compaction, so they never change what it summarises or its hashes.
 - They are kept in `~/.config/claude-burst/context-removals.json` (ids, names and sizes only, never content), so a restart keeps them. A session not touched for 14 days is dropped.
 - Click an item for its full text. The latest request of each conversation is kept in the gateway's memory only, never on disk, and is gone after a restart. A session that sends only what is new with each request then has nothing to list until its conversation is next sent whole: the inspector says so, with how many requests it has seen, and **Bring up to date** asks for it.
+- The session list refreshes by itself every 10 seconds. A session that was at work in the last 6 hours but has sent nothing since the gateway last started is still listed, as "waiting for its next request": its context shows with that request (the next prompt or tool call in that session).
 - The same inspector is on the Codex tab for Codex sessions: see [Codex](codex.md#the-codex-tab).
 
 ## Failover & pricing

@@ -106,7 +106,7 @@ func removeInMessage(raw json.RawMessage, removed map[string]ctxview.Removal) (j
 				changed = true
 			}
 		case "tool_result":
-			text := strings.Join(textsOf(b["content"]), "\n")
+			text, _ := resultText(b["content"])
 			if r, ok := removed[ctxview.ID(grpResults, text)]; ok {
 				b["content"], _ = json.Marshal(ctxview.Stub(r.Name, len(text), r.ID))
 				changed = true

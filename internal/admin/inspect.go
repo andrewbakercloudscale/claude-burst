@@ -3,8 +3,10 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/codex"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -43,7 +45,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		if list == nil {
 			list = []router.InspectSession{}
 		}
-		writeJSON(w, list)
+		writeJSON(w, append(list, s.waitingSessions(list, time.Now())...))
 		return
 	}
 	rep := s.gateway.InspectContext(sid)
@@ -52,6 +54,50 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, rep)
+}
+
+// inspectRecent is how far back a session with no request since the gateway
+// started is still listed as waiting for one.
+const inspectRecent = 6 * time.Hour
+
+// waitingSessions are the sessions at work in the last hours, by the
+// metrics log, that the inspector has nothing of: the gateway restarted and they have sent
+// nothing since. They are listed, newest first, so the page can say why
+// there is nothing to show for them yet. A session's model is its largest
+// request's: its helpers run on small ones.
+func (s *Server) waitingSessions(have []router.InspectSession, now time.Time) []router.InspectSession {
+	listed := map[string]bool{}
+	for _, x := range have {
+		listed[x.Session] = true
+	}
+	type seen struct {
+		at    time.Time
+		model string
+		size  int64
+	}
+	by := map[string]*seen{}
+	_, _, _ = metrics.Scan(s.metricsPath, now.Add(-inspectRecent), func(e metrics.Event) {
+		if e.SessionID == "" || listed[e.SessionID] {
+			return
+		}
+		x := by[e.SessionID]
+		if x == nil {
+			x = &seen{}
+			by[e.SessionID] = x
+		}
+		if e.Time.After(x.at) {
+			x.at = e.Time
+		}
+		if size := e.InputTokens + e.CacheReadTokens + e.CacheWriteTokens; size >= x.size {
+			x.size, x.model = size, e.Model
+		}
+	})
+	out := []router.InspectSession{}
+	for sid, x := range by {
+		out = append(out, router.InspectSession{Session: sid, Repo: s.gateway.InspectRepo(sid), Model: x.model, At: x.at, Waiting: true})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+	return out
 }
 
 // codexContextOf is a Codex session's size as ChatGPT last reported it.

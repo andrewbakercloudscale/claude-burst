@@ -207,7 +207,7 @@ func TestPruneRemovesWhatAWordNamesAndUndoPutsItBack(t *testing.T) {
 // the newest.
 func TestPruneStaleTakesOutOfDateCopies(t *testing.T) {
 	old := ctxview.NewItem(grpResults, "Read /nowhere/a.go", 1, strings.Repeat("old ", 300))
-	old.Flags = []string{"read again later: this copy is out of date"}
+	old.Flags = []string{"read again at prompt 2: this is the older copy"}
 	fresh := ctxview.NewItem(grpResults, "Read /nowhere/a.go", 2, strings.Repeat("new ", 300))
 	personal := ctxview.NewItem(grpResults, "Bash: whoami", 2, strings.Repeat("me ", 300))
 	personal.Flags = []string{"personal data: 1 email"}

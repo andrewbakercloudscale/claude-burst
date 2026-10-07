@@ -418,3 +418,21 @@ out([savedOn(daily, ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]), s
 		t.Fatalf("got %v", got)
 	}
 }
+
+// The address names the tab and the section as the menu does, and reads
+// back to them: a name two tabs share goes by the tab, a section brings its
+// own tab otherwise, and an address that names nothing known is left alone.
+func TestTheAddressNamesTheTabAndSection(t *testing.T) {
+	var got []any
+	runPageJS(t, []string{"slugOf", "hashOf", "placeOf"}, `
+const menu = [["claude", "Context inspector", "sec-inspect"], ["codex", "Context inspector", "sec-codex-inspect"], ["claude", "Context & cache", "sec-context"]]
+  .map(([tab, label, id]) => ({tab, slug: slugOf(label), id}));
+const p = h => { const at = placeOf(h, menu); return at ? at.tab + ":" + at.id : null; };
+out([hashOf("claude", "sec-inspect", menu), hashOf("codex", "sec-codex-inspect", menu), hashOf("claude", "sec-context", menu), hashOf("codex", "~home", menu),
+  p("#claude/context-inspector"), p("#codex/context-inspector"), p("#general/context-and-cache"), p("#claude/sec-inspect"), p("#general"), p("#codex/gone"), p("#nothing"), p("")]);`, &got)
+	want := []any{"#claude/context-inspector", "#codex/context-inspector", "#claude/context-and-cache", "#codex",
+		"claude:sec-inspect", "codex:sec-codex-inspect", "claude:sec-context", "claude:sec-inspect", "general:", "codex:", nil, nil}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v\nwant %v", got, want)
+	}
+}

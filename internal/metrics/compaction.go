@@ -222,6 +222,17 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 	if ctx == 0 {
 		return fx
 	}
+	// A request without the summary, while one is in force, is as a rule not
+	// the conversation: a session's helpers and subagents share its id and
+	// model, and after a gateway restart a request that continues a message
+	// thread does not say what its thread carries. It is left out. Taking it
+	// for the summary gone made the summary's next request a compaction of
+	// its own: on 7 Oct 2026 a session read 59 compactions and $3.55 lost,
+	// of 9 summaries. Only a context back at about what it would be without
+	// Burst says the summary is no longer sent.
+	if e.CompactedMessages == 0 && s.lastCompacted > 0 && !(s.twin > s.lastCtx*13/10 && ctx >= s.twin*8/10) {
+		return fx
+	}
 	swap := e.CompactedMessages > 0 && e.CompactedMessages != s.lastCompacted
 	switch {
 	case e.CompactedMessages == 0:

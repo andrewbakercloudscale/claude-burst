@@ -1,8 +1,13 @@
 package router
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"net/http"
 	"regexp"
 	"sort"
@@ -164,6 +169,15 @@ type InspectSession struct {
 	At       time.Time `json:"at"`
 	Messages int       `json:"messages"`
 	Bytes    int       `json:"bytes"`
+	// Waiting: the session was at work before the gateway last started and
+	// has sent nothing since, so there is nothing to list until it does.
+	Waiting bool `json:"waiting,omitempty"`
+}
+
+// InspectRepo is the repository session sid runs in, "" when unknown.
+func (s *Server) InspectRepo(sid string) string {
+	name, _ := s.repos.Resolve(sid)
+	return name
 }
 
 // InspectSessions lists the sessions with a captured request, newest first.
@@ -381,7 +395,14 @@ func contextItems(body []byte) ([]ContextItem, int) {
 				if name == "" {
 					name = "Tool result"
 				}
-				add(grpResults, name, turn, strings.Join(textsOf(blk.Content), "\n"))
+				text, pics := resultText(blk.Content)
+				add(grpResults, name, turn, text)
+				if it := &items[len(items)-1]; len(pics) > 0 && !it.Removed {
+					it.Pictures = len(pics)
+					for _, p := range pics {
+						it.Extra += pictureTokens(p)
+					}
+				}
 			}
 		}
 	}
@@ -450,6 +471,53 @@ func describeCall(name string, input json.RawMessage) string {
 		return name + ": " + clip(str("description"), 80)
 	}
 	return name
+}
+
+// resultText is a tool result as the inspector lists it and removal finds
+// it again: its text, with a line for each picture that tells that picture
+// from any other, and the pictures themselves (base64, as sent). Without
+// the line every result that is a picture alone had the same empty text,
+// so removing one removed them all, and each showed as 0 tokens.
+func resultText(c json.RawMessage) (string, []string) {
+	var str string
+	if json.Unmarshal(c, &str) == nil {
+		return str, nil
+	}
+	var blocks []struct {
+		Type   string `json:"type"`
+		Text   string `json:"text"`
+		Source struct {
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"source"`
+	}
+	if json.Unmarshal(c, &blocks) != nil {
+		return "", nil
+	}
+	var out, pics []string
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			out = append(out, b.Text)
+		case "image":
+			d := b.Source.Data
+			out = append(out, fmt.Sprintf("[picture: %s, %d KB, %s]", strings.TrimPrefix(b.Source.MediaType, "image/"), len(d)*3/4/1024, ctxview.ID("picture", d[:min(len(d), 4096)]+fmt.Sprint(len(d)))[:8]))
+			pics = append(pics, d)
+		}
+	}
+	return strings.Join(out, "\n"), pics
+}
+
+// pictureTokens estimates what a picture costs: its pixels over 750, as
+// Anthropic documents, up to the most a picture is sent at. A picture whose
+// size cannot be read is taken as a full window's screenshot.
+func pictureTokens(b64 string) int64 {
+	const most, unread = 4800, 1600
+	cfg, _, err := image.DecodeConfig(base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64)))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return unread
+	}
+	return min(int64(cfg.Width)*int64(cfg.Height)/750+1, most)
 }
 
 // textsOf is the text of a content value: a string, or the text blocks of
