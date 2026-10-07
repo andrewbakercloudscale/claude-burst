@@ -70,6 +70,75 @@ notify() {
   osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "claude-burst"' -e 'end run' "$1" >/dev/null 2>&1 || true
 }
 
+# What this did goes in the audit trail too (the Audit tab): the log above is
+# a file nobody opens, and "the watchdog killed the gateway at 03:12" is
+# exactly what someone asking why a session dropped needs to find.
+audit() { "$DIR/audit-add.sh" "$@" >/dev/null 2>&1 || true; }
+
+# A restart that someone asked for: deploy.sh writes planned-restart before
+# it restarts the gateway, and the gateway leaves planned-restart.done when
+# it is back up (it removes the first, often before this script's next run).
+planned="$HOME/.config/claude-burst/planned-restart"
+planned_recent() {
+  local f now
+  now=$(date +%s)
+  for f in "$planned" "$planned.done"; do
+    [[ -f "$f" ]] && (( now - $(stat -f %m "$f" 2>/dev/null || echo 0) < 180 )) && return 0
+  done
+  return 1
+}
+
+# --- Crash loop: restarted again and again is not "healed". ---
+# Every step below treats one failure: reload a gateway that is gone, kill
+# one that hangs. launchd does the same for one that exits. None of them
+# counted, so a gateway that died on start came back every ten seconds for
+# as long as the Mac was on, each restart reported as a success, and with
+# the redirect in place Claude Code was down the whole time with nothing
+# said. CRASH_LIMIT restarts inside CRASH_WINDOW seconds, planned ones not
+# counted, and it says so: a notification, the log and the audit, naming
+# the two commands that end it. It still does not roll back by itself:
+# that needs root for /etc/hosts and pf, and this runs with nobody there.
+RESTARTS_FILE="$HOME/.config/claude-burst/self-heal-restarts"
+PID_FILE="$HOME/.config/claude-burst/self-heal-pid"
+CRASHLOOP_FILE="$HOME/.config/claude-burst/self-heal-crashloop"
+CRASH_LIMIT="${CLAUDE_BURST_CRASH_LIMIT:-5}"
+CRASH_WINDOW="${CLAUDE_BURST_CRASH_WINDOW:-600}"
+
+# recent_restarts prints the restarts still inside the window, one per line.
+recent_restarts() {
+  local now t
+  now=$(date +%s)
+  for t in $(cat "$RESTARTS_FILE" 2>/dev/null); do
+    [[ "$t" == <-> ]] && (( now - t < CRASH_WINDOW )) && echo "$t"
+  done
+}
+
+# note_restart counts one restart ($1 says what it was) and escalates at the
+# limit, once an hour at most while the loop goes on.
+note_restart() {
+  local kept n now
+  now=$(date +%s)
+  kept="$(recent_restarts)"
+  { [[ -n "$kept" ]] && echo "$kept"; echo "$now"; } > "$RESTARTS_FILE"
+  n=$(wc -l < "$RESTARTS_FILE" | tr -d ' ')
+  (( n < CRASH_LIMIT )) && return 0
+  if [[ -f "$CRASHLOOP_FILE" ]] && (( now - $(stat -f %m "$CRASHLOOP_FILE" 2>/dev/null || echo 0) < RENOTIFY_SECONDS )); then
+    return 0
+  fi
+  : > "$CRASHLOOP_FILE"
+  local msg="Gateway restarted $n times in $(( CRASH_WINDOW / 60 )) minutes and is not staying up (last: $1). Run burst-repair; burst-off takes Burst out of the path meanwhile."
+  log "CRASH LOOP: $msg"
+  notify "$msg"
+  audit watchdog error "Watchdog: the gateway keeps restarting" "$msg"
+}
+
+# A window with no restart in it after a loop: say it is over, once.
+if [[ -f "$CRASHLOOP_FILE" && -z "$(recent_restarts)" ]]; then
+  rm -f "$CRASHLOOP_FILE" "$RESTARTS_FILE"
+  log "gateway has stayed up for $(( CRASH_WINDOW / 60 )) minutes: the crash loop is over"
+  audit watchdog ok "Watchdog: the gateway is staying up again" "no restart in the last $(( CRASH_WINDOW / 60 )) minutes"
+fi
+
 # --- 0. Did a human deliberately roll back? Then stay out of the way. ---
 # Reloading the gateway after rollback.sh stopped it is not self-healing, it
 # is undoing someone's decision -- observed 2026-09-07, 90 seconds after a
@@ -86,6 +155,17 @@ if [[ -f "$ROLLED_BACK_MARKER" ]]; then
 fi
 rm -f "$ROLLED_BACK_MARKER.noted"
 
+# --- 0b. Did launchd restart it since the last check? ---
+# A new pid that nobody asked for is the gateway having exited: launchd's
+# KeepAlive brought it back, and this is the only place that can count it.
+pid_now="$(launchagent_pid)"
+pid_last="$(cat "$PID_FILE" 2>/dev/null || true)"
+if [[ -n "$pid_now" && -n "$pid_last" && "$pid_now" != "$pid_last" ]] && ! planned_recent; then
+  log "gateway restarted by itself (pid $pid_last, now $pid_now)"
+  note_restart "it exited and launchd started it again"
+fi
+if [[ -n "$pid_now" ]]; then echo "$pid_now" > "$PID_FILE"; else rm -f "$PID_FILE"; fi
+
 # --- 1. Is the gateway's own LaunchAgent even loaded? Reload if not. ---
 # No root needed for this half: enable/bootstrap on a LaunchAgent is entirely
 # within this user's own session, unlike the /etc/hosts + pf half below.
@@ -101,9 +181,14 @@ if ! launchagent_running; then
   if launchagent_running || ensure_launchagent_loaded; then
     log "reloaded successfully"
     notify "Gateway had stopped (LaunchAgent was unloaded) -- reloaded automatically."
+    audit watchdog warn "Watchdog: reloaded a gateway that had stopped" "its LaunchAgent was unloaded or its process gone"
+    # Counted here, so not again as a new pid on the next check.
+    rm -f "$PID_FILE"
+    note_restart "it had stopped and was reloaded"
   else
     log "FAILED to reload -- see health-diagnostics.sh's ensure_launchagent_loaded output above"
     notify "Gateway is down and could not be reloaded automatically. Check Terminal."
+    audit watchdog error "Watchdog: the gateway is down and could not be reloaded" "run burst-repair, or burst-off to take Burst out of the path"
     exit 0
   fi
   # Give the freshly-reloaded process a moment to bind before testing it
@@ -121,8 +206,7 @@ fi
 HANG_FILE="$HOME/.config/claude-burst/self-heal-hang"
 HANG_LIMIT="${CLAUDE_BURST_HANG_LIMIT:-2}"
 KILL="${CLAUDE_BURST_KILL:-kill}"
-planned="$HOME/.config/claude-burst/planned-restart"
-if [[ -f "$planned" ]] && (( $(date +%s) - $(stat -f %m "$planned" 2>/dev/null || echo 0) < 180 )); then
+if planned_recent; then
   rm -f "$HANG_FILE"
 elif launchagent_running; then
   if gateway_healthy || curl -s -m 5 -o /dev/null "$ADMIN_URL/api/mod-status" 2>/dev/null; then
@@ -135,7 +219,9 @@ elif launchagent_running; then
     if (( hung >= HANG_LIMIT )) && [[ -n "$pid" ]]; then
       log "gateway (pid $pid) hung for $hung checks -- killing it; launchd starts a fresh one"
       "$KILL" -9 "$pid" 2>/dev/null
-      rm -f "$HANG_FILE"
+      rm -f "$HANG_FILE" "$PID_FILE"
+      audit watchdog warn "Watchdog: killed a gateway that had stopped answering" "pid $pid answered nothing for $hung checks; launchd starts a fresh one"
+      note_restart "it hung and was killed"
       exit 0
     fi
   fi

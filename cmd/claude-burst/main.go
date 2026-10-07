@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
 const version = "0.20.11"
@@ -14,6 +16,7 @@ func main() {
 		serve(os.Args[1:])
 		return
 	}
+	cliAction = auditedCommand(os.Args[1:])
 	switch os.Args[1] {
 	case "serve":
 		serve(os.Args[2:])
@@ -64,6 +67,7 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	recordCLI(notice.Info, "done")
 }
 
 func usage() {
@@ -201,4 +205,8 @@ func rejectArgs(cmd string, args []string) {
 	}
 }
 
-func fatal(err error) { fmt.Fprintln(os.Stderr, "error:", err); os.Exit(1) }
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, "error:", err)
+	recordCLI(notice.Warn, "failed: "+err.Error())
+	os.Exit(1)
+}

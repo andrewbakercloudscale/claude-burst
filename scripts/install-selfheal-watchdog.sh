@@ -50,7 +50,7 @@ uninstall() {
 install() {
   [[ -x "$ROOT/scripts/self-heal-watchdog.sh" ]] || { echo "missing or non-executable: $ROOT/scripts/self-heal-watchdog.sh" >&2; exit 1; }
   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.config/claude-burst" "$INSTALL_DIR"
-  cp "$ROOT/scripts/self-heal-watchdog.sh" "$ROOT/scripts/health-diagnostics.sh" "$INSTALL_DIR/"
+  cp "$ROOT/scripts/self-heal-watchdog.sh" "$ROOT/scripts/health-diagnostics.sh" "$ROOT/scripts/audit-add.sh" "$INSTALL_DIR/"
   chmod 755 "$SCRIPT"
 
   cat > "$PLIST" <<PLIST

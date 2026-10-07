@@ -23,7 +23,10 @@ CFG="$HOME/.config/claude-burst"
 LABEL="ninja.andrewbaker.claude-burst"
 GH="https://github.com/andrewbakercloudscale/claude-burst.git"
 STEP="starting"
-trap 'rc=$?; [ $rc -ne 0 ] && echo && echo "burst-repair FAILED (exit $rc) while $STEP. Run scripts/diagnose.sh and paste its report when asking for help; burst-off takes Burst out of the path meanwhile."' EXIT
+# audit records how this ended in the audit trail (the Audit tab). REPO is
+# set further down; before that there is no script to call and nothing ran.
+audit() { [ -n "${REPO:-}" ] && [ -f "$REPO/scripts/audit-add.sh" ] && sh "$REPO/scripts/audit-add.sh" script "$1" "Script: repair.sh (burst-repair)" "$2" >/dev/null 2>&1; return 0; }
+trap 'rc=$?; if [ $rc -ne 0 ]; then audit error "failed (exit $rc) while $STEP"; echo; echo "burst-repair FAILED (exit $rc) while $STEP. Run scripts/diagnose.sh and paste its report when asking for help; burst-off takes Burst out of the path meanwhile."; else audit ok "done"; fi' EXIT
 
 say() { printf '\n== %s\n' "$1"; STEP="$1"; }
 # ask reads the answer from the terminal, not stdin: stdin is the script

@@ -20,6 +20,10 @@ ROLLED_BACK_MARKER="${CLAUDE_BURST_ROLLED_BACK_MARKER:-$HOME/.config/claude-burs
 # one that refuses to run.
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# How this ended goes in the audit trail (the Audit tab), whoever ran it: a
+# person, the dashboard's button, the mod, or watchdog.sh with nobody there.
+trap 'rc=$?; if [ $rc -eq 0 ]; then "$DIR/audit-add.sh" script warn "Script: rollback.sh (burst-off)" "done: Burst is out of the path" >/dev/null 2>&1; else "$DIR/audit-add.sh" script error "Script: rollback.sh (burst-off)" "ended with exit $rc: check that Claude Code reaches Anthropic" >/dev/null 2>&1; fi' EXIT
+
 # Acquire root once, upfront, for the two helper steps below. A NOPASSWD
 # sudoers entry (or an already-cached credential) satisfies this silently --
 # that's what lets watchdog.sh call this script unattended. Otherwise, only

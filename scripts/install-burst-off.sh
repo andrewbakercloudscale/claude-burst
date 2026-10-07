@@ -16,7 +16,7 @@ INSTALL_DIR="${CLAUDE_BURST_INSTALL_DIR:-$HOME/.local/bin}"
 OFF_DIR="$HOME/.local/share/claude-burst"
 
 mkdir -p "$OFF_DIR" "$INSTALL_DIR" &&
-  cp -f "$ROOT/scripts/rollback.sh" "$ROOT/scripts/transparent-root.sh" "$ROOT/scripts/untrust-ca-systemwide.sh" "$ROOT/scripts/codex-unroute.sh" "$ROOT/scripts/reinstall.sh" "$OFF_DIR/" &&
+  cp -f "$ROOT/scripts/rollback.sh" "$ROOT/scripts/transparent-root.sh" "$ROOT/scripts/untrust-ca-systemwide.sh" "$ROOT/scripts/codex-unroute.sh" "$ROOT/scripts/reinstall.sh" "$ROOT/scripts/audit-add.sh" "$OFF_DIR/" &&
   printf '%s\n' "${CLAUDE_BURST_REPO:-$ROOT}" > "$OFF_DIR/repo" &&
   printf '%s\n' '#!/bin/zsh' \
     '# Fetch the newest Claude Burst and install it again. Installed by claude-burst.' \

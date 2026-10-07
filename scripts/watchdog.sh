@@ -51,6 +51,8 @@ if [[ "$healthy" -eq 1 ]]; then
   osascript -e 'display notification "Gateway healthy after check. Staying enabled." with title "claude-burst"' >/dev/null 2>&1 || true
 else
   dump_health_diagnostics "watchdog, ${DELAY}s after enable" >> "$LOG" 2>&1
+  # rollback.sh records its own result; this is why it ran with nobody there.
+  "$DIR/audit-add.sh" watchdog error "Watchdog: gateway unhealthy ${DELAY}s after enable, rolling back" "see ~/.config/claude-burst/watchdog.log" >/dev/null 2>&1 || true
   # Say rolled back only if the rollback says so: reporting success after a
   # failed rollback would leave someone believing they are safe.
   if "$DIR/rollback.sh" >> "$LOG" 2>&1; then

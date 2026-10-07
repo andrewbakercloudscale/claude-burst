@@ -30,6 +30,14 @@ INSTALL_DIR="$HOME/.local/bin"
 TARGET="$INSTALL_DIR/claude-burst"
 OFF_DIR="$HOME/.local/share/claude-burst"
 
+# How this ended goes in the audit trail (the Audit tab), with the command
+# it was given (install or uninstall). Anything else is a usage error that
+# changed nothing and is not recorded.
+INSTALL_CMD="${1:-install}"
+case "$INSTALL_CMD" in install|uninstall)
+  trap 'rc=$?; if [ $rc -eq 0 ]; then sh "$ROOT/scripts/audit-add.sh" script info "Script: install.sh $INSTALL_CMD" "done" >/dev/null 2>&1; else sh "$ROOT/scripts/audit-add.sh" script error "Script: install.sh $INSTALL_CMD" "failed (exit $rc)" >/dev/null 2>&1; fi' EXIT ;;
+esac
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "claude-burst is Mac-only in this MVP." >&2
   exit 1
