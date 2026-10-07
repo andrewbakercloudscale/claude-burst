@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	stubDir = d
-	body := "#!/bin/sh\nd=\"$(dirname \"$0\")\"\necho \"$*\" >> \"$d/calls\"\ncat \"$d/out\"\nexit $(cat \"$d/code\")\n"
+	body := "#!/bin/sh\nd=\"$(dirname \"$0\")\"\necho \"$*\" >> \"$d/calls\"\ncat >> \"$d/stdin\"\ncat \"$d/out\"\nexit $(cat \"$d/code\")\n"
 	if err := os.WriteFile(filepath.Join(d, "security"), []byte(body), 0o755); err != nil {
 		panic(err)
 	}
@@ -33,7 +33,7 @@ func TestMain(m *testing.M) {
 // out and exits with code. It returns a func reading the calls so far.
 func stubSecurity(t *testing.T, out string, code int) func() []string {
 	t.Helper()
-	for name, v := range map[string]string{"out": out, "code": strconv.Itoa(code), "calls": ""} {
+	for name, v := range map[string]string{"out": out, "code": strconv.Itoa(code), "calls": "", "stdin": ""} {
 		if err := os.WriteFile(filepath.Join(stubDir, name), []byte(v), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -117,9 +117,31 @@ func TestStoreAndDelete(t *testing.T) {
 	if err := Store("svc", "v1"); err != nil {
 		t.Fatal(err)
 	}
-	if c := calls(); len(c) != 1 || !strings.HasPrefix(c[0], "add-generic-password -U -a ") || !strings.HasSuffix(c[0], "-s svc -w v1") {
-		t.Fatalf("store calls %q", c)
+	// The secret is on stdin, never among the arguments, which any process
+	// on the Mac can read while security runs.
+	if c := calls(); len(c) != 1 || c[0] != "-i" {
+		t.Fatalf("store must run security -i and nothing else, got %q", c)
 	}
+	in, _ := os.ReadFile(filepath.Join(stubDir, "stdin"))
+	if got := string(in); !strings.HasPrefix(got, `add-generic-password -U -a "`) || !strings.HasSuffix(got, `" -s "svc" -w "v1"`+"\n") {
+		t.Fatalf("store's command line: %q", got)
+	}
+	// Quotes and backslashes in a secret are escaped; a line break would
+	// start a second command, so it is refused.
+	if err := Store("svc", `a b"c\d$e`); err != nil {
+		t.Fatal(err)
+	}
+	in, _ = os.ReadFile(filepath.Join(stubDir, "stdin"))
+	if !strings.HasSuffix(string(in), `-w "a b\"c\\d$e"`+"\n") {
+		t.Fatalf("a secret with quotes: %q", in)
+	}
+	if err := Store("svc", "one\ndelete-keychain"); err == nil {
+		t.Fatal("a secret with a line break must be refused")
+	}
+	if c := calls(); len(c) != 2 {
+		t.Fatalf("the refused secret must not reach security: %q", c)
+	}
+	stubSecurity(t, "", 0)
 	if err := Delete("svc"); err != nil {
 		t.Fatal(err)
 	}

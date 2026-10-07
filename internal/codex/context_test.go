@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -118,5 +119,34 @@ func TestCodexRemoveAndRestore(t *testing.T) {
 	}
 	if turn() != codexBody {
 		t.Fatal("restore did not send the original again")
+	}
+}
+
+// A turn sent with no declared length (chunked) that is larger than the
+// inspector reads must reach ChatGPT whole: it used to arrive cut off at
+// the limit.
+func TestAnOversizedChunkedTurnArrivesWhole(t *testing.T) {
+	old := inspectLimit
+	inspectLimit = 1000
+	t.Cleanup(func() { inspectLimit = old })
+	var got []byte
+	_, _, gw := newTestGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	want := []byte(`{"input":"` + strings.Repeat("x", 5000) + `"}`)
+	// A reader that is not a *bytes.Reader, so the client sends it chunked.
+	req, err := http.NewRequest(http.MethodPost, gw.URL+"/backend-api/codex/responses", io.MultiReader(bytes.NewReader(want)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Session-Id", "S")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !bytes.Equal(got, want) {
+		t.Fatalf("ChatGPT got %d bytes of %d", len(got), len(want))
 	}
 }

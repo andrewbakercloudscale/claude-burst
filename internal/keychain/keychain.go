@@ -36,10 +36,16 @@ var timeout = 10 * time.Second
 var errTimedOut = errors.New("the Keychain did not answer in time (is the login Keychain locked?)")
 
 // security runs the Keychain CLI with args, bounded by timeout.
-func security(args ...string) ([]byte, error) {
+func security(args ...string) ([]byte, error) { return securityStdin("", args...) }
+
+// securityStdin is security with stdin given to the command.
+func securityStdin(stdin string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, securityPath, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	// Kill only reaches security itself; WaitDelay stops a child holding
 	// its output open from keeping CombinedOutput waiting anyway.
 	cmd.WaitDelay = time.Second
@@ -64,10 +70,27 @@ func Store(service, value string) error {
 	if value == "" {
 		return fmt.Errorf("empty key")
 	}
-	if out, err := security("add-generic-password", "-U", "-a", account(), "-s", service, "-w", value); err != nil {
+	// The secret goes to security on stdin (its -i mode reads commands
+	// there), never as an argument: a process's arguments are readable by
+	// every other process on the Mac for as long as it runs (ps), and
+	// until 7 Oct 2026 the key was one of them.
+	for _, v := range []string{service, account(), value} {
+		if strings.ContainsAny(v, "\n\r\x00") {
+			return fmt.Errorf("a Keychain value cannot contain a line break")
+		}
+	}
+	line := "add-generic-password -U -a " + quoteForSecurity(account()) + " -s " + quoteForSecurity(service) + " -w " + quoteForSecurity(value) + "\n"
+	out, err := securityStdin(line, "-i")
+	if err != nil {
 		return fmt.Errorf("security add-generic-password: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// quoteForSecurity quotes one argument for a line read by security -i,
+// which splits on spaces and honours double quotes and backslashes.
+func quoteForSecurity(s string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
 }
 
 // Load returns the secret for service, checking envVar first and falling

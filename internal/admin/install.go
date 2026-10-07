@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -202,6 +203,13 @@ echo
 	if host == "" {
 		host = "api.anthropic.com"
 	}
+	// The host is written into the script several times, in echo lines and
+	// in comments, where quoting cannot protect it: a host with a line
+	// break or a quote in it would be run as commands. A hostname has
+	// neither, so anything else is refused before a script exists.
+	if !plainHostname.MatchString(host) {
+		return "", fmt.Errorf("intercept host %q is not a hostname, so no install script was written", host)
+	}
 
 	if mode == "transparent" {
 		fmt.Fprintf(&b, `# Ask for the password up front, while there is a human here to type it.
@@ -337,6 +345,9 @@ func writeInstallScript(mode, body string) (string, error) {
 // quotes within. Every value this script interpolates is server-derived (a
 // binary path, a directory), not user input -- quoting them anyway costs
 // nothing and means a path with a space stops being a latent bug.
+// plainHostname is letters, digits, dots and hyphens: all a DNS name has.
+var plainHostname = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
+
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

@@ -22,7 +22,9 @@
 // - the usage panel's band file: its summary rows, colours and all, so the
 //   numbers here are the panel's own and nothing is computed twice
 
-const DASHBOARD = 'http://127.0.0.1:7788'
+// Where the dashboard is unless config.json's admin_listen says otherwise.
+const DASHBOARD_DEFAULT = '127.0.0.1:7788'
+let DASHBOARD = 'http://' + DASHBOARD_DEFAULT
 const PANE = 'burst'
 const POLL_MS = 5000
 
@@ -86,6 +88,15 @@ const HANDOFF_ALWAYS_AT = 800000
 
 let heldSeen = 0 // the most this session was last seen to hold, kept for when the gateway is gone
 let handed = '' // the hand-off already made or refused, so it is not tried again
+
+// The dashboard's address as the gateway was told it: admin_listen, a
+// host:port on this Mac. Anything else, a missing file included, is the
+// default: the mod must never be pointed at another machine by a config file.
+export function dashboardURL(cfg) {
+  const m = /^(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/.exec(String((cfg && cfg.admin_listen) || ''))
+  if (!m || +m[2] < 1 || +m[2] > 65535) return 'http://' + DASHBOARD_DEFAULT
+  return 'http://' + m[1] + ':' + +m[2]
+}
 
 async function readJSON($, path) {
   try {
@@ -290,6 +301,7 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     sid = await $.session.id()
     home = (await $.env.get('HOME')) || ''
+    DASHBOARD = dashboardURL(await readJSON($, home + '/.config/claude-burst/config.json'))
     since = Math.floor((await $.clock.now()) / 1000)
     toastsMarked = 0
     handed = ''

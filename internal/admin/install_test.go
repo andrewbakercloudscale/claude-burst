@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -220,5 +221,51 @@ func TestInstallScriptBaseURLRefusesOverTransparentRedirect(t *testing.T) {
 	}
 	if !strings.Contains(script, "transparent-root.sh remove") {
 		t.Error("the refusal does not name the command that clears the redirect")
+	}
+}
+
+// What the dashboard writes into a script it then runs in Terminal can
+// never be run as a command: a host that is not a hostname is refused, and
+// the version and commit are quoted.
+func TestGeneratedScriptsCannotBeInjected(t *testing.T) {
+	s, _ := newInstallServer(t)
+	for _, host := range []string{"api.anthropic.com\"; touch /tmp/pwned; \"", "a.example\nrm -rf ~", "$(id)", "a b", "-x", "x'y"} {
+		cfg := config.Default()
+		cfg.Intercept.Host = host
+		for _, mode := range []string{"base-url", "transparent"} {
+			if script, err := s.installScript(mode, cfg); err == nil {
+				t.Errorf("host %q (%s) was written into a script:\n%s", host, mode, script)
+			}
+		}
+	}
+	cfg := config.Default()
+	cfg.Intercept.Host = "api.anthropic.com"
+	if _, err := s.installScript("base-url", cfg); err != nil {
+		t.Fatalf("a real hostname: %v", err)
+	}
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	// The scripts are checked by the shell itself: with a hostile version
+	// and commit they must still parse, and print the values, not run them.
+	marker := filepath.Join(t.TempDir(), "ran")
+	st := upgradeStatus{RunningVersion: `1.0"; touch ` + marker + `; echo "`, RunningCommit: "$(touch " + marker + ")`touch " + marker + "`"}
+	for name, script := range map[string]string{"upgrade": upgradeScript(t.TempDir(), st), "install-github": githubInstallScript(t.TempDir(), st)} {
+		if out, err := exec.Command("zsh", "-n", "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("%s does not parse: %v\n%s", name, err, out)
+		}
+		// Run only its first lines, up to the echo: the rest fetches and deploys.
+		i := strings.Index(script, "echo 'running: ")
+		if i < 0 {
+			t.Fatalf("%s: the running line is not single-quoted:\n%s", name, script[:400])
+		}
+		line := script[i : i+strings.Index(script[i:], "\n")]
+		out, err := exec.Command("zsh", "-c", line).CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "touch "+marker) {
+			t.Fatalf("%s: %v %q", name, err, out)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("%s ran the version string as a command", name)
+		}
 	}
 }
