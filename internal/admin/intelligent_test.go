@@ -85,7 +85,7 @@ func TestGetAutoCompactionThreshold(t *testing.T) {
 			t.Fatalf("%s: %d %+v", q, code, a)
 		}
 	}
-	if a.Fixed != 300_000 || a.Floor != 120_000 || a.BufferPercent != 20 || a.DelayMinutes != 45 || a.Previous != 300_000 || a.Failures.Unpaid != 1 || a.Failures.LostUSD != 0.31 {
+	if a.Fixed != 300_000 || a.Floor != 120_000 || a.BufferPercent != config.DefaultCompactionBuffer || a.DelayMinutes != 45 || a.Previous != 300_000 || a.Failures.Unpaid != 1 || a.Failures.LostUSD != 0.31 {
 		t.Fatalf("the rest of the answer: %+v", a)
 	}
 	// The running gateway has it too.
@@ -132,7 +132,7 @@ func TestIntelligentCompactionSettingsAreValidatedAndListed(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil || w.Code != http.StatusOK {
 		t.Fatalf("%d %v %s", w.Code, err, w.Body.String())
 	}
-	if v.Mode != "intelligent" || !v.Enabled || v.Fixed != 300_000 || v.Floor != 100_000 || v.Buffer != 20 || v.Delay != 30 || v.Days != 14 {
+	if v.Mode != "intelligent" || !v.Enabled || v.Fixed != 300_000 || v.Floor != 100_000 || v.Buffer != config.DefaultCompactionBuffer || v.Delay != 30 || v.Days != 14 {
 		t.Fatalf("view %+v", v)
 	}
 	if len(v.Repos) != 1 || v.Repos[0].InForce != 150_000 || v.Repos[0].Source != "learned" || v.Repos[0].Name != "my-project" {

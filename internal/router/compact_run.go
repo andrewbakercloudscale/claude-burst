@@ -84,6 +84,9 @@ type compactState struct {
 	msgCount    int // messages in the latest request, memory only
 	// thread: the latest request continued a message thread (threadOf).
 	thread bool
+	// idle is the latest request, memory only, for a summary written from
+	// it if nothing follows (compact_idle.go).
+	idle *idleRequest
 	// judged is the hand-off (Handoff.Of) whose first answer after the
 	// swap has been compared with the limit. Memory only: after a restart
 	// the next answer is judged again, and the mod acts once per summary.
@@ -615,6 +618,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// ("2 messages, 2 prompts"), so a history no turn has answered yet
 	// counts as one prompt too.
 	oneShot := len(bounds) <= 1 || !hasAssistant(msgs)
+	st.idle = nil
+	if !oneShot && !cfg.NoIdleCompaction {
+		st.keepForIdle(in, top, body, msgs, cfg.FloorTokens, limit)
+	}
 	if !oneShot && st.lastContext >= cfg.WarnAtTokens && (st.warnedAt.IsZero() || now.Sub(st.warnedAt) >= window) {
 		st.warnedAt = now
 		s.logger.Printf("req=%s warn stage=compaction session=%s context=%dk (warn at %dk, %s)",

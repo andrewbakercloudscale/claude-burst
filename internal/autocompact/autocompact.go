@@ -35,7 +35,11 @@
 // the cost rises slowly past its lowest point, so a little money buys many
 // fewer compactions. Until 7 Oct 2026 the target was the cheapest size and
 // a busy repository compacted every 80 requests, as often as the delay let
-// it.
+// it. For a few hours that day slackShare was a quarter with a fifth of
+// buffer on top: a third more a turn than the cheapest, about $39 in 14
+// days on this Mac. At a twentieth and no buffer the turn costs 5% more
+// and a compaction comes every 75 requests where the cheapest size has one
+// every 47.
 //
 // Guards, since the log measures money and not what a summary loses: never
 // below the floor, never above the fixed Compact at, a tenth a day at most
@@ -87,7 +91,7 @@ const (
 	lossStreak       = 2
 	// slackShare is how much more than the cheapest a turn may cost so that
 	// compactions come less often: see the package comment.
-	slackShare = 0.25
+	slackShare = 0.05
 )
 
 // Outcome kinds the gateway records (router), beside the summary calls
@@ -342,14 +346,21 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		}
 		a.swapped = append(a.swapped, r)
 		a.after = append(a.after, float64(r.Start))
-		a.costs = append(a.costs, r.CostUSD)
-		if p > 0 {
-			a.c0 = append(a.c0, math.Max(0, r.CostUSD-p*float64(r.Before)))
+		// One that swapped in on a cold cache cost its summary and no
+		// rewrite: not what a compaction in a session at work costs, which
+		// is what a Compact at is worked out from.
+		if !r.Cold {
+			a.costs = append(a.costs, r.CostUSD)
+			if p > 0 {
+				a.c0 = append(a.c0, math.Max(0, r.CostUSD-p*float64(r.Before)))
+			}
 		}
 		if in.Now.Sub(r.Last) >= settled {
 			a.turnsAfter = append(a.turnsAfter, float64(r.Turns))
-			// Each of its turns read Before-Start fewer tokens.
-			saved := p * float64(r.Before-r.Start) * float64(r.Turns)
+			// Each of its turns read Before-Start fewer tokens, less what
+			// it cost to write the whole history again if the
+			// conversation went back to it.
+			saved := p*float64(r.Before-r.Start)*float64(r.Turns) - r.BackUSD
 			if saved < r.CostUSD {
 				a.fails.Unpaid++
 				a.fails.LostUSD += r.CostUSD - saved

@@ -81,6 +81,7 @@ func serve(args []string) {
 		fatal(err)
 	}
 	metrics.SetPricer(srv.PriceTokens)
+	metrics.SetLongWritePricer(srv.LongWriteExtraUSD)
 
 	scheme := "http"
 	var tlsConfig *tls.Config
@@ -224,6 +225,7 @@ func serve(args []string) {
 	// Joins the chosen hotspot when offline; idle unless one is chosen.
 	go superviseHotspot(logger)
 	go srv.WatchNetwork(context.Background())
+	go srv.WatchIdleSessions(context.Background())
 	// ReadHeaderTimeout bounds only the request headers, never a long
 	// streaming reply, so it cannot cut a slow model off; it stops a client
 	// that opens a connection and never finishes its headers from holding it.

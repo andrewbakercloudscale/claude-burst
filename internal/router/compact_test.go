@@ -2058,3 +2058,87 @@ func TestAThreadThatGoesOnFromASummaryIsLoggedWithIt(t *testing.T) {
 		t.Fatalf("the compaction is one run of 3 turns, got %+v", runs)
 	}
 }
+
+// sendLong is send for a request that asks for the one-hour cache, as
+// Claude Code does on a subscription.
+func sendLong(t *testing.T, s *Server, sid string, history []json.RawMessage) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "stream": true, "max_tokens": 100,
+		"system": []any{map[string]any{"type": "text", "text": "sys", "cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"}}},
+		"tools":  []any{}, "messages": history})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", bytes.NewReader(b))
+	req.Header.Set("x-claude-code-session-id", sid)
+	req.Header.Set("authorization", "Bearer oauth")
+	s.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+// A session left alone is summarised while its one-hour cache can still be
+// read, though it is far under Compact at, and the request that comes back
+// carries the summary: what it writes to the cache is what a compaction
+// leaves, not the history.
+func TestAnIdleSessionIsSummarisedBeforeItsCacheExpires(t *testing.T) {
+	f := &fakeAnthropic{context: 150_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 30, FloorTokens: 100_000})
+	all := msgs(t, session)
+	sendLong(t, s, "S", all[:5])
+	now := time.Now()
+	if n := s.compactIdle(now.Add(10 * time.Minute)); n != 0 || f.summaryCount() != 0 {
+		t.Fatalf("ten minutes is not idle: started %d", n)
+	}
+	if n := s.compactIdle(now.Add(52 * time.Minute)); n != 1 {
+		t.Fatalf("idle for 52 minutes at 150k: started %d, want 1", n)
+	}
+	waitFor(t, func() bool { return f.summaryCount() == 1 })
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	// Looked at again: nothing more, the request is not kept.
+	if n := s.compactIdle(now.Add(53 * time.Minute)); n != 0 {
+		t.Fatalf("a second summary of the same idle session: %d", n)
+	}
+	// The user comes back two hours later.
+	sendLong(t, s, "S", all[:9])
+	got := f.last()
+	if !strings.Contains(got, "THE GIST OF THE FIRST TASK") || strings.Contains(got, "old file") || !strings.Contains(got, "done with second") {
+		t.Fatalf("the request that comes back must carry the summary and what followed it:\n%s", got)
+	}
+}
+
+// Nothing is summarised at idle where it would cost a full write or is not
+// worth it: a cache that has had its hour (a Mac that slept), a request
+// that did not ask for the one-hour cache, a context under the floor, and
+// the option turned off.
+func TestIdleCompactionLeavesAloneWhatItWouldLoseOn(t *testing.T) {
+	all := msgs(t, session)
+	on := config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 30, FloorTokens: 100_000}
+	off := on
+	off.NoIdleCompaction = true
+	for name, c := range map[string]struct {
+		cfg     config.CompactionConfig
+		context int64
+		long    bool
+		after   time.Duration
+	}{
+		"asleep through the hour": {on, 150_000, true, 3 * time.Hour},
+		"five-minute cache":       {on, 150_000, false, 52 * time.Minute},
+		"under the floor":         {on, 60_000, true, 52 * time.Minute},
+		"turned off":              {off, 150_000, true, 52 * time.Minute},
+	} {
+		f := &fakeAnthropic{context: c.context}
+		s := compactServer(t, f, c.cfg)
+		if c.long {
+			sendLong(t, s, "S", all[:5])
+		} else {
+			send(t, s, "S", all[:5])
+		}
+		if n := s.compactIdle(time.Now().Add(c.after)); n != 0 {
+			t.Fatalf("%s: started %d summaries", name, n)
+		}
+		// And not a minute later either: it is looked at once.
+		if n := s.compactIdle(time.Now().Add(52 * time.Minute)); n != 0 && name == "asleep through the hour" {
+			t.Fatalf("%s: started %d summaries on a second look", name, n)
+		}
+		s.compaction.running.Wait()
+		if f.summaryCount() != 0 {
+			t.Fatalf("%s: a summary was written", name)
+		}
+	}
+}

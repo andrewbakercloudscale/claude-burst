@@ -363,3 +363,24 @@ func TestIntelligentModeHasNoWarning(t *testing.T) {
 		t.Fatalf("static mode warns at %d, want 240000", fixed.WarnAtTokens)
 	}
 }
+
+// A write to the one-hour cache costs twice the input rate on a Claude
+// model, and PriceTokens charges every write at 1.25 times: the difference
+// is charged on top for the tokens that went there.
+func TestOneHourCacheWritesCostMoreThanFiveMinuteOnes(t *testing.T) {
+	c := Config{Pricing: map[string]ModelPrice{
+		"claude-x":   {InputPerMTok: 4, OutputPerMTok: 20},
+		"claude-set": {InputPerMTok: 4, OutputPerMTok: 20, CacheWrite1hPerMTok: 6},
+		"other":      {InputPerMTok: 4, OutputPerMTok: 20},
+	}}
+	near := func(got, want float64) bool { return got > want-1e-9 && got < want+1e-9 }
+	if got := c.LongWriteExtraUSD("claude-x", 1_000_000); !near(got, 8-5) {
+		t.Fatalf("claude default: %v", got)
+	}
+	if got := c.LongWriteExtraUSD("claude-set", 1_000_000); !near(got, 6-5) {
+		t.Fatalf("configured rate: %v", got)
+	}
+	if got := c.LongWriteExtraUSD("other", 1_000_000) + c.LongWriteExtraUSD("claude-x", 0); got != 0 {
+		t.Fatalf("no known multiplier, or no tokens: %v", got)
+	}
+}
