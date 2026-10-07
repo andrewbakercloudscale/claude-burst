@@ -101,7 +101,7 @@ func New(gateway *router.Server, metricsPath, version, extraHost, rootHelper str
 	return &Server{gateway: gateway, metricsPath: metricsPath, version: version, repos: newRepoResolver(),
 		extraHost: strings.ToLower(extraHost), rootHelper: rootHelper,
 		storeKey: keychain.Store, keyInfo: keychain.Describe, loadKey: keychain.Load,
-		authenticate: touchid.Authenticate}
+		authenticate: touchid.AuthenticateIsolated}
 }
 
 func (s *Server) Handler() http.Handler {

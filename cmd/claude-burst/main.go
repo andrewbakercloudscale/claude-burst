@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
+	"github.com/andrewbakercloudscale/claude-burst/internal/touchid"
 )
 
 const version = "0.20.11"
@@ -32,6 +33,10 @@ func main() {
 		openCmd(os.Args[2:])
 	case "app":
 		appCmd(os.Args[2:])
+	case touchid.HelperCommand:
+		// Run by the gateway, never by hand: the authentication prompt in
+		// a process of its own, so a fault in it cannot end the gateway.
+		os.Exit(touchid.RunHelper(os.Args[2:]))
 	case "keychain-set":
 		keychainSet(os.Args[2:])
 	case "enable":
