@@ -855,6 +855,8 @@
     <button type="button" class="tab" data-tab="general" role="tab">General</button>
   </div>
 
+  <a class="navlink" id="navHome" data-target="~home" href="#" title="Back to the top of the page"><span class="nd"></span><span class="label">Home</span></a>
+
   <div class="navgroup" data-tab="codex">Codex</div>
   <a class="navlink" data-target="sec-codex"><span class="nd" id="nd-codex"></span><span class="label">Overview</span></a>
   <a class="navlink" data-target="sec-codex-insights"><span class="nd" id="nd-codex-insights"></span><span class="label">Insights</span></a>
@@ -3115,6 +3117,7 @@ function renderCompaction(s) {
     [sv.money.value, sv.money.text, sv.money.title],
   ].map(([v, t, tip]) => `<div class="pc-stat"${tip ? ` title="${esc(tip)}"` : ""}><div class="v">${v}</div><div class="k">${esc(t).replace(/^([^\n]*)\n/, '<b style="color:var(--text)">$1</b><br>').replace(/\n/g, "<br>")}</div></div>`).join("");
   lastSavings = cs.daily || null;
+  if (lastState) renderHero(lastState);
   drawSavingsChart();
   lastStrategies = c.compaction_strategies || null;
   drawStrategies();
@@ -4145,6 +4148,13 @@ function drawChecks(ids, checks) {
   return state;
 }
 
+// savedOn is compaction's net saving on the given dates, from the savings
+// chart's days; null before those have loaded. Pure, for page_script_test.go.
+function savedOn(daily, dates) {
+  if (!daily) return null;
+  const want = new Set(dates);
+  return daily.reduce((a, d) => a + (want.has(d.date) ? d.net_usd || 0 : 0), 0);
+}
 function renderHero(s) {
   heroMode = s.intercept.mode;
   drawChecks({meter: "meter", fill: "meterFill", num: "meterNum", of: "meterOf", checks: "heroChecks", fix: "heroFix"},
@@ -4161,6 +4171,7 @@ function renderHero(s) {
   const h = lastHistory;
   const span = h ? `last ${h.days.length}d` : "";
   const w = (h && h.window) || {};
+  const saved = h ? savedOn(lastSavings, h.days.map(d => d.date)) : null;
   $("heroKpis").innerHTML = [
     [compact(w.Requests), "requests"],
     [compact(h ? h.sessions : 0), "sessions"],
@@ -4175,6 +4186,9 @@ function renderHero(s) {
     [compact(w.CacheReadTokens), "cache read", "Input tokens read back from the prompt cache", "T"],
     [compact(w.CacheWriteTokens), "cache write", "Input tokens written to the prompt cache", "T"],
     [compactMoney(w.APIEquivalentUSD), "spend"],
+    // Beside the spend it came off: the same days, after compaction's costs.
+    [saved === null ? "-" : (saved < 0 ? "-" : "") + compactMoney(Math.abs(saved)), "money saved",
+      "What Pauseless Compaction saved on these days after its own costs (summaries and cache rewrites), in API-equivalent dollars: on a subscription the saving is your limits lasting longer"],
   // "T" marks a count of tokens: a bare 2.7B beside a count of requests
   // and a dollar figure does not say what it counts.
   ].map(([v, k, tip, unit]) => `<div class="kpi"${tip ? ` title="${esc(tip)}"` : ""}><div class="v">${esc(v)}${
@@ -4322,7 +4336,9 @@ function syncNavActive() {
   }
   // At the very bottom the last sections can never reach the line.
   if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4 && lastVisible) best = lastVisible;
-  // Above the first section's line (the top of the page): the first one shown.
+  // At the top of the page: Home. Above the first section's line
+  // otherwise: the first one shown.
+  if (scrollY < 40) best = "~home";
   if (!best) best = NAV_TARGETS.find(id => shown($(id))) || null;
   document.querySelectorAll(".navlink").forEach(a =>
     a.classList.toggle("on", a.dataset.target === best));
@@ -4336,6 +4352,14 @@ function syncNavActive() {
   }
 }
 window.addEventListener("scroll", syncNavActive, {passive: true});
+// Home is no section's entry: it is the top of the page, on every tab.
+$("navHome").addEventListener("click", e => {
+  e.preventDefault();
+  navPin = null;
+  const reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  scrollTo({top: 0, behavior: reduce ? "auto" : "smooth"});
+  setTimeout(syncNavActive, 400);
+});
 
 // Layout changes without a scroll (a section loading or collapsing) move the
 // sections under a still viewport; without this the rail kept marking the
@@ -5105,7 +5129,7 @@ function setTab(tab) {
   const closeGroup = () => { if (group) group.classList.toggle("tab-off", !any); };
   document.querySelectorAll(".side .navgroup, .side .navlink").forEach(n => {
     if (n.classList.contains("navgroup")) { closeGroup(); group = n; any = false; return; }
-    const on = tabOf(n.dataset.target) === tab;
+    const on = n.id === "navHome" || tabOf(n.dataset.target) === tab;
     n.classList.toggle("tab-off", !on);
     any = any || on;
   });
@@ -6739,7 +6763,8 @@ function makeInspector(o) {
     $(o.summary).innerHTML = `<b>${esc(d.repo || "?")}</b> <span class="hint">&middot; ${esc(d.model)} &middot; ${d.prompts} prompts &middot; ${inTok(d.context || total)} tokens${d.estimate ? " (estimated: no reply reported the size yet)" : ""} &middot; as sent at ${esc(stamp(d.at))}</span> ` +
       (d.flagged ? `<span class="pill s">${d.flagged} worth a look</span>` : `<span class="pill p">nothing flagged</span>`) +
       (removed ? ` <span class="pill">${removed} removed by you</span>` : "");
-    if (d.since) $(o.summary).innerHTML += `<div class="hint" style="margin-top:6px">${d.since} ${d.since === 1 ? "request" : "requests"} since then added to it and ${d.since === 1 ? "is" : "are"} not listed: this session sends only what is new with each request. A prune, or <b>Bring up to date</b>, has the whole conversation asked for with its next request.</div>`;
+    if (d.since && !d.items.length) $(o.summary).innerHTML += `<div class="hint" style="margin-top:6px">Nothing to list yet: since the gateway last started this session has sent only what is new with each request (${d.since} so far). <b>Bring up to date</b> has the whole conversation asked for with its next request.</div>`;
+    else if (d.since) $(o.summary).innerHTML += `<div class="hint" style="margin-top:6px">${d.since} ${d.since === 1 ? "request" : "requests"} since then added to it and ${d.since === 1 ? "is" : "are"} not listed: this session sends only what is new with each request. A prune, or <b>Bring up to date</b>, has the whole conversation asked for with its next request.</div>`;
     if (o.prune) $("inRefresh").hidden = !d.since;
     const sh = inShares(d.items), pc = x => x < 0.005 ? "<1%" : Math.round(x * 100) + "%";
     const colorOf = name => (sh.groups.find(g => g.name === name) || {}).color || "";

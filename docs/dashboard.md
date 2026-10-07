@@ -61,6 +61,8 @@ Screenshots are of the real dashboard with repository names, paths, session task
 
 ## Analytics
 
+The tiles at the top of the page count the charted window: requests, sessions, tokens by kind, spend, and **Money saved**, which is what Pauseless Compaction saved on those days after its own costs. **Home**, the first entry of the menu, goes back to them from anywhere.
+
 Everything under **Observe** reads the same log, `metrics.jsonl`, and every dollar figure is API-equivalent: on a subscription it is what the same tokens would have cost on the API.
 
 **Daily activity** is a bar per day, as tokens, requests, spend or what was saved.
@@ -238,7 +240,7 @@ The cache holds exactly what was last sent, so the inspector's list is the conte
 - Either one changes everything after that point for the prompt cache, so the next request is a one-off cache write.
 - Removals are applied after Burst's own compaction, so they never change what it summarises or its hashes.
 - They are kept in `~/.config/claude-burst/context-removals.json` (ids, names and sizes only, never content), so a restart keeps them. A session not touched for 14 days is dropped.
-- Click an item for its full text. The latest request of each conversation is kept in the gateway's memory only, never on disk, and is gone after a restart.
+- Click an item for its full text. The latest request of each conversation is kept in the gateway's memory only, never on disk, and is gone after a restart. A session that sends only what is new with each request then has nothing to list until its conversation is next sent whole: the inspector says so, with how many requests it has seen, and **Bring up to date** asks for it.
 - The same inspector is on the Codex tab for Codex sessions: see [Codex](codex.md#the-codex-tab).
 
 ## Failover & pricing

@@ -406,3 +406,15 @@ out({big: names("size", true), small: names("size", false), old: names("age", fa
 		}
 	}
 }
+
+// The Money saved tile sums compaction's net saving over the days the other
+// tiles cover, and has nothing to show before the savings have loaded.
+func TestSavedOnTheTilesDays(t *testing.T) {
+	var got []*float64
+	runPageJS(t, []string{"savedOn"}, `
+const daily = [{date: "2026-10-01", net_usd: 5}, {date: "2026-10-02", net_usd: -1.5}, {date: "2026-10-03", net_usd: 7}, {date: "2026-10-04"}];
+out([savedOn(daily, ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]), savedOn(null, ["2026-10-02"]), savedOn([], [])]);`, &got)
+	if len(got) != 3 || got[0] == nil || *got[0] != 5.5 || got[1] != nil || got[2] == nil || *got[2] != 0 {
+		t.Fatalf("got %v", got)
+	}
+}

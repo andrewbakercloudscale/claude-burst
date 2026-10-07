@@ -1,8 +1,10 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -259,5 +261,35 @@ func TestAPruneOnAThreadAsksForTheHistory(t *testing.T) {
 	// Asked once: the thread goes on as any other.
 	if rec := continueThread(t, s, "T", "msg_03", toolResult("three")); rec.Code != 200 {
 		t.Fatalf("asked for the history twice: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// After a restart a session on a message thread has sent nothing whole, and
+// a helper of its own (a small model, one message) has. The helper must not
+// stand for the session: the inspector shows nothing listed and how many
+// requests it is behind, until the conversation is next sent whole.
+func TestAHelperRequestDoesNotStandForAThreadAfterARestart(t *testing.T) {
+	a := &threadAPI{ctx: 90_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60})
+	helper, _ := json.Marshal(map[string]any{"model": "claude-haiku-4-5", "max_tokens": 100, "system": strings.Repeat("big ", 50),
+		"messages": []any{map[string]any{"role": "user", "content": "name this session"}}})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", bytes.NewReader(helper))
+	req.Header.Set("x-claude-code-session-id", "T")
+	req.Header.Set("authorization", "Bearer oauth")
+	s.ServeHTTP(httptest.NewRecorder(), req)
+	if rec := continueThread(t, s, "T", "msg_from_before_the_restart", toolResult("one")); rec.Code != 200 {
+		t.Fatalf("the thread goes on: %d %s", rec.Code, rec.Body)
+	}
+	rep := s.InspectContext("T")
+	if rep == nil || len(rep.Items) != 0 || rep.Since != 1 || rep.Model != "claude-opus-5-5" {
+		t.Fatalf("want the thread, nothing listed and one request behind: %v", rep != nil)
+	}
+	if l := s.InspectSessions(); len(l) != 1 || l[0].Model != "claude-opus-5-5" {
+		t.Fatalf("the session is listed by its thread: %+v", l)
+	}
+	history := []json.RawMessage{json.RawMessage(`{"role":"user","content":"hello` + strings.Repeat(" there", 200) + `"}`), json.RawMessage(`{"role":"assistant","content":"hi"}`), json.RawMessage(`{"role":"user","content":"go on"}`)}
+	send(t, s, "T", history)
+	if rep := s.InspectContext("T"); rep == nil || rep.Since != 0 || rep.Prompts != 2 {
+		t.Fatalf("sent whole, the conversation is what the inspector shows: %v", rep != nil)
 	}
 }
