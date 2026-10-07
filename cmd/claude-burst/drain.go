@@ -150,6 +150,12 @@ func plannedRestart(consume bool) bool {
 		return false
 	}
 	fresh := time.Since(fi.ModTime()) < plannedRestartFor
+	if consume && fresh {
+		// For the self-heal watchdog, which checks every 30 seconds and
+		// would otherwise find the marker gone and count this restart
+		// towards a crash loop.
+		_ = os.WriteFile(p+".done", nil, 0o600)
+	}
 	if consume || !fresh {
 		os.Remove(p)
 	}

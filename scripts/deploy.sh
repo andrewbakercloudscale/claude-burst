@@ -108,7 +108,10 @@ while ! mkdir "$DEPLOY_LOCK" 2>/dev/null; do
   fi
 done
 echo $$ > "$DEPLOY_LOCK/pid"
-trap 'rm -rf "$DEPLOY_LOCK"' EXIT
+# The audit trail (the Audit tab) gets how the deploy ended: a deploy that
+# rolled its own build back is the first thing to rule out when something
+# changes at that minute.
+trap 'rc=$?; rm -rf "$DEPLOY_LOCK"; if [ $rc -eq 0 ]; then "$ROOT/scripts/audit-add.sh" script info "Script: deploy.sh" "done" >/dev/null 2>&1; else "$ROOT/scripts/audit-add.sh" script error "Script: deploy.sh" "failed (exit $rc)" >/dev/null 2>&1; fi' EXIT
 LABEL="ninja.andrewbaker.claude-burst"
 INSTALL_DIR="$HOME/.local/bin"
 TARGET="$INSTALL_DIR/claude-burst"

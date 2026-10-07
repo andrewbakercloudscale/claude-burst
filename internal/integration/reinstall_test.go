@@ -27,7 +27,7 @@ func newReinstallRig(t *testing.T) *reinstallRig {
 	must(t, os.MkdirAll(r.home, 0o755))
 	must(t, os.MkdirAll(filepath.Join(r.origin, "scripts"), 0o755))
 	r.git(r.origin, "init", "-q", "-b", "main")
-	for _, f := range []string{"install-burst-off.sh", "reinstall.sh", "rollback.sh", "transparent-root.sh", "untrust-ca-systemwide.sh", "codex-unroute.sh"} {
+	for _, f := range []string{"install-burst-off.sh", "reinstall.sh", "rollback.sh", "transparent-root.sh", "untrust-ca-systemwide.sh", "codex-unroute.sh", "audit-add.sh"} {
 		b, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", f))
 		must(t, err)
 		must(t, os.WriteFile(filepath.Join(r.origin, "scripts", f), b, 0o755))

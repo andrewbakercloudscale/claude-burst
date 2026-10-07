@@ -52,6 +52,11 @@ func TestPlannedRestartIsQuietOnce(t *testing.T) {
 	}
 	announceDrain(0)
 	announceReady("9.9.9") // quiet, and uses the marker up
+	// The watchdog checks every 30 seconds: it finds this instead of the
+	// marker, and does not count the restart towards a crash loop.
+	if _, err := os.Stat(marker + ".done"); err != nil {
+		t.Errorf("a planned restart that finished left no .done for the watchdog: %v", err)
+	}
 	announceDrain(0)       // the next restart is news again
 	notice.Flush(2 * time.Second)
 	evs, _ := notice.Read(path)

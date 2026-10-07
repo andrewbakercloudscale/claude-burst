@@ -310,6 +310,18 @@ func appendAudit(path string, ev Event) error {
 	return err
 }
 
+// AppendAudit writes one audit-only entry to path at once, for a process
+// that is not the gateway and has no publisher: the command line. The
+// scripts do the same with scripts/audit-add.sh.
+func AppendAudit(path, kind, severity, title, detail string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	now := time.Now()
+	return appendAudit(path, Event{ID: fmt.Sprintf("%d-%d", now.UnixNano(), os.Getpid()), Kind: kind,
+		Severity: severity, Title: title, Detail: detail, At: now, TS: now.Unix(), AuditOnly: true})
+}
+
 // ReadAudit returns up to limit audit entries, newest first, across the
 // current file and the one before it.
 func ReadAudit(path string, limit int) []Event {
