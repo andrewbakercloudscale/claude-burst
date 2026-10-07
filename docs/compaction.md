@@ -284,13 +284,15 @@ A compacted request does not record what it would have sent without Burst, so th
 
 The dashboard shows the net figure in the Pauseless Compaction section (per session, with the parts on hover), in the **Saved, net** tile under Analytics, and per day in the Saved chart's tooltip. The same explanation is on the page under *How the savings are calculated*.
 
-![The Pauseless Compaction section: headline results over 7 days and its three switches, with what each one does](screenshots/pauseless-compaction.png)
+![The Pauseless Compaction section: headline results over 30 days and its three switches, with what each one does](screenshots/pauseless-compaction.png)
 
 ![The Saved view of Daily activity: tokens removed by compaction and by pruning, per day. Illustration: an example month built from real data](screenshots/saved-chart.png)
 
 The Saved view above is also an illustration, not a measured month: the real daily average so far (2026-09-29 to 10-01, about 195M tokens of context compacted per active day) spread over 30 days, weekdays varying by a fixed pattern and weekends at 35%.
 
 ### Three strategies side by side
+
+![Compaction strategies: three lines of context cost per day (Claude Code alone, fixed Compact at, Burst as it ran) and a table per repository. Example repository names](screenshots/compaction-strategies.png)
 
 The dashboard's **Compaction strategies** section costs the same sessions three ways over the last 30 days, a line each per day, for every repository or for one:
 
@@ -308,7 +310,7 @@ The dashboard's **Compaction strategies** section costs the same sessions three 
 ### The other saving: overflow to the secondary
 
 Past the plan's limit Burst sends requests to the secondary. `overflow_stats` in
-`/api/state` (under `context`, the same 7 days) prices each of those requests twice: the
+`/api/state` (under `context`, the same 30 days) prices each of those requests twice: the
 same tokens at the price of the model Claude Code asked for, which is what they would
 have cost on Anthropic's API, and what the secondary charged. The difference is the
 saving, per day and in total, and it is negative on a day the secondary was the dearer
@@ -339,11 +341,11 @@ What that figure is, and is not:
 - On a metered API key primary the saving is real money, at roughly the same rate.
 - Cost comes to about 14% of the savings, so roughly 86 cents in every dollar of context compacted is kept.
 - Your figure depends on how long your sessions run. A session that never passes **Compact at** (default 300k) is never compacted and saves nothing; the savings come from long sessions, and grow with them.
-- Two days is a small sample. The dashboard shows your own numbers over the last 7 days as soon as a session has been compacted.
+- Two days is a small sample. The dashboard shows your own numbers over the last 30 days as soon as a session has been compacted.
 
 **Where to see it:**
 
-- **Dashboard, Pauseless Compaction** (its own entry in the menu): the on/off switch and thresholds, headline figures for the last 7 days, and a table of sessions with context **before** and **after** the latest summary, the **saving per turn**, and the **net saving** after summaries and cache rewrites.
+- **Dashboard, Pauseless Compaction** (its own entry in the menu): the on/off switch and thresholds, headline figures for the last 30 days, and a table of sessions with context **before** and **after** the latest summary, the **saving per turn**, and the **net saving** after summaries and cache rewrites.
 - **Dashboard, Daily activity, Saved:** the tokens compaction removed (context compacted), stacked with what overflow pruning removed, per day. The tooltip shows what each saved and what the summaries cost.
 - **[Usage panel](https://github.com/andrewbakercloudscale/claude-code-cost-sidebar)** (the companion sidebar): Started, Pending and Finished rows in the turn table, a green negative context delta on the turn where the summary landed, and the summary's cost in the session total. Its ctx bar is the context Burst sends, by part, against the limit set here. One compaction, as the sidebar shows it (figures made up):
 

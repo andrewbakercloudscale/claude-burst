@@ -2,7 +2,7 @@
 
 [Back to the README](../README.md)
 
-This page covers the dashboard's layout, the Sessions and Failover & pricing sections, and how the admin UI is protected.
+This page covers the dashboard's layout with a picture of every main section, Analytics, Usage, the Sessions sections, the Context inspector, Failover & pricing, and how the admin UI is protected.
 
 Claude Burst runs a local dashboard beside the gateway, on port **7788**:
 
@@ -36,11 +36,56 @@ Every control section says where it is saved and when it applies, as a chip besi
 
 A **Needs attention** list above the overview collects everything not doing what it is set to do, each linking to its section: a guard not running, handover hooks half installed, the lid setting not applied as set, another program keeping the Mac awake, a failed usage panel install or removal, and models served without a price.
 
-![Analytics: latency and errors, compaction savings by day and by repository, spend by model and spend by repository. Example repository names](screenshots/analytics.png)
+Screenshots are of the real dashboard with repository names, paths, session tasks and Wi-Fi names replaced by examples. The figures are a real Mac's. They are taken by `docs/render-screenshots.mjs`, which refuses a picture that shows one of this Mac's names.
 
-Screenshots are of a real dashboard with session ids, repository names and dollar figures replaced.
+## The dashboard in pictures
+
+| Section | Tab and menu | What it answers | Picture |
+| --- | --- | --- | --- |
+| Overview | Claude, Observe | Is Burst working, and what needs attention? | [overview](screenshots/overview.png) |
+| Daily activity | Claude, Observe | How much traffic, tokens and spend each day? | [daily-activity](screenshots/daily-activity.png) |
+| Analytics | Claude, Observe | Latency, error rate, busiest day, net saved | [analytics](screenshots/analytics.png) |
+| Compaction savings | Claude, Observe | What compaction saved each day and in each repository | [compaction-savings](screenshots/compaction-savings.png) |
+| Compaction strategies | Claude, Observe | Claude Code alone, a fixed limit and Burst, side by side | [compaction-strategies](screenshots/compaction-strategies.png) |
+| Spend by model and repository | Claude, Observe | Where the money goes | [spend](screenshots/spend.png) |
+| Usage | Claude, Observe | Any window, filtered down to single requests | [usage](screenshots/usage.png) |
+| Pauseless Compaction | Claude, Context | Switches, limits and results | [pauseless-compaction](screenshots/pauseless-compaction.png), [intelligent-compaction](screenshots/intelligent-compaction.png) |
+| Context & cache | Claude, Context | Is pruning and prompt caching working? | [context-and-cache](screenshots/context-and-cache.png) |
+| Failover & pricing | Claude, Routing | When to fail over, and the prices used | [failover-pricing](screenshots/failover-pricing.png) |
+| Session handover | Claude, Sessions | HANDOFF.md read at start and written at close | [handover](screenshots/handover.png) |
+| Session coordination | Claude, Sessions | Several sessions in one working tree | [coordination](screenshots/coordination.png) |
+| Session options and usage panel | Claude, Sessions | What the next session starts with | [sessions-and-panel](screenshots/sessions-and-panel.png) |
+| Context inspector | Claude, Sessions | What a session's context is made of | [context-inspector](screenshots/context-inspector.png) |
+| Codex | Codex | Routing, plan limits, insights and context | [codex](screenshots/codex.png), [codex-insights](screenshots/codex-insights.png), [codex-context](screenshots/codex-context.png), [codex-inspector](screenshots/codex-inspector.png) |
+| This Mac | General | Lid shut, hotspot and notifications | [this-mac](screenshots/this-mac.png) |
+
+## Analytics
+
+Everything under **Observe** reads the same log, `metrics.jsonl`, and every dollar figure is API-equivalent: on a subscription it is what the same tokens would have cost on the API.
+
+**Daily activity** is a bar per day, as tokens, requests, spend or what was saved.
+
+![Daily activity: a bar per day over the window, with the totals above](screenshots/daily-activity.png)
+
+**Analytics** gives the window's latency (median and p95), error rate, busiest day and the net saving.
+
+![Analytics tiles: median and p95 latency, error rate, busiest day and net saved](screenshots/analytics.png)
+
+**Compaction savings** is what Pauseless Compaction saved each day (up) against what its summaries and cache rewrites cost (down), then the same money by repository. How it is worked out: [How the savings are calculated](compaction.md#how-the-savings-are-calculated).
+
+![Compaction savings: savings per day above the line and costs below, and the net saving for each repository. Example repository names](screenshots/compaction-savings.png)
+
+**Compaction strategies** costs the same sessions three ways, a line each: Claude Code alone, one fixed Compact at, and Burst as it ran. Pick one repository or all, and cost or average context. The table gives each repository's average context and cost under each, and what Burst saved against the other two. See [Three strategies side by side](compaction.md#three-strategies-side-by-side).
+
+![Compaction strategies: three lines of context cost per day and a table per repository with average context, cost under each strategy and the saving. Example repository names](screenshots/compaction-strategies.png)
+
+**Spend by model** and **Spend by repository** split the spend, with what compaction saved in each repository beside it.
+
+![Spend by model and spend by repository, each with its share of the spend. Example repository names](screenshots/spend.png)
 
 ## Usage
+
+![Usage: filters, totals, the trend, breakdowns by model, provider, repository and result, and the newest requests. Example repository names](screenshots/usage.png)
 
 **Usage** (Observe menu) is every request in a window you choose, narrowed down with filters. The views above answer fixed questions over whole days; this one answers questions like "the secondary, in this repository, in the last hour, only the failures".
 
@@ -109,13 +154,62 @@ The **support console** at http://127.0.0.1:7789/ (`claude-burst console`, its o
 - One install or removal at a time; its output is shown on the page.
 - **Panel settings**: cost alerts in the chat (on or off), the minimum dollar amount before a session alert fires, and the context size that shows a red restart warning (0 turns it off).
 
+![Context and cache: the pruning switches for overflow requests, the cache hit rate on each side and what pruning removed](screenshots/context-and-cache.png)
+
 **Automask** (beside Context & cache): masks personal data in every request before it leaves the Mac, off by default. Credit cards (Luhn), SA ID numbers, US SSNs, UK NI numbers, IBANs and passport machine-readable lines are on once it is switched on; email, phone, SA bank account and IPv4 are there to switch on. A value gets the same mask for the whole session (`[CARD-1 ...4242]`), each new mask is logged without the value and said once under the prompt and as a pop-up, and it never refuses a request. Saved in `config.json` under `automask`; applies from the next request. See [docs/design/automask.md](design/automask.md).
 
-**Context inspector** (Sessions menu): a session's context item by item, as Burst last sent it: instruction files (each CLAUDE.md and the memory index), skills, built-in and MCP tools, your prompts, Claude's replies and every tool result, each with its tokens and the prompt it arrived with. Flagged: tool output over 20 KB from ten or more prompts ago, a file read again later (the old copy is out of date), a file that no longer exists, an instruction file from outside the repository, personal data. Click an item for its full text. The latest request of each conversation is kept in the gateway's memory only, never on disk, and is gone after a restart.
-
-**Remove and Restore.** An instruction file, the skills list, a reminder or a tool result can be removed from a session's context: Burst leaves it out of every later request of that session, with a one-line note in its place ("Removed from this context by the user in Claude Burst: <name>, <size>. Ask them if you need it again."), so the model knows something was there. Claude Code keeps its own copy of the history, so **Restore** simply stops leaving it out. The system prompt, tools, your prompts and Claude's replies cannot be removed: a reply's thinking is signed and a prompt is the conversation itself. A tool result keeps its place, so its call still pairs with it; only the content becomes the note. Removing or restoring changes everything after that point for the prompt cache, so the next request is a one-off cache write. Removals are applied after Burst's own compaction, so they never change what it summarises or its hashes. They are kept in `~/.config/claude-burst/context-removals.json` (ids, names and sizes only, never content) so a restart keeps them, and a session not touched for 14 days is dropped. The same inspector, with the same Remove and Restore, is on the Codex tab for Codex sessions.
 
 **In-session band** (Sessions menu): the `burst-session` Claude Code mod, a line above Claude Code's own prompt with Burst's route, the context Burst really sends, its compaction state, any problem still standing, and the usage panel's Session and Today rows. Under it, a context bar: the context Burst sends split into system prompt, tools, MCP tools, memory files, messages and tool results, against the compaction limit (measured from the request Burst sent, so it counts Burst's own compaction; `/context-bar` hides or shows it). `/burst` opens a pane with the panel's whole summary. Where the usage panel's sidebar mod is installed (`~/.config/claude-panel/mod-installed` exists), the sidebar draws this itself (its session ctx bar becomes the context bar, and standing problems sit under Proxy State), so nothing is drawn above the prompt, and nothing is added to Claude Code's status line. `/burst band` puts the band back, or takes it away again, and the choice is kept. The section says whether it is installed and current (the installed copy matches `mods/burst-session`), installs, updates or removes it through `scripts/update-mod.sh` (every upgrade of Burst runs it, and the usage panel's updater, whichever button or script started the upgrade; the mod was called `burst-band` until 0.19.1, and an update removes that one), and has **Alerts and compaction lines as toasts in the session** (on by default, saved in `~/.config/claude-burst/mod.json`). With it on, a session that has the mod shows Burst's alerts and Pauseless Compaction's lines as toasts inside Claude Code, each once: the mod claims an alert the way the usage panels do (a folder per event in `~/.config/claude-panel/alerts-claimed`), so the Ghostty pop-up for it stands aside, and a pop-up that got there first is not toasted; compaction lines are taken from the same queue the prompt-notice hook reads, so a toasted line is not printed under the prompt. An alert about no one session is toasted in every session that has the mod. Sessions without the mod, and alerts raised while no session is open, still get the pop-up and the line under the prompt. Turn it off where the mod cannot draw (Remote Control): everything is then as it was without the mod. **Hand Burst's summary to Claude Code** (on by default, `handoff` in the same file): Claude Code's own compaction, typed or automatic, is answered with the summary Burst already wrote, with no summary request, and a session that has left Burst holding 300k or more is compacted that way once, by itself ([hand-off](compaction.md#hand-off-claude-code-takes-bursts-summary)). A session opened again (`--resume`, `--continue`) that Burst had summarised is compacted that way as it opens, in the path or not. `/compact-async-full` does the same on request, at any size, and is never Claude Code's own compaction. **Also from 800k held, with Burst still in the path** (on by default, `handoff_in_path` in the same file) compacts a session that way while Burst is working normally, because past the 1M window a bypass is refused; it can be turned off since the turn after it is read uncached and the replaced messages cannot be brought back into the session (Claude Code's transcript file on disk keeps them). It needs Claude Code 2.1.287 or later and does not draw over Remote Control. The mod also adds two rescue commands that work while the gateway is down, because neither makes a request: `/claude-burst-revert` runs `burst-off` (Burst out of the path, Claude Code straight to Anthropic) and `/claude-burst-reinstall` runs `burst-reinstall` (the newest Burst from GitHub, installed again in the mode `config.json` names). Each opens a Terminal window, where macOS can ask for your password.
+
+## Context inspector
+
+**Context inspector** (Sessions menu) shows what a session's context is made of, as Burst last sent it. The bar at the top is the whole context, a colour for each part; each group below carries the same colour, its tokens and its share, and each item has a line as long as its share.
+
+![Context inspector: a bar of the context by part (tool results, tools, replies, instruction files), three flagged items worth a look, and the groups with each item's size and a Remove button. Illustration: an example session](screenshots/context-inspector.png)
+
+```mermaid
+flowchart LR
+  CC[Claude Code<br>builds the request] --> B{Burst}
+  B --> C[Compaction and automask]
+  C --> R[Your removals:<br>a one-line note in place of each]
+  R --> A[Anthropic]
+  C -. latest request, in memory only .-> I[Context inspector]
+  I -. Remove or Restore .-> R
+```
+
+**What is in a context**
+
+| Part | What it is | Sent | Can be removed |
+| --- | --- | --- | --- |
+| System prompt | Claude Code's own instructions | every request | no |
+| Built-in tools, MCP tools | Each tool's description and schema | every request | no |
+| Instruction files | Each CLAUDE.md and the memory index | from the first prompt | yes |
+| Skills | The list of skills on offer | from the first prompt | yes |
+| Other reminders | Notes Claude Code adds, such as the todo list | with a prompt | yes |
+| Your prompts | What you typed | from that prompt on | no: it is the conversation |
+| Claude's replies | Text, thinking and tool calls | from that prompt on | no: thinking is signed |
+| Tool results | Files read, command output, search results | from that prompt on | yes |
+
+**What gets flagged**
+
+| Flag | Why it is worth a look |
+| --- | --- |
+| Large output from long ago | Tool output over 20 KB from ten or more prompts ago is paid for on every request since |
+| Read again later | A file read again makes the old copy out of date |
+| No longer exists | The file has been deleted or moved |
+| From outside this repository | An instruction file loaded from somewhere else |
+| Personal data | Something automask would mask |
+
+**Remove and Restore**
+
+- **Remove** leaves the item out of every later request of that session, with a one-line note in its place ("Removed from this context by the user in Claude Burst: <name>, <size>. Ask them if you need it again."), so the model knows something was there.
+- **Restore** stops leaving it out. Claude Code keeps its own copy of the history, so nothing is lost.
+- A tool result keeps its place, so its call still pairs with it; only the content becomes the note.
+- Either one changes everything after that point for the prompt cache, so the next request is a one-off cache write.
+- Removals are applied after Burst's own compaction, so they never change what it summarises or its hashes.
+- They are kept in `~/.config/claude-burst/context-removals.json` (ids, names and sizes only, never content), so a restart keeps them. A session not touched for 14 days is dropped.
+- Click an item for its full text. The latest request of each conversation is kept in the gateway's memory only, never on disk, and is gone after a restart.
+- The same inspector is on the Codex tab for Codex sessions: see [Codex](codex.md#the-codex-tab).
 
 ## Failover & pricing
 

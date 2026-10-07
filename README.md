@@ -34,6 +34,19 @@ Claude Burst is a local gateway that sits between Claude Code and Anthropic. **I
 
 ![Dashboard overview: health checks, the totals for 14 days, what needs attention and the setup tests](docs/screenshots/overview.png)
 
+### A look around
+
+| | |
+| --- | --- |
+| **Compaction strategies**: the same sessions costed three ways, by day and by repository. [More](docs/compaction.md#three-strategies-side-by-side) | **Context inspector**: what a session's context is made of, with Remove and Restore. [More](docs/dashboard.md#context-inspector) |
+| ![Compaction strategies: three lines of context cost per day and a table per repository](docs/screenshots/compaction-strategies.png) | ![Context inspector: a bar of the context by part, flagged items and the groups](docs/screenshots/context-inspector.png) |
+| **Session coordination**: several sessions in one working tree. [More](docs/coordination.md) | **Session handover**: HANDOFF.md read at start, written at close. [More](docs/handover.md) |
+| ![Session coordination: counts, issues, who is editing what and the sessions taking part](docs/screenshots/coordination.png) | ![Session handover: hooks, briefing, writer settings and each repository's HANDOFF.md](docs/screenshots/handover.png) |
+| **Codex**: routing, plan limits and insights for OpenAI's Codex. [More](docs/codex.md) | **Lid shut and hotspot**: keep a session running in your bag. [More](docs/lid-and-hotspot.md) |
+| ![Codex insights: tokens per day, latency and error tiles, and each model's share](docs/screenshots/codex-insights.png) | ![This Mac: lid closed choices and joining a hotspot when offline](docs/screenshots/this-mac.png) |
+
+Every section has a picture in [the dashboard guide](docs/dashboard.md#the-dashboard-in-pictures).
+
 ## Fix or update Burst: copy-paste scripts
 
 ### Support console
