@@ -289,7 +289,7 @@ set -uo pipefail
 cd ` + shellQuote(repo) + ` || exit 1
 
 echo "== Claude Burst: install the version on GitHub =="
-echo "running: ` + st.RunningVersion + ` (` + st.RunningCommit + `)"
+echo ` + shellQuote("running: "+st.RunningVersion+" ("+st.RunningCommit+")") + `
 echo
 
 # On success the window closes itself after 10 seconds (a key keeps it
@@ -349,7 +349,7 @@ set -uo pipefail
 cd ` + shellQuote(repo) + ` || exit 1
 
 echo "== Claude Burst upgrade =="
-echo "running: ` + st.RunningVersion + ` (` + st.RunningCommit + `)"
+echo ` + shellQuote("running: "+st.RunningVersion+" ("+st.RunningCommit+")") + `
 echo
 
 # On success the window closes itself after 10 seconds (a key keeps it

@@ -2161,6 +2161,9 @@ function num(n) { return (n || 0).toLocaleString(); }
 // row's part of the column the bar measures (0..1), drawn as a bar with its
 // percentage beside it, so a percentage never sits next to a count. cols is
 // [{h, title}] for the figure columns; foot, when given, is a totals row.
+// name and cells are HTML, so a caller passes every value that came from
+// outside (a repository, a model, a figure) through esc first: the test
+// TestShareTablesEscapeWhatComesFromOutside holds each caller to that.
 function sharePct(f) {
   const p = 100 * f;
   return p <= 0 ? "" : p < 1 ? "<1%" : Math.round(p) + "%";
@@ -2169,10 +2172,10 @@ function shareTable(nameHead, shareHead, cols, rows, foot) {
   const th = cols.map(c => `<th class="n"${c.title ? ` title="${esc(c.title)}"` : ""}>${esc(c.h)}</th>`).join("");
   const body = rows.map(r => `<tr>
     <td class="nm" title="${esc(r.title || "")}"><span class="t">${r.name}</span></td>
-    <td class="sh"><div class="b"><span class="bar"><span style="width:${(Math.max(0, Math.min(1, r.share || 0)) * 100).toFixed(1)}%;background:${r.color}"></span></span><span class="pct">${sharePct(r.share || 0)}</span></div></td>
-    ${r.cells.map((c, i) => `<td class="n ${(r.cls && r.cls[i]) || ""}">${c}</td>`).join("")}</tr>`).join("");
+    <td class="sh"><div class="b"><span class="bar"><span style="width:${(Math.max(0, Math.min(1, r.share || 0)) * 100).toFixed(1)}%;background:${esc(r.color)}"></span></span><span class="pct">${sharePct(r.share || 0)}</span></div></td>
+    ${r.cells.map((c, i) => `<td class="n ${esc((r.cls && r.cls[i]) || "")}">${c}</td>`).join("")}</tr>`).join("");
   const tf = foot ? `<tfoot><tr><td class="nm"><span class="t">${foot.name}</span></td><td class="sh"></td>${
-    foot.cells.map((c, i) => `<td class="n ${(foot.cls && foot.cls[i]) || ""}">${c}</td>`).join("")}</tr></tfoot>` : "";
+    foot.cells.map((c, i) => `<td class="n ${esc((foot.cls && foot.cls[i]) || "")}">${c}</td>`).join("")}</tr></tfoot>` : "";
   return `<div class="stbl-wrap"><table class="stbl"><thead><tr><th>${esc(nameHead)}</th><th class="sh">${esc(shareHead)}</th>${th}</tr></thead><tbody>${body}</tbody>${tf}</table></div>`;
 }
 

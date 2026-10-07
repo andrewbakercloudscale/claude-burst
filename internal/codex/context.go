@@ -41,6 +41,9 @@ const (
 	inspectMaxBody = 64 << 20
 )
 
+// inspectLimit is inspectMaxBody; a variable so a test need not send 64MB.
+var inspectLimit int64 = inspectMaxBody
+
 // RemovalKey is the store key of a Codex session.
 func RemovalKey(sid string) string { return "codex:" + sid }
 
@@ -52,15 +55,28 @@ func (g *Gateway) Removals() *ctxview.Store { return g.removals }
 // JSON) goes on exactly as Codex sent it.
 func (g *Gateway) prepareTurn(r *http.Request) {
 	sid := r.Header.Get("Session-Id")
-	if sid == "" || r.Body == nil || r.Header.Get("Content-Encoding") != "" || r.ContentLength > inspectMaxBody {
+	if sid == "" || r.Body == nil || r.Header.Get("Content-Encoding") != "" || r.ContentLength > inspectLimit {
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, inspectMaxBody+1))
-	_ = r.Body.Close()
-	if err != nil || len(body) > inspectMaxBody {
+	orig := r.Body
+	body, err := io.ReadAll(io.LimitReader(orig, inspectLimit+1))
+	if err != nil {
+		_ = orig.Close()
 		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), errReader{err}))
 		return
 	}
+	if int64(len(body)) > inspectLimit {
+		// A body with no declared length (chunked) that turns out larger
+		// than the limit: what was read goes on, followed by the rest of
+		// the stream. Until 7 Oct 2026 the rest was dropped, so ChatGPT
+		// got the first 64MB of the turn and nothing after it.
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(body), orig), orig}
+		return
+	}
+	_ = orig.Close()
 	if out, ok := applyRemovals(body, g.removals.For(RemovalKey(sid))); ok {
 		body = out
 	}

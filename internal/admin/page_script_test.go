@@ -18,13 +18,17 @@ import (
 // while traffic was failing or going to the secondary.
 
 // pageFunc returns the source of a top-level `function name(` in the page,
-// up to the first line that is exactly "}".
+// up to the first line that is exactly "}", or the whole of a one-line one.
 func pageFunc(t *testing.T, name string) string {
 	t.Helper()
 	src := string(indexHTML)
 	start := strings.Index(src, "\nfunction "+name+"(")
 	if start < 0 {
 		t.Fatalf("function %s not found in admin.html", name)
+	}
+	// A function written on one line ends where that line does.
+	if nl := strings.Index(src[start+1:], "\n"); nl >= 0 && strings.HasSuffix(src[start+1:start+1+nl], "}") {
+		return src[start : start+2+nl]
 	}
 	end := strings.Index(src[start:], "\n}\n")
 	if end < 0 {
@@ -331,7 +335,7 @@ func TestSavingsTiles(t *testing.T) {
 		Text  string `json:"text"`
 	}
 	var got map[string]map[string]tile
-	runPageJS(t, []string{"savingsTiles", "signedUSD", "num"}, `
+	runPageJS(t, []string{"savingsTiles", "signedUSD", "netUSD", "pct", "num"}, `
 out({
   some: savingsTiles({compacted_requests: 931, tokens_not_resent: 317.2e6, twin_tokens: 446e6,
     saved_usd: 63.44, summary_usd: 6.84, rewrite_usd: 1.74, net_usd: 54.86, twin_usd: 89.2}),
@@ -349,5 +353,40 @@ out({
 	}
 	if n := got["none"]; n["tokens"].Value != "-" || n["money"].Value != "-" || strings.Contains(n["money"].Text, "NaN") {
 		t.Errorf("none: %+v", n)
+	}
+}
+
+// The share tables are built as HTML strings. A repository or model name
+// comes from outside (a folder name, a provider's model id), so each table
+// must show it as text: no tag or attribute of its own.
+func TestShareTablesEscapeWhatComesFromOutside(t *testing.T) {
+	const evil = `<img src=x onerror=alert(1)>"'><script>x</script>`
+	h := map[string]any{"repos": []map[string]any{
+		{"repo": evil, "path": evil, "sessions": 1, "requests": 2, "usd": 3.5, "compacted": true, "saved_usd": 1.25},
+	}}
+	js, _ := json.Marshal(h)
+	var got map[string]string
+	runPageJS(t, []string{"money", "num", "signedUSD", "netUSD", "sharePct", "shareTable", "renderRepoSplit"}, fmt.Sprintf(`
+const els = {};
+const $ = id => (els[id] = els[id] || {innerHTML: ""});
+renderRepoSplit(%s);
+out({
+  repos: els.repoSplit.innerHTML,
+  raw: shareTable("<b>", "<i>", [{h: "<u>", title: '"><s>'}],
+    [{name: "ok", title: '"><script>', share: 0.5, color: '"><script>', cells: ["1"], cls: ['"><script>']}],
+    {name: "Total", cells: ["1"], cls: ['"><script>']}),
+});`, js), &got)
+	for name, html := range got {
+		if html == "" {
+			t.Fatalf("%s: nothing was drawn", name)
+		}
+		for _, bad := range []string{"<img", "<script", "<b>", "<i>", "<u>", "<s>", `background:"`} {
+			if strings.Contains(html, bad) {
+				t.Errorf("%s: %q reached the page unescaped:\n%s", name, bad, html)
+			}
+		}
+	}
+	if !strings.Contains(got["repos"], "&lt;img src=x") {
+		t.Errorf("the repository's name must still be shown, as text:\n%s", got["repos"])
 	}
 }

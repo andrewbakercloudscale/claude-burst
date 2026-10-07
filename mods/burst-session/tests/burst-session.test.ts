@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { dashboardURL } from '../hooks/register.js'
 
 const BAND = {
   plugin: 'claude-burst',
@@ -93,6 +94,22 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
 async function start($) {
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
 }
+
+test('the dashboard is asked where config.json says it listens', async ($, on) => {
+  const urls: string[] = []
+  stubs(on, [mod()], [], urls, false, [], {}, { files: { '/Users/me/.config/claude-burst/config.json': JSON.stringify({ admin_listen: '127.0.0.1:7999' }) } })
+  await start($)
+  expect(urls[0]).toBe('http://127.0.0.1:7999/api/mod?session=S1&since=1000000000')
+})
+
+test('an address that is not this Mac, or not an address, is the default', async () => {
+  expect(dashboardURL({ admin_listen: '127.0.0.1:7999' })).toBe('http://127.0.0.1:7999')
+  expect(dashboardURL({ admin_listen: 'localhost:8001' })).toBe('http://localhost:8001')
+  for (const bad of ['evil.example:7788', '10.0.0.5:7788', '0.0.0.0:7788', '127.0.0.1:7788/x@evil', '127.0.0.1:0', '127.0.0.1:99999', ':7788', '', 7788, null]) {
+    expect(dashboardURL({ admin_listen: bad })).toBe('http://127.0.0.1:7788')
+  }
+  expect(dashboardURL(null)).toBe('http://127.0.0.1:7788')
+})
 
 test('the band shows the route, the context Burst sends, and the panel rows', async ($, on) => {
   const urls: string[] = []
