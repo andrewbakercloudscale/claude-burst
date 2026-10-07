@@ -98,6 +98,37 @@ type CompactedSession struct {
 	NetUSD      float64 `json:"net_usd"`
 }
 
+// The notes the router gives a summary call's metric. One answered call is
+// one of these; a call that got no answer or a refusal has a note starting
+// NoteSummary and none of them, and cost nothing.
+const (
+	// NoteSummary: the summary was written.
+	NoteSummary = "compaction summary"
+	// NoteSummaryRetry: written at the second asking, after NoteSummaryToolCall.
+	NoteSummaryRetry = "compaction summary, asked again after a tool call"
+	// NoteSummaryToolCall: the model called a tool where the summary should
+	// be. It is asked once more, so this is part of a compaction's cost and
+	// not yet a failure.
+	NoteSummaryToolCall = "compaction summary: the model called a tool, asked again"
+	// NoteSummaryIncomplete starts the note of a call that was paid for and
+	// wrote no summary: the stream broke, it was cut off, or it was empty.
+	NoteSummaryIncomplete = "compaction summary incomplete"
+)
+
+// IsSummaryNote reports a metric of the gateway's own summary call.
+func IsSummaryNote(note string) bool { return strings.HasPrefix(note, NoteSummary) }
+
+// SummaryWritten reports a summary call that wrote its summary. Until
+// 7 Oct 2026 only NoteSummary counted, so every summary written at the
+// second asking was read as a paid failure and raised that repository's
+// learned Compact at.
+func SummaryWritten(note string) bool { return note == NoteSummary || note == NoteSummaryRetry }
+
+// SummaryPaid reports a summary call that was answered, so billed.
+func SummaryPaid(note string) bool {
+	return SummaryWritten(note) || note == NoteSummaryToolCall || strings.HasPrefix(note, NoteSummaryIncomplete)
+}
+
 // eventContext is everything a request sent: uncached, cache read and cache
 // write.
 func eventContext(e Event) int64 { return e.InputTokens + e.CacheReadTokens + e.CacheWriteTokens }
@@ -181,9 +212,9 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 	s := t.session(key)
 	// A summary cut short (the stream broke, or the session was cleared)
 	// was still paid for: its cost counts, the summary does not.
-	if e.Note == "compaction summary" || strings.HasPrefix(e.Note, "compaction summary incomplete") {
+	if SummaryPaid(e.Note) {
 		fx.isSummary, fx.summaryUSD = true, e.APIEquivalentUSD
-		fx.unfinished = e.Note != "compaction summary"
+		fx.unfinished = !SummaryWritten(e.Note)
 		return fx
 	}
 	ctx := eventContext(e)

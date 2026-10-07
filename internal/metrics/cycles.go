@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -107,8 +106,10 @@ func CompactionRunsSince(path string, since time.Time) ([]CompactionRun, []Summa
 				states[key] = st
 				order = append(order, key)
 			}
-			if strings.HasPrefix(e.Note, "compaction summary") {
-				if e.Note == "compaction summary" && ok(e) {
+			if IsSummaryNote(e.Note) {
+				// A tool call is asked again: its cost is part of the
+				// compaction that follows, not a failure of its own.
+				if (SummaryWritten(e.Note) || e.Note == NoteSummaryToolCall) && ok(e) {
 					st.pendingUSD += e.APIEquivalentUSD
 				} else {
 					failures = append(failures, SummaryFailure{Session: e.SessionID, At: e.Time, USD: e.APIEquivalentUSD, Note: e.Note})

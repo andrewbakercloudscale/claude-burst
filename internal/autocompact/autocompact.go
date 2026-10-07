@@ -258,6 +258,11 @@ func costPerTurn(t, after, growth int64, readPrice, extraUSD float64) float64 {
 // only rises past the cheapest size, so the first step over the limit ends
 // it.
 func Latest(cheapest, after, growth int64, readPrice, extraUSD float64) int64 {
+	// With no price for a token read the cost only falls as t grows, and
+	// the walk below would never end.
+	if readPrice <= 0 {
+		return cheapest
+	}
 	limit := costPerTurn(cheapest, after, growth, readPrice, extraUSD) * (1 + slackShare)
 	t := cheapest
 	for limit > 0 && costPerTurn(t+round, after, growth, readPrice, extraUSD) <= limit {

@@ -137,3 +137,57 @@ func TestARunLoggedWithoutItsThreadsSummaryGoesOn(t *testing.T) {
 		t.Fatalf("the second compaction: %+v", second)
 	}
 }
+
+// A summary written at the second asking, after the model called a tool at
+// the first, is one compaction that worked: both calls are its cost and
+// neither is a failure. A summary cut off at max_tokens was paid for and
+// wrote nothing: a failure.
+func TestASummaryWrittenAtTheSecondAskingIsNotAFailure(t *testing.T) {
+	at := time.Now().Add(-3 * time.Hour)
+	n := 0
+	ev := func(rest string) string {
+		n++
+		return `{"time":"` + at.Add(time.Duration(n)*time.Minute).Format(time.RFC3339) + `","session_id":"S","slot":"primary","model":"m","http_status":200,` + rest + `}`
+	}
+	lines := []string{
+		ev(`"input_tokens":2,"cache_read_tokens":200000`), ev(`"input_tokens":2,"cache_read_tokens":250000`),
+		ev(`"input_tokens":400,"cache_read_tokens":250000,"api_equivalent_usd":0.15,"note":"` + NoteSummaryToolCall + `"`),
+		ev(`"input_tokens":400,"cache_read_tokens":250000,"api_equivalent_usd":0.05,"note":"` + NoteSummaryRetry + `"`),
+		ev(`"input_tokens":2,"cache_write_tokens":60000,"compacted_messages":40`),
+		ev(`"input_tokens":2,"cache_read_tokens":70000,"compacted_messages":40`),
+		ev(`"input_tokens":400,"cache_read_tokens":70000,"api_equivalent_usd":0.3,"note":"` + NoteSummaryIncomplete + `: cut off at max_tokens"`),
+	}
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	SetPricer(func(model string, in, out, read, write int64) (float64, bool) {
+		return float64(read)*0.5/1e6 + float64(write)*6.25/1e6, true
+	})
+	t.Cleanup(func() { SetPricer(nil) })
+	runs, failed, err := CompactionRunsSince(p, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failed) != 1 || failed[0].USD != 0.3 {
+		t.Fatalf("failures %+v: want the cut-off summary alone", failed)
+	}
+	var swap *CompactionRun
+	for i := range runs {
+		if runs[i].Swapped {
+			swap = &runs[i]
+		}
+	}
+	if want := 0.15 + 0.05 + 60_000*5.75/1e6; swap == nil || swap.CostUSD < want-1e-9 || swap.CostUSD > want+1e-9 {
+		t.Fatalf("the swapped run %+v: want both summary calls in its cost, %v", swap, want)
+	}
+	for note, want := range map[string][2]bool{
+		NoteSummary: {true, true}, NoteSummaryRetry: {true, true}, NoteSummaryToolCall: {false, true},
+		NoteSummaryIncomplete + ": empty": {false, true}, "compaction summary failed: dial": {false, false},
+		"compaction summary rejected: overloaded": {false, false}, "": {false, false},
+	} {
+		if SummaryWritten(note) != want[0] || SummaryPaid(note) != want[1] {
+			t.Errorf("%q: written %v paid %v", note, SummaryWritten(note), SummaryPaid(note))
+		}
+	}
+}
