@@ -214,10 +214,31 @@ func TestMostCompactionsLosingMoneyGoesBackToTheFixedCompactAt(t *testing.T) {
 
 func TestSessionsThatEndBeforeACompactionPaysGoBackToTheFixedCompactAt(t *testing.T) {
 	// Each run paid, but only just: far short of twice the payback.
-	short := swapped("a1", 150_000, 70_000, 0.40, 12, 2_000)
+	short := swapped("a1", 150_000, 70_000, 0.40, 10, 2_000)
 	grow := metrics.CompactionRun{Session: "a9", Model: "m", At: now.Add(-72 * time.Hour), Last: now.Add(-71 * time.Hour), Start: 20_000, End: 220_000, Turns: 100}
 	r := Learn(empty(), inputs(short, short, short, grow), bounds, true).Repos["/src/repo-a"]
-	if r.Target != bounds.Ceiling || !strings.Contains(r.Reason, "sessions go on 12 turns") {
+	if r.Target != bounds.Ceiling || !strings.Contains(r.Reason, "sessions go on 10 turns") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// The target is the latest size a turn can afford, not the cheapest: far
+// fewer compactions for a quarter more a turn at most.
+func TestTheTargetIsTheLatestSizeWithinTheSlack(t *testing.T) {
+	const after, growth, extraUSD = 70_000, 2_000, 0.30
+	cheapest := Optimal(after, growth, int64(extraUSD/readPrice), 0)
+	late := Latest(cheapest, after, growth, readPrice, extraUSD)
+	limit := costPerTurn(cheapest, after, growth, readPrice, extraUSD) * (1 + slackShare)
+	if late <= cheapest || costPerTurn(late, after, growth, readPrice, extraUSD) > limit || costPerTurn(late+round, after, growth, readPrice, extraUSD) <= limit {
+		t.Fatalf("cheapest %d, late %d", cheapest, late)
+	}
+	// A cycle at the late size is at least half as long again.
+	if float64(late-after) < 1.5*float64(cheapest-after) {
+		t.Fatalf("cheapest %d, late %d: not much later", cheapest, late)
+	}
+	ok := swapped("a1", 250_000, after, 0.40, 120, growth)
+	r := Learn(empty(), inputs(ok, ok, ok), bounds, true).Repos["/src/repo-a"]
+	if r.Target <= roundTo(Optimal(r.AfterTokens, r.GrowthTurn, 0, 0)) || !strings.Contains(r.Reason, "as late as costs no more than 25% more a turn") {
 		t.Fatalf("%+v", r)
 	}
 }
