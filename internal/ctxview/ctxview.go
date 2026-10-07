@@ -62,6 +62,11 @@ type Item struct {
 	Removable bool     `json:"removable,omitempty"`
 	Removed   bool     `json:"removed,omitempty"` // the request carried the note, not the item
 	Full      string   `json:"-"`
+	// Pictures is how many images the item carries, and Extra what they
+	// cost in tokens, estimated from their size in pixels: a picture's
+	// cost is not in its bytes, so Scale adds it to the text's share.
+	Pictures int   `json:"pictures,omitempty"`
+	Extra    int64 `json:"-"`
 }
 
 // NewItem builds an item from its text. A removed item's text is the note,
@@ -119,16 +124,25 @@ func StubID(text string) (string, bool) {
 // none is known yet (estimate).
 func Scale(items []Item, context int64, prompts int) (estimate bool) {
 	total := 0
+	var extra int64
 	for _, it := range items {
 		total += it.Bytes
+		extra += it.Extra
 	}
 	estimate = context <= 0
+	// The text shares what the pictures leave. Should the pictures be put
+	// at more than the context, their estimate is what is wrong: all of it
+	// is then shared by size, a token of picture as four bytes.
+	text := context - extra
 	for i := range items {
 		it := &items[i]
-		if estimate || total == 0 {
-			it.Tokens = int64(it.Bytes / 4)
-		} else {
-			it.Tokens = context * int64(it.Bytes) / int64(total)
+		switch {
+		case estimate || total == 0:
+			it.Tokens = int64(it.Bytes/4) + it.Extra
+		case text <= 0:
+			it.Tokens = context * (int64(it.Bytes) + 4*it.Extra) / (int64(total) + 4*extra)
+		default:
+			it.Tokens = text*int64(it.Bytes)/int64(total) + it.Extra
 		}
 		if it.Turn > 0 {
 			it.TurnsAgo = prompts - it.Turn
@@ -137,6 +151,14 @@ func Scale(items []Item, context int64, prompts int) (estimate bool) {
 	return estimate
 }
 
+// What makes an item worth a look by its size alone: an older output of a
+// call made again from this many bytes, and any removable item from this
+// share of the context.
+const (
+	rerunMinBytes   = 2000
+	bigSharePercent = 5
+)
+
 // Flag marks what is worth a look; it returns how many items it flagged.
 // Each flag says why in a few words. root is the repository the session
 // runs in ("" when unknown); readPrefix is how a file read is named ("Read "
@@ -144,9 +166,17 @@ func Scale(items []Item, context int64, prompts int) (estimate bool) {
 func Flag(items []Item, root, readPrefix string) int {
 	home, _ := os.UserHomeDir()
 	lastRead := map[string]int{} // path -> index of its newest read
+	lastRun := map[string]int{}  // a call named with what it was given -> index of its newest result
+	var context int64
 	for i, it := range items {
-		if p, ok := strings.CutPrefix(it.Name, readPrefix); ok && readPrefix != "" && it.Group == GrpResults {
+		context += it.Tokens
+		if it.Group != GrpResults {
+			continue
+		}
+		if p, ok := strings.CutPrefix(it.Name, readPrefix); ok && readPrefix != "" {
 			lastRead[p] = i
+		} else if strings.ContainsAny(it.Name, " :") {
+			lastRun[it.Name] = i
 		}
 	}
 	scan := automask.NewSession()
@@ -161,12 +191,23 @@ func Flag(items []Item, root, readPrefix string) int {
 			it.Flags = append(it.Flags, fmt.Sprintf("large and %d prompts old", it.TurnsAgo))
 		}
 		if p, ok := strings.CutPrefix(it.Name, readPrefix); ok && readPrefix != "" && it.Group == GrpResults {
-			if lastRead[p] != i {
-				it.Flags = append(it.Flags, "read again later: this copy is out of date")
+			if j := lastRead[p]; j != i {
+				it.Flags = append(it.Flags, fmt.Sprintf("read again at prompt %d: this is the older copy", items[j].Turn))
 			}
 			if _, err := os.Stat(p); err != nil && filepath.IsAbs(p) {
 				it.Flags = append(it.Flags, "file no longer exists")
 			}
+		}
+		// The same command or search made again: the older output is
+		// rarely what is wanted. Small ones are not worth the look.
+		if j, ok := lastRun[it.Name]; ok && j != i && it.Group == GrpResults && it.Bytes >= rerunMinBytes {
+			it.Flags = append(it.Flags, fmt.Sprintf("run again at prompt %d: this is the older output", items[j].Turn))
+		}
+		if it.Pictures > 0 && it.TurnsAgo >= 1 {
+			it.Flags = append(it.Flags, fmt.Sprintf("picture from %d prompt%s ago", it.TurnsAgo, map[bool]string{true: "", false: "s"}[it.TurnsAgo == 1]))
+		}
+		if it.Removable && context > 0 && it.Tokens*100/context >= bigSharePercent {
+			it.Flags = append(it.Flags, fmt.Sprintf("big: %d%% of the context", it.Tokens*100/context))
 		}
 		if it.Group == GrpInstructions && filepath.IsAbs(it.Name) {
 			p := it.Name

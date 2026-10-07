@@ -205,3 +205,46 @@ func TestAnUnfinishedSummaryCostsButDoesNotCount(t *testing.T) {
 		t.Fatalf("compactions=%d summary=$%.2f net=$%.2f, want 0, $0.18, -$0.18", st.Compactions, st.SummaryUSD, st.NetUSD)
 	}
 }
+
+// A session's helpers and subagents share its id and model and carry no
+// summary. Their requests between the conversation's own are not the
+// summary going and coming back: one summary is one compaction, its cache
+// write is charged once, and the saving runs on through them. A context
+// back at what it would be without Burst is the summary gone.
+func TestAHelpersRequestsAreNotCompactions(t *testing.T) {
+	SetPricer(func(model string, in, out, cr, cw int64) (float64, bool) {
+		return float64(cr)/1e6*0.2 + float64(cw)/1e6*5, true
+	})
+	t.Cleanup(func() { SetPricer(nil) })
+	ev := func(min int, ctx, cacheWrite, compacted int64) string {
+		return `{"time":"2026-10-07T15:` + fmt.Sprintf("%02d", min) + `:00+02:00","session_id":"S","slot":"primary","model":"m","http_status":200,` +
+			`"cache_read_tokens":` + fmt.Sprint(ctx-cacheWrite) + `,"cache_write_tokens":` + fmt.Sprint(cacheWrite) +
+			`,"compacted_messages":` + fmt.Sprint(compacted) + `}`
+	}
+	lines := []string{
+		ev(0, 400000, 0, 0),      // twin 400k
+		ev(1, 50000, 50000, 800), // the swap: saved 350k, 50k rewritten
+		ev(2, 30000, 30000, 0),   // a helper: left out
+		ev(3, 60000, 10000, 800), // +10k: twin 410k, saved 350k, no second swap
+		ev(4, 61000, 0, 0),       // a thread request after a restart: left out
+		ev(5, 70000, 70000, 800), // sent whole again, +10k: saved 350k, not a swap
+		ev(6, 430000, 0, 0),      // back at the size without Burst: the summary is gone
+		ev(7, 440000, 0, 0),      // uncompacted
+		ev(8, 60000, 60000, 800), // the same summary size again is a compaction now: saved 380k
+	}
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := CompactionStatsSince(p, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := st.Sessions[0]
+	if c.Compactions != 2 || c.Requests != 4 || st.TokensNotResent != 350000*3+380000 {
+		t.Fatalf("want 2 compactions over 4 requests and %d tokens, got %d over %d and %d", 350000*3+380000, c.Compactions, c.Requests, st.TokensNotResent)
+	}
+	if want := float64(50000+60000) / 1e6 * (5 - 0.2); st.RewriteUSD-want > 1e-9 || want-st.RewriteUSD > 1e-9 {
+		t.Fatalf("rewrite %v, want %v: only a swap's cache write is its cost", st.RewriteUSD, want)
+	}
+}

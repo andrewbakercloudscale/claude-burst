@@ -69,7 +69,7 @@ func pruneMatches(items []ContextItem, what string) (hit []int, kept int) {
 		switch what {
 		case PruneStale:
 			for _, f := range it.Flags {
-				if strings.HasPrefix(f, "read again later") || strings.HasPrefix(f, "file no longer exists") || strings.HasPrefix(f, "large and") {
+				if strings.HasPrefix(f, "read again") || strings.HasPrefix(f, "file no longer exists") || strings.HasPrefix(f, "large and") {
 					hit = append(hit, i)
 					break
 				}
