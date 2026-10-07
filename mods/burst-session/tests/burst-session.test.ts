@@ -47,13 +47,13 @@ function mod(over: Record<string, unknown> = {}) {
 // panel's pop-up already took, `lines` what the gateway's notice queue holds
 // (handed over once), `runs` and `posts` what the mod ran and posted,
 // `commands` the slash commands it added, `missing` a program that is not there.
-type World = { claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string>; pid?: string }
+type World = { sid?: string; claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string>; pid?: string }
 
 function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}, world: World = {}) {
   const clock = mock.clock(on, { now: 1_000_000_000_000 })
   mock.env(on, { HOME: '/Users/me', ...(world.env || {}) })
   on('session.start', () => ({ cwd: '/work' }))
-  on('session.id', () => ({ value: 'S1' }))
+  on('session.id', () => ({ value: world.sid || 'S1' }))
   on('command.register', ($, e) => { world.commands?.push(e.name); return { value: undefined } })
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['drawn by Claude Code'] }))
   on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined } })
@@ -412,9 +412,36 @@ test("Claude Code's compaction is answered with Burst's summary: no summary requ
   const r = await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
   expect(calls).toEqual([])
   // The cut is the start of the reply, not of its tool call: "Looking." is kept.
-  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h5', 'h6', 'h7', 'h8'])
+  // The kept tool result (h7) goes back without its handle: with it, Claude
+  // Code writes the row pointing at the history this compaction replaced,
+  // and claude --resume loads that history again.
+  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h5', 'h6', undefined, 'h8'])
+  expect(r.messages[3]).toEqual({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't2', text: 'output' }] })
   expect(r.messages[0]).toEqual({ role: 'user', text: LEAD, toolUses: [] })
   expect(toasts).toContain("Compacted with Burst's summary: 5 messages replaced, nothing written by Claude Code")
+})
+
+test('/resume and /clear carry on under another session with no session.start: the mod follows it', async ($, on) => {
+  const urls: string[] = []
+  const calls: string[] = []
+  const other = HANDOFF_FILE.replace('S1.json', 'S2.json')
+  // S2 is the session moved to; only S1 has a summary of Burst's.
+  const world: World = { files: { [HANDOFF_FILE]: handoff() } }
+  const clock = stubs(on, [mod()], [], urls, false, [], {}, world)
+  core(on, calls)
+  await start($)
+  world.sid = 'S2'
+  await clock.advance(5000)
+  expect(urls[urls.length - 1]).toContain('/api/mod?session=S2&')
+  // S1's summary is not S2's: Claude Code compacts S2 itself.
+  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[0].text).toBe('CORE SUMMARY')
+  // Once Burst has summarised S2, its own summary is what answers.
+  world.files = { [other]: handoff({ session: 'S2' }) }
+  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[0].text).toBe(LEAD)
+  // And the move is seen at the compaction itself, before any poll.
+  world.sid = 'S1'
+  world.files = { [HANDOFF_FILE]: handoff() }
+  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[0].text).toBe(LEAD)
 })
 
 test('a hand-off that does not fit the transcript, or is turned off, leaves the compaction to Claude Code', async ($, on) => {
@@ -447,7 +474,7 @@ test('a prompt named by its text is found only after the message the summary end
   // The same words said earlier are not the cut.
   const twice = [{ role: 'user', text: 'second task, the long one', toolUses: [], handle: 'e0' }, { role: 'assistant', text: 'which one?', toolUses: [], handle: 'e1' }, ...TRANSCRIPT]
   const r = await $.session.compact({ trigger: 'manual', messages: twice })
-  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h4', 'h5', 'h6', 'h7', 'h8'])
+  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h4', 'h5', 'h6', undefined, 'h8'])
   expect((await $.session.compact({ trigger: 'manual', messages: r.messages })).messages[0].text).toBe('CORE SUMMARY')
   expect(calls).toEqual(['manual'])
 })
