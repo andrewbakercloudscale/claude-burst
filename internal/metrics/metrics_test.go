@@ -545,3 +545,26 @@ func TestDailyLeavesOfflineAndCancelledOutOfErrors(t *testing.T) {
 		t.Fatalf("result = %q, want offline", got)
 	}
 }
+
+// A cached prompt is most of what a request reads. The window, the day and
+// the model all count it: input and output alone showed 40M tokens for 14
+// days that had read thousands of millions.
+func TestDailyCountsCachedTokens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	writeEvents(t, path, Event{Time: time.Now(), Slot: "primary", Route: "anthropic", Model: "m", HTTPStatus: 200,
+		InputTokens: 2, OutputTokens: 300, CacheReadTokens: 96_000, CacheWriteTokens: 900})
+	h, err := Daily(path, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const all = 2 + 300 + 96_000 + 900
+	if h.Window.CacheReadTokens != 96_000 || h.Window.CacheWriteTokens != 900 {
+		t.Fatalf("window: %+v", h.Window)
+	}
+	if d := h.Days[len(h.Days)-1]; d.PrimaryTokens != all {
+		t.Fatalf("day: %d, want %d", d.PrimaryTokens, all)
+	}
+	if len(h.Models) != 1 || h.Models[0].Tokens != all {
+		t.Fatalf("models: %+v", h.Models)
+	}
+}

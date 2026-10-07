@@ -4095,7 +4095,9 @@ function renderHero(s) {
   $("heroKpis").innerHTML = [
     [compact(w.Requests), "requests"],
     [compact(h ? h.sessions : 0), "sessions"],
-    [compact((w.InputTokens || 0) + (w.OutputTokens || 0)), "tokens"],
+    // Every token billed, cached ones too: a cached prompt is most of what
+    // a request reads, and input plus output alone read 60 times too low.
+    [compact((w.InputTokens || 0) + (w.OutputTokens || 0) + (w.CacheReadTokens || 0) + (w.CacheWriteTokens || 0)), "tokens"],
     [compactMoney(w.APIEquivalentUSD), "spend"],
   ].map(([v, k]) => `<div class="kpi"><div class="v">${esc(v)}</div><div class="k">${esc(k)}${
     span ? " · " + esc(span) : ""}</div></div>`).join("");
