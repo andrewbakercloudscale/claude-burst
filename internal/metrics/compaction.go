@@ -152,12 +152,13 @@ func cacheReadUSD(model string, tokens int64) float64 {
 	return price(model, tokens, 0)
 }
 
-// rewriteUSD is what writing tokens to cache costs over reading them.
-func rewriteUSD(model string, tokens int64) float64 {
+// rewriteUSD is what writing tokens to cache costs over reading them, long
+// of them to the one-hour cache.
+func rewriteUSD(model string, tokens, long int64) float64 {
 	if tokens <= 0 {
 		return 0
 	}
-	return price(model, 0, tokens) - price(model, tokens, 0)
+	return price(model, 0, tokens) - price(model, tokens, 0) + longWriteUSD(model, min(long, tokens))
 }
 
 // compactionTracker replays sessions through the log in time order.
@@ -234,7 +235,7 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 		}
 		s.summarySize = ctx
 		fx.swapBefore, fx.swapAfter = s.twin, ctx
-		fx.rewriteUSD = rewriteUSD(e.Model, e.CacheWriteTokens)
+		fx.rewriteUSD = rewriteUSD(e.Model, e.CacheWriteTokens, e.CacheWrite1hTokens)
 	default:
 		// Ordinary growth, which the twin shares.
 		if s.twin == 0 {

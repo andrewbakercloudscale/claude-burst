@@ -313,6 +313,7 @@ func stats(args []string) {
 	p, _ := config.MetricsPath()
 	if cfg, err := config.Load(); err == nil {
 		metrics.SetPricer(cfg.PriceTokens)
+		metrics.SetLongWritePricer(cfg.LongWriteExtraUSD)
 	}
 	var since time.Time
 	if *days > 0 {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,10 @@ type CompactionConfig struct {
 	// NoPromptNotice turns off the lines Claude Code shows under a prompt
 	// when a compaction starts, is ready, swaps in or fails. On by default.
 	NoPromptNotice bool `json:"no_prompt_notice,omitempty"`
+	// NoIdleCompaction turns off the summary written for a session that
+	// has been idle for 50 minutes, before its one-hour cache expires
+	// (router/compact_idle.go). On by default.
+	NoIdleCompaction bool `json:"no_idle_compaction,omitempty"`
 	// MidTurn swaps a ready summary in on the next request, even inside a
 	// turn, instead of waiting for the next plain prompt. The turn in
 	// progress keeps its thinking; only what came before it is summarised.
@@ -167,7 +172,7 @@ const (
 	DefaultCompactionCompactAt   = 300_000
 	DefaultCompactionWindow      = 30
 	DefaultCompactionFloor       = 100_000
-	DefaultCompactionBuffer      = 20
+	DefaultCompactionBuffer      = 0
 )
 
 // warnAt is the warning size for a Compact at. Intelligent mode has none:
@@ -239,6 +244,32 @@ type ModelPrice struct {
 	// rather than hidden.
 	CacheReadPerMTok  float64 `json:"cache_read_per_mtok,omitempty"`
 	CacheWritePerMTok float64 `json:"cache_write_per_mtok,omitempty"`
+	// CacheWrite1hPerMTok is a write to the one-hour cache, which Claude
+	// Code asks for on a subscription. When absent: twice the input rate for
+	// a Claude model (Anthropic's published multiplier), the ordinary write
+	// rate for anything else.
+	CacheWrite1hPerMTok float64 `json:"cache_write_1h_per_mtok,omitempty"`
+}
+
+// LongWriteExtraUSD is what tokens written to the one-hour cache cost over
+// the ordinary write rate PriceTokens charged them at. Until 7 Oct 2026
+// every write was priced as a five-minute one, 1.25 times input, while this
+// Mac's sessions wrote to the one-hour cache at 2 times: 14 days of writes
+// read as $105 and were $168.
+func (c Config) LongWriteExtraUSD(model string, tokens int64) float64 {
+	if tokens <= 0 {
+		return 0
+	}
+	price := c.Pricing[model]
+	_, write := price.CacheRates(model)
+	long := price.CacheWrite1hPerMTok
+	if long == 0 {
+		long = write
+		if strings.Contains(model, "claude") {
+			long = price.InputPerMTok * 2
+		}
+	}
+	return float64(tokens) / 1_000_000 * math.Max(0, long-write)
 }
 
 // CacheRates returns the per-MTok price of cache reads and cache writes for

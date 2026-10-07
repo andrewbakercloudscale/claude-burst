@@ -54,6 +54,10 @@ type Event struct {
 	// these, a 150k-token turn recorded as input_tokens=2.
 	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
+	// CacheWrite1hTokens is the part of CacheWriteTokens written to the
+	// one-hour cache. Recorded from 7 Oct 2026; older events have none and
+	// stay priced as five-minute writes.
+	CacheWrite1hTokens int64 `json:"cache_write_1h_tokens,omitempty"`
 	// Secondary context pruning (router/prune.go): bytes of tool output
 	// removed from the request, how many old tool results were stubbed, and
 	// how many oversized ones were cut down.
@@ -92,9 +96,29 @@ type Event struct {
 type Pricer func(model string, input, output, cacheRead, cacheWrite int64) (usd float64, priced bool)
 
 var (
-	pricerMu sync.RWMutex
-	pricer   Pricer
+	pricerMu  sync.RWMutex
+	pricer    Pricer
+	longWrite func(model string, tokens int64) float64
 )
+
+// SetLongWritePricer installs what one-hour cache writes cost over the
+// Pricer's ordinary write rate.
+func SetLongWritePricer(f func(model string, tokens int64) float64) {
+	pricerMu.Lock()
+	longWrite = f
+	pricerMu.Unlock()
+}
+
+// longWriteUSD is that extra for tokens on model, 0 with no pricer set.
+func longWriteUSD(model string, tokens int64) float64 {
+	pricerMu.RLock()
+	f := longWrite
+	pricerMu.RUnlock()
+	if f == nil || tokens <= 0 {
+		return 0
+	}
+	return f(model, tokens)
+}
 
 // SetPricer installs the pricing used to cost events that were recorded
 // before their model was priced. On 2026-09-29 claude-opus-5-5 was priced at
@@ -120,7 +144,7 @@ func decodeEvent(b []byte, e *Event) bool {
 		pricerMu.RUnlock()
 		if p != nil {
 			if usd, ok := p(e.Model, e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheWriteTokens); ok {
-				e.APIEquivalentUSD, e.PricingUnknown, e.Repriced = usd, false, true
+				e.APIEquivalentUSD, e.PricingUnknown, e.Repriced = usd+longWriteUSD(e.Model, e.CacheWrite1hTokens), false, true
 			}
 		}
 	}

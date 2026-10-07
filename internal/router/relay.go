@@ -36,7 +36,10 @@ func copyResponseHeaders(dst http.Header, src http.Header) {
 // so the secondary's context pruning (prune.go) reaches the metrics row
 // without widening writeMetric's signature for every caller.
 type tokenUsage struct {
-	input, output, cacheRead, cacheWrite         int64
+	input, output, cacheRead, cacheWrite int64
+	// cacheWrite1h is the part of cacheWrite that went to the one-hour
+	// cache, which costs more than the five-minute one.
+	cacheWrite1h                                 int64
 	prunedBytes, prunedResults, truncatedResults int64
 	repeatedCalls, rerunsAfterStub               int64
 	// msgID is the response's message id: what the next request of a
@@ -187,6 +190,11 @@ func readCacheUsage(u map[string]any, tok *tokenUsage) {
 	if n := number(u["cache_creation_input_tokens"]); n > tok.cacheWrite {
 		tok.cacheWrite = n
 	}
+	if cc, ok := u["cache_creation"].(map[string]any); ok {
+		if n := number(cc["ephemeral_1h_input_tokens"]); n > tok.cacheWrite1h {
+			tok.cacheWrite1h = n
+		}
+	}
 }
 
 func number(v any) int64 {
@@ -222,6 +230,11 @@ func (s *Server) PriceTokens(model string, input, output, cacheRead, cacheWrite 
 	return s.cfg.PriceTokens(model, input, output, cacheRead, cacheWrite)
 }
 
+// LongWriteExtraUSD is what one-hour cache writes cost over PriceTokens.
+func (s *Server) LongWriteExtraUSD(model string, tokens int64) float64 {
+	return s.cfg.LongWriteExtraUSD(model, tokens)
+}
+
 func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedModel string, status int, start time.Time, tok tokenUsage, claim string, reset int64, note, destination string) {
 	// As the text log: a Go network error quotes the whole URL, and the
 	// query of one (the name a DNS lookup asked for, a device id) is not
@@ -238,6 +251,7 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 	// "free".
 	price, priced := s.cfg.Pricing[model]
 	equiv, _ := s.PriceTokens(model, tok.input, tok.output, tok.cacheRead, tok.cacheWrite)
+	equiv += s.LongWriteExtraUSD(model, tok.cacheWrite1h)
 	// Only tokens make a missing price a problem. Events with no token
 	// counts (failover notes, upstream errors, control-plane passthrough)
 	// legitimately cost nothing and must not be flagged.
@@ -254,7 +268,7 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 	err := s.metrics.Write(metrics.Event{
 		Time: time.Now(), RequestID: rid, SessionID: in.Header.Get("x-claude-code-session-id"), AgentID: in.Header.Get("x-claude-code-agent-id"),
 		Slot: slot, Route: route, Model: model, RequestedModel: requestedModel, HTTPStatus: status, DurationMS: time.Since(start).Milliseconds(),
-		InputTokens: tok.input, OutputTokens: tok.output, CacheReadTokens: tok.cacheRead, CacheWriteTokens: tok.cacheWrite,
+		InputTokens: tok.input, OutputTokens: tok.output, CacheReadTokens: tok.cacheRead, CacheWriteTokens: tok.cacheWrite, CacheWrite1hTokens: tok.cacheWrite1h,
 		PrunedBytes: tok.prunedBytes, PrunedToolResults: tok.prunedResults, TruncatedToolResults: tok.truncatedResults,
 		RepeatedCalls: tok.repeatedCalls, RerunsAfterStub: tok.rerunsAfterStub,
 		PrunedUSD:         float64(tok.prunedBytes/metrics.BytesPerToken) / 1_000_000 * price.InputPerMTok,

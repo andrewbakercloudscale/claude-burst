@@ -49,6 +49,16 @@ type CompactionRun struct {
 	End     int64
 	Turns   int
 	CostUSD float64 // summary call and cache rewrite; Swapped only
+	// Cold: the summary swapped in on a request that came coldAfter or more
+	// after the one before it, so the cache had gone and that request would
+	// have written the whole history. The write is then not this
+	// compaction's cost, and CostUSD is the summary call alone.
+	Cold bool
+	// BackUSD is what it cost to write the whole history to the cache again
+	// when the conversation went back to its full size after this summary;
+	// Swapped only. On 3 Oct 2026 two of those were $4.57 and $6.70, more
+	// than every summary that week, and nothing counted them.
+	BackUSD float64
 }
 
 // SummaryFailure is a summary call that wrote no summary.
@@ -74,6 +84,8 @@ type runState struct {
 // request is taken for a side call, and sideRun how many in a row are taken
 // for the conversation instead.
 const (
+	// coldAfter is how long the one-hour cache keeps a conversation.
+	coldAfter = time.Hour
 	sideFloor = 50_000
 	sideRun   = 3
 )
@@ -127,15 +139,20 @@ func CompactionRunsSince(path string, since time.Time) ([]CompactionRun, []Summa
 			}
 			start := func(swapped bool) {
 				var before int64
+				cold := false
 				if st.run != nil {
 					before = st.run.End
+					cold = e.Time.Sub(st.run.Last) >= coldAfter
 				}
 				closeRun(st)
 				newRun()
 				if swapped {
 					st.run.Swapped, st.sw, st.count = true, st.run, count
 					st.run.Before = max(before, ctx)
-					st.run.CostUSD = st.pendingUSD + rewriteUSD(e.Model, e.CacheWriteTokens)
+					st.run.CostUSD, st.run.Cold = st.pendingUSD, cold
+					if !cold {
+						st.run.CostUSD += rewriteUSD(e.Model, e.CacheWriteTokens, e.CacheWrite1hTokens)
+					}
 					st.pendingUSD = 0
 				}
 			}
@@ -165,6 +182,7 @@ func CompactionRunsSince(path string, since time.Time) ([]CompactionRun, []Summa
 			case count == 0 && st.sw != nil && st.run == st.sw && whole():
 				// The summary's run waits: it goes on if the summary comes
 				// back, and ends at the next one otherwise.
+				st.sw.BackUSD += rewriteUSD(e.Model, e.CacheWriteTokens, e.CacheWrite1hTokens)
 				newRun()
 			case count == 0 && st.sw != nil && st.run != st.sw && !whole() && ctx*5 >= st.sw.End*2:
 				// Back at the summary's size, though nothing says so.

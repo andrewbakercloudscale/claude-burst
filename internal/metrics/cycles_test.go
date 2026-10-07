@@ -29,9 +29,11 @@ func TestCompactionRunsFollowTheMainConversation(t *testing.T) {
 		ev(`"input_tokens":400,"cache_read_tokens":250000,"api_equivalent_usd":0.2,"note":"compaction summary"`),
 		ev(`"input_tokens":400,"cache_read_tokens":250000,"api_equivalent_usd":0.1,"note":"compaction summary incomplete: the stream broke off"`),
 		`{"time":"` + at.Add(9*time.Minute).Format(time.RFC3339) + `","session_id":"S","slot":"primary","model":"m","http_status":502,"note":"compaction summary failed: dial"}`,
-		ev(`"input_tokens":2,"cache_write_tokens":60000,"compacted_messages":40`), // the swap
+		ev(`"input_tokens":2,"cache_write_tokens":60000,"cache_write_1h_tokens":60000,"compacted_messages":40`), // the swap
 		ctx(70, `,"compacted_messages":40`), ctx(80, `,"compacted_messages":40`),
-		ctx(270, ""), // the summary no longer fits: a new run, with what it replaced back
+		// The summary no longer fits: a new run, with what it replaced back
+		// and all of it written to the one-hour cache again.
+		ev(`"input_tokens":2,"cache_write_tokens":270000,"cache_write_1h_tokens":270000`),
 	}
 	p := filepath.Join(t.TempDir(), "m.jsonl")
 	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
@@ -40,7 +42,8 @@ func TestCompactionRunsFollowTheMainConversation(t *testing.T) {
 	SetPricer(func(model string, in, out, read, write int64) (float64, bool) {
 		return float64(read)*0.5/1e6 + float64(write)*6.25/1e6, true
 	})
-	t.Cleanup(func() { SetPricer(nil) })
+	SetLongWritePricer(func(model string, tokens int64) float64 { return float64(tokens) * 3.75 / 1e6 })
+	t.Cleanup(func() { SetPricer(nil); SetLongWritePricer(nil) })
 	runs, failed, err := CompactionRunsSince(p, at)
 	if err != nil {
 		t.Fatal(err)
@@ -53,12 +56,17 @@ func TestCompactionRunsFollowTheMainConversation(t *testing.T) {
 		t.Fatalf("the run before the swap: %+v", first)
 	}
 	// The swap replaced 250k with 60k, for the summary ($0.20) and writing
-	// 60k to cache where it would have been read (60k * $5.75/M).
+	// 60k to the one-hour cache where it would have been read (60k at
+	// $5.75/M, and $3.75/M more for the hour).
 	if !swap.Swapped || swap.Before != 250_002 || swap.Start != 60_002 || swap.End != 80_002 || swap.Turns != 3 {
 		t.Fatalf("the swapped run: %+v", swap)
 	}
-	if want := 0.2 + 60_000*5.75/1e6; swap.CostUSD < want-1e-9 || swap.CostUSD > want+1e-9 {
+	if want := 0.2 + 60_000*9.5/1e6; swap.CostUSD < want-1e-9 || swap.CostUSD > want+1e-9 {
 		t.Fatalf("the swap cost $%.4f, want $%.4f", swap.CostUSD, want)
+	}
+	// Going back to the full history wrote 270k that had been read.
+	if want := 270_000 * 9.5 / 1e6; swap.BackUSD < want-1e-9 || swap.BackUSD > want+1e-9 || first.BackUSD != 0 {
+		t.Fatalf("going back cost $%.4f, want $%.4f", swap.BackUSD, want)
 	}
 	if last.Swapped || last.Start != 270_002 || last.Turns != 1 {
 		t.Fatalf("the run after the summary was dropped: %+v", last)
@@ -189,5 +197,37 @@ func TestASummaryWrittenAtTheSecondAskingIsNotAFailure(t *testing.T) {
 		if SummaryWritten(note) != want[0] || SummaryPaid(note) != want[1] {
 			t.Errorf("%q: written %v paid %v", note, SummaryWritten(note), SummaryPaid(note))
 		}
+	}
+}
+
+// A summary that swaps in an hour or more after the session's last request
+// lands on a cold cache: that request would have written the whole history
+// anyway, so the write is not the compaction's cost.
+func TestASwapOnAColdCacheCostsItsSummaryAlone(t *testing.T) {
+	at := time.Now().Add(-6 * time.Hour)
+	ev := func(min int, rest string) string {
+		return `{"time":"` + at.Add(time.Duration(min)*time.Minute).Format(time.RFC3339) + `","session_id":"S","slot":"primary","model":"m","http_status":200,` + rest + `}`
+	}
+	lines := []string{
+		ev(1, `"input_tokens":2,"cache_read_tokens":150000`),
+		ev(2, `"input_tokens":2,"cache_read_tokens":160000`),
+		ev(52, `"input_tokens":400,"cache_read_tokens":160000,"api_equivalent_usd":0.1,"note":"compaction summary"`),
+		ev(200, `"input_tokens":2,"cache_write_tokens":60000,"cache_write_1h_tokens":60000,"compacted_messages":40`),
+		ev(201, `"input_tokens":2,"cache_read_tokens":61000,"compacted_messages":40`),
+	}
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	SetPricer(func(model string, in, out, read, write int64) (float64, bool) {
+		return float64(read)*0.5/1e6 + float64(write)*6.25/1e6, true
+	})
+	t.Cleanup(func() { SetPricer(nil) })
+	runs, _, err := CompactionRunsSince(p, at)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs %+v, %v", runs, err)
+	}
+	if swap := runs[1]; !swap.Swapped || !swap.Cold || swap.CostUSD != 0.1 || swap.Before != 160_002 {
+		t.Fatalf("the cold swap: %+v", swap)
 	}
 }

@@ -1,6 +1,8 @@
 package autocompact
 
 import (
+	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -223,7 +225,7 @@ func TestSessionsThatEndBeforeACompactionPaysGoBackToTheFixedCompactAt(t *testin
 }
 
 // The target is the latest size a turn can afford, not the cheapest: far
-// fewer compactions for a quarter more a turn at most.
+// fewer compactions for a little more a turn (slackShare) at most.
 func TestTheTargetIsTheLatestSizeWithinTheSlack(t *testing.T) {
 	const after, growth, extraUSD = 70_000, 2_000, 0.30
 	cheapest := Optimal(after, growth, int64(extraUSD/readPrice), 0)
@@ -238,8 +240,25 @@ func TestTheTargetIsTheLatestSizeWithinTheSlack(t *testing.T) {
 	}
 	ok := swapped("a1", 250_000, after, 0.40, 120, growth)
 	r := Learn(empty(), inputs(ok, ok, ok), bounds, true).Repos["/src/repo-a"]
-	if r.Target <= roundTo(Optimal(r.AfterTokens, r.GrowthTurn, 0, 0)) || !strings.Contains(r.Reason, "as late as costs no more than 25% more a turn") {
+	if r.Target <= roundTo(Optimal(r.AfterTokens, r.GrowthTurn, 0, 0)) || !strings.Contains(r.Reason, fmt.Sprintf("as late as costs no more than %d%% more a turn", int(slackShare*100))) {
 		t.Fatalf("%+v", r)
+	}
+}
+
+// A compaction whose turns saved more than it cost still lost money when
+// the conversation then went back to its full history and wrote all of it
+// to the cache again.
+func TestGoingBackToTheFullHistoryIsCountedAgainstACompaction(t *testing.T) {
+	ok := swapped("a1", 250_000, 70_000, 0.40, 120, 2_000)
+	back := ok
+	back.BackUSD = 16.70
+	r := Learn(empty(), inputs(ok, ok, back), bounds, true).Repos["/src/repo-a"]
+	saved := readPrice * float64(250_000-70_000) * 120
+	if saved <= 0.40 || saved >= 0.40+16.70 {
+		t.Fatalf("the test's own figures: saved %.2f", saved)
+	}
+	if r.Failures.Unpaid != 1 || math.Abs(r.Failures.LostUSD-(0.40+16.70-saved)) > 0.001 {
+		t.Fatalf("%+v", r.Failures)
 	}
 }
 

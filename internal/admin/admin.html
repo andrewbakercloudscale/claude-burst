@@ -1187,7 +1187,7 @@
         <span class="hint" id="icNote"></span>
       </div>
       <div class="hint" style="margin-top:6px" data-static><strong>Compact at</strong>: the context that triggers a summary, the same for every repository (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default). <strong>Max 1 compaction per</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
-      <div class="hint" style="margin-top:6px;line-height:1.55" data-ic>Burst learns a size for each repository from the last 14 days of its own compactions: what one leaves behind, how fast the context grows again, and what one costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is where the two add up to the least, plus the <strong>Buffer</strong>, kept between <strong>Never below</strong> and <strong>Never above</strong>, and adjusted once a day by a tenth at most. A repository with fewer than 3 compactions uses <em>Never above</em>. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. One failure among compactions that paid moves a repository's size up a little; two in a row add a tenth at once, and where most lose money it goes back to <em>Never above</em>. There is no warning in this mode. <strong>Max 1 compaction per</strong> is the least time between two compactions of the same session (default 30 minutes).</div>
+      <div class="hint" style="margin-top:6px;line-height:1.55" data-ic>Burst learns a size for each repository from the last 14 days of its own compactions: what one leaves behind, how fast the context grows again, and what one costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is the latest one that costs no more than 5% more a turn than where the two add up to the least, plus the <strong>Buffer</strong> (none unless you set one), kept between <strong>Never below</strong> and <strong>Never above</strong>, and adjusted once a day by a tenth at most. A repository with fewer than 3 compactions uses <em>Never above</em>. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. One failure among compactions that paid moves a repository's size up a little; two in a row add a tenth at once, and where most lose money it goes back to <em>Never above</em>. There is no warning in this mode. <strong>Max 1 compaction per</strong> is the least time between two compactions of the same session (default 30 minutes). Apart from all of this, a session left idle for 50 minutes at <em>Never below</em> or more is summarised before its one-hour cache expires, so coming back writes the summary to the cache and not the whole history.</div>
       <div id="icTable" style="margin-top:8px" data-ic></div>
       </div>
       <h3 class="mac-h">Repository overrides</h3>
@@ -3030,7 +3030,7 @@ function renderCompaction(s) {
       $("compactWindow").value = k.window_minutes || 30;
     }
     if (document.activeElement !== $("icFloor")) $("icFloor").value = Math.round((k.floor_tokens || 100000) / 1000);
-    if (document.activeElement !== $("icBuffer")) $("icBuffer").value = k.buffer_percent ?? 20;
+    if (document.activeElement !== $("icBuffer")) $("icBuffer").value = k.buffer_percent ?? 0;
     setMode(k.mode || "");
   }
   setPill("icState", !k.enabled ? "compaction off" : k.mode === "intelligent" ? "intelligent" : "static", k.enabled ? "ok" : "");
@@ -3246,7 +3246,7 @@ function renderLearned(v) {
   }
   const src = {learned: ["learned", "p"], override: ["your override", "s"], off: ["never", "s"], fixed: ["fixed", "s"]};
   $("icTable").innerHTML = `<div class="hint" style="margin-bottom:4px">${on
-      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, as late as costs no more than 25% more a turn than the cheapest size, plus ${v.buffer_percent}%, at most once every ${v.delay_minutes} minutes for a session.`
+      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, as late as costs no more than 5% more a turn than the cheapest size${v.buffer_percent ? `, plus ${v.buffer_percent}%` : ""}, at most once every ${v.delay_minutes} minutes for a session.`
       : `Off: every repository compacts at ${k(v.fixed)}. <b>Would be</b> shows what this mode would use.`}</div>
     <div class="ic-scroll"><table><thead><tr><th>Repository</th><th class="num">Compact at now</th><th class="num">${on ? "Target" : "Would be"}</th>
       <th class="num" title="The context a compaction leaves behind (median)">Leaves</th>
