@@ -256,7 +256,7 @@ out({
 // silently absent (it returns null for a missing object) or always green.
 func TestStateCarriesPrimaryHealthForTheCheck(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "http://x/api/state", nil)
+	req := localRequest(http.MethodGet, "http://x/api/state", nil)
 	req.Host = "127.0.0.1:7788"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)

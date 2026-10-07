@@ -13,7 +13,7 @@ import (
 
 func getUsage(t *testing.T, s *Server, query string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/usage?"+query, nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1/api/usage?"+query, nil)
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
 	return rr

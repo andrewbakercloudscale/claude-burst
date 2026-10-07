@@ -68,7 +68,7 @@ func TestCodexEnableRefusedWhenListenerFailed(t *testing.T) {
 
 func codexStateOf(t *testing.T, s *Server) codexState {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/codex", nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1/api/codex", nil)
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -126,7 +126,7 @@ func TestCodexEnableConflictIsReported(t *testing.T) {
 func TestCodexEnableNeedsMutationHeader(t *testing.T) {
 	s := newTestServer(t)
 	t.Setenv("CODEX_HOME", t.TempDir())
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/codex/enable", nil)
+	req := localRequest(http.MethodPost, "http://127.0.0.1/api/codex/enable", nil)
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {

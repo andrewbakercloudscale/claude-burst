@@ -44,7 +44,7 @@ func seedLearned(t *testing.T, s *Server) (root string) {
 
 func threshold(t *testing.T, s *Server, query string) (thresholdAnswer, int) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7788/api/GetAutoCompactionThreshold?"+query, nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1:7788/api/GetAutoCompactionThreshold?"+query, nil)
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, req)
 	var a thresholdAnswer
@@ -125,7 +125,7 @@ func TestIntelligentCompactionSettingsAreValidatedAndListed(t *testing.T) {
 	if rr := mutate(t, s, "/api/compaction", `{"enabled":true,"mode":"intelligent"}`); rr.Code != http.StatusOK {
 		t.Fatalf("save: %d %s", rr.Code, rr.Body.String())
 	}
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7788/api/intelligent-compaction", nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1:7788/api/intelligent-compaction", nil)
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, req)
 	var v learnedView

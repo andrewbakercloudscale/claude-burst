@@ -74,7 +74,7 @@ func TestPromptNoticeHookFollowsTheSetting(t *testing.T) {
 
 func TestPromptNoticeAnswersNothingWhenThereIsNothing(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/prompt-notice", bytes.NewReader([]byte(`{"session_id":"S"}`)))
+	req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/prompt-notice", bytes.NewReader([]byte(`{"session_id":"S"}`)))
 	req.Header.Set(mutationHeader, "1")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, req)
@@ -87,7 +87,7 @@ func TestPromptNoticeAnswersNothingWhenThereIsNothing(t *testing.T) {
 
 func TestPromptNoticeTestNeedsASession(t *testing.T) {
 	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/prompt-notice-test", bytes.NewReader([]byte(`{}`)))
+	req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/prompt-notice-test", bytes.NewReader([]byte(`{}`)))
 	req.Header.Set(mutationHeader, "1")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, req)
@@ -135,7 +135,7 @@ func TestCompactCommandFollowsTheSetting(t *testing.T) {
 func TestPromptNoticeHookStandsAsideForTheMod(t *testing.T) {
 	s := newTestServer(t)
 	ask := func(body string) int {
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/prompt-notice", bytes.NewReader([]byte(body)))
+		req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/prompt-notice", bytes.NewReader([]byte(body)))
 		req.Header.Set(mutationHeader, "1")
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, req)

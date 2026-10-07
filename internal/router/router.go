@@ -1433,10 +1433,41 @@ func messageSkeleton(body []byte) string {
 // and metrics: enough for the provider's message, not a whole echoed prompt.
 const maxErrorExcerpt = 300
 
-// errorExcerpt is the start of an upstream error body on one line, the
-// provider's own statement of why the request failed.
+// errorExcerpt is the provider's own statement of why a request failed, on
+// one line. From a JSON error body only the error's type and message are
+// kept: the rest of such a body can echo the request back, and the log and
+// the metrics hold no conversation text. A body that is not JSON (a proxy's
+// page, a plain line) is kept from its start.
 func errorExcerpt(body []byte) string {
-	s := strings.Join(strings.Fields(string(body)), " ")
+	var j struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+		Error   json.RawMessage
+	}
+	s := ""
+	if json.Unmarshal(body, &j) == nil {
+		var e struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		}
+		var plain string
+		switch {
+		case json.Unmarshal(j.Error, &e) == nil && (e.Type != "" || e.Message != ""):
+			s = e.Type + ": " + e.Message
+			if e.Type == "" || e.Message == "" {
+				s = e.Type + e.Message
+			}
+		case json.Unmarshal(j.Error, &plain) == nil && plain != "":
+			s = plain
+		case j.Message != "":
+			s = j.Message
+		default:
+			return fmt.Sprintf("(%d bytes of JSON with no error message)", len(body))
+		}
+	} else {
+		s = string(body)
+	}
+	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > maxErrorExcerpt {
 		s = strings.ToValidUTF8(s[:maxErrorExcerpt], "") + "..."
 	}

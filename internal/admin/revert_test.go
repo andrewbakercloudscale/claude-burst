@@ -15,7 +15,7 @@ import (
 
 func postRevert(t *testing.T, s *Server) (*httptest.ResponseRecorder, revertResponse) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/revert", nil)
+	req := localRequest(http.MethodPost, "/api/revert", nil)
 	req.Header.Set(mutationHeader, "1")
 	req.Host = "127.0.0.1:7788"
 	rec := httptest.NewRecorder()

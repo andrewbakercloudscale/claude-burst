@@ -10,17 +10,17 @@ import (
 func TestInspectEndpointsBeforeAnyRequest(t *testing.T) {
 	s := newTestServer(t)
 	rr := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/inspect", nil))
+	s.Handler().ServeHTTP(rr, localRequest(http.MethodGet, "http://127.0.0.1/api/inspect", nil))
 	if rr.Code != http.StatusOK || strings.TrimSpace(rr.Body.String()) != "[]" {
 		t.Fatalf("list = %d %q", rr.Code, rr.Body)
 	}
 	rr = httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/inspect?session=nope", nil))
+	s.Handler().ServeHTTP(rr, localRequest(http.MethodGet, "http://127.0.0.1/api/inspect?session=nope", nil))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unknown session = %d", rr.Code)
 	}
 	rr = httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/inspect-item?session=nope&i=0", nil))
+	s.Handler().ServeHTTP(rr, localRequest(http.MethodGet, "http://127.0.0.1/api/inspect-item?session=nope&i=0", nil))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unknown item = %d", rr.Code)
 	}
@@ -36,7 +36,7 @@ func TestInspectRemoveRefusesUnknownItems(t *testing.T) {
 		`{"engine":"claude","session":"S","id":"ab12"}`: http.StatusNotFound,
 		`{"engine":"codex","session":"S","id":"ab12"}`:  http.StatusConflict, // no Codex gateway in this server
 	} {
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/inspect/remove", strings.NewReader(body))
+		req := localRequest(http.MethodPost, "http://127.0.0.1/api/inspect/remove", strings.NewReader(body))
 		req.Header.Set(mutationHeader, "1")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)

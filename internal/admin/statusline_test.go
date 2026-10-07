@@ -11,7 +11,7 @@ import (
 
 func postStatusLine(t *testing.T, h http.Handler, body string) int {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "http://x/api/statusline", strings.NewReader(body))
+	req := localRequest(http.MethodPost, "http://x/api/statusline", strings.NewReader(body))
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()

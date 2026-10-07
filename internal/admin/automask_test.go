@@ -16,7 +16,7 @@ func TestAutomaskSwitchesAreSavedAndShown(t *testing.T) {
 
 	get := func() automaskStatus {
 		rr := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/automask", nil))
+		s.Handler().ServeHTTP(rr, localRequest(http.MethodGet, "http://127.0.0.1/api/automask", nil))
 		var st automaskStatus
 		if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
 			t.Fatalf("%d %s", rr.Code, rr.Body)

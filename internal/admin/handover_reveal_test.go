@@ -17,7 +17,7 @@ func TestHandoverRevealOnlyAuditedFiles(t *testing.T) {
 	t.Cleanup(func() { revealFile = old })
 	for _, body := range []string{`{"root":"/etc"}`, `{"root":""}`, `nope`} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/handover-reveal", strings.NewReader(body))
+		req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/handover-reveal", strings.NewReader(body))
 		req.Header.Set("X-Claude-Burst-Admin", "1")
 		s.Handler().ServeHTTP(rec, req)
 		if rec.Code == http.StatusOK {

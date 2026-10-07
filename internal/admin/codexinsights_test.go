@@ -100,7 +100,7 @@ func TestCodexInsightsEndpoint(t *testing.T) {
 	s := newTestServer(t)
 	for _, q := range []string{"", "?days=30", "?days=0", "?days=abc", "?days=9999"} {
 		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/codex/insights"+q, nil))
+		s.Handler().ServeHTTP(rec, localRequest(http.MethodGet, "http://127.0.0.1/api/codex/insights"+q, nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: %d %s", q, rec.Code, rec.Body)
 		}

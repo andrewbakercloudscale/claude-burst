@@ -107,7 +107,7 @@ func (r *upgradeRig) status(refresh bool) upgradeStatus {
 	if refresh {
 		path += "?refresh=1"
 	}
-	req := httptest.NewRequest(http.MethodGet, "http://x"+path, nil)
+	req := localRequest(http.MethodGet, "http://x"+path, nil)
 	req.Host = "127.0.0.1:7788"
 	rr := httptest.NewRecorder()
 	r.s.Handler().ServeHTTP(rr, req)
@@ -119,7 +119,7 @@ func (r *upgradeRig) status(refresh bool) upgradeStatus {
 }
 
 func (r *upgradeRig) upgrade() *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader("{}"))
+	req := localRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader("{}"))
 	req.Host = "127.0.0.1:7788"
 	req.Header.Set("X-Claude-Burst-Admin", "1")
 	req.Header.Set("Content-Type", "application/json")
@@ -321,7 +321,7 @@ func TestInstallGitHubVersionRollsBackWithoutTouchingTheCheckout(t *testing.T) {
 	r.running = git(t, r.checkout, "rev-parse", "HEAD")
 	os.WriteFile(filepath.Join(r.checkout, "wip.txt"), []byte("wip"), 0o644)
 
-	req := httptest.NewRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader(`{"mode":"github"}`))
+	req := localRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader(`{"mode":"github"}`))
 	req.Host = "127.0.0.1:7788"
 	req.Header.Set("X-Claude-Burst-Admin", "1")
 	req.Header.Set("Content-Type", "application/json")
@@ -359,7 +359,7 @@ func TestInstallGitHubVersionRollsBackWithoutTouchingTheCheckout(t *testing.T) {
 
 func TestInstallGitHubVersionRejectsAnUnknownMode(t *testing.T) {
 	r := newUpgradeRig(t)
-	req := httptest.NewRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader(`{"mode":"nuke"}`))
+	req := localRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader(`{"mode":"nuke"}`))
 	req.Host = "127.0.0.1:7788"
 	req.Header.Set("X-Claude-Burst-Admin", "1")
 	req.Header.Set("Content-Type", "application/json")

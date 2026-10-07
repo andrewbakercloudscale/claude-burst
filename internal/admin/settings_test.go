@@ -18,7 +18,7 @@ import (
 func postSettings(t *testing.T, s *Server, body string) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/settings-save", strings.NewReader(body))
+	req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/settings-save", strings.NewReader(body))
 	req.Header.Set("X-Claude-Burst-Admin", "1")
 	s.Handler().ServeHTTP(rec, req)
 	var out map[string]any
@@ -88,7 +88,7 @@ func TestSettingsSaveRejectsBadInput(t *testing.T) {
 func TestSettingsSaveNeedsTheAdminHeader(t *testing.T) {
 	s := newTestServer(t)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7788/api/settings-save", strings.NewReader(`{"notify":{"failover":true}}`))
+	req := localRequest(http.MethodPost, "http://127.0.0.1:7788/api/settings-save", strings.NewReader(`{"notify":{"failover":true}}`))
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status %d, want 403", rec.Code)
@@ -301,7 +301,7 @@ func TestSettingsGetShape(t *testing.T) {
 	s := newTestServer(t)
 	securityCalls := stubMacForSettings(t)
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7788/api/settings", nil))
+	s.Handler().ServeHTTP(rec, localRequest(http.MethodGet, "http://127.0.0.1:7788/api/settings", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}

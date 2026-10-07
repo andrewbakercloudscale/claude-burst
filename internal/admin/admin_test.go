@@ -89,7 +89,7 @@ func TestGuardRejectsNonLoopbackHost(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.host, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "http://x/api/state", nil)
+			req := localRequest(http.MethodGet, "http://x/api/state", nil)
 			req.Host = c.host
 			rr := httptest.NewRecorder()
 			h.ServeHTTP(rr, req)
@@ -118,7 +118,7 @@ func TestGuardAcceptsConfiguredExtraHost(t *testing.T) {
 		"cloudscale-claudeburst.test": http.StatusOK,
 		"other-host.test":             http.StatusForbidden,
 	} {
-		req := httptest.NewRequest(http.MethodGet, "http://x/api/state", nil)
+		req := localRequest(http.MethodGet, "http://x/api/state", nil)
 		req.Host = host
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, req)
@@ -138,7 +138,7 @@ func TestMutatingRequiresHeaderAndPost(t *testing.T) {
 	h := s.Handler()
 
 	post := func(withHeader bool) int {
-		req := httptest.NewRequest(http.MethodPost, "http://x/api/reset", nil)
+		req := localRequest(http.MethodPost, "http://x/api/reset", nil)
 		req.Host = "127.0.0.1"
 		if withHeader {
 			req.Header.Set(mutationHeader, "1")
@@ -155,7 +155,7 @@ func TestMutatingRequiresHeaderAndPost(t *testing.T) {
 		t.Errorf("POST with mutation header: status=%d, want 200", code)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://x/api/reset", nil)
+	req := localRequest(http.MethodGet, "http://x/api/reset", nil)
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()
@@ -172,7 +172,7 @@ func TestMutatingRequiresHeaderAndPost(t *testing.T) {
 func TestReadOnlyRejectsPost(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
-	req := httptest.NewRequest(http.MethodPost, "http://x/api/state", nil)
+	req := localRequest(http.MethodPost, "http://x/api/state", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -199,7 +199,7 @@ func TestHandleStateDegradesGracefullyOnBrokenConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://x/api/state", nil)
+	req := localRequest(http.MethodGet, "http://x/api/state", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
@@ -226,7 +226,7 @@ func TestHandleStateHealthyPath(t *testing.T) {
 	s := newTestServer(t)
 	writeConfig(t, os.Getenv("HOME"))
 
-	req := httptest.NewRequest(http.MethodGet, "http://x/api/state", nil)
+	req := localRequest(http.MethodGet, "http://x/api/state", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
@@ -273,7 +273,7 @@ func TestHandleLog_ServesTailWhenOversized(t *testing.T) {
 
 	s := newTestServer(t)
 	t.Setenv("HOME", home) // newTestServer reset HOME to its own temp dir; point it back
-	req := httptest.NewRequest(http.MethodGet, "http://x/api/log", nil)
+	req := localRequest(http.MethodGet, "http://x/api/log", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
@@ -293,7 +293,7 @@ func TestHandleTestConnection_BaseURLModeShortCircuits(t *testing.T) {
 	s := newTestServer(t)
 	writeConfig(t, os.Getenv("HOME")) // config.Default() -> base-url mode
 
-	req := httptest.NewRequest(http.MethodGet, "http://x/api/test-connection", nil)
+	req := localRequest(http.MethodGet, "http://x/api/test-connection", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
@@ -345,7 +345,7 @@ func TestHandleTestConnectionTransparentModeUnreachableHostReportsFailure(t *tes
 	}
 	s := New(gw, filepath.Join(gdir, "metrics.jsonl"), "v", "", "/path/to/transparent-root.sh")
 
-	req := httptest.NewRequest(http.MethodGet, "http://x/api/test-connection", nil)
+	req := localRequest(http.MethodGet, "http://x/api/test-connection", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
@@ -394,7 +394,7 @@ func TestHandleForceRejectsWhenNoSecondaryConfigured(t *testing.T) {
 	}
 	s := New(gw, filepath.Join(gdir, "metrics.jsonl"), "v", "", "/path")
 
-	req := httptest.NewRequest(http.MethodPost, "http://x/api/force", nil)
+	req := localRequest(http.MethodPost, "http://x/api/force", nil)
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()
@@ -497,7 +497,7 @@ func newSecondaryTestServer(t *testing.T) (*Server, string, map[string]string) {
 
 func postSecondary(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary", strings.NewReader(body))
+	req := localRequest(http.MethodPost, "http://127.0.0.1/api/secondary", strings.NewReader(body))
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()
@@ -695,7 +695,7 @@ func TestStateReportsSecondaryCredential(t *testing.T) {
 		t.Fatalf("save failed: %s", rr.Body.String())
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
@@ -801,7 +801,7 @@ func TestStateReportsKeySourceAndAge(t *testing.T) {
 		t.Fatalf("save failed: %s", rr.Body.String())
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)
@@ -841,7 +841,7 @@ func TestSecondaryKeyRevealRequiresMutationGuard(t *testing.T) {
 	}
 
 	// GET must not work at all.
-	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/secondary-key", nil)
+	get := localRequest(http.MethodGet, "http://127.0.0.1/api/secondary-key", nil)
 	get.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, get)
@@ -853,7 +853,7 @@ func TestSecondaryKeyRevealRequiresMutationGuard(t *testing.T) {
 	}
 
 	// POST without the header must not work either.
-	noHdr := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	noHdr := localRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
 	noHdr.Host = "127.0.0.1"
 	rr = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, noHdr)
@@ -865,7 +865,7 @@ func TestSecondaryKeyRevealRequiresMutationGuard(t *testing.T) {
 	}
 
 	// A non-loopback Host must not work even with the header.
-	evil := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	evil := localRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
 	evil.Host = "evil.example.com"
 	evil.Header.Set(mutationHeader, "1")
 	rr = httptest.NewRecorder()
@@ -875,7 +875,7 @@ func TestSecondaryKeyRevealRequiresMutationGuard(t *testing.T) {
 	}
 
 	// The properly guarded call returns it.
-	ok := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	ok := localRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
 	ok.Host = "127.0.0.1"
 	ok.Header.Set(mutationHeader, "1")
 	rr = httptest.NewRecorder()
@@ -907,7 +907,7 @@ func TestSecondaryKeyRevealWithoutKey(t *testing.T) {
 	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4","model":"glm-4.6"}`); rr.Code != http.StatusOK {
 		t.Fatalf("setup save failed: %s", rr.Body.String())
 	}
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	req := localRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()
@@ -938,7 +938,7 @@ func TestSecondaryKeyRevealDeniedByAuth(t *testing.T) {
 	}
 	s.authenticate = func(reason string) error { return errors.New("User canceled authentication") }
 
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	req := localRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	rr := httptest.NewRecorder()
@@ -966,7 +966,7 @@ func TestSecondaryKeyRevealPromptNamesTheProvider(t *testing.T) {
 	var got string
 	s.authenticate = func(reason string) error { got = reason; return nil }
 
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
+	req := localRequest(http.MethodPost, "http://127.0.0.1/api/secondary-key", nil)
 	req.Host = "127.0.0.1"
 	req.Header.Set(mutationHeader, "1")
 	s.Handler().ServeHTTP(httptest.NewRecorder(), req)
@@ -992,7 +992,7 @@ func TestHistoryEndpoint(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "http://127.0.0.1/api/history?days=7", nil))
+	s.Handler().ServeHTTP(rr, localRequest("GET", "http://127.0.0.1/api/history?days=7", nil))
 	if rr.Code != 200 {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
 	}
@@ -1014,7 +1014,7 @@ func TestHistoryEndpoint(t *testing.T) {
 	// back to the default -- neither may 500 the one endpoint the chart has.
 	for _, q := range []string{"?days=9999", "?days=abc", "?days=-1", ""} {
 		rr := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "http://127.0.0.1/api/history"+q, nil))
+		s.Handler().ServeHTTP(rr, localRequest("GET", "http://127.0.0.1/api/history"+q, nil))
 		if rr.Code != 200 {
 			t.Errorf("days=%q gave %d: %s", q, rr.Code, rr.Body.String())
 			continue
@@ -1035,12 +1035,12 @@ func TestHistoryEndpoint(t *testing.T) {
 func TestHistoryIsReadOnly(t *testing.T) {
 	s := newTestServer(t)
 	rr := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest("POST", "http://127.0.0.1/api/history", nil))
+	s.Handler().ServeHTTP(rr, localRequest("POST", "http://127.0.0.1/api/history", nil))
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /api/history gave %d, want 405", rr.Code)
 	}
 	rr = httptest.NewRecorder()
-	s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "http://evil.example/api/history", nil))
+	s.Handler().ServeHTTP(rr, localRequest("GET", "http://evil.example/api/history", nil))
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("cross-origin Host gave %d, want 403", rr.Code)
 	}
@@ -1051,7 +1051,7 @@ func TestHistoryIsReadOnly(t *testing.T) {
 // on another site could press Restart or Force.
 func TestDashboardRefusesToBeFramed(t *testing.T) {
 	h := newTestServer(t).Handler()
-	req := httptest.NewRequest(http.MethodGet, "http://x/", nil)
+	req := localRequest(http.MethodGet, "http://x/", nil)
 	req.Host = "127.0.0.1"
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -1073,7 +1073,7 @@ func TestRestartSignalsForDrain(t *testing.T) {
 
 	s := &Server{}
 	rec := httptest.NewRecorder()
-	s.handleRestart(rec, httptest.NewRequest(http.MethodPost, "/api/restart", nil))
+	s.handleRestart(rec, localRequest(http.MethodPost, "/api/restart", nil))
 	if !strings.Contains(rec.Body.String(), "in-flight replies finish") {
 		t.Fatalf("reply should say it waits for in-flight replies: %s", rec.Body.String())
 	}

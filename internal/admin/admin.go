@@ -222,6 +222,14 @@ func (s *Server) guard(next http.Handler) http.Handler { return guard(s.extraHos
 // DNS-rebinding defence, and sets the framing and sniffing headers.
 func guard(extraHost string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The caller, not only the name it asked for: a listen address set
+		// to every interface would otherwise let any machine on the network
+		// send "Host: 127.0.0.1" and drive the dashboard, which has no
+		// login because it is meant to be reachable from this Mac alone.
+		if !loopbackPeer(r.RemoteAddr) {
+			http.Error(w, "admin UI only answers this Mac (loopback)", http.StatusForbidden)
+			return
+		}
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
@@ -231,6 +239,14 @@ func guard(extraHost string, next http.Handler) http.Handler {
 			(extraHost != "" && host == extraHost)
 		if !allowed {
 			http.Error(w, "admin UI only accepts loopback Host headers (got "+r.Host+")", http.StatusForbidden)
+			return
+		}
+		// Another site's page may link here, never call the API: two GET
+		// routes do work (a connection test, a git fetch), and an image tag
+		// on any page could set them off. Browsers say where a request came
+		// from; curl, Claude Code and the mod send neither header.
+		if strings.HasPrefix(r.URL.Path, "/api/") && crossSite(r) {
+			http.Error(w, "admin API only answers its own page", http.StatusForbidden)
 			return
 		}
 		// Never emit CORS headers: without them a cross-origin page cannot
@@ -245,6 +261,31 @@ func guard(extraHost string, next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// crossSite reports a browser request that did not come from this server's
+// own page: Sec-Fetch-Site says so on every current browser, and Origin on
+// the requests that carry one.
+func crossSite(r *http.Request) bool {
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		return true
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	return err != nil || !strings.EqualFold(u.Host, r.Host)
+}
+
+// loopbackPeer reports whether a connection came from this Mac.
+func loopbackPeer(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) readOnly(h http.HandlerFunc) http.HandlerFunc { return readOnly(h) }
@@ -1077,6 +1118,21 @@ func secondaryRoute(cfg config.Config, req secondaryRequest) (rc config.RouteCon
 	}
 }
 
+// hostOf is a base URL's host, lower case, "" when it has none.
+func hostOf(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Host)
+}
+
+// movesStoredKey reports a save that points an endpoint already in use at a
+// different host, so a key stored for the first would go to the second.
+func movesStoredKey(from, to string) bool {
+	return hostOf(from) != "" && hostOf(to) != "" && hostOf(from) != hostOf(to)
+}
+
 // handleSecondary writes the secondary provider slot -- provider, endpoint,
 // model, and the API key that goes with it.
 //
@@ -1089,6 +1145,19 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
+	}
+	// Showing the stored key needs Touch ID, so sending it somewhere new
+	// must too: without this, a new base URL and a test request hand the
+	// key to a host of the caller's choosing. Asked before the config lock
+	// is taken, since the sheet waits for a person.
+	if cur, err := config.Load(); err == nil && strings.TrimSpace(req.APIKey) == "" {
+		if next, service, envVar, err := secondaryRoute(cur, req); err == nil && service != "" &&
+			movesStoredKey(cur.Secondary.BaseURL, next.BaseURL) && s.keyInfo(service, envVar).Present {
+			if err := s.authenticate("send the API key stored for Claude Burst to " + hostOf(next.BaseURL)); err != nil {
+				http.Error(w, "authentication was not completed, so the secondary was not changed: "+err.Error(), http.StatusForbidden)
+				return
+			}
+		}
 	}
 	var (
 		rc              config.RouteConfig

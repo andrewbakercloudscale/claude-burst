@@ -34,7 +34,7 @@ func TestCoordinationSwitchInstallsAndRemovesTheHooks(t *testing.T) {
 		t.Fatalf("want the seven coordination hooks:\n%s", b)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/coordination", nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1/api/coordination", nil)
 	get := httptest.NewRecorder()
 	s.Handler().ServeHTTP(get, req)
 	var d struct {
@@ -97,7 +97,7 @@ func TestCoordinationActions(t *testing.T) {
 		t.Fatalf("nothing to hand on: want 409, got %d", rr.Code)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/coordination", nil)
+	req := localRequest(http.MethodGet, "http://127.0.0.1/api/coordination", nil)
 	get := httptest.NewRecorder()
 	s.Handler().ServeHTTP(get, req)
 	var d struct {
