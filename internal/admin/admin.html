@@ -1664,6 +1664,16 @@
         <select id="inSession" style="max-width:520px"></select>
         <button id="inReload">Reload</button>
       </div>
+      <div class="row" style="align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <label class="hint" for="inPruneWord">Prune</label>
+        <input id="inPruneWord" type="text" placeholder="repository or file name" style="width:230px" aria-label="Word naming what to prune">
+        <button id="inPruneGo" title="Remove every tool result and instruction file whose file, command or name has the word. /burst-prune <word> in the session does the same">Prune what it names</button>
+        <button id="inPruneStale" title="Remove out of date copies of files read again later, results for files that no longer exist, and large results from ten or more prompts ago">Prune stale</button>
+        <button id="inPruneResults" title="Remove every tool result from before the latest prompt: for when a task is finished">Prune old tool results</button>
+        <button id="inPruneUndo" title="Put back everything removed from this session, by a prune or by Remove">Undo all</button>
+        <button id="inRefresh" hidden title="This session sends only what is new with each request. This has its whole conversation asked for with its next request">Bring up to date</button>
+      </div>
+      <div id="inPruneNote"></div>
       <div id="inSummary" style="margin:12px 0"></div>
       <div id="inBody"></div>
     </div>
@@ -6671,6 +6681,8 @@ function makeInspector(o) {
     $(o.summary).innerHTML = `<b>${esc(d.repo || "?")}</b> <span class="hint">&middot; ${esc(d.model)} &middot; ${d.prompts} prompts &middot; ${inTok(d.context || total)} tokens${d.estimate ? " (estimated: no reply reported the size yet)" : ""} &middot; as sent at ${esc(stamp(d.at))}</span> ` +
       (d.flagged ? `<span class="pill s">${d.flagged} worth a look</span>` : `<span class="pill p">nothing flagged</span>`) +
       (removed ? ` <span class="pill">${removed} removed by you</span>` : "");
+    if (d.since) $(o.summary).innerHTML += `<div class="hint" style="margin-top:6px">${d.since} ${d.since === 1 ? "request" : "requests"} since then added to it and ${d.since === 1 ? "is" : "are"} not listed: this session sends only what is new with each request. A prune, or <b>Bring up to date</b>, has the whole conversation asked for with its next request.</div>`;
+    if (o.prune) $("inRefresh").hidden = !d.since;
     const sh = inShares(d.items), pc = x => x < 0.005 ? "<1%" : Math.round(x * 100) + "%";
     const colorOf = name => (sh.groups.find(g => g.name === name) || {}).color || "";
     const bySize = sh.groups.filter(g => g.tokens > 0).sort((a, b) => b.tokens - a.tokens);
@@ -6726,12 +6738,35 @@ function makeInspector(o) {
       p.textContent = await r.text();
     } catch (err) { p.textContent = String(err); }
   });
+  // Prune: Remove for many items at once, chosen by a word. Claude Code's
+  // inspector only; /burst-prune in the session is the same request.
+  if (o.prune) {
+    const run = async (body, ask) => {
+      if (!data) return;
+      if (ask && !confirm(ask + "\n\nClaude Code keeps its own copy. Burst leaves each one out of every later request of this session, with a one-line note in its place. The next request writes what follows the first of them to the cache again, once. Undo all puts them back.")) return;
+      try {
+        const r = await post(body.refresh ? "/api/inspect/refresh" : "/api/inspect/prune", {session: data.session, ...body});
+        note($("inPruneNote"), "ok", r.detail || "Done.");
+        load();
+      } catch (err) { note($("inPruneNote"), "bad", "Nothing changed: " + err.message); }
+    };
+    $("inPruneGo").onclick = () => {
+      const w = $("inPruneWord").value.trim();
+      if (!w) { note($("inPruneNote"), "bad", "Type a word first: a repository's name, a file's name."); return; }
+      run({what: w}, `Prune every tool result and instruction file whose file, command or name has "${w}"?`);
+    };
+    $("inPruneWord").onkeydown = e => { if (e.key === "Enter") $("inPruneGo").click(); };
+    $("inPruneStale").onclick = () => run({what: "stale"}, "Prune out of date copies of files read again later, results for files that no longer exist, and large results from ten or more prompts ago?");
+    $("inPruneResults").onclick = () => run({what: "results"}, "Prune every tool result from before the latest prompt?");
+    $("inPruneUndo").onclick = () => run({restore: true});
+    $("inRefresh").onclick = () => run({refresh: true});
+  }
   $(o.sel).onchange = load;
   $(o.reload).onclick = loadSessions;
   loadSessions();
   return {loadSessions};
 }
-makeInspector({engine: "claude", sel: "inSession", reload: "inReload", summary: "inSummary", body: "inBody", dot: "nd-inspect",
+makeInspector({engine: "claude", prune: true, sel: "inSession", reload: "inReload", summary: "inSummary", body: "inBody", dot: "nd-inspect",
   who: "Claude Code", unit: "messages", none: "no session yet: one appears after its next request"});
 // var, not const: setTab runs before this line on a page opened on Codex.
 var cxInspector = makeInspector({engine: "codex", sel: "cxInSession", reload: "cxInReload", summary: "cxInSummary", body: "cxInBody", dot: "nd-cx-inspect",
