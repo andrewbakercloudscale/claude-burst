@@ -479,7 +479,7 @@
   .main .wrap { max-width: 1120px; }
 
   /* ===================================================================== *
-   * Hero: one card carrying the verdict, the identity and the five numbers.
+   * Hero: one card carrying the verdict, the identity and its numbers.
    * ===================================================================== */
   .hero {
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
@@ -4086,7 +4086,7 @@ function renderHero(s) {
     s.overflow ? (s.secondary.provider || "secondary") : (s.primary.provider || "primary"))}</b>` +
     (s.until ? ` &middot; until ${esc(stamp(s.until))}` : "");
 
-  // The five KPIs are over the CHARTED WINDOW, not all time, and the label
+  // The KPIs are over the CHARTED WINDOW, not all time, and the label
   // under them says which -- a headline number whose period is unstated is
   // the easiest way to compare two things that are not comparable.
   const h = lastHistory;
@@ -4099,10 +4099,12 @@ function renderHero(s) {
     // a request reads, and input plus output alone read 60 times too low.
     [compact((w.InputTokens || 0) + (w.OutputTokens || 0) + (w.CacheReadTokens || 0) + (w.CacheWriteTokens || 0)), "tokens",
       "Every token billed: fresh input, output, and what was read from and written to the prompt cache"],
-    // Uncached is the work that was new: everything not read back from
-    // the cache, so fresh input, what was written to the cache, and output.
-    [compact((w.InputTokens || 0) + (w.OutputTokens || 0) + (w.CacheWriteTokens || 0)), "uncached",
-      "Tokens not read from the prompt cache: fresh input, input written to the cache, and output"],
+    // The total's four parts, apart: the total alone hides that nearly
+    // all of it is cache reads, which cost a tenth of fresh input.
+    [compact(w.InputTokens), "fresh input", "Input tokens that were not in the prompt cache"],
+    [compact(w.OutputTokens), "output", "Tokens the models wrote"],
+    [compact(w.CacheReadTokens), "cache read", "Input tokens read back from the prompt cache"],
+    [compact(w.CacheWriteTokens), "cache write", "Input tokens written to the prompt cache"],
     [compactMoney(w.APIEquivalentUSD), "spend"],
   ].map(([v, k, tip]) => `<div class="kpi"${tip ? ` title="${esc(tip)}"` : ""}><div class="v">${esc(v)}</div><div class="k">${esc(k)}${
     span ? " · " + esc(span) : ""}</div></div>`).join("");
