@@ -375,6 +375,24 @@ install() {
   fi
   chmod 755 "$staged"
 
+  # As scripts/deploy.sh does before it swaps: a build that cannot print its
+  # own help is not put over a working gateway, and the binary it replaces
+  # is kept where scripts/rollback.sh and the next deploy look for it.
+  # Repair and burst-reinstall come through here, so without this the fix
+  # could leave a Mac with a broken binary and nothing to go back to.
+  if ! "$staged" --help >/dev/null 2>&1; then
+    echo "ERROR: the new build failed its own --help smoke test; nothing was installed and the running gateway is untouched." >&2
+    exit 1
+  fi
+  if [[ -x "$TARGET" ]]; then
+    bak_dir="${CLAUDE_BURST_BACKUP_DIR:-$HOME/.config/claude-burst/backups}"
+    if mkdir -p "$bak_dir" && cp "$TARGET" "$bak_dir/claude-burst-bin.latest.bak"; then
+      echo "Kept the binary being replaced: $bak_dir/claude-burst-bin.latest.bak"
+    else
+      echo "WARNING: could not keep a copy of the binary being replaced in $bak_dir" >&2
+    fi
+  fi
+
   # mv, never cp over $TARGET: the running gateway has that file mapped, and
   # rewriting its bytes in place invalidates the code signature, so macOS
   # SIGKILLs every later launch of it (exit 137) while the old process keeps

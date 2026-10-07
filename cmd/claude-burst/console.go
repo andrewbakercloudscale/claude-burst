@@ -19,6 +19,20 @@ import (
 // own LaunchAgent and loads nothing the gateway needs, so a gateway that
 // will not start (a broken config, a crash) still leaves a page that shows
 // why and can fix it. A config that does not load falls back to defaults.
+// restoreConfig is the way out of a config.json the gateway cannot read.
+func restoreConfig(args []string) {
+	rejectArgs("restore-config", args)
+	r, err := config.RestoreLastGood()
+	if errors.Is(err, config.ErrConfigLoads) {
+		fmt.Println(err)
+		return
+	}
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Printf("restored config.json from %s\nthe file that would not load is kept as %s\nthe gateway starts by itself within seconds; if not: claude-burst open\n", r.From, r.Kept)
+}
+
 func consoleCmd(args []string) {
 	rejectArgs("console", args)
 	cfg, err := config.Load()

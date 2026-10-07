@@ -34,7 +34,10 @@ say "finding the Claude Burst checkout"
 REPO="${CLAUDE_BURST_REPO:-}"
 if [ -z "$REPO" ]; then
   here="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
-  for d in "$here" ~/claude-burst ~/claude-burst-repo ~/Desktop/github/claude-burst; do
+  # The path install.sh recorded comes first: the checkout can be anywhere.
+  recorded="$(cat ~/.local/share/claude-burst/repo 2>/dev/null || true)"
+  for d in "$here" "$recorded" ~/claude-burst ~/claude-burst-repo ~/Desktop/github/claude-burst; do
+    [ -n "$d" ] || continue
     if [ -f "$d/install.sh" ] && [ -d "$d/.git" ]; then REPO=$d; break; fi
   done
 fi
@@ -50,7 +53,14 @@ say "syncing with GitHub"
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "local edits present, leaving them alone (not synced)"
 else
-  git fetch -q --tags origin && git checkout -q main && git merge -q --ff-only origin/main || exit 1
+  # Best effort: this script is for a Mac where things are broken, and the
+  # network (or Burst in front of it) may be what is broken. Until
+  # 7 Oct 2026 a failed fetch ended the repair before it had fixed anything.
+  if git fetch -q --tags origin && git checkout -q main && git merge -q --ff-only origin/main; then
+    echo "up to date with GitHub"
+  else
+    echo "WARNING: could not sync with GitHub (no network, or main has moved apart). Repairing from this checkout as it is."
+  fi
 fi
 git log --oneline -1
 
@@ -79,6 +89,20 @@ say "reinstalling"
 # /etc/hosts and pf on a Mac that chose not to. No config at all is a fresh
 # install, which gets the default.
 if [ -f "$CFG/config.json" ]; then
+  # A config that cannot be read stops the gateway starting and would be
+  # taken for base-url mode below, on a Mac that may be transparent: put
+  # the newest backup that loads back first, or stop and say so.
+  # The gateway's own reader decides, where it is installed: it refuses
+  # more than broken JSON. restore-config does nothing to a config that loads.
+  if [ -x ~/.local/bin/claude-burst ]; then
+    if ! ~/.local/bin/claude-burst restore-config; then
+      echo "config.json cannot be read and no backup could be restored. Fix or remove $CFG/config.json (backups are in $CFG/backups), or run burst-off."
+      exit 1
+    fi
+  elif ! /usr/bin/python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CFG/config.json" 2>/dev/null; then
+    echo "config.json cannot be read. Fix or remove $CFG/config.json (backups are in $CFG/backups), or run burst-off."
+    exit 1
+  fi
   MODE=$(/usr/bin/python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("intercept") or {}).get("mode") or "base-url")' "$CFG/config.json" 2>/dev/null)
   [ "$MODE" = transparent ] || MODE=base-url
 else
