@@ -208,6 +208,7 @@ func TestPrimaryHealthCheck(t *testing.T) {
 		OK       bool   `json:"ok"`
 		Critical bool   `json:"critical"`
 		Detail   string `json:"detail"`
+		Label    string `json:"label"`
 	}
 	var got map[string]*check
 	runPageJS(t, []string{"primaryHealthCheck"}, fmt.Sprintf(`
@@ -216,9 +217,11 @@ out({
   missing: primaryHealthCheck(undefined, now),
   fresh: primaryHealthCheck({failures: 0, last_answer: zero, last_failure: zero, failing_since: zero}, now),
   failing: primaryHealthCheck({failures: 7, last_answer: zero, last_failure: %q, failing_since: %q, last_error: "resolve api.anthropic.com over DoH"}, now),
+  offline: primaryHealthCheck({failures: 113, network_down: true, last_answer: zero, last_failure: %q, failing_since: %q, last_error: "dial tcp 160.79.104.10:443: connect: network is unreachable"}, now),
   stale: primaryHealthCheck({failures: 2, last_answer: zero, last_failure: %q, failing_since: %q, last_error: "x"}, now),
   answering: primaryHealthCheck({failures: 0, last_answer: %q, last_failure: %q, failing_since: zero}, now),
 });`, now.UnixMilli(),
+		jsTime(now.Add(-30*time.Second)), jsTime(now.Add(-5*time.Minute)),
 		jsTime(now.Add(-30*time.Second)), jsTime(now.Add(-5*time.Minute)),
 		jsTime(now.Add(-11*time.Minute)), jsTime(now.Add(-12*time.Minute)),
 		jsTime(now.Add(-time.Minute)), jsTime(now.Add(-time.Hour))), &got)
@@ -234,6 +237,11 @@ out({
 		!strings.Contains(c.Detail, "no answer since the gateway started") ||
 		!strings.Contains(c.Detail, "DoH") {
 		t.Errorf("every request failing must be a critical red check naming the error: %+v", c)
+	}
+	// Offline is said as that alone: no error text, nothing about Anthropic.
+	if c := got["offline"]; c == nil || c.OK || c.Label != "Network down" ||
+		strings.Contains(c.Detail, "dial") || strings.Contains(c.Detail, "113") {
+		t.Errorf("offline: %+v", c)
 	}
 	if c := got["stale"]; c == nil || !c.OK {
 		t.Errorf("a failure over 10 minutes old must not hold the check red: %+v", c)

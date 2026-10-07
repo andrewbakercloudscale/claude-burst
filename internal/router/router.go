@@ -520,6 +520,9 @@ type PrimaryHealth struct {
 	LastError    string    `json:"last_error,omitempty"` // that error, verbatim
 	FailingSince time.Time `json:"failing_since"`        // first failure since the last answer
 	Failures     int       `json:"failures"`             // failures since the last answer
+	// NetworkDown: the failures are this Mac having no network, not
+	// Anthropic refusing. The dashboard then says only that.
+	NetworkDown bool `json:"network_down"`
 }
 
 func (s *Server) notePrimaryAnswered(slot string) {
@@ -531,6 +534,7 @@ func (s *Server) notePrimaryAnswered(slot string) {
 	s.health.LastAnswer = time.Now()
 	s.health.Failures = 0
 	s.health.FailingSince = time.Time{}
+	s.health.NetworkDown = false
 	s.alertNetworkUp()
 }
 
@@ -557,13 +561,18 @@ func (s *Server) notePrimaryFailure(slot string, err error) {
 	s.health.Failures++
 	s.health.LastFailure = now
 	s.health.LastError = err.Error()
+	s.health.NetworkDown = isLocalConnectivityFailure(err)
 }
 
 // Health returns a copy of the primary's current health.
 func (s *Server) Health() PrimaryHealth {
 	s.healthMu.Lock()
 	defer s.healthMu.Unlock()
-	return s.health
+	h := s.health
+	s.alerts.mu.Lock()
+	h.NetworkDown = h.Failures > 0 && (h.NetworkDown || s.alerts.networkDown)
+	s.alerts.mu.Unlock()
+	return h
 }
 
 // takeFailoverNotices returns and clears the pending lines.

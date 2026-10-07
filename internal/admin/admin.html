@@ -3842,6 +3842,12 @@ function primaryHealthCheck(ph, now) {
   const lastAnswer = at(ph.last_answer) ? ph.last_answer : "";
   const failing = ph.failures > 0 && now - at(ph.last_failure) < 10 * 60 * 1000;
   const t = v => new Date(at(v)).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  // This Mac is offline: said as that and nothing more. The error text and
+  // "Anthropic is refusing" beside it sent the reader to the wrong place.
+  if (failing && ph.network_down) {
+    return {key: "network", label: "Network down", target: "sec-activity", ok: false, critical: true,
+      detail: `this Mac has had no network since ${t(ph.failing_since)}`};
+  }
   return {
     key: "primary", label: "Anthropic answering", target: "sec-activity",
     ok: !failing, critical: true,
@@ -3992,6 +3998,7 @@ const CHECK_FIX = {
   pfguard: "arm the pf redirect guard under Guards (it asks for your password once).",
   secondary: "add the secondary's API key under Secondary, then press Test secondary.",
   primary: "Anthropic is refusing or failing requests, usually a usage limit or an outage (status.anthropic.com). With a secondary set up, requests already go there.",
+  network: "nothing: requests go through again by themselves when the network is back.",
   errors: "open Activity to see which requests failed and why. A burst of limit errors is normal; a steady stream is not.",
   cxroute: "route Codex through Burst with the button, then quit and reopen the Codex app (it reads its config when a session starts).",
   cxport: "Codex is routed to a port nothing answers on, so it cannot work. Send Codex straight to ChatGPT below (or run burst-off), then restart the gateway from the support console.",
@@ -4980,7 +4987,16 @@ function codexChecks(c, s, now) {
     last.http_status === 401 || last.http_status === 403 || last.http_status === 429);
   const why = !last ? "" : last.http_status === 401 || last.http_status === 403 ? "the ChatGPT sign-in was refused"
     : last.http_status === 429 ? "the plan's usage limit" : last.http_status ? `HTTP ${last.http_status}` : "no answer";
-  out.push({
+  // No network on this Mac: the gateway says so for Claude Code, and a Codex
+  // turn that never left says so in its own note.
+  const ph = (s && s.primary_health) || {};
+  const offline = bad && ((ph.network_down && now - Date.parse(ph.last_failure) < 10 * 60 * 1000) ||
+    /network is unreachable|no route to host|no such host/.test(String(last.note || "")));
+  if (offline) out.push({
+    key: "network", label: "Network down", target: "sec-codex", ok: false, critical: true,
+    detail: `this Mac had no network for the last turn, at ${t(last.time)}`,
+  });
+  else out.push({
     key: "cxchatgpt", label: "ChatGPT answering", target: "sec-codex", ok: !bad, critical: true,
     detail: !last ? "no Codex turn yet through Burst"
       : bad ? `the last turn, at ${t(last.time)}, failed: ${why}${last.note ? `: ${String(last.note).slice(0, 200)}` : ""}`
