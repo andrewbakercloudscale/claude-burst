@@ -163,9 +163,9 @@ The **support console** at http://127.0.0.1:7789/ (`claude-burst console`, its o
 
 ## Context inspector
 
-**Context inspector** (Sessions menu) shows what a session's context is made of, as Burst last sent it. The bar at the top is the whole context, a colour for each part; each group below carries the same colour, its tokens and its share, and each item has a line as long as its share.
+**Context inspector** (Sessions menu) shows what a session's context is made of, as Burst last sent it. The bar at the top is the whole context, a colour for each part; each group below carries the same colour, its tokens and its share, and each item has a line as long as its share. Click a group's head (tinted, with an arrow) to open it. Inside is a table, biggest first so what is worth removing is at the top: click **Item**, **Came with** or **Tokens** to sort by name, age or size, and again to turn the order round. "prompt 9, 2 prompts ago" means the item came into the context with your ninth prompt and you have sent two more since. Tick the items to take out (the box in the header ticks the whole group) and **Remove selected** at the bottom removes them in one go.
 
-![Context inspector: a bar of the context by part (tool results, tools, replies, instruction files), three flagged items worth a look, and the groups with each item's size and a Remove button. Illustration: an example session](screenshots/context-inspector.png)
+![Context inspector: a bar of the context by part (tool results, tools, replies, instruction files), three flagged items worth a look, and each group as a table with sortable headers, a box to tick on each item and Remove selected at the bottom. Illustration: an example session](screenshots/context-inspector.png)
 
 ```mermaid
 flowchart LR
