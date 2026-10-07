@@ -28,6 +28,15 @@
 // in all, held one repository 50k to 90k above its cheapest size, which
 // cost more on every turn than the losses had.
 //
+// Late, not cheapest. The money is not all a compaction costs: it is also a
+// pause and a summary that keeps less than the history did, and the model
+// has no figure for either. So the target is not the cheapest size but the
+// latest one whose turn costs no more than slackShare above the cheapest:
+// the cost rises slowly past its lowest point, so a little money buys many
+// fewer compactions. Until 7 Oct 2026 the target was the cheapest size and
+// a busy repository compacted every 80 requests, as often as the delay let
+// it.
+//
 // Guards, since the log measures money and not what a summary loses: never
 // below the floor, never above the fixed Compact at, a tenth a day at most
 // once a threshold is in use (the first one learned goes straight there),
@@ -76,6 +85,9 @@ const (
 	// for tomorrow.
 	lossRaisePercent = 10
 	lossStreak       = 2
+	// slackShare is how much more than the cheapest a turn may cost so that
+	// compactions come less often: see the package comment.
+	slackShare = 0.25
 )
 
 // Outcome kinds the gateway records (router), beside the summary calls
@@ -241,6 +253,19 @@ func costPerTurn(t, after, growth int64, readPrice, extraUSD float64) float64 {
 	return (readPrice*float64(t)+extraUSD)*float64(growth)/float64(t-after) + readPrice*float64(after+t)/2
 }
 
+// Latest is the largest Compact at, in steps of round from cheapest, whose
+// turn costs no more than slackShare above a turn at cheapest. The cost
+// only rises past the cheapest size, so the first step over the limit ends
+// it.
+func Latest(cheapest, after, growth int64, readPrice, extraUSD float64) int64 {
+	limit := costPerTurn(cheapest, after, growth, readPrice, extraUSD) * (1 + slackShare)
+	t := cheapest
+	for limit > 0 && costPerTurn(t+round, after, growth, readPrice, extraUSD) <= limit {
+		t += round
+	}
+	return t
+}
+
 func roundTo(n int64) int64 { return (n + round/2) / round * round }
 
 func median(v []float64) float64 {
@@ -395,12 +420,17 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 			// Room to work in: half as much again as a compaction leaves.
 			low := max(b.Floor, r.AfterTokens*3/2)
 			cheapest := best
+			best = Latest(best, r.AfterTokens, r.GrowthTurn, a.price, extraUSD)
+			late := best
 			best = best * int64(100+max(b.BufferPercent, 0)) / 100
 			target := min(max(best, low), b.Ceiling)
 			if gap := float64(target - r.AfterTokens); gap > 0 {
 				r.PaybackTurn = int(math.Ceil((a.price*float64(target) + extraUSD) / (a.price * gap)))
 			}
 			r.Reason = fmt.Sprintf("a compaction leaves %dk and costs $%.2f, the context grows %.1fk a turn: cheapest at %dk", r.AfterTokens/1000, r.CostUSD, float64(r.GrowthTurn)/1000, cheapest/1000)
+			if late > cheapest {
+				r.Reason += fmt.Sprintf(", as late as costs no more than %d%% more a turn: %dk", int(slackShare*100), late/1000)
+			}
 			if b.BufferPercent > 0 {
 				r.Reason += fmt.Sprintf(", plus the %d%% buffer: %dk", b.BufferPercent, best/1000)
 			}

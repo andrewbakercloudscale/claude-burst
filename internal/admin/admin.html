@@ -3243,7 +3243,7 @@ function renderLearned(v) {
   }
   const src = {learned: ["learned", "p"], override: ["your override", "s"], off: ["never", "s"], fixed: ["fixed", "s"]};
   $("icTable").innerHTML = `<div class="hint" style="margin-bottom:4px">${on
-      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, ${v.buffer_percent}% above the cheapest size, at most once every ${v.delay_minutes} minutes for a session.`
+      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, as late as costs no more than 25% more a turn than the cheapest size, plus ${v.buffer_percent}%, at most once every ${v.delay_minutes} minutes for a session.`
       : `Off: every repository compacts at ${k(v.fixed)}. <b>Would be</b> shows what this mode would use.`}</div>
     <div class="ic-scroll"><table><thead><tr><th>Repository</th><th class="num">Compact at now</th><th class="num">${on ? "Target" : "Would be"}</th>
       <th class="num" title="The context a compaction leaves behind (median)">Leaves</th>
