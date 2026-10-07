@@ -319,12 +319,33 @@
   .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, transparent); background: var(--bad-bg); }
   .st-2 { color: var(--ok); } .st-4 { color: var(--warn); } .st-5 { color: var(--bad); } .st-wait { color: var(--muted); }
 
-  details.ingrp { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; }
-  details.ingrp > summary { cursor: pointer; padding: 9px 12px; display: flex; gap: 10px; align-items: baseline; font-weight: 600; }
+  details.ingrp { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; overflow: hidden; }
+  /* A group's head is a control: tinted like one, with an arrow that turns. */
+  details.ingrp > summary { cursor: pointer; padding: 9px 12px; display: flex; gap: 10px; align-items: baseline; font-weight: 600; list-style: none;
+    background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+  details.ingrp > summary::-webkit-details-marker { display: none; }
+  details.ingrp > summary::before { content: "\25B6"; color: var(--accent); font-size: 11px; transition: transform .12s; display: inline-block; width: 12px; align-self: center; }
+  details.ingrp[open] > summary::before { transform: rotate(90deg); }
+  details.ingrp > summary:hover { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); }
+  /* A group's items: a table whose headers sort it, a box to tick on each
+     item that can be taken out. */
+  table.intbl { table-layout: fixed; }
+  table.intbl th { padding: 6px 12px; white-space: nowrap; }
+  table.intbl th[data-sort] { cursor: pointer; color: var(--accent); user-select: none; }
+  table.intbl th[data-sort]:hover { text-decoration: underline; }
+  table.intbl th.on::after { content: " \25B2"; font-size: 9px; }
+  table.intbl th.on.desc::after { content: " \25BC"; }
+  table.intbl .ck { width: 34px; padding-right: 0; }
+  table.intbl .ck input { cursor: pointer; margin: 0; }
+  table.intbl .when { width: 190px; }
+  table.intbl .num { width: 74px; text-align: right; }
+  table.intbl .act { width: 96px; text-align: right; }
+  table.intbl td { padding: 7px 12px; }
+  .inselbar { position: sticky; bottom: 0; display: flex; gap: 12px; align-items: center; padding: 9px 12px; margin-top: 8px;
+    border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
   details.ingrp > summary .spacer { flex: 1; }
-  .initem { border-top: 1px solid var(--border); padding: 7px 12px; }
-  .initem .top { display: flex; gap: 10px; align-items: baseline; cursor: pointer; }
-  .initem .nm { font: 12px var(--mono); flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .initem .nm, .initem .pv { cursor: pointer; }
+  .initem .nm { font: 12px var(--mono); overflow-wrap: anywhere; }
   .initem .tk { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
   .initem .pv { font-size: 12.5px; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
   .initem pre { max-height: 420px; overflow: auto; white-space: pre-wrap; font: 11.5px var(--mono); background: var(--panel-2); padding: 8px; border-radius: 6px; }
@@ -6634,18 +6655,55 @@ function inShares(items) {
   for (const g of groups) g.share = total ? g.tokens / total : 0;
   return {groups, total};
 }
-function inItem(it, i, color, total) {
-  const when = it.turn ? `prompt ${it.turn}${it.turns_ago ? `, ${it.turns_ago} ago` : ", latest"}` : "every request";
+// inItem is one row of a group's table. picked says its box is ticked.
+function inItem(it, i, color, total, picked) {
+  const when = it.turn ? `prompt ${it.turn}${it.turns_ago ? `, ${it.turns_ago} ${it.turns_ago === 1 ? "prompt" : "prompts"} ago` : ", the latest"}` : "every request";
+  const whenTip = it.turn ? `Came into the context with your prompt number ${it.turn}${it.turns_ago ? `: you have sent ${it.turns_ago} more since` : ", the latest one"}` : "Sent with every request";
   const btn = it.removable ? (it.removed
       ? `<button class="in-rm" data-act="restore" data-id="${esc(it.id)}" title="Send it again from the next request on">Restore</button>`
       : `<button class="in-rm" data-act="remove" data-id="${esc(it.id)}" title="Leave it out of every later request of this session, a one-line note in its place">Remove</button>`) : "";
-  return `<div class="initem${it.removed ? " removed" : ""}" data-i="${i}"><div class="top"><span class="nm">${esc(it.name)}</span><span class="tk">${esc(when)}</span><span class="tk">${it.removed ? "removed" : inTok(it.tokens)}</span>${btn}</div>` +
+  const box = it.removable && !it.removed ? `<input type="checkbox" class="in-ck" data-id="${esc(it.id)}"${picked ? " checked" : ""} aria-label="Select ${esc(it.name)}">` : "";
+  return `<tr class="initem${it.removed ? " removed" : ""}" data-i="${i}"><td class="ck">${box}</td>` +
+    `<td class="it"><div class="nm" title="Click to read it in full">${esc(it.name)}</div>` +
     (it.flags && it.flags.length ? `<div>${it.flags.map(f => `<span class="inflag">${esc(f)}</span>`).join("")}</div>` : "") +
     `<div class="pv">${esc(it.preview)}</div>` +
-    (color && total && !it.removed ? `<span class="wt" title="${(it.tokens / total * 100).toFixed(1)}% of this context"><span style="width:${Math.min(100, it.tokens / total * 100).toFixed(2)}%;background:${color}"></span></span>` : "") + `</div>`;
+    (color && total && !it.removed ? `<span class="wt" title="${(it.tokens / total * 100).toFixed(1)}% of this context"><span style="width:${Math.min(100, it.tokens / total * 100).toFixed(2)}%;background:${color}"></span></span>` : "") + `</td>` +
+    `<td class="tk when" title="${esc(whenTip)}">${esc(when)}</td><td class="tk num">${it.removed ? "removed" : inTok(it.tokens)}</td><td class="act">${btn}</td></tr>`;
+}
+// inOrder sorts a group's rows ([item, index] pairs) by a header: "size",
+// "age" (the order sent) or "name". Pure, for page_script_test.go.
+function inOrder(rows, key, desc) {
+  const by = key === "name" ? (x, y) => String(x[0].name).localeCompare(String(y[0].name))
+    : key === "age" ? (x, y) => x[1] - y[1]
+    : (x, y) => (x[0].tokens || 0) - (y[0].tokens || 0);
+  return [...rows].sort((x, y) => (desc ? -1 : 1) * by(x, y) || x[1] - y[1]);
 }
 function makeInspector(o) {
   let data = null;
+  // The order inside a group, for every group and both inspectors:
+  // biggest first until a header is clicked.
+  let sort = {key: "size", desc: true};
+  try {
+    const v = JSON.parse(localStorage.getItem("inSort") || "{}");
+    if (["size", "age", "name"].includes(v.key)) sort = {key: v.key, desc: !!v.desc};
+  } catch (e) {}
+  // The ids ticked for Remove selected.
+  const picked = new Set();
+  const pickedItems = () => data ? data.items.filter(x => picked.has(x.id) && x.removable && !x.removed) : [];
+  function drawPicked() {
+    const bar = $(o.body).querySelector(".inselbar");
+    if (!bar) return;
+    const its = pickedItems();
+    bar.querySelector("button").disabled = !its.length;
+    bar.querySelector(".hint").textContent = its.length
+      ? `${its.length} selected, ${inTok(its.reduce((a, x) => a + x.tokens, 0))} tokens`
+      : "Tick the items to take out of this session's context.";
+    $(o.body).querySelectorAll("input.in-ck").forEach(c => { c.checked = picked.has(c.dataset.id); });
+    $(o.body).querySelectorAll("input.in-all").forEach(c => {
+      const boxes = [...c.closest("table").querySelectorAll("input.in-ck")];
+      c.checked = boxes.length > 0 && boxes.every(x => x.checked);
+    });
+  }
   const q = o.engine === "codex" ? "engine=codex&" : "";
   async function loadSessions() {
     let list = [];
@@ -6703,13 +6761,50 @@ function makeInspector(o) {
       if (!g) groups.push(g = {name: it.group, rows: [], tokens: 0});
       g.rows.push([it, i]); g.tokens += it.removed ? 0 : it.tokens;
     }
-    const block = (key, title, rows, tokens, dflt) => `<details class="ingrp" data-g="${esc(key)}"${(first ? dflt : open.has(key)) ? " open" : ""}><summary>${colorOf(key) ? `<i class="sw" style="background:${colorOf(key)}"></i>` : ""}${esc(title)} <span class="hint">${rows.length}</span><span class="spacer"></span><span class="tk">${inTok(tokens)}${colorOf(key) && sh.total ? " &middot; " + pc(tokens / sh.total) : ""}</span></summary>` +
-      rows.map(([it, i]) => inItem(it, i, colorOf(it.group), sh.total)).join("") + `</details>`;
+    for (const id of [...picked]) if (!d.items.some(x => x.id === id && x.removable && !x.removed)) picked.delete(id);
+    const th = (key, label, cls, tip) => `<th data-sort="${key}" class="${cls}${sort.key === key ? " on" + (sort.desc ? " desc" : "") : ""}" title="${tip}">${label}</th>`;
+    const head = rows => `<thead><tr><th class="ck">${rows.some(([it]) => it.removable && !it.removed) ? `<input type="checkbox" class="in-all" title="Select every item of this group" aria-label="Select every item of this group">` : ""}</th>` +
+      th("name", "Item", "", "Sort by name") + th("age", "Came with", "when", "Sort by age: the order sent") + th("size", "Tokens", "num", "Sort by size") + `<th class="act"></th></tr></thead>`;
+    const block = (key, title, rows, tokens, dflt) => `<details class="ingrp" data-g="${esc(key)}"${(first ? dflt : open.has(key)) ? " open" : ""}><summary title="Click to show or hide its items">${colorOf(key) ? `<i class="sw" style="background:${colorOf(key)}"></i>` : ""}${esc(title)} <span class="hint">${rows.length}</span><span class="spacer"></span><span class="tk">${inTok(tokens)}${colorOf(key) && sh.total ? " &middot; " + pc(tokens / sh.total) : ""}</span></summary>` +
+      `<table class="intbl">${head(rows)}<tbody>${inOrder(rows, sort.key, sort.desc).map(([it, i]) => inItem(it, i, colorOf(it.group), sh.total, picked.has(it.id))).join("")}</tbody></table></details>`;
     $(o.body).innerHTML = (flagged.length ? block("~flagged", "Worth a look", flagged, flagged.reduce((a, [it]) => a + it.tokens, 0), true) : "") +
       (gone.length ? block("~removed", "Removed by you", gone, 0, true) : "") +
-      groups.map(g => block(g.name, g.name, g.rows, g.tokens, false)).join("");
+      groups.map(g => block(g.name, g.name, g.rows, g.tokens, false)).join("") +
+      (d.items.some(x => x.removable && !x.removed) ? `<div class="inselbar"><button class="in-rmsel" disabled>Remove selected</button><span class="hint"></span></div>` : "");
+    drawPicked();
   }
+  $(o.body).addEventListener("change", e => {
+    const c = e.target;
+    if (c.matches("input.in-all")) c.closest("table").querySelectorAll("input.in-ck").forEach(x => c.checked ? picked.add(x.dataset.id) : picked.delete(x.dataset.id));
+    else if (c.matches("input.in-ck")) c.checked ? picked.add(c.dataset.id) : picked.delete(c.dataset.id);
+    else return;
+    drawPicked();
+  });
   $(o.body).addEventListener("click", async e => {
+    const by = e.target.closest("th[data-sort]");
+    if (by) {
+      // The same header again turns the order round; size starts biggest first.
+      sort = sort.key === by.dataset.sort ? {key: sort.key, desc: !sort.desc} : {key: by.dataset.sort, desc: by.dataset.sort === "size"};
+      try { localStorage.setItem("inSort", JSON.stringify(sort)); } catch (err) {}
+      draw();
+      return;
+    }
+    const all = e.target.closest("button.in-rmsel");
+    if (all) {
+      const its = pickedItems();
+      if (!its.length || !confirm(`Remove ${its.length} ${its.length === 1 ? "item" : "items"} (${inTok(its.reduce((a, x) => a + x.tokens, 0))} tokens) from this session's context?\n\n` +
+        `${o.who} keeps its own copy. Burst leaves each one out of every later request of this session, with a one-line note in its place.\n\n` +
+        `The next request re-reads the context after the first of them from scratch (a one-off cache write). Restore puts one back.`)) return;
+      all.disabled = true;
+      const say = all.parentElement.querySelector(".hint");
+      let done = 0;
+      try {
+        for (const it of its) { await post("/api/inspect/remove", {engine: o.engine, session: data.session, id: it.id, restore: false}); done++; }
+        picked.clear();
+        load();
+      } catch (err) { say.textContent = `Removed ${done} of ${its.length}, then failed: ${err.message}`; all.disabled = false; }
+      return;
+    }
     const btn = e.target.closest("button.in-rm");
     if (btn) {
       e.stopPropagation();
@@ -6725,14 +6820,14 @@ function makeInspector(o) {
       } catch (err) { btn.disabled = false; btn.textContent = "Failed: " + err.message; }
       return;
     }
-    const top = e.target.closest(".initem .top, .initem .pv");
+    const top = e.target.closest(".initem .nm, .initem .pv");
     if (!top) return;
     const row = top.closest(".initem");
     const pre = row.querySelector("pre");
     if (pre) { pre.remove(); return; }
     const p = document.createElement("pre");
     p.textContent = "loading...";
-    row.appendChild(p);
+    row.querySelector("td.it").appendChild(p);
     try {
       const r = await fetch(`/api/inspect-item?${q}session=${encodeURIComponent(data.session)}&i=${row.dataset.i}`);
       p.textContent = await r.text();

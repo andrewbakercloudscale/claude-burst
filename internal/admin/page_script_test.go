@@ -390,3 +390,19 @@ out({
 		t.Errorf("the repository's name must still be shown, as text:\n%s", got["repos"])
 	}
 }
+
+// The inspector's tables sort by the header clicked: size, age (the order
+// the items were sent in) or name, either way round.
+func TestInspectorOrder(t *testing.T) {
+	var got map[string][]string
+	runPageJS(t, []string{"inOrder"}, `
+const rows = [{name: "b", tokens: 5}, {name: "c", tokens: 900}, {name: "a", tokens: 40}, {name: "d", tokens: 40}].map((it, i) => [it, i]);
+const names = (k, desc) => inOrder(rows, k, desc).map(r => r[0].name);
+out({big: names("size", true), small: names("size", false), old: names("age", false), fresh: names("age", true), name: names("name", false)});`, &got)
+	want := map[string]string{"big": "cadb", "small": "badc", "old": "bcad", "fresh": "dacb", "name": "abcd"}
+	for k, w := range want {
+		if g := strings.Join(got[k], ""); g != w {
+			t.Errorf("%s: got %s, want %s", k, g, w)
+		}
+	}
+}
