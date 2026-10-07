@@ -51,6 +51,8 @@ type interceptResolver struct {
 
 	mu        sync.Mutex
 	cache     map[string]dnsEntry
+	flights   map[string]*lookupFlight // the one lookup in progress per host
+	failed    map[string]failedLookup  // a lookup that just failed, not to be repeated yet
 	preferred string           // the endpoint that last answered; tried first
 	now       func() time.Time // swappable for tests
 }
@@ -59,6 +61,36 @@ type dnsEntry struct {
 	addrs   []string
 	expires time.Time
 }
+
+// lookupFlight is one lookup that every request wanting the same host waits
+// on, so twenty requests arriving together ask the resolvers once, not twenty
+// times.
+type lookupFlight struct {
+	done  chan struct{}
+	addrs []string
+	err   error
+}
+
+type failedLookup struct {
+	err   error
+	until time.Time
+}
+
+// How a failing lookup is kept from holding requests up. Asking every
+// resolver in turn takes over half a minute when none answers, and before
+// these each request paid that in full, one after another.
+var (
+	// negativeDNSTTL is how long a failed lookup is believed: requests in
+	// that time get the same answer at once instead of asking again.
+	negativeDNSTTL = 5 * time.Second
+	// staleDNSWait is how long a request holding an expired address waits
+	// for a fresh one before it goes ahead with the old one.
+	staleDNSWait = 2 * time.Second
+	// lookupBudget bounds one lookup across every resolver. It runs apart
+	// from the request that started it, so that request going away does not
+	// fail the others waiting on the same answer.
+	lookupBudget = 45 * time.Second
+)
 
 // Cache floors. A CDN can advertise very short TTLs; re-resolving on every
 // request would put a DoH round-trip in front of each call, and never
@@ -76,6 +108,8 @@ func newInterceptResolver(host, endpoint, pinned string) *interceptResolver {
 		dialer:   &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second},
 		client:   &http.Client{Timeout: 10 * time.Second},
 		cache:    map[string]dnsEntry{},
+		flights:  map[string]*lookupFlight{},
+		failed:   map[string]failedLookup{},
 		now:      time.Now,
 	}
 }
@@ -146,30 +180,64 @@ func (r *interceptResolver) DialContext(ctx context.Context, network, addr strin
 
 func (r *interceptResolver) lookup(ctx context.Context, host string) ([]string, error) {
 	r.mu.Lock()
-	if e, ok := r.cache[host]; ok && r.now().Before(e.expires) {
-		addrs := e.addrs
+	e, cached := r.cache[host]
+	if cached && r.now().Before(e.expires) {
 		r.mu.Unlock()
-		return addrs, nil
+		return e.addrs, nil
+	}
+	// Anthropic's address rarely changes, and the lookup fails mostly
+	// while the Mac is changing networks. The last address it had is far
+	// likelier to work than no address at all: on 2026-09-30 one reset
+	// connection to the DoH server, with a good address in the cache
+	// minutes stale, sent both sessions to the paid secondary.
+	stale := e.addrs
+	if f, ok := r.failed[host]; ok && r.now().Before(f.until) {
+		r.mu.Unlock()
+		if len(stale) > 0 {
+			return stale, nil
+		}
+		return nil, f.err
+	}
+	fl := r.flights[host]
+	if fl == nil {
+		fl = &lookupFlight{done: make(chan struct{})}
+		r.flights[host] = fl
+		go r.refresh(host, fl)
 	}
 	r.mu.Unlock()
 
-	addrs, ttl, err := r.queryAll(ctx, host)
-	if err != nil {
-		// Anthropic's address rarely changes, and the lookup fails mostly
-		// while the Mac is changing networks. The last address it had is far
-		// likelier to work than no address at all: on 2026-09-30 one reset
-		// connection to the DoH server, with a good address in the cache
-		// minutes stale, sent both sessions to the paid secondary.
-		r.mu.Lock()
-		e, ok := r.cache[host]
-		r.mu.Unlock()
-		if ok && len(e.addrs) > 0 {
-			return e.addrs, nil
-		}
-		return nil, &LookupError{Host: host, Err: err}
+	var giveUp <-chan time.Time
+	if len(stale) > 0 {
+		t := time.NewTimer(staleDNSWait)
+		defer t.Stop()
+		giveUp = t.C
 	}
-	if len(addrs) == 0 {
-		return nil, fmt.Errorf("no A records for %s", host)
+	select {
+	case <-fl.done:
+		if fl.err == nil {
+			return fl.addrs, nil
+		}
+		if len(stale) > 0 {
+			return stale, nil
+		}
+		return nil, fl.err
+	case <-giveUp:
+		return stale, nil
+	case <-ctx.Done():
+		if len(stale) > 0 {
+			return stale, nil
+		}
+		return nil, &LookupError{Host: host, Err: ctx.Err()}
+	}
+}
+
+// refresh is the lookup itself, run once for everyone waiting on fl.
+func (r *interceptResolver) refresh(host string, fl *lookupFlight) {
+	ctx, cancel := context.WithTimeout(context.Background(), lookupBudget)
+	defer cancel()
+	addrs, ttl, err := r.queryAll(ctx, host)
+	if err == nil && len(addrs) == 0 {
+		err = fmt.Errorf("no A records for %s", host)
 	}
 	if ttl < minDNSTTL {
 		ttl = minDNSTTL
@@ -179,10 +247,20 @@ func (r *interceptResolver) lookup(ctx context.Context, host string) ([]string, 
 	}
 
 	r.mu.Lock()
-	r.cache[host] = dnsEntry{addrs: addrs, expires: r.now().Add(ttl)}
+	if err != nil {
+		fl.err = &LookupError{Host: host, Err: err}
+		r.failed[host] = failedLookup{err: fl.err, until: r.now().Add(negativeDNSTTL)}
+	} else {
+		fl.addrs = addrs
+		r.cache[host] = dnsEntry{addrs: addrs, expires: r.now().Add(ttl)}
+		delete(r.failed, host)
+	}
+	delete(r.flights, host)
 	r.mu.Unlock()
-	r.saveCache(host, addrs)
-	return addrs, nil
+	if err == nil {
+		r.saveCache(host, addrs)
+	}
+	close(fl.done)
 }
 
 // LookupError is a failed lookup, every resolver tried, with no address to
