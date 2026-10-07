@@ -6848,6 +6848,7 @@ function makeInspector(o) {
       if (!g) groups.push(g = {name: it.group, rows: [], tokens: 0});
       g.rows.push([it, i]); g.tokens += it.removed ? 0 : it.tokens;
     }
+    // Biggest group first, as the items in each are by default.
     const th = (key, label, cls, tip) => `<th data-sort="${key}" class="${cls}${sort.key === key ? " on" + (sort.desc ? " desc" : "") : ""}" title="${tip}">${label}</th>`;
     const head = () => `<thead><tr>` +
       th("name", "Item", "", "Sort by name") + th("age", "Came with", "when", "Sort by age: the order sent") + th("size", "Tokens", "num", "Sort by size") + `<th class="act"></th></tr></thead>`;
@@ -6855,7 +6856,7 @@ function makeInspector(o) {
       `<table class="intbl">${head(rows)}<tbody>${inOrder(rows, sort.key, sort.desc).map(([it, i]) => inItem(it, i, colorOf(it.group), sh.total)).join("")}</tbody></table></details>`;
     $(o.body).innerHTML = (flagged.length ? block("~flagged", "Worth a look", flagged, flagged.reduce((a, [it]) => a + it.tokens, 0), true) : "") +
       (gone.length ? block("~removed", "Removed by you", gone, 0, true) : "") +
-      groups.map(g => block(g.name, g.name, g.rows, g.tokens, false)).join("");
+      groups.sort((a, b) => b.tokens - a.tokens).map(g => block(g.name, g.name, g.rows, g.tokens, false)).join("");
   }
   $(o.body).addEventListener("click", async e => {
     const by = e.target.closest("th[data-sort]");
