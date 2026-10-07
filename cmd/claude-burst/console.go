@@ -8,10 +8,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/admin"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
@@ -44,8 +46,12 @@ func consoleCmd(args []string) {
 		fmt.Println("console: off (console_listen is \"off\")")
 		return
 	}
-	logger := log.New(os.Stderr, "console: ", log.LstdFlags)
+	logger := log.New(&logline.Writer{W: os.Stderr}, "console: ", 0)
 	if dir, err := config.ConfigDir(); err == nil {
+		// launchd appends this process's output to these two for ever.
+		for _, name := range []string{"console.err.log", "console.out.log"} {
+			_, _ = trimStderrLog(filepath.Join(dir, name), stderrLogMax, stderrLogKeep)
+		}
 		notice.SetDefault(notice.New(notice.Path(dir), logger))
 		// Burst's alerts over the Codex window too: the usage panel only
 		// draws over Ghostty.

@@ -29,6 +29,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/atomicfile"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
+	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/repo"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
@@ -112,6 +113,11 @@ type Server struct {
 	automask   *masker
 	inspect    *inspectStore
 	removals   *ctxview.Store
+	// quiet counts the requests whose start and done lines are left out of
+	// the log, and repeats says when a line that would repeat for every
+	// request of an outage was last written: see quietlog.go.
+	quiet   quietCounter
+	repeats repeatLimiter
 	// snapMu guards the last fully logged network snapshot (logSnapshot).
 	snapMu    sync.Mutex
 	snapState string
@@ -846,8 +852,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer s.inflight.Add(-1)
 	}
 
+	// Health checks, heartbeats and the other calls that are not a model
+	// request were 56% of the log's lines (6 Oct 2026), a start and a done
+	// each, around the one request in a hundred anyone looks for. They are
+	// counted now and one line a minute says how many; one that fails or
+	// is slow is still logged, with its request id.
+	quiet, panicked := !isInference(r.URL.Path), false
 	defer func() {
 		if rec := recover(); rec != nil {
+			panicked = true
 			s.logger.Printf("req=%s PANIC method=%q path=%q err=%v\n%s", rid, r.Method, r.URL.Path, rec, debug.Stack())
 			if !sw.wroteHeader {
 				http.Error(sw, "internal error", http.StatusInternalServerError)
@@ -858,11 +871,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// newline) and this line is the audit trail the whole log design
 		// exists for -- an unquoted newline would let a caller forge what
 		// looks like a second, distinct log line.
+		dur := time.Since(start)
+		if quiet && !panicked && sw.status < 400 && dur < quietSlow {
+			s.quiet.add(s.logger, time.Now())
+			return
+		}
 		s.logger.Printf("req=%s done method=%q path=%q status=%d dur_ms=%d",
-			rid, r.Method, r.URL.Path, sw.status, time.Since(start).Milliseconds())
+			rid, r.Method, r.URL.Path, sw.status, dur.Milliseconds())
 	}()
 
-	s.logger.Printf("req=%s start method=%q path=%q", rid, r.Method, r.URL.Path)
+	if !quiet {
+		s.logger.Printf("req=%s start method=%q path=%q", rid, r.Method, r.URL.Path)
+	}
 	s.handle(sw, r)
 }
 
@@ -1218,7 +1238,12 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			// would arm a window blaming a model for a laptop changing WiFi.
 			s.notePrimaryFailure(slot, err)
 			s.alertNetworkDown()
-			s.logger.Printf("req=%s no_failover route=%s reason=%q (local network unavailable: control DNS failed)", rid, p.Name(), "network down")
+			// One line when it starts and one a minute after: every request
+			// of an outage fails the same way (928 of these in one hour on
+			// 6 Oct 2026), and each still has its own done line and metric.
+			if ok, skipped := s.repeats.allow("network down", time.Now()); ok {
+				s.logger.Printf("req=%s no_failover route=%s reason=%q (local network unavailable: control DNS failed)%s", rid, p.Name(), "network down", andMore(skipped))
+			}
 			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
@@ -1338,7 +1363,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 				s.logger.Printf("req=%s error stage=translate_response route=%s model=%q err=%v", rid, p.Name(), model, err)
 			}
 		} else {
-			tok = s.relay(w, resp, model)
+			tok = s.relay(rid, w, resp, model)
 		}
 		tok.prunedBytes, tok.prunedResults, tok.truncatedResults = pruned.prunedBytes, pruned.prunedResults, pruned.truncatedResults
 		tok.repeatedCalls, tok.rerunsAfterStub = pruned.repeatedCalls, pruned.rerunsAfterStub
@@ -1641,8 +1666,13 @@ func (s *Server) logSnapshot(rid, route string, triggerErr error, np netProbe) {
 	at := s.snapAt
 	s.snapMu.Unlock()
 	if same {
-		s.logger.Printf("req=%s network-snapshot route=%s trigger_err=%q (network unchanged since %s)",
-			rid, route, triggerErr, at.Format("15:04:05"))
+		// At most one short line a minute: the full one above already says
+		// what the network looks like, and the request's own lines carry
+		// its error.
+		if ok, skipped := s.repeats.allow("snapshot unchanged", time.Now()); ok {
+			s.logger.Printf("req=%s network-snapshot route=%s trigger_err=%q (network unchanged since %s)%s",
+				rid, route, triggerErr, at.Format("15:04:05"), andMore(skipped))
+		}
 		return
 	}
 	s.logger.Printf("req=%s %s", rid, np.snapshot(route, triggerErr))
@@ -1765,7 +1795,7 @@ type tokenUsage struct {
 	msgID string
 }
 
-func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string) tokenUsage {
+func (s *Server) relay(rid string, w http.ResponseWriter, resp *http.Response, model string) tokenUsage {
 	defer resp.Body.Close()
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -1781,7 +1811,7 @@ func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string)
 			// Almost always means the client (Claude Code) disconnected
 			// mid-response. Not a proxy bug, but worth having in the log
 			// when someone is debugging a truncated response.
-			s.logger.Printf("relay copy error (client likely disconnected): %v", err)
+			s.logger.Printf("req=%s relay copy error (client likely disconnected): %v", rid, err)
 		}
 		if fl != nil {
 			fl.Flush()
@@ -1798,7 +1828,7 @@ func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string)
 		line, err := br.ReadString('\n')
 		if len(line) > 0 {
 			if _, werr := io.WriteString(w, line); werr != nil {
-				s.logger.Printf("relay SSE write error (client likely disconnected): %v", werr)
+				s.logger.Printf("req=%s relay SSE write error (client likely disconnected): %v", rid, werr)
 				break
 			}
 			if fl != nil {
@@ -1808,7 +1838,7 @@ func (s *Server) relay(w http.ResponseWriter, resp *http.Response, model string)
 		}
 		if err != nil {
 			if err != io.EOF {
-				s.logger.Printf("relay SSE read error: %v", err)
+				s.logger.Printf("req=%s relay SSE read error: %v", rid, err)
 			}
 			break
 		}
@@ -1944,6 +1974,10 @@ func (s *Server) PriceTokens(model string, input, output, cacheRead, cacheWrite 
 }
 
 func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedModel string, status int, start time.Time, tok tokenUsage, claim string, reset int64, note, destination string) {
+	// As the text log: a Go network error quotes the whole URL, and the
+	// query of one (the name a DNS lookup asked for, a device id) is not
+	// metadata.
+	note = logline.StripQueries(note)
 
 	// Two-value lookup, not a bare index. A missing key yields the zero
 	// ModelPrice, so indexing alone silently prices an unknown model at

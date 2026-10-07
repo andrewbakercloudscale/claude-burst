@@ -26,6 +26,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/hotspot"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
+	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
@@ -204,7 +205,14 @@ func serve(args []string) {
 	// 06:11 while the requests table read 08:11, which looks exactly like a
 	// logger that has stopped. It had not -- the machine is UTC+2. One clock,
 	// the reader's.
-	logger := log.New(rotate.NewWriter(logPath, logMaxBytes, logMaxBackups), "", log.LstdFlags)
+	//
+	// logline.Writer starts every line with that local time and its zone,
+	// and the line's level. The standard logger goes to the same file: a
+	// stray log.Printf used to land, undated by zone, in launchd.err.log.
+	logOut := &logline.Writer{W: rotate.NewWriter(logPath, logMaxBytes, logMaxBackups)}
+	logger := log.New(logOut, "", 0)
+	log.SetFlags(0)
+	log.SetOutput(logOut)
 	srv, err := router.New(cfg, statePath, metricsPath, logger)
 	if err != nil {
 		fatal(err)

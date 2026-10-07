@@ -143,21 +143,23 @@ func TestFailoverReplaysRequestToBedrock(t *testing.T) {
 
 // TestEveryRequestIsLoggedStartAndDone verifies the top-level ServeHTTP
 // wrapper always writes a start line and a matching done line (with status
-// and duration) for every request, success or not, so the text log alone is
-// enough to answer "what did the gateway just do" without cross-referencing
-// metrics.jsonl.
+// and duration) for every model request, success or not, so the text log
+// alone is enough to answer "what did the gateway just do" without
+// cross-referencing metrics.jsonl. Requests that are not model requests
+// are counted while they succeed: see TestServeHTTPLogsModelRequestsAndFailuresOnly.
 func TestEveryRequestIsLoggedStartAndDone(t *testing.T) {
-	s, logBuf := newTestServer(t, "", "")
+	up := newRecordingUpstream(t)
+	s, logBuf := newTestServer(t, up.srv.URL, "")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/healthz", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader("{}"))
 	s.ServeHTTP(rr, req)
 
 	logs := logBuf.String()
-	if !strings.Contains(logs, `start method="GET" path="/healthz"`) {
+	if !strings.Contains(logs, `start method="POST" path="/v1/messages"`) {
 		t.Fatalf("missing start log line, got:\n%s", logs)
 	}
-	if !strings.Contains(logs, `done method="GET" path="/healthz" status=200`) {
+	if !strings.Contains(logs, `done method="POST" path="/v1/messages" status=`) {
 		t.Fatalf("missing done log line with status, got:\n%s", logs)
 	}
 	// Both lines for the same request must share a request id.

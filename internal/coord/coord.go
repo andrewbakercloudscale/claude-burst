@@ -52,6 +52,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 )
 
 // Settings are the timings. Zero values take the defaults in Resolved.
@@ -269,8 +271,13 @@ func (c *Coordinator) with(fn func(t *tx) error) error {
 	return os.Rename(tmp, path)
 }
 
+// coordLogMax is where coord.log is moved to coord.log.1 and started again.
+const coordLogMax = 2 << 20
+
 // Log appends one line to coord.log, in local time.
 func (c *Coordinator) Log(format string, a ...any) {
+	// Kept to a size: it grew for ever, a line for every hand-over.
+	_ = rotate.RotateIfOversized(filepath.Join(c.Dir, "coord.log"), coordLogMax, 1)
 	f, err := os.OpenFile(filepath.Join(c.Dir, "coord.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return

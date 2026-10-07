@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
@@ -104,11 +105,10 @@ func logAround(path string, t time.Time, before, after time.Duration) ([]string,
 	out := []string{}
 	for sc.Scan() {
 		line := sc.Bytes()
-		if len(line) < 19 {
-			continue
-		}
-		ts, err := time.ParseInLocation("2006/01/02 15:04:05", string(line[:19]), time.Local)
-		if err != nil || ts.Before(from) {
+		// Either layout: the rotated files still hold lines from before
+		// the zone was part of the stamp.
+		ts, ok := logline.ParseStamp(string(line[:min(len(line), len(logline.Stamp))]))
+		if !ok || ts.Before(from) {
 			continue
 		}
 		if ts.After(to) {

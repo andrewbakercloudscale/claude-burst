@@ -23,6 +23,7 @@ mkdir -p "$HOME/.config/claude-burst"
 # shellcheck source=./health-diagnostics.sh
 source "$DIR/health-diagnostics.sh"
 
+rotate_log_file "$LOG"
 echo "$(date '+%Y-%m-%d %H:%M:%S') watchdog armed, checking in ${DELAY}s" >> "$LOG"
 sleep "$DELAY"
 

@@ -53,10 +53,7 @@ mkdir -p "$HOME/.config/claude-burst"
 # shellcheck source=./health-diagnostics.sh
 source "$DIR/health-diagnostics.sh"
 
-if [[ -f "$LOG" ]]; then
-  log_size=$(stat -f %z "$LOG" 2>/dev/null || stat -c %s "$LOG" 2>/dev/null || echo 0)
-  (( log_size > LOG_MAX_BYTES )) && : > "$LOG"
-fi
+rotate_log_file "$LOG" "$LOG_MAX_BYTES"
 
 # Before every early return below, including the rolled-back stand-down: a
 # heartbeat that only appeared on the cycles that did something would go stale
