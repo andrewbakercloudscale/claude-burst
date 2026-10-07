@@ -50,7 +50,9 @@ func (s *Server) handleMod(w http.ResponseWriter, r *http.Request) {
 		resp.Reason = st.LastReason
 	}
 	resp.PrimaryFailing = s.gateway.Health().Failures
-	if today, err := metrics.Summarize(s.metricsPath, time.Now().Add(-24*time.Hour)); err == nil {
+	if today, err := cachedScan("today|"+s.metricsPath, func() (metrics.Summary, error) {
+		return metrics.Summarize(s.metricsPath, time.Now().Add(-24*time.Hour))
+	}); err == nil {
 		resp.TodayUSD, resp.TodayRequests = today.APIEquivalentUSD, today.Requests
 	}
 	if sid != "" {

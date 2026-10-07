@@ -67,7 +67,9 @@ type verdict struct {
 }
 
 func (s *Server) contextInfo(cfg config.Config) contextInfo {
-	eff, _ := metrics.EfficiencySince(s.metricsPath, time.Now().Add(-contextWindow))
+	eff, _ := cachedScan("efficiency|"+s.metricsPath, func() (metrics.Efficiency, error) {
+		return metrics.EfficiencySince(s.metricsPath, time.Now().Add(-contextWindow))
+	})
 	ci := contextInfo{
 		Applicable: cfg.Secondary.Provider == "openai-compatible",
 		Pruning:    cfg.SecondaryPruning,
@@ -84,7 +86,9 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.Sessions = s.gateway.CompactionSessions()
 	ci.PromptNotice = promptNoticeState()
 	ci.MidTurnOff = s.gateway.MidTurnOff()
-	ci.CompactionStats, _ = metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
+	ci.CompactionStats, _ = cachedScan("compaction|"+s.metricsPath, func() (metrics.CompactionStats, error) {
+		return metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
+	})
 	ci.Overflow = s.overflowStats()
 	if s.repos != nil {
 		ci.SavingsByRepo = s.repos.savingsByRepo(ci.CompactionStats.Sessions)

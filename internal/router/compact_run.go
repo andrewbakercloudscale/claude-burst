@@ -1124,6 +1124,15 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			if s.compaction.newFirstLogged == nil {
 				s.compaction.newFirstLogged = map[string]time.Time{}
 			}
+			// One entry a session for as long as the gateway runs, unless
+			// the old ones go: they only hold back a repeat for a minute.
+			if len(s.compaction.newFirstLogged) > 500 {
+				for k, at := range s.compaction.newFirstLogged {
+					if now.Sub(at) >= time.Minute {
+						delete(s.compaction.newFirstLogged, k)
+					}
+				}
+			}
 			s.compaction.newFirstLogged[prefix] = now
 			s.logger.Printf("req=%s compaction new first message session=%s: %d messages, %d bytes, the first %d bytes of %s, the last %s; %s was seen %s ago with %d messages; first message: %s", rid, key, len(msgs), len(body), len(msgs[0]), lastMessageShape(msgs[:1]), lastMessageShape(msgs[len(msgs)-1:]), nearKey[strings.LastIndex(nearKey, "|")+1:], now.Sub(near.seen).Round(time.Second), near.msgCount, firstMessageChange(near.firstRaw, msgs[0]))
 		}
