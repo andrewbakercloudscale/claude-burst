@@ -191,6 +191,34 @@ Tried live on 2026-10-05 with Claude Code 2.1.289: a typed `/compact` and the au
 one both replaced the transcript with the handed summary, the session answered from it,
 and no summary request was made.
 
+## How this differs from Anthropic's background compaction
+
+**Same technique, different seat.** Anthropic documents [compaction in the background](https://platform.claude.com/docs/en/build-with-claude/compaction-background) (beta, read 2026-10-07) as a loop an application runs when it owns the conversation history. Burst runs the same loop from a gateway under Claude Code, which owns the history and never learns it was shortened.
+
+Where the two match:
+
+- The summary is requested in the background, on a copy of the history, while the conversation carries on.
+- The swap replaces exactly the messages the request held, and everything added since stays after it.
+- Only one summary is in flight at a time.
+- A summary that fails or does not arrive leaves the full history in place.
+
+Where they differ:
+
+| | Anthropic background compaction | Burst |
+|---|---|---|
+| Who runs it | Your own application, which owns the history | A gateway in the path; Claude Code owns the history |
+| How the summary is made | An API feature: `compaction: {type: "summarize"}` with the beta header `compact-2026-09-04` | An ordinary request with Burst's own summarise prompt |
+| What comes back | A compaction block (`stop_reason: "compaction"`), swapped in as an assistant message | Plain text, sent as a user message inside a system reminder |
+| Finding the cut | A count of messages | A count plus the content of the messages on each side, because Claude Code can rewrite the history under the gateway (`/clear`, a rewind) |
+| Copies of the history | One | Two: Claude Code's full copy and what Burst sends (see [Two copies of the conversation](#two-copies-of-the-conversation-what-claude-code-keeps-and-what-burst-sends)). The [hand-off](#hand-off-claude-code-takes-bursts-summary) exists only to bring Claude Code's copy in line |
+| Thinking blocks | Can stay valid across the swap, under conditions on a linked page | Thinking from before the summary is dropped |
+| When to compact | Your code decides | **Compact at** or a limit learned for each repository, a window between compactions, a retry after a failure, state kept across restarts |
+| Platforms | Claude API, Claude Platform on AWS, Google Cloud and Microsoft Foundry (beta); not Amazon Bedrock | Wherever the gateway sits in front of Anthropic |
+
+**Why Burst does not simply use it.** The page assumes the caller can edit the history. Claude Code gives no way to do that except the `session.compact` hook the hand-off already uses, so the loop has to run outside it.
+
+**What is not known yet.** Using the API's `compaction` parameter for Burst's own background summary request, in place of Burst's prompt, might give a better summary and keep thinking valid. It has not been tried. Three things would have to hold: the beta works on a subscription login, the summary request still reads from cache (Burst's costs about $0.20 because it does), and Claude Code accepts a compaction block in a history it did not put there. The comparison above is from that one page; the pages it links to (the on-demand loop, the conditions for kept thinking) were not read.
+
 ## Intelligent Compaction Mode: a limit learned for each repository
 
 **Burst works out when to compact each repository, from that repository's own history, and shows its reasoning.** Compacting early costs summaries; compacting late costs every turn in between. Where the two add up to the least is different for every repository, and it moves as the work changes.

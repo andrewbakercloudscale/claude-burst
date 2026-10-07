@@ -250,7 +250,7 @@ Anthropic receives and bills:     139k tokens
 - **No pause, and mid-turn.** The summary is written in the background from the cache (about $0.20 at 400k) and swapped in between two requests, even inside a long turn.
 - **The trade.** Claude Code's copy keeps growing, so a request that bypasses Burst sends all of it, uncached. Burst shows that figure and alerts on a bypass.
 
-The details, with five worked examples, are in [Two copies of the conversation](docs/compaction.md#two-copies-of-the-conversation-what-claude-code-keeps-and-what-burst-sends).
+The details, with five worked examples, are in [Two copies of the conversation](docs/compaction.md#two-copies-of-the-conversation-what-claude-code-keeps-and-what-burst-sends). How it compares with the API's own background compaction is in [How this differs from Anthropic's background compaction](docs/compaction.md#how-this-differs-from-anthropics-background-compaction).
 
 <a id="intelligent-compaction-mode"></a>
 **Intelligent Compaction Mode: the size is learned, not guessed.** One *Compact at* for every repository is a guess, and it is wrong in both directions: a repository of small edits is compacted later than it should be, and one of long tool runs is summarised over and over. Set **Compaction mode** to **Intelligent** and Burst finds the size for each repository where the two costs add up to the least:
