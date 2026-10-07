@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sort"
 	"strings"
@@ -19,7 +20,11 @@ import (
 
 type inspectStore struct {
 	mu   sync.Mutex
-	reqs map[string]*captured // session|conversation -> latest request
+	reqs map[string]*captured // conversation -> its latest request sent whole
+	// want: sessions whose whole conversation is wanted, and why. A session
+	// on a message thread sends only what is new, so the next request that
+	// continues its thread is asked for the history (applyThreadRequest).
+	want map[string]string
 }
 
 type captured struct {
@@ -28,6 +33,7 @@ type captured struct {
 	body    []byte
 	msgs    int
 	at      time.Time
+	since   int // requests that continued its thread since: not in body
 }
 
 const (
@@ -35,25 +41,46 @@ const (
 	inspectMaxReqs = 40
 )
 
-func newInspectStore() *inspectStore { return &inspectStore{reqs: map[string]*captured{}} }
+func newInspectStore() *inspectStore {
+	return &inspectStore{reqs: map[string]*captured{}, want: map[string]string{}}
+}
 
 // captureForInspect keeps body as the latest request of its conversation.
-// Side requests (the away recap and the like) are not the conversation.
-func (s *Server) captureForInspect(sid string, body []byte) {
+// Side requests (the away recap and the like) are not the conversation. A
+// request that continues a message thread carries one message, not the
+// conversation: it is counted against the conversation it continues, whose
+// last whole request stays what the inspector shows.
+func (s *Server) captureForInspect(r *http.Request, body []byte) {
+	sid := r.Header.Get("x-claude-code-session-id")
 	if sid == "" {
 		return
 	}
 	var top struct {
 		Model    string            `json:"model"`
 		Messages []json.RawMessage `json:"messages"`
+		Thread   struct {
+			Type string `json:"type"`
+		} `json:"thread"`
 	}
 	if json.Unmarshal(body, &top) != nil || len(top.Messages) == 0 || isSideRequest(top.Messages) {
 		return
 	}
-	key := sid + "|" + conversationID(top.Messages[0])
+	// The conversation as compaction names it, which a summary swapped in
+	// does not change; its first message otherwise.
+	ci := compactInfoFrom(r.Context())
+	key := ci.key
+	if key == "" {
+		key = sid + "|" + conversationID(top.Messages[0])
+	}
 	st := s.inspect
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if ci.thread || top.Thread.Type == "continue" {
+		if c := st.reqs[key]; c != nil {
+			c.since++
+		}
+		return
+	}
 	st.reqs[key] = &captured{session: sid, model: top.Model, body: body, msgs: len(top.Messages), at: time.Now()}
 	if len(st.reqs) > inspectMaxReqs {
 		cut := time.Now().Add(-inspectKeep)
@@ -69,6 +96,32 @@ func (s *Server) captureForInspect(sid string, body []byte) {
 			delete(st.reqs, oldest)
 		}
 	}
+}
+
+// WantHistory has session sid's whole conversation asked for with its next
+// request, when that request continues a message thread: the inspector then
+// shows the session as it is now, and what was removed from its context is
+// left out of what the API holds. A session that sends its history with
+// every request needs no asking.
+func (s *Server) WantHistory(sid, why string) {
+	if sid == "" {
+		return
+	}
+	s.inspect.mu.Lock()
+	s.inspect.want[sid] = why
+	s.inspect.mu.Unlock()
+}
+
+func (st *inspectStore) wanted(sid string) string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.want[sid]
+}
+
+func (st *inspectStore) asked(sid string) {
+	st.mu.Lock()
+	delete(st.want, sid)
+	st.mu.Unlock()
 }
 
 // InspectSession is one session the inspector can show.
@@ -111,8 +164,9 @@ type ContextReport struct {
 	RepoRoot string        `json:"repo_root,omitempty"`
 	Model    string        `json:"model"`
 	At       time.Time     `json:"at"`
-	Context  int64         `json:"context"`  // what the API reported; 0 when not known yet
-	Estimate bool          `json:"estimate"` // tokens are bytes/4, not shares of a reported context
+	Context  int64         `json:"context"`         // what the API reported; 0 when not known yet
+	Estimate bool          `json:"estimate"`        // tokens are bytes/4, not shares of a reported context
+	Since    int           `json:"since,omitempty"` // requests that continued the thread since At: what they added is not in Items
 	Prompts  int           `json:"prompts"`
 	Flagged  int           `json:"flagged"`
 	Items    []ContextItem `json:"items"`
@@ -143,16 +197,20 @@ func (s *Server) InspectContext(sid string) *ContextReport {
 			c = x
 		}
 	}
+	if c != nil {
+		cp := *c
+		c = &cp
+	}
 	s.inspect.mu.Unlock()
 	if c == nil {
 		return nil
 	}
 	name, root := s.repos.Resolve(sid)
-	rep := &ContextReport{Session: sid, Repo: name, RepoRoot: root, Model: c.model, At: c.at}
-	for _, cs := range s.CompactionSessions() {
-		if cs.Session == sid && cs.Context > rep.Context {
-			rep.Context = cs.Context
-		}
+	rep := &ContextReport{Session: sid, Repo: name, RepoRoot: root, Model: c.model, At: c.at, Since: c.since}
+	// The conversation in use, not the session's largest on record: after a
+	// compaction the largest is the one the summary replaced.
+	if main := MainConversation(s.CompactionSessions(), sid); main != nil {
+		rep.Context = main.Context
 	}
 	rep.Items, rep.Prompts = contextItems(c.body)
 	rep.Estimate = ctxview.Scale(rep.Items, rep.Context, rep.Prompts)

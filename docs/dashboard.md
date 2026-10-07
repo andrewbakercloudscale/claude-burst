@@ -190,6 +190,25 @@ flowchart LR
 | Claude's replies | Text, thinking and tool calls | from that prompt on | no: thinking is signed |
 | Tool results | Files read, command output, search results | from that prompt on | yes |
 
+**From inside a session** (mod 0.12.0 or later)
+
+The cache holds exactly what was last sent, so the inspector's list is the content of the cache. Two commands ask for it from the session, without opening the dashboard:
+
+| Command | What it does |
+| --- | --- |
+| `/burst-dump` | Lists every item Burst last sent for this session in the order sent: its number, tokens, kind and name, with the totals by part on top |
+| `/burst-dump <word>` | The same list, narrowed to items with the word in their name or first lines |
+| `/burst-dump <number>` | One item in full (the first 60,000 characters) |
+| `/burst-prune <word>` | Removes every tool result and instruction file whose file, command or name has the word: a repository's name, a file. A result is matched by its call's whole input, so a file read by a relative path after a `cd` into the repository is found |
+| `/burst-prune stale` | Removes out of date copies of files read again later, results for files that no longer exist, and large results from ten or more prompts ago |
+| `/burst-prune results` | Removes every tool result from before the latest prompt |
+| `/burst-prune undo` | Puts back everything removed from this session, by a prune or by the inspector's Remove |
+
+- **What a prune costs:** the next request writes everything after the first removed item to the cache again, once. The toast says how many tokens were removed and how many are written again.
+- **What a prune leaves:** prompts and replies that mention the word. They are Claude Code's, and the toast counts them. `/compact` with an instruction (`/compact drop everything about <name>`) or a rewind drops those.
+- **Sessions on message threads:** Claude Code 2.1.289 and later sends a turn as the new message alone, and the API holds the rest. The inspector and `/burst-dump` then show the conversation as it was last sent whole, and say how many requests have come since. A dump that is behind, a prune and an undo each have the whole conversation asked for with the session's next request (the same 404 `thread_not_found` answer [compaction](compaction.md) uses, one request refused and one sent whole), so a prune takes effect then, and a second `/burst-prune` after the next reply catches what arrived in between. This needs Pauseless Compaction on; with it off a prune takes effect when the history is next sent whole.
+- **Items under 512 bytes are left:** the note sent in a removed item's place is about that size.
+
 **What gets flagged**
 
 | Flag | Why it is worth a look |

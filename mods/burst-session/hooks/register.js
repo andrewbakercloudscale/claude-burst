@@ -39,6 +39,16 @@ let band = true // the band above the prompt; off where the sidebar has it
 let ready = false // false until the session's first answer: nothing is known yet, which is not down
 const BAND_KEY = 'band'
 
+// /burst-dump: the context Burst last sent for this session, item by item,
+// which is what the cache holds. /burst-prune takes items out of it by a
+// word. Both are the dashboard's Context inspector, asked from the session:
+// the content stays in the gateway's memory and is fetched when asked for.
+const DUMP = 'burst-dump'
+const PRUNE = 'burst-prune'
+const DUMP_ROWS = 400 // rows drawn at most: a list is narrowed, a text is cut
+const DUMP_TEXT = 60000 // characters of one item shown
+let dump = null // what /burst-dump last fetched: { rep, filter, item, error }
+
 // The way out when Burst is the problem. Both are immediate, so no request
 // is made: they work while the gateway is down and Claude Code cannot reach
 // the model. Each runs a script install.sh put on the PATH, in a Terminal
@@ -380,6 +390,16 @@ export function register(on) {
     } catch (err) {
       $.ui.log('could not add /' + FAST + ': ' + err)
     }
+    try {
+      await $.command.register({ name: DUMP, description: 'Everything in the context Burst last sent for this session, which is what the cache holds: /burst-dump, /burst-dump <word> to narrow it, /burst-dump <number> for one item in full', immediate: true })
+    } catch (err) {
+      $.ui.log('could not add /' + DUMP + ': ' + err)
+    }
+    try {
+      await $.command.register({ name: PRUNE, description: 'Take out of this session\'s context every tool result and instruction file a word names (a repository, a file): /burst-prune <word>, or stale, results, undo', immediate: true })
+    } catch (err) {
+      $.ui.log('could not add /' + PRUNE + ': ' + err)
+    }
     for (const c of Object.values(RESCUE)) {
       try {
         await $.command.register({ name: c.name, description: c.description, immediate: true })
@@ -416,6 +436,20 @@ export function register(on) {
     return {}
   })
 
+  on('command.run', { command: DUMP }, async ($, e) => {
+    await follow($)
+    await loadDump($, e && e.args)
+    await $.ui.open({ id: DUMP, title: 'Burst context', focus: true, closeOnEscape: true })
+    $.ui.invalidate('ui.render')
+    return {}
+  })
+
+  on('command.run', { command: PRUNE }, async ($, e) => {
+    await follow($)
+    $.ui.toast(await prune($, e && e.args), { timeoutMs: TOAST_MS.error })
+    return {}
+  })
+
   on('command.run', { command: 'context-bar' }, async ($) => {
     showBar = !showBar
     $.ui.invalidate('ui.render')
@@ -433,6 +467,10 @@ export function register(on) {
   })
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
+    if (e.requestId === DUMP) {
+      const { Box, Text } = $.ui.resolve(e)
+      return Box({ flexDirection: 'column', children: dumpRows(Text) })
+    }
     if (e.requestId !== PANE) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const rows = []
@@ -455,6 +493,137 @@ export function register(on) {
     }))
     return Box({ flexDirection: 'column', children: rows })
   })
+}
+
+async function loadDump($, args) {
+  const a = String(args || '').trim()
+  dump = { rep: null, filter: '', item: null, error: '' }
+  try {
+    const r = await $.http.fetch(DASHBOARD + '/api/inspect?session=' + encodeURIComponent(sid))
+    if (r.status === 404) {
+      await wantHistory($)
+      throw new Error('Burst has not seen this session\'s whole conversation since the gateway started: each request carries only what is new. It is asked for with the next request, so ask again after the next reply')
+    }
+    if (!r.ok) throw new Error('the dashboard answered ' + r.status)
+    dump.rep = JSON.parse(r.text)
+    if (dump.rep.since > 0) await wantHistory($)
+    if (!/^\d+$/.test(a)) {
+      dump.filter = a.toLowerCase()
+      return
+    }
+    const it = (dump.rep.items || [])[+a - 1]
+    if (!it) throw new Error('no item ' + a + ': this context has ' + (dump.rep.items || []).length)
+    const t = await $.http.fetch(DASHBOARD + '/api/inspect-item?session=' + encodeURIComponent(sid) + '&i=' + (+a - 1))
+    if (!t.ok) throw new Error('the session moved on while asking for item ' + a + ': ask again')
+    dump.item = { n: +a, it, text: String(t.text || '') }
+  } catch (err) {
+    dump.error = String((err && err.message) || err)
+  }
+}
+
+// A session on a message thread sends only what is new, so the gateway has
+// the conversation as it was last sent whole. This has it asked for with
+// the session's next request.
+async function wantHistory($) {
+  try {
+    await $.http.fetch(DASHBOARD + '/api/inspect/refresh', {
+      method: 'POST',
+      headers: { 'X-Claude-Burst-Admin': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: sid }),
+    })
+  } catch (err) {
+    // The list is still shown, with how far behind it is.
+  }
+}
+
+// What an item is, in a word, for the list's third column.
+const DUMP_KIND = {
+  'System prompt': 'system', 'Built-in tools': 'tools', 'MCP tools': 'mcp', 'Instruction files': 'file', Skills: 'skills',
+  'Other reminders': 'note', 'Your prompts': 'prompt', "Claude's replies": 'reply', 'Tool results': 'result',
+}
+
+function tokens(n) {
+  return n < 1000 ? String(n) : n < 10000 ? (n / 1000).toFixed(1) + 'k' : kTokens(n)
+}
+
+// Text as a pane can draw it: no escape codes, no control characters.
+function plain(s) {
+  return String(s).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\t/g, '  ').replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '')
+}
+
+function dumpRows(Text) {
+  const dim = (t) => Text({ dimColor: true, children: [t] })
+  if (!dump) return [dim('/' + DUMP + ' has not been asked for in this session')]
+  if (dump.error) return [Text({ color: 'red', children: [dump.error] })]
+  const rep = dump.rep
+  const items = rep.items || []
+  const at = new Date(rep.at)
+  const when = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0')
+  const total = items.reduce((n, it) => n + it.tokens, 0)
+  const rows = []
+  if (dump.item) {
+    const { n, it, text } = dump.item
+    rows.push(Text({ bold: true, children: ['Item ' + n + ': ' + it.name] }))
+    rows.push(dim(it.group + ', ' + tokens(it.tokens) + ' tokens' + (it.turns_ago > 0 ? ', ' + it.turns_ago + ' prompts ago' : '') + (it.removed ? ', removed: this note is what is sent' : '') + (it.flags ? ', ' + it.flags.join(', ') : '')))
+    rows.push(Text({ children: [' '] }))
+    const lines = plain(text.slice(0, DUMP_TEXT)).split('\n')
+    for (const l of lines.slice(0, DUMP_ROWS)) rows.push(Text({ children: [l === '' ? ' ' : l] }))
+    if (text.length > DUMP_TEXT || lines.length > DUMP_ROWS) rows.push(dim('Cut here: ' + text.length + ' characters in all. The dashboard\'s Context inspector shows the rest'))
+    return rows
+  }
+  rows.push(Text({ bold: true, children: ['What Burst last sent for this session, at ' + when + ': ' + tokens(total) + ' tokens' + (rep.estimate ? ' (estimated)' : '') + ' in ' + items.length + ' items. The cache holds this'] }))
+  if (rep.since > 0) rows.push(Text({ color: 'yellow', children: [rep.since + (rep.since === 1 ? ' request' : ' requests') + ' since ' + when + ' added to it and are not listed: the session sends only what is new. The whole conversation is asked for with the next request, so ask again after the next reply'] }))
+  const groups = new Map()
+  for (const it of items) {
+    const g = groups.get(it.group) || { tokens: 0, n: 0 }
+    g.tokens += it.tokens
+    g.n++
+    groups.set(it.group, g)
+  }
+  for (const [name, g] of [...groups].sort((a, b) => b[1].tokens - a[1].tokens)) {
+    rows.push(Text({ children: ['  ' + name.padEnd(18) + tokens(g.tokens).padStart(6) + String(total > 0 ? Math.round((g.tokens * 100) / total) : 0).padStart(4) + '%  ', dim(g.n + (g.n === 1 ? ' item' : ' items'))] }))
+  }
+  rows.push(Text({ children: [' '] }))
+  const words = dump.filter.split(/\s+/).filter(Boolean)
+  const shown = []
+  items.forEach((it, i) => {
+    const hay = (it.name + ' ' + it.group + ' ' + (it.preview || '')).toLowerCase()
+    if (words.every((w) => hay.includes(w))) shown.push([i + 1, it])
+  })
+  if (words.length > 0) rows.push(dim(shown.length + ' items with "' + dump.filter + '" in their name or first lines, ' + tokens(shown.reduce((n, x) => n + x[1].tokens, 0)) + ' tokens'))
+  for (const [n, it] of shown.slice(0, DUMP_ROWS)) {
+    const said = it.group === 'Your prompts' || (it.group === "Claude's replies" && !it.name.startsWith('Call: '))
+    const label = plain(said ? it.name + ': ' + (it.preview || '') : it.name).slice(0, 160)
+    const note = (it.removed ? '  removed' : '') + (it.flags ? '  ' + it.flags.join(', ') : '')
+    rows.push(Text({
+      wrap: 'truncate-end', dimColor: it.removed || undefined, color: it.group === 'Your prompts' ? 'cyan' : undefined,
+      children: [String(n).padStart(4) + tokens(it.tokens).padStart(7) + '  ' + (DUMP_KIND[it.group] || 'other').padEnd(7) + label, note ? Text({ color: 'yellow', children: [note] }) : ''],
+    }))
+  }
+  if (shown.length > DUMP_ROWS) rows.push(dim((shown.length - DUMP_ROWS) + ' more: narrow the list with /' + DUMP + ' <word>'))
+  rows.push(Text({ children: [' '] }))
+  rows.push(dim('/' + DUMP + ' <number> shows one item in full, /' + DUMP + ' <word> narrows the list, /' + PRUNE + ' <word> takes out what the word names'))
+  return rows
+}
+
+// prune asks the gateway to take items out, or put them back, and returns
+// what to tell the user.
+async function prune($, args) {
+  const what = String(args || '').trim()
+  if (what === '') return '/' + PRUNE + ' <word> takes out of this session\'s context every tool result and instruction file whose file, command or name has the word: a repository\'s name, a file. Also: stale (out of date copies), results (every tool result before the latest prompt), undo. /' + DUMP + ' shows what is there'
+  const body = /^(undo|restore)$/i.test(what) ? { session: sid, restore: true } : { session: sid, what }
+  try {
+    const r = await $.http.fetch(DASHBOARD + '/api/inspect/prune', {
+      method: 'POST',
+      headers: { 'X-Claude-Burst-Admin': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (r.status === 404) return 'Nothing pruned yet: Burst has not seen this session\'s whole conversation since the gateway started. It is asked for with the next request, so prune again after the next reply'
+    if (!r.ok) return 'Nothing pruned: the dashboard answered ' + r.status
+    return String(JSON.parse(r.text).detail || 'Done')
+  } catch (err) {
+    return 'Nothing pruned: the Burst dashboard is not answering'
+  }
 }
 
 // The usage panel's installer leaves this marker while its sidebar mod is

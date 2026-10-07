@@ -354,6 +354,8 @@ scripts/lid-awake-root.sh status
 # Inside Claude Code (installed while Pauseless Compaction is on)
 /compact-async                               # compact now, in the background, no pause
 /compact-async-full                          # also shrink what Claude Code holds, with the summary Burst already wrote
+/burst-dump                                  # everything in the context Burst last sent: what the cache holds
+/burst-prune <word>                          # take out every tool result and instruction file the word names; undo puts them back
 
 # Amazon Bedrock secondary (overflow only)
 claude-burst configure --secondary bedrock --region us-east-1

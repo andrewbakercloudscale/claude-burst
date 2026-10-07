@@ -339,7 +339,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// After compaction, so a removal never changes the history compaction
 	// hashes: it only changes what is sent.
 	body = s.applyRemovals(r.Header.Get("x-claude-code-session-id"), body)
-	s.captureForInspect(r.Header.Get("x-claude-code-session-id"), body)
+	s.captureForInspect(r, body)
 	reqModel := requestModel(body)
 	ladder := s.ladderFor(reqModel, now)
 
