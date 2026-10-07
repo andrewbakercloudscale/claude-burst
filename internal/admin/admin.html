@@ -330,6 +330,15 @@
   .initem pre { max-height: 420px; overflow: auto; white-space: pre-wrap; font: 11.5px var(--mono); background: var(--panel-2); padding: 8px; border-radius: 6px; }
   .initem .in-rm { font-size: 11.5px; padding: 2px 8px; }
   .initem.removed .nm { text-decoration: line-through; color: var(--muted); }
+  /* What the context is made of, as one bar: a segment for each group. */
+  .inbar { display: flex; height: 18px; border-radius: 6px; overflow: hidden; background: var(--panel-2); margin: 10px 0 8px; }
+  .inbar > span { min-width: 2px; }
+  .inlegend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; margin-bottom: 4px; }
+  .inlegend > span { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+  .inlegend i, .ingrp > summary i.sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .inlegend b { font: 12px var(--mono); font-weight: 600; }
+  .initem .wt { display: block; height: 3px; border-radius: 2px; margin-top: 5px; background: var(--panel-2); }
+  .initem .wt > span { display: block; height: 100%; border-radius: 2px; min-width: 1px; }
   .inflag { font: 11px var(--mono); padding: 1px 6px; border-radius: 5px; color: var(--warn); background: var(--warn-bg); margin-right: 4px; display: inline-block; }
   details.resp { border-bottom: 1px solid var(--border); }
   details.resp:last-child { border-bottom: none; }
@@ -1311,7 +1320,7 @@
       <div class="hint" style="margin-top:6px"><strong>Keep recent</strong>: how many of the latest tool results are always sent in full (default 10). Raise it if the verdict above says pruned requests fail more often. <strong>Step</strong>: how many results the cut-off advances at a time (default 10); bigger keeps the prefix stable for longer but prunes a little less. <strong>Cap</strong>: the largest single tool result sent in full (default 40&nbsp;KB).</div>
       <div id="pruneNote"></div>
 
-      <div class="hint" style="margin-top:8px">Figures cover the last 7 days of <code>metrics.jsonl</code>. "Removed" is the share of the secondary's input pruning took out, estimated at ~4 bytes per token and priced at the secondary model's input rate. A <strong>re-run</strong> is the model calling a tool again, with the same input, after its output was stubbed: pruning cost a round trip there instead of saving one. If more than a quarter of stubbed calls are re-run, the verdict turns red. Cache figures come from what each provider reports; a provider that caches but does not say so shows 0%.</div>
+      <div class="hint" style="margin-top:8px">Figures cover the last 30 days of <code>metrics.jsonl</code>. "Removed" is the share of the secondary's input pruning took out, estimated at ~4 bytes per token and priced at the secondary model's input rate. A <strong>re-run</strong> is the model calling a tool again, with the same input, after its output was stubbed: pruning cost a round trip there instead of saving one. If more than a quarter of stubbed calls are re-run, the verdict turns red. Cache figures come from what each provider reports; a provider that caches but does not say so shows 0%.</div>
     </div>
   </section>
 
@@ -2948,7 +2957,7 @@ function renderContext(s) {
   const v = c.verdict || {level: "info", text: ""};
   const cls = {ok: "c-ok", bad: "c-bad", info: "c-info"}[v.level] || "c-info";
   const head = {ok: "Working", bad: "Needs attention", info: !c.applicable ? "Not applicable" : on ? "Waiting" : "Off"}[v.level];
-  const days = c.window_days || 7;
+  const days = c.window_days || 30;
   const lastPruned = e.last_pruned_at && !e.last_pruned_at.startsWith("0001") ? " · last pruned " + esc(stamp(e.last_pruned_at)) : "";
   $("ctxCards").innerHTML = `
     <div class="card ${cls}">
@@ -3066,7 +3075,7 @@ function renderCompaction(s) {
   setPill("compactNoticeState", hookOK ? "hook installed" : hookWanted ? "hook missing, press Save" : "off",
     hookOK ? "ok" : hookWanted ? "warn" : "");
   const cs = c.compaction_stats || {}, kk = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "k";
-  const days = c.window_days || 7;
+  const days = c.window_days || 30;
   const sv = savingsTiles(cs);
   $("pcStats").innerHTML = [
     [cs.compactions || 0, `Pauseless compaction${cs.compactions === 1 ? "" : "s"} in ${days} days`],
@@ -6599,14 +6608,31 @@ setInterval(loadAutomask, 30000);
 // One inspector, drawn twice: Claude Code's (engine "claude") and Codex's.
 // Remove and Restore keep the groups you had open and your place.
 function inTok(n) { return n >= 1000 ? Math.round(n / 1000) + "k" : String(n); }
-function inItem(it, i) {
+// IN_COLORS are the inspector's group colours, in the order groups arrive.
+const IN_COLORS = ["#7c3aed", "#2a78d6", "#0e9f9d", "#d98a1f", "#1baf7a", "#eb6834", "#8a93a6", "#c2418f", "#5b6bd6", "#9a8a2a"];
+// inShares is the composition bar's data: each group with its tokens and
+// its share of the context, removed items left out. Pure, for
+// page_script_test.go.
+function inShares(items) {
+  const groups = [];
+  for (const it of items || []) {
+    let g = groups.find(x => x.name === it.group);
+    if (!g) groups.push(g = {name: it.group, tokens: 0, items: 0, color: IN_COLORS[groups.length % IN_COLORS.length]});
+    if (!it.removed) { g.tokens += it.tokens || 0; g.items++; }
+  }
+  const total = groups.reduce((a, g) => a + g.tokens, 0);
+  for (const g of groups) g.share = total ? g.tokens / total : 0;
+  return {groups, total};
+}
+function inItem(it, i, color, total) {
   const when = it.turn ? `prompt ${it.turn}${it.turns_ago ? `, ${it.turns_ago} ago` : ", latest"}` : "every request";
   const btn = it.removable ? (it.removed
       ? `<button class="in-rm" data-act="restore" data-id="${esc(it.id)}" title="Send it again from the next request on">Restore</button>`
       : `<button class="in-rm" data-act="remove" data-id="${esc(it.id)}" title="Leave it out of every later request of this session, a one-line note in its place">Remove</button>`) : "";
   return `<div class="initem${it.removed ? " removed" : ""}" data-i="${i}"><div class="top"><span class="nm">${esc(it.name)}</span><span class="tk">${esc(when)}</span><span class="tk">${it.removed ? "removed" : inTok(it.tokens)}</span>${btn}</div>` +
     (it.flags && it.flags.length ? `<div>${it.flags.map(f => `<span class="inflag">${esc(f)}</span>`).join("")}</div>` : "") +
-    `<div class="pv">${esc(it.preview)}</div></div>`;
+    `<div class="pv">${esc(it.preview)}</div>` +
+    (color && total && !it.removed ? `<span class="wt" title="${(it.tokens / total * 100).toFixed(1)}% of this context"><span style="width:${Math.min(100, it.tokens / total * 100).toFixed(2)}%;background:${color}"></span></span>` : "") + `</div>`;
 }
 function makeInspector(o) {
   let data = null;
@@ -6645,6 +6671,12 @@ function makeInspector(o) {
     $(o.summary).innerHTML = `<b>${esc(d.repo || "?")}</b> <span class="hint">&middot; ${esc(d.model)} &middot; ${d.prompts} prompts &middot; ${inTok(d.context || total)} tokens${d.estimate ? " (estimated: no reply reported the size yet)" : ""} &middot; as sent at ${esc(stamp(d.at))}</span> ` +
       (d.flagged ? `<span class="pill s">${d.flagged} worth a look</span>` : `<span class="pill p">nothing flagged</span>`) +
       (removed ? ` <span class="pill">${removed} removed by you</span>` : "");
+    const sh = inShares(d.items), pc = x => x < 0.005 ? "<1%" : Math.round(x * 100) + "%";
+    const colorOf = name => (sh.groups.find(g => g.name === name) || {}).color || "";
+    const bySize = sh.groups.filter(g => g.tokens > 0).sort((a, b) => b.tokens - a.tokens);
+    $(o.summary).innerHTML += `<div class="inbar" role="img" aria-label="What this context is made of">${bySize.map(g =>
+        `<span style="width:${(g.share * 100).toFixed(2)}%;background:${g.color}" title="${esc(g.name)}: ${inTok(g.tokens)} tokens, ${pc(g.share)}"></span>`).join("")}</div>` +
+      `<div class="inlegend">${bySize.map(g => `<span><i style="background:${g.color}"></i>${esc(g.name)} <b>${inTok(g.tokens)}</b> <span class="hint">${pc(g.share)}</span></span>`).join("")}</div>`;
     setDot(o.dot, d.flagged ? "warn" : "ok");
     // Groups open now stay open: a redraw after Remove must not fold the
     // list you were working through.
@@ -6659,8 +6691,8 @@ function makeInspector(o) {
       if (!g) groups.push(g = {name: it.group, rows: [], tokens: 0});
       g.rows.push([it, i]); g.tokens += it.removed ? 0 : it.tokens;
     }
-    const block = (key, title, rows, tokens, dflt) => `<details class="ingrp" data-g="${esc(key)}"${(first ? dflt : open.has(key)) ? " open" : ""}><summary>${esc(title)} <span class="hint">${rows.length}</span><span class="spacer"></span><span class="tk">${inTok(tokens)}</span></summary>` +
-      rows.map(([it, i]) => inItem(it, i)).join("") + `</details>`;
+    const block = (key, title, rows, tokens, dflt) => `<details class="ingrp" data-g="${esc(key)}"${(first ? dflt : open.has(key)) ? " open" : ""}><summary>${colorOf(key) ? `<i class="sw" style="background:${colorOf(key)}"></i>` : ""}${esc(title)} <span class="hint">${rows.length}</span><span class="spacer"></span><span class="tk">${inTok(tokens)}${colorOf(key) && sh.total ? " &middot; " + pc(tokens / sh.total) : ""}</span></summary>` +
+      rows.map(([it, i]) => inItem(it, i, colorOf(it.group), sh.total)).join("") + `</details>`;
     $(o.body).innerHTML = (flagged.length ? block("~flagged", "Worth a look", flagged, flagged.reduce((a, [it]) => a + it.tokens, 0), true) : "") +
       (gone.length ? block("~removed", "Removed by you", gone, 0, true) : "") +
       groups.map(g => block(g.name, g.name, g.rows, g.tokens, false)).join("");

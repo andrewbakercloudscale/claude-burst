@@ -30,6 +30,22 @@ Checked against codex-cli 0.159.2. The other route, `chatgpt_base_url`, was reje
 
 ## The Codex tab
 
+![The Codex tab's overview: six checks, the routing state and its buttons, 14-day turns, sessions, tokens and errors, and the ChatGPT plan's weekly window](screenshots/codex.png)
+
+![Codex insights: tokens per day split into cached input, uncached input and output, latency, error rate and cached share tiles, and each model's share of the tokens](screenshots/codex-insights.png)
+
+![Codex context by session: each session's context after its latest turn as a bar against its model's window. Example repository names](screenshots/codex-context.png)
+
+![Codex context inspector: a bar of the context by part (tool outputs, reasoning, replies, instructions, tools, AGENTS.md), one flagged tool output, and the items with a Remove button. Illustration: an example session](screenshots/codex-inspector.png)
+
+| Section | What it answers |
+| --- | --- |
+| Checks and overview | Is Codex going through Burst, is ChatGPT answering, and how much of the plan is used? |
+| Insights | Turns, tokens, latency and errors per day, and which models the tokens go to |
+| Context | How full each session's window is |
+| Context inspector | What a session's context is made of, with Remove and Restore |
+| Requests | The recent model calls, one a row |
+
 - **Checks**: Codex's own meter, as the Claude tab's is Claude Code's, with the same rule (the worst failing check sets the colour) and a fix button on each failing check:
   - **Codex goes through Burst**: Burst's block is in `~/.codex/config.toml` (red if that file does not parse; amber if Codex goes straight to ChatGPT).
   - **Burst's Codex port answering**: red when Codex is routed to a port nothing answers on.
@@ -44,7 +60,7 @@ Checked against codex-cli 0.159.2. The other route, `chatgpt_base_url`, was reje
   - **By model**: each model's share of the tokens, with its turns, tokens per turn, cached share, output, median latency and failed turns.
   - Tokens only: there is no API-equivalent price for Codex's models. The same figures as JSON: `curl -s 'http://127.0.0.1:7788/api/codex/insights?days=14'`.
 - **Context**: each recent session's context after its latest turn against its model's window, as a bar: green, amber from 60%, red from 85%. Codex compacts on its own as it nears the limit.
-- **Context inspector**: a Codex session's context item by item, as Burst last forwarded it: Codex's instructions, skills, the developer reminders, AGENTS.md, your prompts, Codex's replies and tool calls, every tool output, and the encrypted reasoning (size only). **Remove** leaves AGENTS.md, skills, a reminder or a tool output out of every later turn of that session, a one-line note in its place; **Restore** puts it back. See [the dashboard](dashboard.md) for how removal works.
+- **Context inspector**: with the same bar of the context by part as [Claude Code's](dashboard.md#context-inspector). A Codex session's context item by item, as Burst last forwarded it: Codex's instructions, skills, the developer reminders, AGENTS.md, your prompts, Codex's replies and tool calls, every tool output, and the encrypted reasoning (size only). **Remove** leaves AGENTS.md, skills, a reminder or a tool output out of every later turn of that session, a one-line note in its place; **Restore** puts it back. See [the dashboard](dashboard.md) for how removal works.
 - **Requests**: the recent model calls, with uncached input, cached input and output apart.
 
 When ChatGPT refuses a turn for the plan's usage limit, an on-screen alert says so with the reset time, and clears on the next accepted turn.

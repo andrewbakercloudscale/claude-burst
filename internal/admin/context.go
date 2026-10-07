@@ -20,12 +20,9 @@ import (
 // and the numbers that say whether it and prompt caching are working.
 // See router/prune.go for what pruning does and why only the secondary.
 
-const contextWindow = 7 * 24 * time.Hour
-
-// strategiesWindow is how far back the three-way comparison of compaction
-// strategies looks: long enough to show a change of mode as a bend in the
-// lines.
-const strategiesWindow = 30 * 24 * time.Hour
+// 30 days since 7 Oct 2026 (7 before): a week of savings swings with one
+// busy day, and the usage panel's savings card reads the same window.
+const contextWindow = 30 * 24 * time.Hour
 
 type contextInfo struct {
 	// Applicable is false when the secondary is not openai-compatible, so
@@ -103,7 +100,7 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 		if s.repos != nil {
 			repoOf = s.repos.resolve
 		}
-		return metrics.CompactionStrategiesSince(s.metricsPath, time.Now().Add(-strategiesWindow), fixedAt, repoOf)
+		return metrics.CompactionStrategiesSince(s.metricsPath, time.Now().Add(-contextWindow), fixedAt, repoOf)
 	})
 	ci.Overflow = s.overflowStats()
 	if s.repos != nil {

@@ -4,6 +4,39 @@
 
 ![This Mac: keep working with the lid closed (off, plugged in only, or also on battery), join a hotspot when offline, and notifications](screenshots/this-mac.png)
 
+The two halves work together: the first stops the Mac sleeping when the lid shuts, the second gets it back online when it leaves Wi-Fi. With both on, a session carries on in your bag and you follow it from your phone through Remote Control.
+
+```mermaid
+flowchart TD
+  L[Lid shuts] --> P{Lid setting}
+  P -- Off --> Z[Mac sleeps: the session pauses]
+  P -- Plugged in only --> AC{On mains power?}
+  AC -- no --> Z
+  AC -- yes --> K[Mac stays awake, screen off]
+  P -- Plugged in and on battery --> K
+  K --> N{Internet reachable?}
+  N -- yes --> RC[Session runs, Remote Control reachable]
+  N -- no, 2 failed checks --> J[Join the chosen hotspot]
+  J -- joined --> E[Gateway ends stale connections<br>Remote Control reconnects]
+  E --> RC
+  J -- not found --> T[Try again every 60 s<br>for 30 minutes]
+  T --> N
+```
+
+| You want | Lid setting | Hotspot |
+| --- | --- | --- |
+| A session that keeps running on your desk with the lid shut | Plugged in only | off |
+| To carry the Mac between rooms or home and keep going | Plugged in and on battery | on, only with the lid shut |
+| The Mac to rejoin your phone whenever Wi-Fi drops, lid open or shut | either | on, any time this Mac is offline |
+| Nothing changed | Off | off |
+
+| Where it shows | What you see |
+| --- | --- |
+| Dashboard, General tab, **This Mac** | The lid choice, what the machine is really doing, other programs keeping it awake, the hotspot's network, timing and log |
+| **Needs attention** on the overview | The lid setting not applied as set, or another program keeping the Mac awake |
+| `claude-burst status` | The flag, the mode, the power source and any drift, with the command that fixes it |
+| On-screen alerts | Keep-awake turned itself off; network offline and back |
+
 ## Keeping Claude Code working with the lid shut
 
 Off by default. `keep_awake_lid_closed` in `config.json` keeps a Claude Code session in Ghostty running, and Remote Control reachable, after you close the lid. `keep_awake_lid_closed_power` picks when:

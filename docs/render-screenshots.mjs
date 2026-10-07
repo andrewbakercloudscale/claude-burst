@@ -3,15 +3,14 @@
 // The pictures are the real dashboard, photographed with Playwright, but not
 // this Mac's own: every answer from /api is rewritten on its way to the page.
 // Repository names, home paths, session tasks and Wi-Fi names are replaced
-// with examples, and the Issues and Intelligent Compaction tables are made up
-// whole. The figures (requests, tokens, spend) are the running gateway's.
+// with examples, and the Issues and Intelligent Compaction tables and the two
+// Context inspectors are made up whole. The figures (requests, tokens,
+// spend) are the running gateway's.
 //
 //   PLAYWRIGHT=/path/to/node_modules/playwright node docs/render-screenshots.mjs [name ...]
 //
 // (PLAYWRIGHT is only needed when `playwright` is not resolvable from here.)
-// With names, only those pictures are taken: overview, analytics,
-// pauseless-compaction, intelligent-compaction, sessions-and-panel,
-// failover-pricing, coordination-issues, this-mac.
+// With names, only those pictures are taken: see SHOTS at the foot.
 //
 // Nothing is written unless every picture passes the check at the end of
 // shoot(): the text drawn in it must not hold this Mac's user name, one of
@@ -70,6 +69,8 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 function plain(text) {
   for (const d of parents) text = text.split(d + '/').join(CODE + '/').split(d).join(CODE)
+  // Claude Code's project folders spell a path with dashes.
+  for (const d of parents) text = text.split(d.replace(/\//g, '-')).join(CODE.replace(/\//g, '-'))
   text = text.split(HOME).join('/Users/you').split(HOME.replace(/\//g, '-')).join('-Users-you')
   for (const [real, fake] of alias) text = text.replace(new RegExp('(^|[^A-Za-z0-9_.-])' + esc(real) + '(?![A-Za-z0-9_-])', 'g'), '$1' + fake)
   return text
@@ -96,9 +97,9 @@ const ISSUES = [
   issue('2026-10-01 17:11:34', SID.a, [CODE + '/web-shop/src/orders/export.ts']),
 ]
 const SESSIONS = [
-  { id: SID.a + '-0000-4000-8000-000000000001', label: 'web-shop', task: 'add retries to the order export', cwd: CODE + '/web-shop' },
-  { id: SID.b + '-0000-4000-8000-000000000002', label: 'claude-burst', task: '', cwd: CODE + '/claude-burst' },
-  { id: SID.c + '-0000-4000-8000-000000000003', label: 'data-pipeline', task: 'move the nightly job to the new queue', cwd: CODE + '/data-pipeline' },
+  { id: SID.a + '-0000-4000-8000-000000000001', label: 'web-shop', task: 'add retries to the order export', cwd: CODE + '/web-shop', active_ago_s: 40 },
+  { id: SID.b + '-0000-4000-8000-000000000002', label: 'claude-burst', task: '', cwd: CODE + '/claude-burst', active_ago_s: 310 },
+  { id: SID.c + '-0000-4000-8000-000000000003', label: 'data-pipeline', task: 'move the nightly job to the new queue', cwd: CODE + '/data-pipeline', active_ago_s: 5400 },
 ]
 
 const none = { summary_failed: 0, unused: 0, unpaid: 0, ended: 0, attempts: 0, rate: 0, lost_usd: 0 }
@@ -113,9 +114,61 @@ const INTELLIGENT = {
   ],
 }
 
+// The Context inspector shows prompts, replies and file contents, so nothing
+// of a real session is used: one example session for each engine.
+const item = (group, name, tokens, preview, o = {}) => ({ group, name, tokens, bytes: Math.round(tokens * 2.7), preview, ...o })
+const rm = (id) => ({ id, removable: true })
+const INSPECT = {
+  claude: {
+    session: SID.a + '-0000-4000-8000-000000000001', repo: 'web-shop', repo_root: CODE + '/web-shop', model: 'claude-opus-5-5', at: '2026-10-07T10:42:18+02:00', context: 148600, estimate: false, prompts: 14, flagged: 3,
+    items: [
+      item('System prompt', 'System prompt, part 1', 5700, 'You are Claude Code, Anthropic\'s official CLI for Claude.'),
+      item('Built-in tools', '16 tools', 27000, 'Agent, AskUserQuestion, Bash, Edit, Glob, Grep, Read, Skill, TodoWrite, WebFetch, WebSearch, Write'),
+      item('MCP tools', 'issue-tracker: 26 tools', 11800, 'create_issue, create_pull_request, get_file_contents, list_commits, search_code'),
+      item('Instruction files', '/Users/you/.claude/CLAUDE.md', 800, '# Global rules: answer first, keep it short', { turn: 1, turns_ago: 13, ...rm('a1') }),
+      item('Instruction files', CODE + '/web-shop/CLAUDE.md', 3900, '# web-shop: run `make test` before every commit', { turn: 1, turns_ago: 13, ...rm('a2') }),
+      item('Instruction files', CODE + '/shared-rules/CLAUDE.md', 6200, '# Rules shared by every service in the monorepo', { turn: 1, turns_ago: 13, flags: ['from outside this repository'], ...rm('a3') }),
+      item('Skills', '9 skills', 2100, 'code-review, deploy, release-notes, security-review', { turn: 1, turns_ago: 13, ...rm('a4') }),
+      item('Your prompts', 'Prompt', 120, 'add retries to the order export, three attempts with backoff', { turn: 1, turns_ago: 13 }),
+      item("Claude's replies", 'Reply', 6400, 'I will start by reading the export job and its tests.', { turn: 1, turns_ago: 13 }),
+      item('Tool results', 'Read src/orders/export.ts', 9200, 'import { Queue } from "../queue"', { turn: 1, turns_ago: 13, flags: ['read again at prompt 9: this copy is out of date'], ...rm('a5') }),
+      item('Tool results', 'Bash make test', 31400, '> web-shop@4.2.0 test  PASS src/orders/export.test.ts (212 tests)', { turn: 2, turns_ago: 12, flags: ['31k tokens from 12 prompts ago'], ...rm('a6') }),
+      item('Tool results', 'Grep "retry" src/', 4800, 'src/checkout/retry.ts:14: export function retry<T>(', { turn: 4, turns_ago: 10, ...rm('a7') }),
+      item("Claude's replies", 'Reply', 8900, 'The export job has no retry at all: a failed page ends the run.', { turn: 4, turns_ago: 10 }),
+      item('Your prompts', 'Prompt', 90, 'yes, and make the backoff configurable', { turn: 9, turns_ago: 5 }),
+      item('Tool results', 'Read src/orders/export.ts', 9600, 'import { Queue } from "../queue"', { turn: 9, turns_ago: 5, ...rm('a8') }),
+      item("Claude's replies", 'Reply', 7700, 'Done: three attempts, backoff from ORDER_EXPORT_BACKOFF_MS.', { turn: 9, turns_ago: 5 }),
+      item('Tool results', 'Bash make test', 12300, 'PASS src/orders/export.test.ts (218 tests)', { turn: 14, ...rm('a9') }),
+      item('Other reminders', 'Todo list reminder', 600, 'The todo list is empty.', { turn: 14, ...rm('a10') }),
+    ],
+  },
+  codex: {
+    session: SID.c + '-0000-4000-8000-000000000003', repo: 'data-pipeline', repo_root: CODE + '/data-pipeline', model: 'gpt-5.2-codex', at: '2026-10-07T10:51:02+02:00', context: 86400, estimate: false, prompts: 8, flagged: 1,
+    items: [
+      item('Instructions', "Codex's instructions", 6900, 'You are Codex, a coding agent running in the Codex CLI.'),
+      item('Tools', '11 tools', 5200, 'shell, apply_patch, update_plan, view_image, web_search'),
+      item('AGENTS.md', CODE + '/data-pipeline/AGENTS.md', 2400, '# data-pipeline: jobs live in jobs/, tests in tests/', { turn: 1, turns_ago: 7, ...rm('c1') }),
+      item('Skills', '4 skills', 900, 'release, migrate, profile, lint', { turn: 1, turns_ago: 7, ...rm('c2') }),
+      item('Your prompts', 'Prompt', 140, 'move the nightly job to the new queue', { turn: 1, turns_ago: 7 }),
+      item("Codex's replies", 'Reply', 5100, 'Reading jobs/nightly.py and the queue client first.', { turn: 1, turns_ago: 7 }),
+      item('Tool calls', 'shell: cat jobs/nightly.py', 300, 'cat jobs/nightly.py', { turn: 1, turns_ago: 7 }),
+      item('Tool outputs', 'shell: pytest -q', 38200, '412 passed, 3 skipped in 41.80s', { turn: 2, turns_ago: 6, flags: ['38k tokens from 6 prompts ago'], ...rm('c3') }),
+      item('Tool outputs', 'shell: cat jobs/nightly.py', 7400, 'from pipeline.queue import LegacyQueue', { turn: 1, turns_ago: 7, ...rm('c4') }),
+      item('Reasoning', 'Encrypted reasoning', 12800, '(encrypted: size only)', { turn: 5, turns_ago: 3 }),
+      item("Codex's replies", 'Reply', 7060, 'The job now enqueues through QueueV2 and the old path is removed.', { turn: 8 }),
+    ],
+  },
+}
+function inspect(url) {
+  const d = INSPECT[url.searchParams.get('engine') === 'codex' ? 'codex' : 'claude']
+  if (url.searchParams.get('session')) return JSON.stringify(d)
+  return JSON.stringify([{ session: d.session, repo: d.repo, model: d.model, at: d.at, messages: d.items.length, bytes: d.context * 3 }])
+}
+
 // What the page is given for one /api answer.
-function rewrite(path, text) {
+function rewrite(path, text, url) {
   if (path === '/api/intelligent-compaction') return JSON.stringify(INTELLIGENT)
+  if (path === '/api/inspect') return inspect(url)
   let doc
   try {
     doc = JSON.parse(plain(text))
@@ -145,7 +198,10 @@ await context.route('**/api/**', async (route) => {
   if (req.method() !== 'GET') return route.abort()
   try {
     const r = await route.fetch()
-    await route.fulfill({ response: r, body: rewrite(new URL(req.url()).pathname, await r.text()) })
+    const url = new URL(req.url())
+    // A made-up session is one the gateway does not have: its 404 must not
+    // reach the page with the example's body.
+    await route.fulfill({ response: r, status: url.pathname === '/api/inspect' ? 200 : r.status(), body: rewrite(url.pathname, await r.text(), url) })
   } catch (err) {
     await route.abort()
   }
@@ -193,10 +249,20 @@ async function shoot(page, name, selectors, { until = '', prepare } = {}) {
   }, { selectors, until })
   if (!box) return failed.push(name + ': not on the page: ' + selectors.join(', '))
   const hits = found(box.text)
-  if (hits.length) return failed.push(name + ': shows ' + [...new Set(hits)].join(', '))
+  if (hits.length) {
+    // With where: the words either side say which field still leaks.
+    const at = box.text.toLowerCase().indexOf(hits[0])
+    return failed.push(name + ': shows ' + [...new Set(hits)].join(', ') + ' ("' + box.text.slice(Math.max(0, at - 60), at + 40).replace(/\s+/g, ' ') + '")')
+  }
   const png = await page.screenshot({ fullPage: true, clip: { x: box.x, y: box.y, width: box.width, height: box.height } })
   writeFileSync(join(OUT, name + '.png'), png)
   console.log(name + '.png  ' + Math.round(box.width) + 'x' + Math.round(box.height))
+}
+
+// The inspector's flagged group opens by itself; one more shows the items.
+const openGroups = () => {
+  const g = [...document.querySelectorAll('details.ingrp')].find((d) => d.dataset.g === 'Tool results' || d.dataset.g === 'Tool outputs')
+  if (g) g.open = true
 }
 
 const want = process.argv.slice(2)
@@ -211,7 +277,16 @@ const SHOTS = {
       writeFileSync(join(OUT, 'overview.png'), await page.screenshot())
       console.log('overview.png  1360x900')
     }],
-    ['analytics', (page) => shoot(page, 'analytics', ['#sec-analytics', '#sec-models', '#sec-repos'])],
+    ['analytics', (page) => shoot(page, 'analytics', ['#sec-analytics'])],
+    ['spend', (page) => shoot(page, 'spend', ['#sec-models', '#sec-repos'])],
+    ['daily-activity', (page) => shoot(page, 'daily-activity', ['#sec-activity'])],
+    ['compaction-savings', (page) => shoot(page, 'compaction-savings', ['#sec-savings'])],
+    ['compaction-strategies', (page) => shoot(page, 'compaction-strategies', ['#sec-strategies'])],
+    ['usage', (page) => shoot(page, 'usage', ['#sec-usage'])],
+    ['context-and-cache', (page) => shoot(page, 'context-and-cache', ['#sec-context'])],
+    ['context-inspector', (page) => shoot(page, 'context-inspector', ['#sec-inspect'], { prepare: openGroups })],
+    ['coordination', (page) => shoot(page, 'coordination', ['#sec-coord'])],
+    ['handover', (page) => shoot(page, 'handover', ['#handoverSection'], { prepare: () => document.querySelector('#handoverSection').classList.remove('collapsed') })],
     ['pauseless-compaction', (page) => shoot(page, 'pauseless-compaction', ['#sec-compaction'], { until: '.ic-panel' })],
     // The section runs on for pages: its head, down to the mode's own panel,
     // which is the next picture. That table is ten columns, so its panel is
@@ -227,6 +302,12 @@ const SHOTS = {
     ['failover-pricing', (page) => shoot(page, 'failover-pricing', ['#sec-failover'])],
     ['coordination-issues', (page) => shoot(page, 'coordination-issues', ['#coIssues'])],
     ['sessions-and-panel', (page) => shoot(page, 'sessions-and-panel', ['#sec-sessions', '#sec-panel'])],
+  ],
+  codex: [
+    ['codex', (page) => shoot(page, 'codex', ['#sec-codex'])],
+    ['codex-insights', (page) => shoot(page, 'codex-insights', ['#sec-codex-insights'])],
+    ['codex-context', (page) => shoot(page, 'codex-context', ['#sec-codex-context'])],
+    ['codex-inspector', (page) => shoot(page, 'codex-inspector', ['#sec-codex-inspect'], { prepare: openGroups })],
   ],
   general: [
     ['this-mac', (page) => shoot(page, 'this-mac', ['#sec-mac', '#sec-notify'])],
