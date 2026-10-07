@@ -215,9 +215,18 @@ Where they differ:
 | When to compact | Your code decides | **Compact at** or a limit learned for each repository, a window between compactions, a retry after a failure, state kept across restarts |
 | Platforms | Claude API, Claude Platform on AWS, Google Cloud and Microsoft Foundry (beta); not Amazon Bedrock | Wherever the gateway sits in front of Anthropic |
 
-**Why Burst does not simply use it.** The page assumes the caller can edit the history. Claude Code gives no way to do that except the `session.compact` hook the hand-off already uses, so the loop has to run outside it.
+**Why Burst does not simply hand the job over.** The page assumes the caller can edit the history. Claude Code gives no way to do that except the `session.compact` hook the hand-off already uses, so the loop has to run outside it.
 
-**What is not known yet.** Using the API's `compaction` parameter for Burst's own background summary request, in place of Burst's prompt, might give a better summary and keep thinking valid. It has not been tried. Three things would have to hold: the beta works on a subscription login, the summary request still reads from cache (Burst's costs about $0.20 because it does), and Claude Code accepts a compaction block in a history it did not put there. The comparison above is from that one page; the pages it links to (the on-demand loop, the conditions for kept thinking) were not read.
+**Tried on 2026-10-07, on a subscription login, with real Claude Code requests on Opus 5.5.** A test proxy between `claude -p` and the gateway asked the API for a compaction block of a short conversation and then sent the block in place of the summarised messages on the turns that followed. Burst itself was not changed.
+
+| Question | Result |
+|---|---|
+| Does the beta work on a subscription login? | Yes: HTTP 200, `stop_reason: "compaction"`, a block with readable text and a signature |
+| Does the summary request read from cache? | Yes: 7,891 tokens read from cache, 62 not, none written |
+| Does a real Claude Code request with the block in front work? | Yes: HTTP 200 with Claude Code's own `context_management` and tools left in, and the answers recalled what was summarised. Claude Code never sees the block: the gateway puts it in the request |
+| Does thinking in the turn kept after the swap stay valid? | With the block: yes, checked with the API's binding check set to fail on a mismatch (200, nothing dropped). With a plain-text summary in the same place, which is what Burst sends today: no, a 400 saying the thinking block "is bound to a different conversation" |
+
+Not measured: whether the API's summary is better than Burst's on a long session (the test conversation was six messages), and the binding check was switched on for the test, so the 400 is what a plain-text swap gets where the API enforces the check, not something seen in ordinary use here.
 
 ## Intelligent Compaction Mode: a limit learned for each repository
 
