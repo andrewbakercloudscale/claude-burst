@@ -32,7 +32,7 @@ func TestInspectRemoveRefusesUnknownItems(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
 	for body, want := range map[string]int{
-		`{"session":"S"}`:                                http.StatusBadRequest,
+		`{"session":"S"}`: http.StatusBadRequest,
 		`{"engine":"claude","session":"S","id":"ab12"}`: http.StatusNotFound,
 		`{"engine":"codex","session":"S","id":"ab12"}`:  http.StatusConflict, // no Codex gateway in this server
 	} {

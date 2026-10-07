@@ -68,7 +68,13 @@ type Writer struct {
 	maxBackups int
 	f          *os.File
 	size       int64
+	// rotateFailed: the last rotation failed and that has been said.
+	rotateFailed bool
 }
+
+// retryAfter is how much more is written after a failed rotation before it
+// is tried again.
+const retryAfter = 1 << 20
 
 func NewWriter(path string, maxBytes int64, maxBackups int) *Writer {
 	return &Writer{path: path, maxBytes: maxBytes, maxBackups: maxBackups}
@@ -84,7 +90,22 @@ func (w *Writer) Write(p []byte) (int, error) {
 	}
 	if w.size+int64(len(p)) > w.maxBytes {
 		if err := w.rotate(); err != nil {
-			return 0, err
+			// A log that cannot rotate (permissions, a full disk) goes on
+			// in the file it has: log.Logger throws a Write error away, so
+			// returning it here made the log stop with nothing to say why.
+			// Said once on stderr, and tried again a megabyte later.
+			if !w.rotateFailed {
+				w.rotateFailed = true
+				fmt.Fprintf(os.Stderr, "rotate: %s could not be rotated, so it goes on past its limit: %v\n", w.path, err)
+			}
+			if w.f == nil {
+				if err := w.open(); err != nil {
+					return 0, err
+				}
+			}
+			w.size = w.maxBytes - retryAfter
+		} else {
+			w.rotateFailed = false
 		}
 	}
 	n, err := w.f.Write(p)

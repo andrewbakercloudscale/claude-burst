@@ -49,6 +49,10 @@ def anchors(path):
                 continue
             if fenced:
                 continue
+            # An explicit anchor: <a id="x"> or name="x". GitHub links to
+            # these as it does to a heading.
+            for explicit in re.findall(r"<a\s+(?:id|name)=[\"']([^\"']+)[\"']", line):
+                result.add(explicit)
             m = re.match(r"^(#{1,6})\s+(.*?)\s*#*\s*$", line)
             if not m:
                 continue

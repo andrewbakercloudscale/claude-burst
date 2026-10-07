@@ -188,11 +188,26 @@ ensure_launchagent_loaded() {
   launchagent_loaded
 }
 
+# rotate_log_file <path> [max bytes]: once the file is over the limit (2MB
+# unless given) it becomes <path>.1 and a new one starts, so the last 2MB
+# and more are always there. The logs these scripts write had no limit, or
+# were emptied whole at theirs, which threw away the history a fault needs.
+rotate_log_file() {
+  local f="$1" max="${2:-2097152}" size
+  [[ -f "$f" ]] || return 0
+  size=$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f" 2>/dev/null || echo 0)
+  if (( size > max )); then
+    mv -f "$f" "$f.1" 2>/dev/null || true
+  fi
+  return 0
+}
+
 dump_health_diagnostics() {
   local label="${1:-health check}"
   local out="$HOME/.config/claude-burst/health-check-failures.log"
   local svc_label="${LABEL:-ninja.andrewbaker.claude-burst}"
   mkdir -p "$(dirname "$out")"
+  rotate_log_file "$out"
   {
     echo "===== $(date '+%Y-%m-%d %H:%M:%S') health check failed: $label ====="
     local gport; gport="$(gateway_port)"

@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
+	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 )
 
 // The pass-through: what keeps running Claude Code sessions alive after
@@ -153,6 +155,7 @@ func startPassthrough(cfg config.Config, listen, target string, idle time.Durati
 	if err != nil {
 		return false, "", err
 	}
+	_ = rotate.RotateIfOversized(filepath.Join(dir, "passthrough.log"), 2<<20, 1)
 	logf, err := os.OpenFile(filepath.Join(dir, "passthrough.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return false, "", err
@@ -222,7 +225,7 @@ func stopPassthrough(logger *log.Logger) {
 }
 
 func runPassthrough(listen, target string, idle time.Duration) error {
-	logger := log.New(os.Stdout, "passthrough ", log.LstdFlags)
+	logger := log.New(&logline.Writer{W: os.Stdout}, "passthrough ", 0)
 	u, err := url.Parse(target)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("pass-through target %q is not a URL", target)

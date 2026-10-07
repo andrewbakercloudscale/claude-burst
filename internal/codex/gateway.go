@@ -410,7 +410,9 @@ func (g *Gateway) record(r *http.Request, status int, u usage, note string) {
 	}
 	// One line per turn, metadata only, so the gateway log (and with it
 	// scripts/diagnose.sh) shows Codex's traffic beside Claude Code's.
-	g.logger.Printf("codex: turn status=%d model=%q in=%d cached=%d out=%d ms=%d session=%s", status, u.Model, uncached, u.Cached, u.Output, e.DurationMS, e.SessionID)
+	// req is the id codex-metrics.jsonl has as request_id, so a turn's line
+	// here and its record there are one lookup apart.
+	g.logger.Printf("codex: turn req=%s status=%d model=%q in=%d cached=%d out=%d ms=%d session=%s", e.RequestID, status, u.Model, uncached, u.Cached, u.Output, e.DurationMS, e.SessionID)
 	if err := g.metrics.Write(e); err != nil {
 		g.logger.Printf("codex: metrics write failed: %v", err)
 	}
