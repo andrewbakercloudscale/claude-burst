@@ -71,6 +71,20 @@ func TestCodexChecks(t *testing.T) {
 		}
 	}
 
+	// A turn that never left this Mac: Network down, and nothing about ChatGPT.
+	broken["recent"] = []any{map[string]any{"time": "2026-10-04T17:58:00Z", "http_status": 502,
+		"note": "upstream unreachable: dial tcp 104.18.32.47:443: connect: network is unreachable"}}
+	cs, _ = runCodexChecks(t, broken, state)
+	if got := codexKeys(cs); !strings.Contains(got, "network!") || strings.Contains(got, "cxchatgpt") {
+		t.Fatalf("offline: %s", got)
+	}
+	// The gateway saying so for Claude Code counts for a bare 502 too.
+	broken["recent"] = []any{map[string]any{"time": "2026-10-04T17:58:00Z", "http_status": 502}}
+	off := map[string]any{"intercept": state["intercept"], "primary_health": map[string]any{"network_down": true, "last_failure": "2026-10-04T17:59:00Z"}}
+	if cs, _ = runCodexChecks(t, broken, off); !strings.Contains(codexKeys(cs), "network!") {
+		t.Fatalf("offline by the gateway's word: %s", codexKeys(cs))
+	}
+
 	// An old failure no longer counts.
 	broken["recent"] = []any{map[string]any{"time": "2026-10-04T17:00:00Z", "http_status": 502}}
 	if cs, _ = runCodexChecks(t, broken, state); strings.Contains(codexKeys(cs), "cxchatgpt!") {
