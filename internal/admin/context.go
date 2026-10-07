@@ -22,6 +22,11 @@ import (
 
 const contextWindow = 7 * 24 * time.Hour
 
+// strategiesWindow is how far back the three-way comparison of compaction
+// strategies looks: long enough to show a change of mode as a bend in the
+// lines.
+const strategiesWindow = 30 * 24 * time.Hour
+
 type contextInfo struct {
 	// Applicable is false when the secondary is not openai-compatible, so
 	// there is nothing for pruning to act on.
@@ -52,6 +57,9 @@ type contextInfo struct {
 	// Overflow is what the secondary's requests would have cost at the
 	// price of the model asked for, against what it charged, same window.
 	Overflow metrics.OverflowStats `json:"overflow_stats"`
+	// Strategies costs the same sessions three ways: Claude Code alone, one
+	// fixed Compact at, and what Burst did. See metrics/strategies.go.
+	Strategies metrics.Strategies `json:"compaction_strategies"`
 	// SavingsByRepo is the same savings split by repository.
 	SavingsByRepo []RepoSaving `json:"savings_by_repo,omitempty"`
 	// PromptNotice is whether the prompt notice hook is in settings.json.
@@ -88,6 +96,14 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.MidTurnOff = s.gateway.MidTurnOff()
 	ci.CompactionStats, _ = cachedScan("compaction|"+s.metricsPath, func() (metrics.CompactionStats, error) {
 		return metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
+	})
+	fixedAt := cfg.PrimaryCompaction.Resolved().CompactAtTokens
+	ci.Strategies, _ = cachedScan(fmt.Sprintf("strategies|%d|%s", fixedAt, s.metricsPath), func() (metrics.Strategies, error) {
+		var repoOf func(string) (string, string)
+		if s.repos != nil {
+			repoOf = s.repos.resolve
+		}
+		return metrics.CompactionStrategiesSince(s.metricsPath, time.Now().Add(-strategiesWindow), fixedAt, repoOf)
 	})
 	ci.Overflow = s.overflowStats()
 	if s.repos != nil {

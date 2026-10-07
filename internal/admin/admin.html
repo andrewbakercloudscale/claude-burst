@@ -157,6 +157,8 @@
   /* Savings chart: saved (up) and what it cost (down), per day. Two hues
      validated with dataviz/validate_palette.js in both modes. */
   :root { --pcs-saved: #7c3aed; --pcs-cost: #0e9f9d; }
+  :root { --st-default: #8a93a6; --st-fixed: #d98a1f; --st-actual: #7c3aed; }
+  @media (prefers-color-scheme: dark) { :root { --st-default: #9aa3b8; --st-fixed: #e0a75e; --st-actual: #9466f5; } }
   @media (prefers-color-scheme: dark) { :root { --pcs-saved: #9466f5; --pcs-cost: #2aa8a6; } }
   .pc-chart { margin-top: 12px; border: 1px solid color-mix(in srgb, var(--pc-b) 30%, var(--border)); border-radius: var(--radius); background: var(--panel); }
   .pc-chart .pc-chart-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 12px 16px 0; }
@@ -838,6 +840,7 @@
   <a class="navlink" data-target="sec-activity"><span class="nd" id="nd-activity"></span><span class="label">Activity</span><span class="count" id="nc-activity"></span></a>
   <a class="navlink" data-target="sec-analytics"><span class="nd"></span><span class="label">Analytics</span></a>
   <a class="navlink" data-target="sec-savings"><span class="nd"></span><span class="label">Compaction savings</span></a>
+  <a class="navlink" data-target="sec-strategies" hidden><span class="nd"></span><span class="label">Compaction strategies</span></a>
   <a class="navlink" data-target="sec-models"><span class="nd"></span><span class="label">Spend by model</span></a>
   <a class="navlink" data-target="sec-repos"><span class="nd"></span><span class="label">Spend by repository</span></a>
   <a class="navlink" data-target="sec-usage"><span class="nd"></span><span class="label">Usage</span></a>
@@ -1043,6 +1046,27 @@
         <div class="pc-chart-head"><h3>Savings by repository</h3><span class="sum" id="pcRepoSum"></span></div>
       </div>
       <div id="pcRepoSplit" style="padding-bottom:6px"></div>
+  </section>
+
+  <section id="sec-strategies" style="scroll-margin-top:70px" hidden>
+    <h2>Compaction strategies <span class="hint">what the same sessions' context cost each day, three ways: Claude Code alone, one fixed Compact at, and what Burst did</span></h2>
+      <div class="pc-chart" style="margin:0;border:0">
+        <div class="pc-chart-head"><h3>Context cost per day</h3><span class="sum" id="stSum"></span>
+          <span class="legend"><span><i style="background:var(--st-default)"></i><span id="stLegDefault">Claude Code alone</span></span><span><i style="background:var(--st-fixed)"></i><span id="stLegFixed">Fixed Compact at</span></span><span><i style="background:var(--st-actual)"></i>Burst, as it ran</span></span></div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:2px 0 8px">
+          <label class="hint" for="stRepo">Repository</label>
+          <select id="stRepo" aria-label="Repository to chart"></select>
+          <label class="hint" for="stMetric">Show</label>
+          <select id="stMetric" aria-label="What to chart"><option value="usd">cost ($)</option><option value="ctx">average context (T)</option></select>
+        </div>
+        <div class="chart-wrap" id="stChartWrap"><div id="stChart"></div><div class="chart-tip" id="stTip"></div></div>
+        <details><summary>Show as a table</summary><div id="stChartTable"></div></details>
+        <div class="hint" style="margin-top:8px" id="stNote"></div>
+      </div>
+      <div class="pc-chart" style="margin:0;border:0;border-top:1px solid var(--border);border-radius:0">
+        <div class="pc-chart-head"><h3>By repository</h3><span class="sum" id="stRepoSum"></span></div>
+      </div>
+      <div id="stRepoSplit" style="padding-bottom:6px"></div>
   </section>
 
   <section id="sec-models" style="scroll-margin-top:70px">
@@ -3052,6 +3076,8 @@ function renderCompaction(s) {
   ].map(([v, t, tip]) => `<div class="pc-stat"${tip ? ` title="${esc(tip)}"` : ""}><div class="v">${v}</div><div class="k">${esc(t).replace(/^([^\n]*)\n/, '<b style="color:var(--text)">$1</b><br>').replace(/\n/g, "<br>")}</div></div>`).join("");
   lastSavings = cs.daily || null;
   drawSavingsChart();
+  lastStrategies = c.compaction_strategies || null;
+  drawStrategies();
   // The chart's own day count (its window includes today), so both headers agree.
   renderSavingsByRepo(c.savings_by_repo || [], (cs.daily || []).length || days);
   setDot("nd-compaction", k.enabled ? "ok" : "");
@@ -4101,15 +4127,18 @@ function renderHero(s) {
     // Every token billed, cached ones too: a cached prompt is most of what
     // a request reads, and input plus output alone read 60 times too low.
     [compact((w.InputTokens || 0) + (w.OutputTokens || 0) + (w.CacheReadTokens || 0) + (w.CacheWriteTokens || 0)), "tokens",
-      "Every token billed: fresh input, output, and what was read from and written to the prompt cache"],
+      "Every token billed: fresh input, output, and what was read from and written to the prompt cache", "T"],
     // The total's four parts, apart: the total alone hides that nearly
     // all of it is cache reads, which cost a tenth of fresh input.
-    [compact(w.InputTokens), "fresh input", "Input tokens that were not in the prompt cache"],
-    [compact(w.OutputTokens), "output", "Tokens the models wrote"],
-    [compact(w.CacheReadTokens), "cache read", "Input tokens read back from the prompt cache"],
-    [compact(w.CacheWriteTokens), "cache write", "Input tokens written to the prompt cache"],
+    [compact(w.InputTokens), "fresh input", "Input tokens that were not in the prompt cache", "T"],
+    [compact(w.OutputTokens), "output", "Tokens the models wrote", "T"],
+    [compact(w.CacheReadTokens), "cache read", "Input tokens read back from the prompt cache", "T"],
+    [compact(w.CacheWriteTokens), "cache write", "Input tokens written to the prompt cache", "T"],
     [compactMoney(w.APIEquivalentUSD), "spend"],
-  ].map(([v, k, tip]) => `<div class="kpi"${tip ? ` title="${esc(tip)}"` : ""}><div class="v">${esc(v)}</div><div class="k">${esc(k)}${
+  // "T" marks a count of tokens: a bare 2.7B beside a count of requests
+  // and a dollar figure does not say what it counts.
+  ].map(([v, k, tip, unit]) => `<div class="kpi"${tip ? ` title="${esc(tip)}"` : ""}><div class="v">${esc(v)}${
+    unit ? `<span style="font-size:.6em;font-weight:600;margin-left:3px" title="tokens">${esc(unit)}</span>` : ""}</div><div class="k">${esc(k)}${
     span ? " · " + esc(span) : ""}</div></div>`).join("");
 }
 
@@ -4593,6 +4622,132 @@ function drawSavingsChart() {
     days.slice().reverse().map(d => `<tr><td>${esc(dayLabel(d.date))}</td><td class="num">$${d.up.toFixed(2)}</td><td class="num">$${d.summary.toFixed(2)}</td><td class="num">$${d.rewrite.toFixed(2)}</td><td class="num">${netUSD(d.net)}</td><td class="num">${d.compactions}</td></tr>`).join("") + `</tbody></table>`;
 }
 window.addEventListener("resize", () => { clearTimeout(window.__pcResize); window.__pcResize = setTimeout(drawSavingsChart, 120); });
+
+// Compaction strategies: the same sessions costed three ways, a line each.
+// "Claude Code alone" compacts only near the model's window, "Fixed" at the
+// one configured Compact at, and "Burst, as it ran" is what the log
+// recorded, so a change of mode shows as a bend in that line. The first two
+// are replayed twins (metrics/strategies.go); all three are costed alike.
+let lastStrategies = null;
+const ST_LINES = [["default", "var(--st-default)"], ["fixed", "var(--st-fixed)"], ["actual", "var(--st-actual)"]];
+// strategyView picks the rows to chart: every repository, or one. Pure, for
+// page_script_test.go.
+function strategyView(st, repo) {
+  const r = repo ? (st.repos || []).find(x => x.repo === repo) : null;
+  return r || st;
+}
+// strategyValue is one line's value for a day: dollars, or the average
+// context a request sent, in tokens.
+function strategyValue(d, key, metric) {
+  const c = d[key] || {};
+  return metric === "ctx" ? (d.requests ? (c.tokens || 0) / d.requests : 0) : (c.usd || 0);
+}
+function strategyNames(st) {
+  const k = n => Math.round((n || 0) / 1000) + "k";
+  return {default: `Claude Code alone (compacts at ${k(st.default_at)})`, fixed: `Fixed Compact at ${k(st.fixed_at)}`, actual: "Burst, as it ran"};
+}
+function drawStrategies() {
+  const st = lastStrategies, sec = $("sec-strategies");
+  const any = !!(st && st.requests);
+  sec.hidden = !any;
+  for (const a of document.querySelectorAll('.navlink[data-target="sec-strategies"]')) a.hidden = !any;
+  const host = $("stChart"), tip = $("stTip");
+  tip.style.opacity = "0";
+  if (!any) { host.innerHTML = ""; return; }
+  const names = strategyNames(st), kT = n => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "k") + " T";
+  $("stLegDefault").textContent = names.default;
+  $("stLegFixed").textContent = names.fixed;
+
+  const sel = $("stRepo"), want = sel.value;
+  const opts = [""].concat((st.repos || []).filter(r => r.requests).map(r => r.repo));
+  sel.innerHTML = opts.map(o => `<option value="${esc(o)}">${esc(o || "All repositories")}</option>`).join("");
+  sel.value = opts.includes(want) ? want : "";
+  const view = strategyView(st, sel.value), metric = $("stMetric").value;
+  // From the first day with anything to pay for: the days before the log
+  // recorded cached tokens would be a flat line at zero.
+  const all = view.daily || [], peak = Math.max(0, ...all.map(d => (d.default || {}).usd || 0));
+  const first = all.findIndex(d => ((d.default || {}).usd || 0) > peak / 100);
+  const days = first > 0 ? all.slice(first) : all;
+  const fmt = v => metric === "ctx" ? kT(v) : "$" + v.toFixed(2);
+
+  const dU = (view.default || {}).usd || 0, fU = (view.fixed || {}).usd || 0, aU = (view.actual || {}).usd || 0;
+  const pct = (a, b) => b > 0 ? ` (${Math.round(a / b * 100)}%)` : "";
+  $("stSum").innerHTML = `Burst <b>${esc(money(aU))}</b>: ${netUSD(dU - aU)}${esc(pct(dU - aU, dU))} under Claude Code alone, ${netUSD(fU - aU)}${esc(pct(fU - aU, fU))} under fixed`;
+  $("stNote").textContent = "Each line is the context every request resent, at the cache-read price, plus what that strategy's compactions cost (the summary and the cache rewrite). " +
+    "Burst's line is what was recorded; the other two are the same sessions replayed with a compaction where that strategy would have made one. " +
+    "Output and new input are the same three ways and are left out. API-equivalent dollars.";
+
+  const W = Math.max(320, host.clientWidth || 640), H = 210;
+  const padL = 56, padR = 12, padT = 10, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const hi = niceMax(Math.max(0, ...days.map(d => Math.max(...ST_LINES.map(([k]) => strategyValue(d, k, metric))))));
+  const y = v => padT + (hi - v) / hi * plotH;
+  const band = plotW / Math.max(1, days.length), x = i => padL + band * i + band / 2;
+  const parts = [];
+  for (const v of [hi, hi / 2, 0]) {
+    parts.push(`<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-width="1"/>`);
+    parts.push(`<text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="var(--faint)">${esc(metric === "ctx" ? kT(v) : "$" + v.toFixed(v && v < 1 ? 2 : 0))}</text>`);
+  }
+  for (const [k, color] of ST_LINES) {
+    const pts = days.map((d, i) => `${x(i).toFixed(1)},${y(strategyValue(d, k, metric)).toFixed(1)}`);
+    parts.push(`<polyline fill="none" stroke="${color}" stroke-width="${k === "actual" ? 2.5 : 2}"${k === "default" ? ' stroke-dasharray="5 4"' : ""} stroke-linejoin="round" stroke-linecap="round" points="${pts.join(" ")}"/>`);
+    if (days.length <= 45) days.forEach((d, i) => parts.push(`<circle cx="${x(i).toFixed(1)}" cy="${y(strategyValue(d, k, metric)).toFixed(1)}" r="2.2" fill="${color}"/>`));
+  }
+  const every = Math.max(1, Math.ceil(days.length / Math.max(1, Math.floor(plotW / 58)))), last = days.length - 1;
+  days.forEach((d, i) => {
+    if ((last - i) % every) return;
+    parts.push(`<text x="${x(i)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--faint)">${esc(dayLabel(d.date))}</text>`);
+  });
+  days.forEach((d, i) => parts.push(`<rect class="hit" data-i="${i}" x="${padL + band * i}" y="${padT}" width="${band}" height="${plotH}" fill="transparent"/>`));
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Context cost per day under three compaction strategies">${parts.join("")}</svg>`;
+
+  const wrap = $("stChartWrap");
+  host.querySelectorAll("rect.hit").forEach(r => {
+    r.addEventListener("mouseenter", () => {
+      const d = days[+r.dataset.i];
+      const row = (c, k, v) => `<div class="r"><span>${c ? `<i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${c};margin-right:6px"></i>` : ""}${k}</span><b>${esc(v)}</b></div>`;
+      const avg = k => d.requests ? kT(((d[k] || {}).tokens || 0) / d.requests) : "-";
+      tip.innerHTML = `<div class="d">${esc(dayLabel(d.date))} · ${esc(num(d.requests))} requests</div>` +
+        ST_LINES.map(([k, c]) => row(c, esc(names[k]), `${money((d[k] || {}).usd)} · avg ${avg(k)} · ${(d[k] || {}).compactions || 0} compactions`)).join("") +
+        row("", "Burst against Claude Code alone", signedUSD((d.default.usd || 0) - (d.actual.usd || 0))) +
+        row("", "Burst against the fixed Compact at", signedUSD((d.fixed.usd || 0) - (d.actual.usd || 0)));
+      const rect = r.getBoundingClientRect(), wr = wrap.getBoundingClientRect(), tw = tip.offsetWidth, gap = 12;
+      let left = rect.right - wr.left + gap;
+      if (left + tw > wr.width) left = rect.left - wr.left - gap - tw;
+      tip.style.left = Math.max(0, left) + "px"; tip.style.top = "10px"; tip.style.opacity = "1";
+    });
+    r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
+  });
+  $("stChartTable").innerHTML = `<table><thead><tr><th>Day</th><th class="num">Requests</th>${ST_LINES.map(([k]) => `<th class="num">${esc(names[k])}</th>`).join("")}<th class="num">Against Claude Code alone</th><th class="num">Against fixed</th></tr></thead><tbody>` +
+    days.slice().reverse().map(d => `<tr><td>${esc(dayLabel(d.date))}</td><td class="num">${esc(num(d.requests))}</td>${ST_LINES.map(([k]) => `<td class="num">${esc(fmt(strategyValue(d, k, metric)))}</td>`).join("")}<td class="num">${netUSD(d.default.usd - d.actual.usd)}</td><td class="num">${netUSD(d.fixed.usd - d.actual.usd)}</td></tr>`).join("") + `</tbody></table>`;
+
+  // Repositories with next to no context to pay for would only be rows of
+  // equal numbers; the total still counts them.
+  const repos = (st.repos || []).filter(r => r.requests && r.default.usd >= 0.5).slice(0, 12);
+  const top = Math.max(0, ...repos.map(r => r.default.usd));
+  const avgOf = (r, k) => r.requests ? kT(r[k].tokens / r.requests) : "-";
+  $("stRepoSum").innerHTML = `the ${repos.length} with the most context, over ${(st.daily || []).length} days`;
+  $("stRepoSplit").innerHTML = shareTable("Repository", "Context",
+    [{h: "Avg context: alone / fixed / Burst", title: "Average context a request sent: Claude Code alone, then the fixed Compact at, then Burst as it ran"},
+     {h: "Alone", title: "Context cost with Claude Code alone"}, {h: "Fixed", title: "Context cost with the one fixed Compact at"}, {h: "Burst", title: "Context cost as Burst ran"},
+     {h: "vs alone", title: "What Burst saved against Claude Code alone, after its compactions' costs"},
+     {h: "vs fixed", title: "What Burst saved against the one fixed Compact at, after its compactions' costs"}],
+    repos.map(r => ({
+      name: esc(r.repo), title: `${r.path || r.repo}: ${num(r.sessions)} sessions, ${num(r.requests)} requests, ${num(r.actual.compactions)} compactions by Burst`,
+      share: top > 0 ? r.default.usd / top : 0, color: "var(--st-default)",
+      cells: [esc(`${avgOf(r, "default")} / ${avgOf(r, "fixed")} / ${avgOf(r, "actual")}`),
+        esc(money(r.default.usd)), esc(money(r.fixed.usd)), esc(money(r.actual.usd)),
+        netUSD(r.default.usd - r.actual.usd), netUSD(r.fixed.usd - r.actual.usd)],
+      cls: ["dim", "", "", "", r.default.usd >= r.actual.usd ? "good" : "bad", r.fixed.usd >= r.actual.usd ? "good" : "bad"],
+    })),
+    {name: "All repositories", cells: [esc(`${avgOf(st, "default")} / ${avgOf(st, "fixed")} / ${avgOf(st, "actual")}`),
+      esc(money(st.default.usd)), esc(money(st.fixed.usd)), esc(money(st.actual.usd)),
+      netUSD(st.default.usd - st.actual.usd), netUSD(st.fixed.usd - st.actual.usd)],
+     cls: ["dim", "", "", "", st.default.usd >= st.actual.usd ? "good" : "bad", st.fixed.usd >= st.actual.usd ? "good" : "bad"]});
+}
+$("stRepo").addEventListener("change", drawStrategies);
+$("stMetric").addEventListener("change", drawStrategies);
+window.addEventListener("resize", () => { clearTimeout(window.__stResize); window.__stResize = setTimeout(drawStrategies, 120); });
 
 // rounded draws a rect with only its TOP corners rounded: the data-end is
 // rounded, the baseline end is square, so a stack still reads as sitting on
