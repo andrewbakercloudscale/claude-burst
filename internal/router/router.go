@@ -100,9 +100,12 @@ type Server struct {
 	// dashboard. Held by healthMu; not part of state.json.
 	// readyMu guards the cached answer to "does the secondary have its
 	// credential"; see secondaryReady.
-	readyMu  sync.Mutex
-	readyAt  time.Time
-	readyErr error
+	readyMu sync.Mutex
+	readyAt time.Time
+	// readyChecking: one request is asking the Keychain; the others use
+	// the last answer meanwhile.
+	readyChecking bool
+	readyErr      error
 
 	healthMu sync.Mutex
 	health   PrimaryHealth

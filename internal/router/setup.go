@@ -262,15 +262,28 @@ func (s *Server) secondaryReady() bool {
 		return true
 	}
 	s.readyMu.Lock()
-	defer s.readyMu.Unlock()
-	if !s.readyAt.IsZero() && time.Since(s.readyAt) < secondaryReadyTTL {
-		return s.readyErr == nil
+	if !s.readyAt.IsZero() && (time.Since(s.readyAt) < secondaryReadyTTL || s.readyChecking) {
+		// Fresh, or another request is asking the Keychain right now: the
+		// last answer stands. The lookup runs a command that can take
+		// seconds, and until 7 Oct 2026 it ran with this lock held, so
+		// once a minute every request queued behind it.
+		ok := s.readyErr == nil
+		s.readyMu.Unlock()
+		return ok
 	}
+	first := s.readyAt.IsZero()
+	wasOK := s.readyErr == nil
+	s.readyChecking = true
+	s.readyMu.Unlock()
+
 	err := c.CredentialReady()
-	if err != nil && (s.readyAt.IsZero() || s.readyErr == nil) {
+
+	s.readyMu.Lock()
+	s.readyAt, s.readyErr, s.readyChecking = time.Now(), err, false
+	s.readyMu.Unlock()
+	if err != nil && (first || wasOK) {
 		s.logger.Printf("secondary route=%s has no usable credential (%v): treating it as absent, so Anthropic's own limits pass through to Claude Code", s.secondary.Name(), err)
 	}
-	s.readyAt, s.readyErr = time.Now(), err
 	s.alertSecondaryKey(err)
 	return err == nil
 }

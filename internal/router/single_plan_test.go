@@ -5,10 +5,12 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -415,5 +417,106 @@ func TestSecondaryKeyAddedLaterIsPickedUp(t *testing.T) {
 	s.readyMu.Unlock()
 	if !s.HasSecondary() {
 		t.Fatal("after the TTL the new key must be seen")
+	}
+}
+
+// slowCredential is a secondary whose Keychain lookup takes as long as the
+// test says.
+type slowCredential struct {
+	Provider
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (c *slowCredential) CredentialReady() error {
+	c.calls.Add(1)
+	c.entered <- struct{}{}
+	<-c.release
+	return nil
+}
+
+// While one request asks the Keychain, which can take seconds, the others
+// answer from the last result: they used to queue behind it once a minute.
+func TestRequestsDoNotWaitForAnotherRequestsKeychainLookup(t *testing.T) {
+	up := newRecordingUpstream(t)
+	s, _ := singlePlanServer(t, up.srv.URL, false, "subscription-limit", nil)
+	slow := &slowCredential{Provider: s.secondary, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	s.secondary = slow
+	s.readyMu.Lock()
+	s.readyAt, s.readyErr = time.Now().Add(-secondaryReadyTTL-time.Second), nil
+	s.readyMu.Unlock()
+
+	first := make(chan bool, 1)
+	go func() { first <- s.HasSecondary() }()
+	<-slow.entered // the lookup is running
+
+	done := make(chan bool, 1)
+	go func() { done <- s.HasSecondary() }()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("meanwhile the last answer (ready) stands")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second request waited for the first one's Keychain lookup")
+	}
+	close(slow.release)
+	if !<-first {
+		t.Fatal("the lookup said ready")
+	}
+	if n := slow.calls.Load(); n != 1 {
+		t.Fatalf("%d lookups, want 1", n)
+	}
+}
+
+// save only decides what to write; Unlock writes it once the lock is let
+// go. Nothing is on disk while the lock is held, the newest of many saves
+// is what lands, and a restart reads it back.
+func TestTheNewestCompactionSaveIsWhatLands(t *testing.T) {
+	dir := t.TempDir()
+	c := newCompactor(config.CompactionConfig{}, filepath.Join(dir, "compaction-state.json"), nil)
+	c.mu.Lock()
+	st := c.state("S|m")
+	st.seen, st.lastContext = time.Now(), 123
+	for i := 0; i < 50; i++ {
+		st.lastContext = int64(1000 + i)
+		c.save()
+	}
+	if _, err := os.Stat(filepath.Join(dir, "compaction-state.json")); err == nil {
+		t.Fatal("the state was written with the compaction lock still held")
+	}
+	c.mu.Unlock()
+	b, err := os.ReadFile(filepath.Join(dir, "compaction-state.json"))
+	if err != nil || !strings.Contains(string(b), `"last_context":1049`) {
+		t.Fatalf("the newest save must be on disk once the lock is released: %v %s", err, b)
+	}
+	if again := newCompactor(config.CompactionConfig{}, filepath.Join(dir, "compaction-state.json"), nil); again.sessions["S|m"] == nil || again.sessions["S|m"].lastContext != 1049 {
+		t.Fatalf("a restart must read it back: %+v", again.sessions["S|m"])
+	}
+}
+
+// Many requests save at once and write after unlocking, in any order: an
+// older save must never land over a newer one.
+func TestConcurrentSavesNeverLeaveAnOlderStateOnDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compaction-state.json")
+	c := newCompactor(config.CompactionConfig{}, path, nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.mu.Lock()
+			st := c.state("S|m")
+			st.seen = time.Now()
+			st.lastContext++
+			c.save()
+			c.mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	b, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(b), `"last_context":200`) {
+		t.Fatalf("the last state must be the one on disk: %v %s", err, b)
 	}
 }
