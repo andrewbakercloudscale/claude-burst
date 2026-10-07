@@ -392,9 +392,14 @@ install() {
     echo "ERROR: the new build failed its own --help smoke test; nothing was installed and the running gateway is untouched." >&2
     exit 1
   fi
+  # replaced is the copy of the binary this run replaces, when there is one:
+  # what the health check after the restart goes back to.
+  local replaced="" old_sha=""
+  old_sha="$(cat "$INSTALL_DIR/.claude-burst.build-sha" 2>/dev/null || true)"
   if [[ -x "$TARGET" ]]; then
     bak_dir="${CLAUDE_BURST_BACKUP_DIR:-$HOME/.config/claude-burst/backups}"
     if mkdir -p "$bak_dir" && cp "$TARGET" "$bak_dir/claude-burst-bin.latest.bak"; then
+      replaced="$bak_dir/claude-burst-bin.latest.bak"
       echo "Kept the binary being replaced: $bak_dir/claude-burst-bin.latest.bak"
     else
       echo "WARNING: could not keep a copy of the binary being replaced in $bak_dir" >&2
@@ -511,6 +516,20 @@ PLIST
     sleep 2
   done
   launchctl kickstart -k "gui/$UID/$LABEL"
+
+  # Does it answer? A build that printed its help can still die on start.
+  # If it does not, the binary it replaced goes back (scripts/install-health.sh).
+  # ${replaced:-/nonexistent}: with no copy kept there is nothing to go back
+  # to, and a backup left by some earlier run is not this run's to restore.
+  source "$ROOT/scripts/health-diagnostics.sh"
+  source "$ROOT/scripts/install-health.sh"
+  local health_rc=0
+  burst_health_or_rollback "$TARGET" "${replaced:-/nonexistent}" "$LABEL" "$INSTALL_DIR/.claude-burst.build-sha" "$old_sha" || health_rc=$?
+  case "$health_rc" in
+    0) ;;
+    2) echo "install.sh FAILED: the new build did not start. The previous one is running again." >&2; exit 1 ;;
+    *) echo "install.sh FAILED: the gateway is not answering." >&2; exit 1 ;;
+  esac
 
   # The gateway watchdog restarts a gateway that died or hung; nothing else
   # does, and the dashboard showed it unarmed after every fresh install

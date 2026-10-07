@@ -154,8 +154,9 @@ by `./install.sh uninstall`.
 
 ### Going back to the previous binary only
 
-`scripts/deploy.sh` backs up the previous binary and rolls it back automatically on a failed
-health check. By hand:
+`scripts/deploy.sh` and `install.sh` (so `burst-repair` and `burst-reinstall` too) back up the
+previous binary and put it back automatically when the new one does not answer within 30
+seconds of starting; the install then fails and says the new build was not installed. By hand:
 
 ```sh
 cp ~/.config/claude-burst/backups/claude-burst-bin.latest.bak ~/.local/bin/claude-burst
