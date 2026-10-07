@@ -1370,8 +1370,13 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		if slot == "primary" {
 			s.noteSessionContext(in, tok)
 		}
-		s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
-			rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
+		// A call that is not a model request, answered quickly with nothing
+		// to note (a heartbeat, an event upload), is in the minute's quiet
+		// count from ServeHTTP and in metrics.jsonl: not a line of its own.
+		if isInference(in.URL.Path) || note != "" || time.Since(start) >= quietSlow {
+			s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
+				rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
+		}
 		s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tok, "", 0, note, destination)
 		return
 	}
