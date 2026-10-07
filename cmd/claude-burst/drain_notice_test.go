@@ -57,7 +57,7 @@ func TestPlannedRestartIsQuietOnce(t *testing.T) {
 	if _, err := os.Stat(marker + ".done"); err != nil {
 		t.Errorf("a planned restart that finished left no .done for the watchdog: %v", err)
 	}
-	announceDrain(0)       // the next restart is news again
+	announceDrain(0) // the next restart is news again
 	notice.Flush(2 * time.Second)
 	evs, _ := notice.Read(path)
 	if len(evs) != 1 || evs[0].Title != "Gateway restarting" {

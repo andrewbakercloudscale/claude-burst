@@ -53,8 +53,8 @@ type interceptResolver struct {
 	cache     map[string]dnsEntry
 	flights   map[string]*lookupFlight // the one lookup in progress per host
 	failed    map[string]failedLookup  // a lookup that just failed, not to be repeated yet
-	preferred string           // the endpoint that last answered; tried first
-	now       func() time.Time // swappable for tests
+	preferred string                   // the endpoint that last answered; tried first
+	now       func() time.Time         // swappable for tests
 }
 
 type dnsEntry struct {

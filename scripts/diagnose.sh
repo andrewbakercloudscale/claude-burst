@@ -5,6 +5,13 @@
 # changes nothing.
 #
 #   scripts/diagnose.sh            writes ~/burst-diagnose-<time>.txt and copies it
+#   scripts/diagnose.sh --check    the checks only: no report, nothing copied
+#
+# It opens with the checks: one line each, PASS, FAIL or SKIP with the reason
+# and what to run, then "N checks, M failed". The exit code is 0 when none
+# failed and 1 when any did, so a script (or a person in a hurry) gets the
+# answer without reading the report. This replaced connectivity-test.sh,
+# which made real paid calls with the stored keys to say less.
 #
 # Secrets are redacted (API keys, tokens, Authorization headers, keychain
 # contents are never read). Paste the report wherever you are getting help.
@@ -52,7 +59,136 @@ probe() { # url
   curl -sS -m 5 -o /dev/null -w "HTTP %{http_code}, connect %{time_connect}s, total %{time_total}s, ip %{remote_ip}\n" "$1" 2>&1
 }
 
+# ---- The checks ----
+# Each is one question with a yes or no answer, asked without a password and
+# without sending a credential anywhere. A check that does not apply to this
+# Mac (the Codex gateway is off, Burst was turned off on purpose) is a SKIP,
+# which is not a failure.
+CHECKS=""; TOTAL=0; FAILED=0; SKIPPED=0
+pass() { TOTAL=$((TOTAL + 1)); CHECKS="${CHECKS}PASS  $1"$'\n'; }
+fail() { TOTAL=$((TOTAL + 1)); FAILED=$((FAILED + 1)); CHECKS="${CHECKS}FAIL  $1"$'\n'"      $2"$'\n'; }
+skip() { SKIPPED=$((SKIPPED + 1)); CHECKS="${CHECKS}SKIP  $1"$'\n'; }
+http_code() { curl -s -m "${2:-5}" -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true; }
+cfg() { # key path, default: a value from config.json
+  /usr/bin/python3 -c '
+import json, sys
+try:
+    v = json.load(open(sys.argv[1]))
+    for k in sys.argv[2].split("."):
+        v = v[k]
+    print(v if v not in (None, "") else sys.argv[3])
+except Exception:
+    print(sys.argv[3])' "$CFG/config.json" "$1" "$2" 2>/dev/null || echo "$2"
+}
+BIN="$HOME/.local/bin/claude-burst"
+LISTEN="$(cfg listen 127.0.0.1:7777)"
+ADMIN="$(cfg admin_listen 127.0.0.1:7788)"
+CONSOLE="$(cfg console_listen 127.0.0.1:7789)"
+MODE="$(cfg intercept.mode base-url)"
+OFF=""; [ -f "$CFG/rolled-back" ] && OFF=1
+
+run_checks() {
+  local v code pid
+
+  if v="$("$BIN" version 2>/dev/null)" && [ -n "$v" ]; then pass "claude-burst $v is installed and runs"
+  else fail "claude-burst is not installed or does not run ($BIN)" "run: burst-reinstall, or ./install.sh from the checkout"; fi
+
+  if [ ! -f "$CFG/config.json" ]; then fail "there is no config.json" "run: claude-burst configure"
+  elif /usr/bin/python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CFG/config.json" 2>/dev/null; then pass "config.json loads"
+  else fail "config.json does not load" "run: claude-burst restore-config"; fi
+
+  if [ -n "$OFF" ]; then
+    skip "Burst was turned off by hand (burst-off): the gateway checks do not apply. claude-burst enable turns it back on"
+  else
+    pid="$(launchctl print "gui/$UID/$LABEL" 2>/dev/null | awk '/^[[:space:]]*pid = [0-9]+/ {print $3; exit}')"
+    if [ -n "$pid" ]; then pass "the gateway is running (pid $pid)"
+    else fail "the gateway is not running" "run: burst-repair"; fi
+
+    if [ "$MODE" = transparent ]; then
+      if grep -qE '^[[:space:]]*127\.0\.0\.1[[:space:]]+api\.anthropic\.com' /etc/hosts 2>/dev/null; then pass "/etc/hosts sends api.anthropic.com to this Mac (transparent mode)"
+      else fail "transparent mode, but /etc/hosts does not send api.anthropic.com to this Mac" "run: burst-repair"; fi
+      code="$(http_code https://api.anthropic.com/healthz)"
+      if [ "$code" = 200 ]; then pass "the gateway answers as api.anthropic.com"
+      else fail "the gateway does not answer as api.anthropic.com (HTTP ${code:-000})" "run: burst-repair; burst-off takes Burst out of the path meanwhile"; fi
+    else
+      code="$(http_code "http://$LISTEN/healthz")"
+      if [ "$code" = 200 ]; then pass "the gateway answers on $LISTEN"
+      else fail "the gateway does not answer on $LISTEN (HTTP ${code:-000})" "run: burst-repair; burst-off takes Burst out of the path meanwhile"; fi
+      if grep -qE "\"ANTHROPIC_BASE_URL\" *: *\"https?://$LISTEN" "$HOME/.claude/settings.json" 2>/dev/null; then pass "Claude Code is pointed at the gateway (settings.json)"
+      else fail "Claude Code is not pointed at the gateway: settings.json has no ANTHROPIC_BASE_URL for $LISTEN" "run: claude-burst enable"; fi
+    fi
+
+    code="$(http_code "http://$ADMIN/")"
+    if [ "$code" = 200 ]; then pass "the dashboard answers on $ADMIN"
+    else fail "the dashboard does not answer on $ADMIN (HTTP ${code:-000})" "run: burst-repair"; fi
+
+    if launchctl print "gui/$UID/$LABEL-selfheal" >/dev/null 2>&1; then pass "the self-heal watchdog is loaded"
+    else fail "the self-heal watchdog is not loaded: a gateway that stops will stay stopped" "run: scripts/install-selfheal-watchdog.sh"; fi
+
+    if [ -f "$CFG/self-heal-crashloop" ]; then fail "the gateway keeps restarting (the watchdog reported a crash loop)" "see the end of $CFG/launchd.err.log; run: burst-repair"
+    else pass "no crash loop reported"; fi
+  fi
+
+  if [ "$CONSOLE" = off ]; then skip "the support console is off (console_listen)"
+  else
+    code="$(http_code "http://$CONSOLE/")"
+    if [ "$code" = 200 ]; then pass "the support console answers on $CONSOLE"
+    else fail "the support console does not answer on $CONSOLE (HTTP ${code:-000})" "run: scripts/install-console.sh"; fi
+  fi
+
+  # The network, then Anthropic through it. In transparent mode this Mac's
+  # api.anthropic.com is the gateway, so Anthropic itself is asked about by
+  # the gateway: /api/test-connection is its own answer.
+  code="$(http_code https://captive.apple.com/hotspot-detect.html)"
+  if [ "$code" = 200 ]; then pass "this Mac has a network"
+  else fail "this Mac has no working network (captive.apple.com: HTTP ${code:-000})" "nothing in Burst fixes this: check Wi-Fi, VPN and proxy"; fi
+  if [ "$MODE" = transparent ] && [ -z "$OFF" ]; then
+    if curl -s -m 10 "http://$ADMIN/api/test-connection" 2>/dev/null | grep -q '"ok": *true'; then pass "the gateway reaches Anthropic"
+    else fail "the gateway's own connection test fails" "open http://$ADMIN/ and read the Checks; run: burst-repair"; fi
+  else
+    code="$(http_code https://api.anthropic.com/v1/messages 8)"
+    case "$code" in
+      ""|000) fail "Anthropic cannot be reached from this Mac" "check the network, DNS and any proxy: env | grep -i proxy" ;;
+      *) pass "Anthropic is reachable (HTTP $code with no credentials)" ;;
+    esac
+  fi
+
+  # The secondary's address, with no key sent: any HTTP answer is a path.
+  v="$(cfg secondary.base_url "")"
+  if [ -z "$v" ]; then skip "no secondary with an address is configured"
+  else
+    code="$(http_code "$v" 8)"
+    case "$code" in
+      ""|000) fail "the secondary cannot be reached ($v)" "check the address in the dashboard's Secondary section" ;;
+      *) pass "the secondary is reachable ($v)" ;;
+    esac
+  fi
+
+  v="$(cfg codex.listen 127.0.0.1:7779)"
+  if [ "$v" = off ] || [ -n "$OFF" ]; then skip "the Codex gateway is off"
+  elif ! grep -q '^# BEGIN claude-burst' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null; then skip "Codex is not routed through Burst"
+  else
+    code="$(http_code "http://$v/backend-api/codex/models" 10)"
+    case "$code" in
+      ""|000) fail "Codex is routed through Burst and its port $v does not answer" "run: burst-repair; claude-burst codex disable sends Codex straight to ChatGPT" ;;
+      *) pass "the Codex gateway forwards (HTTP $code with no login)" ;;
+    esac
+  fi
+}
+
+run_checks
+SUMMARY="$TOTAL checks, $FAILED failed"
+[ "$SKIPPED" -gt 0 ] && SUMMARY="$SUMMARY, $SKIPPED skipped"
+
+if [ "${1:-}" = "--check" ]; then
+  printf '%s%s\n' "$CHECKS" "$SUMMARY"
+  [ "$FAILED" -eq 0 ]; exit $?
+fi
+
 {
+section "Checks: $SUMMARY"
+printf '%s' "$CHECKS"
+
 section "When and where"
 date '+%Y-%m-%d %H:%M:%S %Z'
 sw_vers 2>/dev/null | tr '\n' ' '; echo
@@ -110,10 +246,7 @@ run "lsof 7777 7788 17777 7779 443" bash -c 'lsof -nP -iTCP:7777 -iTCP:7788 -iTC
 
 section "Gateway health"
 # The ports config.json names; the defaults when it names none.
-LISTEN=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("listen","127.0.0.1:7777"))' "$CFG/config.json" 2>/dev/null || echo 127.0.0.1:7777)
-ADMIN=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("admin_listen","127.0.0.1:7788"))' "$CFG/config.json" 2>/dev/null || echo 127.0.0.1:7788)
 echo "gateway listens on $LISTEN, dashboard on $ADMIN (from config.json)"
-MODE=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("intercept",{}).get("mode","base-url"))' "$CFG/config.json" 2>/dev/null || echo base-url)
 echo "intercept mode: $MODE"
 if [ "$MODE" = transparent ]; then
   # Here the gateway is reached only as api.anthropic.com, through /etc/hosts
@@ -196,5 +329,7 @@ section "End"
 } > "$OUT" 2>&1
 
 pbcopy < "$OUT" 2>/dev/null && copied=" and copied to the clipboard" || copied=""
+printf '%s%s\n\n' "$CHECKS" "$SUMMARY"
 echo "Report written to $OUT$copied ($(wc -l < "$OUT" | tr -d ' ') lines)."
 echo "It needs no password and changed nothing. Secrets are redacted; skim it before sharing."
+[ "$FAILED" -eq 0 ]
