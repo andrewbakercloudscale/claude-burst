@@ -13,6 +13,7 @@ import (
 
 func readHandoff(t *testing.T, s *Server, sid string) (*Handoff, bool) {
 	t.Helper()
+	unwritten(s.compaction.path).Wait() // a save is written just after the lock is released
 	b, err := os.ReadFile(filepath.Join(handoffDir(s.compaction.path), sid+".json"))
 	if err != nil {
 		return nil, false

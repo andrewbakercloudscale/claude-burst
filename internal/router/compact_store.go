@@ -49,7 +49,7 @@ func (c *compactor) resolve(key string, msgs []json.RawMessage) string {
 }
 
 type compactor struct {
-	mu       sync.Mutex
+	mu       saveMutex
 	cfg      config.CompactionConfig
 	sessions map[string]*compactState // keyed by session id + "|" + model
 	path     string                   // where sessions survive a restart; "" = memory only
@@ -138,6 +138,7 @@ type savedCompaction struct {
 const savedTTL = 48 * time.Hour
 
 func (c *compactor) load() {
+	unwritten(c.path).Wait()
 	if c.path == "" {
 		return
 	}
@@ -178,7 +179,7 @@ func (c *compactor) load() {
 	}
 	// The files are what the mod reads, and the rules for which summary a
 	// session offers may have changed with this build.
-	c.writeHandoffs()
+	writeHandoffFiles(c.handoffFiles())
 }
 
 // save writes every live session to disk. Called with c.mu held, only on
@@ -201,11 +202,84 @@ func (c *compactor) save() {
 			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned, Hand: st.hand, Tail: st.tail,
 			Parts: st.parts, Raw: st.rawContext, Marks: st.marks, NextMarks: st.nextMarks}
 	}
-	c.writeHandoffs()
-	b, err := json.Marshal(out)
+	w := &diskWrite{}
+	w.dir, w.handoffs = c.handoffFiles()
+	w.state, w.err = json.Marshal(out)
+	c.mu.queue(c, w)
+}
+
+// diskWrite is one save, as bytes: what save decided under the lock, for
+// Unlock to put on disk once the lock is released.
+type diskWrite struct {
+	seq      uint64
+	state    []byte
+	err      error
+	dir      string
+	handoffs map[string][]byte
+}
+
+// saveMutex is the compaction lock. save is called with it held, on the
+// request path, and until 7 Oct 2026 it wrote the files there too: every
+// request of every session waited on the disk (megabytes of summaries and
+// a directory listing) whenever any session's state changed. Now save only
+// decides what to write, and Unlock writes it after letting go. The
+// request that changed the state still waits for its own write, so
+// nothing is lost when the gateway stops; nobody else does.
+type saveMutex struct {
+	sync.Mutex
+	c       *compactor
+	pending *diskWrite // guarded by the lock itself
+	seq     uint64
+
+	writeMu sync.Mutex
+	written uint64 // guarded by writeMu
+}
+
+// queue replaces any save not yet written: each is the whole state.
+func (m *saveMutex) queue(c *compactor, w *diskWrite) {
+	m.seq++
+	w.seq = m.seq
+	if m.pending == nil {
+		unwritten(c.path).Add(1)
+	}
+	m.c, m.pending = c, w
+}
+
+// unwrittenSaves counts, for each state file, the saves decided and not
+// yet on disk, so a compactor loading that file in the same process reads
+// what was saved. Between processes the gateway's exit does the waiting:
+// its last save returns only when written.
+var unwrittenSaves sync.Map
+
+func unwritten(path string) *sync.WaitGroup {
+	wg, _ := unwrittenSaves.LoadOrStore(path, &sync.WaitGroup{})
+	return wg.(*sync.WaitGroup)
+}
+
+func (m *saveMutex) Unlock() {
+	w, c := m.pending, m.c
+	m.pending = nil
+	m.Mutex.Unlock()
+	if w == nil {
+		return
+	}
+	defer unwritten(c.path).Done()
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	// Two requests can reach here out of order: the older save loses.
+	if w.seq < m.written {
+		return
+	}
+	m.written = w.seq
+	c.writeDisk(w)
+}
+
+func (c *compactor) writeDisk(w *diskWrite) {
+	writeHandoffFiles(w.dir, w.handoffs)
+	err := w.err
 	if err == nil {
 		tmp := c.path + ".tmp"
-		if err = os.WriteFile(tmp, b, 0600); err == nil {
+		if err = os.WriteFile(tmp, w.state, 0600); err == nil {
 			err = os.Rename(tmp, c.path)
 		}
 	}

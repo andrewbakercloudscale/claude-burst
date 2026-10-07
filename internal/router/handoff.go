@@ -199,10 +199,10 @@ func (c *compactor) supersede(key string, first json.RawMessage) bool {
 // writeHandoffs makes the handoff directory hold exactly the summaries in
 // force: one file per session, and none for a session whose summary was
 // dropped, which must never be handed to Claude Code. Caller holds c.mu.
-func (c *compactor) writeHandoffs() {
-	dir := handoffDir(c.path)
+func (c *compactor) handoffFiles() (dir string, files map[string][]byte) {
+	dir = handoffDir(c.path)
 	if dir == "" {
-		return
+		return "", nil
 	}
 	best := map[string]*Handoff{}
 	// A conversation the session left behind (Claude Code took its summary
@@ -231,26 +231,38 @@ func (c *compactor) writeHandoffs() {
 			best[sid] = st.hand
 		}
 	}
+	files = map[string][]byte{}
+	for sid, h := range best {
+		if strings.ContainsAny(sid, "/\\") || sid == "" {
+			continue
+		}
+		if b, err := json.Marshal(h); err == nil {
+			files[sid] = b
+		}
+	}
+	return dir, files
+}
+
+// writeHandoffFiles makes dir hold exactly files: one hand-off a session,
+// and none for a session that has none. Disk only, so it runs off the
+// compaction lock.
+func writeHandoffFiles(dir string, files map[string][]byte) {
+	if dir == "" {
+		return
+	}
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
-		if sid := strings.TrimSuffix(e.Name(), ".json"); best[sid] == nil {
+		if _, ok := files[strings.TrimSuffix(e.Name(), ".json")]; !ok {
 			os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
-	if len(best) == 0 {
+	if len(files) == 0 {
 		return
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	for sid, h := range best {
-		if strings.ContainsAny(sid, "/\\") || sid == "" {
-			continue
-		}
-		b, err := json.Marshal(h)
-		if err != nil {
-			continue
-		}
+	for sid, b := range files {
 		p := filepath.Join(dir, sid+".json")
 		if old, err := os.ReadFile(p); err == nil && string(old) == string(b) {
 			continue
