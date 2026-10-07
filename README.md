@@ -363,6 +363,29 @@ claude-burst keychain-set                    # reads AWS_BEARER_TOKEN_BEDROCK
 claude-burst configure --primary anthropic-api-key --secondary bedrock
 ```
 
+### Inside a Claude Code session
+
+Every slash command Burst adds. The first two come with Pauseless Compaction, the rest with the `burst-session` mod (the dashboard's **In-session band** section installs it).
+
+| Command | What it does |
+| --- | --- |
+| `/compact-async` | Compacts now, in the background, with no pause |
+| `/compact-async-full` | Also shrinks what Claude Code holds, with the summary Burst already wrote |
+| `/burst` | Opens a pane with the usage panel's summary and Burst's route, context and compaction state |
+| `/burst band` | Puts the band above the prompt back, or takes it away |
+| `/context-bar` | Shows or hides the bar of what the context Burst sends is made of |
+| `/burst-dump` | Lists everything in the context Burst last sent for this session, which is what the cache holds |
+| `/burst-dump <word>` | The same list, narrowed to items with the word in their name or first lines |
+| `/burst-dump <number>` | One item in full |
+| `/burst-prune <word>` | Takes out every tool result and instruction file whose file, command or name has the word: a repository's name, a file |
+| `/burst-prune stale` | Takes out out of date copies of files read again later, results for deleted files, and large old results |
+| `/burst-prune results` | Takes out every tool result from before the latest prompt |
+| `/burst-prune undo` | Puts back everything pruned or removed from this session |
+| `/claude-burst-revert` | Turns Burst off and sends Claude Code straight to Anthropic. Works while the gateway is down |
+| `/claude-burst-reinstall` | Fetches the newest Burst from GitHub and installs it again. Works while the gateway is down |
+
+**To shrink a context that is mostly tool results:** `/burst-prune stale` at any time, or `/burst-prune results` when a task is finished. Sent to the wrong session? `/burst-prune <the other repository's name>` takes out what that work read. Each prune costs one cache rewrite of what follows the first removed item, and `/burst-prune undo` reverses it. See [the context inspector](docs/dashboard.md#context-inspector).
+
 ## Uninstall
 
 ```bash
