@@ -63,7 +63,7 @@ Under the rules is a box for your own list, one to a line: project code names, c
 
 ## Last 50 masks
 
-The section ends with the last 50 masks: when, which repository, which rule, where it was found (your prompt, tool output, Claude's reply, the system prompt) and the mask. A value is listed the first time it is masked in a session, and the value itself is never kept. The list starts again when the gateway restarts; the gateway log holds the same lines for longer.
+The section ends with the last 50 masks: when, which repository, which rule, where it was found (your prompt, tool output, Claude's reply, the system prompt) and the mask. A value is listed the first time it is masked in a session, and the value itself is never kept. The list is kept across restarts; the gateway log holds the same lines for longer.
 
 There to switch on (noisy in code, so off):
 
@@ -79,10 +79,10 @@ There to switch on (noisy in code, so off):
 
 - **It never refuses a request.** A refused request breaks the turn; a masked one does not.
 - **Only the secret part goes.** A connection string keeps its host, port and database; a signed link keeps its path; a `.env` file keeps its names, ports, links and paths.
-- **The same value gets the same mask for the whole session.** Claude can tell two keys apart (`[APIKEY-1]`, `[APIKEY-2]`), and Anthropic's prompt cache and Burst's compaction keep working.
-- **You are told once per value.** A line under the prompt, a pop-up, and a line in the gateway log with the session, the rule and the mask. The value itself is never written anywhere.
+- **The same value gets the same mask for the whole session**, across gateway restarts too. Claude can tell two keys apart (`[APIKEY-1]`, `[APIKEY-2]`), and Anthropic's prompt cache and Burst's compaction keep working.
+- **You are told once per value.** A line under the prompt, a pop-up, and a line in the gateway log with the session, the rule and the mask. The value itself is never written anywhere: to keep a session's masks across a restart, `automask-state.json` files each mask under a hash of its value, made with a key in `automask.key` beside it (both readable by you only, a session's entries dropped after a day idle). Someone who can read both files could test a guess against a hash, and could as easily read the value in Claude Code's own transcript on the same Mac.
 - **Everything text is looked at**: the system prompt, your prompts, tool output and earlier turns. Thinking blocks, pictures and the tool calls Claude writes are left as they are.
-- **The dashboard counts** how many values each rule masked since the gateway started. The [Context inspector](dashboard.md#context-inspector) flags an item holding something a rule would mask.
+- **The dashboard counts** how many values each rule has masked, and since when; the counts are kept across restarts. The [Context inspector](dashboard.md#context-inspector) flags an item holding something a rule would mask.
 
 ## What to expect when a key is masked
 

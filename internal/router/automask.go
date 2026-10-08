@@ -2,9 +2,14 @@ package router
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -23,8 +28,152 @@ type masker struct {
 	cfg      config.AutomaskConfig
 	sessions map[string]*maskSession
 	notices  map[string][]string // session -> lines for under the prompt
-	totals   map[string]int      // rule -> values masked since the gateway started
+	totals   map[string]int      // rule -> values masked since `since`
+	since    time.Time           // when the counting began
 	recent   []AutomaskHit       // the last maskRecentMax new masks, oldest first
+	// path is where the above survives a restart, "" for memory only; key
+	// is what each session's table is hashed with, so no value is in it.
+	path    string
+	key     []byte
+	logger  *log.Logger
+	seq     uint64 // saves decided, guarded by mu
+	writeMu sync.Mutex
+	written uint64 // guarded by writeMu
+}
+
+// savedMasker is the masker on disk. Until 8 Oct 2026 it was memory only,
+// and every restart began each session's masks at 1 again: a session that
+// sends only what is new could then be given [APIKEY-1] for a second key
+// while the history the API holds used it for the first, and a session
+// that sends its history whole was told of every old value once more.
+// The values are not here: each is filed under a hash keyed with
+// automask.key, a file beside this one.
+type savedMasker struct {
+	Since    time.Time                   `json:"since"`
+	Totals   map[string]int              `json:"totals,omitempty"`
+	Recent   []AutomaskHit               `json:"recent,omitempty"`
+	Sessions map[string]savedMaskSession `json:"sessions,omitempty"`
+}
+
+type savedMaskSession struct {
+	Masks  map[string]string `json:"masks"`
+	Counts map[string]int    `json:"counts"`
+	Used   time.Time         `json:"used"`
+}
+
+// automaskStatePath is where the masker is kept, beside the gateway state.
+func automaskStatePath(statePath string) string {
+	if statePath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(statePath), "automask-state.json")
+}
+
+// maskKey reads the key the tables are hashed with, making it the first
+// time. nil when it can be neither read nor made: the masker then keeps
+// everything in memory, as it did before.
+func maskKey(path string) []byte {
+	if b, err := os.ReadFile(path); err == nil {
+		if k, err := hex.DecodeString(string(bytes.TrimSpace(b))); err == nil && len(k) == 32 {
+			return k
+		}
+	}
+	k := make([]byte, 32)
+	if _, err := rand.Read(k); err != nil {
+		return nil
+	}
+	if os.WriteFile(path, []byte(hex.EncodeToString(k)+"\n"), 0600) != nil {
+		return nil
+	}
+	return k
+}
+
+func (m *masker) load() {
+	if m.path == "" {
+		return
+	}
+	if m.key = maskKey(filepath.Join(filepath.Dir(m.path), "automask.key")); m.key == nil {
+		if m.logger != nil {
+			m.logger.Printf("error stage=automask_load path=%s: no key could be read or written beside it, so masks are kept in memory only", m.path)
+		}
+		m.path = ""
+		return
+	}
+	b, err := os.ReadFile(m.path)
+	if err != nil {
+		return
+	}
+	var saved savedMasker
+	if err := json.Unmarshal(b, &saved); err != nil {
+		if m.logger != nil {
+			m.logger.Printf("error stage=automask_load path=%s err=%v (starting with no masks)", m.path, err)
+		}
+		return
+	}
+	if !saved.Since.IsZero() {
+		m.since = saved.Since
+	}
+	for k, v := range saved.Totals {
+		m.totals[k] = v
+	}
+	m.recent = saved.Recent
+	for sid, sv := range saved.Sessions {
+		ms := &maskSession{masks: automask.NewSessionFrom(m.key, sv.Masks, sv.Counts), cache: map[[20]byte][]byte{}, env: map[string]bool{}, used: sv.Used}
+		ms.masks.SetWords(m.cfg.Words)
+		m.sessions[sid] = ms
+	}
+	m.pruneSessions()
+}
+
+// snapshot is the masker as it goes to disk, nil when it is memory only.
+// Called with mu held.
+func (m *masker) snapshot() ([]byte, uint64) {
+	if m.path == "" {
+		return nil, 0
+	}
+	out := savedMasker{Since: m.since, Totals: m.totals, Recent: m.recent, Sessions: map[string]savedMaskSession{}}
+	for sid, ms := range m.sessions {
+		masks, counts := ms.masks.Snapshot()
+		if len(masks) == 0 {
+			continue
+		}
+		out.Sessions[sid] = savedMaskSession{Masks: masks, Counts: counts, Used: ms.used}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, 0
+	}
+	m.seq++
+	return b, m.seq
+}
+
+// write puts a snapshot on disk, off the lock. Two can arrive out of
+// order: the older loses.
+func (m *masker) write(b []byte, seq uint64) {
+	if b == nil {
+		return
+	}
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	if seq < m.written {
+		return
+	}
+	m.written = seq
+	tmp := m.path + ".tmp"
+	err := os.WriteFile(tmp, b, 0600)
+	if err == nil {
+		err = os.Rename(tmp, m.path)
+	}
+	if err != nil && m.logger != nil {
+		m.logger.Printf("error stage=automask_save path=%s err=%v", m.path, err)
+	}
+}
+
+// AutomaskSince is when the counts of AutomaskTotals began.
+func (s *Server) AutomaskSince() time.Time {
+	s.automask.mu.Lock()
+	defer s.automask.mu.Unlock()
+	return s.automask.since
 }
 
 // AutomaskHit is one new mask as the dashboard lists it. The mask only:
@@ -41,8 +190,7 @@ type AutomaskHit struct {
 
 const maskRecentMax = 50
 
-// AutomaskRecent is the last 50 new masks since the gateway started,
-// newest first.
+// AutomaskRecent is the last 50 new masks, newest first.
 func (s *Server) AutomaskRecent() []AutomaskHit {
 	s.automask.mu.Lock()
 	defer s.automask.mu.Unlock()
@@ -64,8 +212,11 @@ type maskSession struct {
 // (the masks themselves are kept, so nothing changes on the wire).
 const maskCacheMax = 20000
 
-func newMasker(c config.AutomaskConfig) *masker {
-	return &masker{cfg: c, sessions: map[string]*maskSession{}, notices: map[string][]string{}, totals: map[string]int{}}
+func newMasker(c config.AutomaskConfig, path string, logger *log.Logger) *masker {
+	m := &masker{cfg: c, sessions: map[string]*maskSession{}, notices: map[string][]string{}, totals: map[string]int{},
+		since: time.Now(), path: path, logger: logger}
+	m.load()
+	return m
 }
 
 // SetAutomask applies c to the running gateway; the dashboard's switches.
@@ -80,8 +231,8 @@ func (s *Server) SetAutomask(c config.AutomaskConfig) {
 	}
 }
 
-// AutomaskTotals is how many values each rule has masked since the gateway
-// started, for the dashboard.
+// AutomaskTotals is how many values each rule has masked since
+// AutomaskSince, for the dashboard.
 func (s *Server) AutomaskTotals() map[string]int {
 	s.automask.mu.Lock()
 	defer s.automask.mu.Unlock()
@@ -133,7 +284,7 @@ func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
 	m.mu.Lock()
 	ms := m.sessions[sid]
 	if ms == nil {
-		ms = &maskSession{masks: automask.NewSession(), cache: map[[20]byte][]byte{}, env: map[string]bool{}, used: time.Now()}
+		ms = &maskSession{masks: automask.NewSessionFrom(m.key, nil, nil), cache: map[[20]byte][]byte{}, env: map[string]bool{}, used: time.Now()}
 		ms.masks.SetWords(cfg.Words)
 		m.sessions[sid] = ms
 		m.pruneSessions()
@@ -214,7 +365,10 @@ func (s *Server) noteMasked(sid string, hits []automask.Hit) {
 		s.automask.notices[sid] = append(s.automask.notices[sid],
 			"⚡ Claude Burst, automask: masked "+sum+" before sending. Claude sees only the masks; the originals never leave this Mac")
 	}
+	// A table changes only here, so this is every save it needs.
+	b, seq := s.automask.snapshot()
 	s.automask.mu.Unlock()
+	s.automask.write(b, seq)
 	where := ""
 	if repo != "" {
 		where = " in " + repo

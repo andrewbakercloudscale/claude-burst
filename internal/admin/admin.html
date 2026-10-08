@@ -1365,11 +1365,11 @@
       </div>
       <div class="row" style="align-items:center;gap:12px;margin-top:12px">
         <button class="primary" id="amSave">&#x2713; Save</button>
-        <span class="hint">Masked counts are since the gateway last started.</span>
+        <span class="hint" id="amSince">Masked counts are kept across restarts.</span>
       </div>
       <div id="amNote"></div>
       <h3 style="margin:18px 0 4px">Last 50 masks</h3>
-      <div class="hint" style="margin-bottom:6px">Each value masked for the first time in a session, newest first, since the gateway last started. The mask only: the value itself is never kept. Every one is also a line in the gateway log.</div>
+      <div class="hint" style="margin-bottom:6px">Each value masked for the first time in a session, newest first, kept across restarts. The mask only: the value itself is never kept. Every one is also a line in the gateway log.</div>
       <table class="stbl" id="amRecent"></table>
     </div>
   </section>
@@ -6732,7 +6732,8 @@ function drawAutomask(st) {
       `<tr><td>${esc(new Date(h.at).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit"}))}</td>` +
       `<td title="${esc(h.session)}">${esc(h.repo || (h.session ? h.session.slice(0, 8) : "(no session)"))}</td><td>${esc(h.name)}</td>` +
       `<td>${esc(amWhere[h.where] || h.where)}</td><td><code>${esc(h.mask)}</code></td></tr>`).join("") + `</tbody>`
-    : `<tbody><tr><td class="hint">Nothing masked since the gateway last started.</td></tr></tbody>`;
+    : `<tbody><tr><td class="hint">Nothing masked yet.</td></tr></tbody>`;
+  if (st.since) $("amSince").textContent = `Masked counts are since ${new Date(st.since).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"})}, and are kept across restarts.`;
   const masked = st.rules.reduce((a, r) => a + r.masked, 0);
   setDot("nd-automask", st.enabled ? (masked ? "warn" : "ok") : "");
 }

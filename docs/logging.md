@@ -87,6 +87,7 @@ All under `~/.config/claude-burst/` unless a path is given.
 | `self-heal.log`, `watchdog.log`, `health-check-failures.log` | The watchdogs, and what a failed health check looked like | 2MB and one older file each |
 | `hotspot.log` | Hotspot joins | 400 lines |
 | `compaction-outcomes.jsonl` | Summaries dropped or ended, for the learner | None: a line of about 100 bytes for each such event |
+| `automask-state.json`, `automask.key` | Automask's counts, its last 50 masks, and each session's masks filed under a keyed hash of the value: no value | Rewritten whole when a new value is masked; a session's entries go after a day idle |
 | `compaction-threads.json` | Which conversation each of the latest 512 replies belongs to, so a restart does not lose a session's place: ids and sizes, no content | Rewritten whole, about 100KB at most |
 | `/var/log/claude-burst-pf.log` | The pf redirect guard (root) | One older file |
 

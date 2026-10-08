@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/automask"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -25,11 +26,13 @@ type automaskStatus struct {
 	Rules   []automaskRule       `json:"rules"`
 	Words   []string             `json:"words"`
 	Recent  []router.AutomaskHit `json:"recent"`
+	// Since is when the rules' Masked counts began.
+	Since time.Time `json:"since"`
 }
 
 func (s *Server) automaskStatus(c config.AutomaskConfig) automaskStatus {
 	totals := s.gateway.AutomaskTotals()
-	out := automaskStatus{Enabled: c.Enabled, Words: append([]string{}, c.Words...), Recent: s.gateway.AutomaskRecent()}
+	out := automaskStatus{Enabled: c.Enabled, Words: append([]string{}, c.Words...), Recent: s.gateway.AutomaskRecent(), Since: s.gateway.AutomaskSince()}
 	for _, r := range automask.Rules {
 		out.Rules = append(out.Rules, automaskRule{ID: r.ID, Name: r.Name, Note: r.Note, Default: r.Default,
 			On: router.RuleOn(c, r), Masked: totals[r.ID]})
