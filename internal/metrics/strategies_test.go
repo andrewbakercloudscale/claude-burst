@@ -42,7 +42,7 @@ func TestThreeWaysOfCompactingAreCostedOverTheSameRequests(t *testing.T) {
 	SetLongWritePricer(func(model string, tokens int64) float64 { return float64(tokens) * 5 / 1e6 })
 	t.Cleanup(func() { SetPricer(nil); SetLongWritePricer(nil) })
 
-	st, err := CompactionStrategiesSince(p, at, 250_000, func(session string) (string, string) {
+	st, err := CompactionStrategiesSince(p, at, 250_000, 0, func(session string) (string, string) {
 		if session == "S" {
 			return "big", "/r/big"
 		}
@@ -102,7 +102,7 @@ func TestThreeWaysOfCompactingAreCostedOverTheSameRequests(t *testing.T) {
 			t.Fatalf("cheapest %+v, yet %dk cost $%.4f", big.Cheapest, z.At/1000, z.USD)
 		}
 	}
-	if small.Cheapest == nil || small.Cheapest.At != 100_000 || small.Cheapest.USD != small.Actual.USD {
+	if small.Cheapest == nil || small.Cheapest.At != 500_000 || small.Cheapest.USD != small.Actual.USD {
 		t.Fatalf("small's cheapest: %+v", small.Cheapest)
 	}
 	near("each repository on its own cheapest size", st.PerRepoUSD, big.Cheapest.USD+small.Cheapest.USD)
@@ -137,7 +137,7 @@ func TestATwinKeepsItsOwnCompactionUntilTheUserClears(t *testing.T) {
 	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, err := CompactionStrategiesSince(p, at, 250_000, nil)
+	st, err := CompactionStrategiesSince(p, at, 250_000, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1229,7 +1229,7 @@
           <input type="number" id="icFloor" min="50" max="900" step="10" style="width:110px">
         </div>
         <div data-ic>
-          <label for="icBuffer" title="Added on top of the cheapest size, so a learned size is less eager than the money alone says">Buffer (%)</label>
+          <label for="icBuffer" title="Added on top of the cheapest size where it is worked out from a repository's compactions, so it is less eager than the money alone says. Not added to a size replayed over the repository's requests">Buffer (%)</label>
           <input type="number" id="icBuffer" min="0" max="200" step="5" style="width:110px">
         </div>
         <div data-static>
@@ -1245,7 +1245,7 @@
         <span class="hint" id="icNote"></span>
       </div>
       <div class="hint" style="margin-top:6px" data-static><strong>Compact at</strong>: the context that triggers a summary, the same for every repository (default 300k). <strong>Warn when at</strong>: a line in the gateway log and a flag in the table below once a session reaches this share of <em>Compact at</em> (default 80%, so 240k at the default). <strong>Max 1 compaction per</strong>: the least time between two compactions of the same session (default 30 minutes), so a session that grows fast is not summarised over and over.</div>
-      <div class="hint" style="margin-top:6px;line-height:1.55" data-ic>Burst learns a size for each repository from the last 14 days of its own compactions: what one leaves behind, how fast the context grows again, and what one costs. Compacting early costs summaries; compacting late costs every turn in between. The learned size is the latest one that costs no more than 5% more a turn than where the two add up to the least, plus the <strong>Buffer</strong> (20% unless you change it: better to compact a little late than too early), kept between <strong>Never below</strong> and <strong>Never above</strong>, and adjusted once a day by a tenth at most. A repository with fewer than 3 compactions starts in the middle, halfway between <em>Never below</em> and <em>Never above</em>. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. One failure among compactions that paid moves a repository's size up a little; two in a row add a tenth at once, and where most lose money it goes back to <em>Never above</em>. There is no warning in this mode. <strong>Max 1 compaction per</strong> is the least time between two compactions of the same session (default 30 minutes). Apart from all of this, a session left idle for 50 minutes at <em>Never below</em> or more is summarised before its one-hour cache expires, so coming back writes the summary to the cache and not the whole history.</div>
+      <div class="hint" style="margin-top:6px;line-height:1.55" data-ic>Burst learns a size for each repository from the last 14 days of its own requests. Compacting early costs summaries; compacting late costs every turn in between. Where a repository has 300 requests or more, every size from <strong>Never below</strong> to <strong>Never above</strong> is replayed over them, with the same least time between a session's compactions, and the learned size is the latest one whose replay cost no more than 5% above the cheapest (better to compact a little late than too early). It is taken at once and whenever the replay moves. A repository with fewer requests is worked out from its own compactions instead (what one leaves behind, how fast the context grows again, what one costs), plus the <strong>Buffer</strong> (20% unless you change it), and adjusted once a day by a tenth at most. With too little of either it starts in the middle, halfway between <em>Never below</em> and <em>Never above</em>. <strong>A failure is a compaction that lost money</strong>: it did not save what it cost, or its summary was paid for and never used. One failure among compactions that paid moves a repository's size up a little; two in a row add a tenth at once, and where most lose money it goes back to <em>Never above</em>. There is no warning in this mode. <strong>Max 1 compaction per</strong> is the least time between two compactions of the same session (default 30 minutes). Apart from all of this, a session left idle for 50 minutes at <em>Never below</em> or more is summarised before its one-hour cache expires, so coming back writes the summary to the cache and not the whole history.</div>
       <div id="icTable" style="margin-top:8px" data-ic></div>
       </div>
       <h3 class="mac-h">Repository overrides</h3>
@@ -4778,6 +4778,19 @@ function strategyValue(d, key, metric) {
   const c = d[key] || {};
   return metric === "ctx" ? (d.requests ? (c.tokens || 0) / d.requests : 0) : (c.usd || 0);
 }
+// strategyBest is what hindsight says of a view (every repository, or one):
+// the size whose replay cost least, what Burst cost over it, and for every
+// repository together what each one on its own best size would have cost.
+// null with no sweep in the data (a gateway older than the page). Pure, for
+// page_script_test.go.
+function strategyBest(st, view) {
+  const best = view && view.cheapest;
+  if (!best || !(best.usd > 0)) return null;
+  const actual = (view.actual || {}).usd || 0;
+  const out = {at: best.at, usd: best.usd, over: actual - best.usd, share: (actual - best.usd) / best.usd};
+  if (view === st && st.per_repo_usd > 0) out.perRepo = st.per_repo_usd;
+  return out;
+}
 function strategyNames(st) {
   const k = n => Math.round((n || 0) / 1000) + "k";
   return {default: `Claude Code alone (compacts at ${k(st.default_at)})`, fixed: `Fixed Compact at ${k(st.fixed_at)}`, actual: "Burst, as it ran"};
@@ -4809,9 +4822,16 @@ function drawStrategies() {
   const dU = (view.default || {}).usd || 0, fU = (view.fixed || {}).usd || 0, aU = (view.actual || {}).usd || 0;
   const pct = (a, b) => b > 0 ? ` (${Math.round(a / b * 100)}%)` : "";
   $("stSum").innerHTML = `Burst <b>${esc(money(aU))}</b>: ${netUSD(dU - aU)}${esc(pct(dU - aU, dU))} under Claude Code alone, ${netUSD(fU - aU)}${esc(pct(fU - aU, fU))} under fixed`;
+  const best = strategyBest(st, view);
+  if (best) {
+    const kk = n => Math.round(n / 1000) + "k";
+    $("stSum").innerHTML += `<br>Best size in hindsight <b>${esc(kk(best.at))}</b>, ${esc(money(best.usd))}: Burst cost ${esc(money(Math.abs(best.over)))} (${Math.round(Math.abs(best.share) * 100)}%) ${best.over >= 0 ? "more" : "less"}` +
+      (best.perRepo ? `. Each repository on its own best size: ${esc(money(best.perRepo))}` : "");
+  }
   $("stNote").textContent = "Each line is the context every request resent, at the cache-read price, plus what that strategy's compactions cost (the summary and the cache rewrite). " +
     "Burst's line is what was recorded; the other two are the same sessions replayed with a compaction where that strategy would have made one. " +
-    "Output and new input are the same three ways and are left out. API-equivalent dollars.";
+    "Output and new input are the same three ways and are left out. API-equivalent dollars. " +
+    "The best size in hindsight is the cheapest of the same replay at every size from 100k to 500k, with the same least time between a session's compactions: it is what the intelligent mode now takes each repository's size from.";
 
   const W = Math.max(320, host.clientWidth || 640), H = 210;
   const padL = 56, padR = 12, padT = 10, padB = 24;

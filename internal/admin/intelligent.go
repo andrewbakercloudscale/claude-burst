@@ -51,8 +51,19 @@ func (s *Server) learnCompaction(cfg config.Config, now time.Time) autocompact.S
 	if err != nil {
 		return s.learned
 	}
+	// Every size replayed over each repository's own requests, with the
+	// delay a real session has between its compactions: what the learner
+	// takes a size from where there are requests enough.
+	measured := map[string]metrics.StrategyRepo{}
+	if sweep, err := metrics.CompactionStrategiesSince(s.metricsPath, since, config.DefaultCompactionCompactAt, time.Duration(c.WindowMinutes)*time.Minute, s.repos.resolve); err == nil {
+		for _, r := range sweep.Repos {
+			if r.Path != "" {
+				measured[r.Path] = r
+			}
+		}
+	}
 	st := autocompact.Learn(s.learned, autocompact.Inputs{
-		Runs: runs, Failed: failed,
+		Runs: runs, Failed: failed, Measured: measured,
 		Outcomes:  autocompact.ReadOutcomes(s.gateway.CompactionOutcomesPath(), since),
 		Resolve:   s.repos.resolve,
 		ReadPrice: metrics.CacheReadPrice,
