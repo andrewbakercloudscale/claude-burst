@@ -19,7 +19,7 @@ func captureNotices(t *testing.T) func() []notice.Event {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "notices.json")
 	notice.SetDefault(notice.New(path, nil))
-	t.Cleanup(func() { notice.SetDefault(nil) })
+	t.Cleanup(func() { notice.Default().Flush(2 * time.Second); notice.SetDefault(nil) })
 	return func() []notice.Event {
 		notice.Flush(2 * time.Second)
 		evs, err := notice.Read(path)
