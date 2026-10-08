@@ -6,7 +6,7 @@ Last updated 8 October 2026, at v0.20.21.
 
 | # | Task | Area | State |
 |---|---|---|---|
-| 1 | [Keep state across a gateway restart](#1-keep-state-across-a-gateway-restart) | Resilience | Started |
+| 1 | [Keep state across a gateway restart](#1-keep-state-across-a-gateway-restart) | Resilience | Done |
 | 2 | [Count what a restart costs](#2-count-what-a-restart-costs) | Resilience | Open |
 | 3 | [Find the cause of the repeated "still over" notice](#3-find-the-cause-of-the-repeated-still-over-notice) | Resilience | Open |
 | 4 | [Split the dashboard page](#4-split-the-dashboard-page) | Code quality | Open |
@@ -27,12 +27,11 @@ Last updated 8 October 2026, at v0.20.21.
 - **Automask's masks.** The table of value to mask is in memory only, by design: the values are the secrets.
 - **Automask's counts and its Last 50 masks list.** These hold no values.
 
-**Plan.**
+**What was built.**
 
-- Done: the latest 512 replies are saved in `compaction-threads.json` (ids and sizes, no content) and read at start.
-- Save Automask's counts and Last 50 masks list the same way.
-- Leave the inspector's requests and Automask's table in memory. Say so on the dashboard after a restart instead of showing an empty list.
-- Check one risk: a session on a thread after a restart gets a new mask table, so a value could be given a mask number that the history the API holds already uses for another value. If it can happen, ask that session for its history once so the table is rebuilt in the same order.
+- The latest 512 replies are saved in `compaction-threads.json` (ids and sizes, no content) and read at start, so a session on a thread keeps its conversation, its summary and its limit.
+- Automask's counts, its Last 50 masks list and each session's masks are saved in `automask-state.json`. Each mask is filed under a keyed hash of its value, so no value is on disk. A session keeps its mask numbers across a restart: no number is used twice, and a history sent whole is not reported as new.
+- The inspector's requests stay in memory by design. The dashboard already says so for a session that has sent nothing whole since the restart.
 
 **Done when.** After a deploy, a session on a thread keeps its conversation, its summary and its limit with no request for its history, and the Automask section reads as it did before.
 

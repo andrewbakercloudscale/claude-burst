@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/automask"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -131,5 +134,53 @@ func TestAutomaskMasksTheUsersWordsAndListsTheLastMasks(t *testing.T) {
 	}
 	if recent = s.AutomaskRecent(); len(recent) != 50 || recent[0].Mask != "[PRIVATEKEY-59]" {
 		t.Fatalf("kept %d, newest %s", len(recent), recent[0].Mask)
+	}
+}
+
+// A restart keeps each session's masks, so a value masked before it has
+// the same mask after it and is not reported as new, a new value gets the
+// next number and not one already used, and no value is on disk.
+func TestAutomaskMasksSurviveARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "automask-state.json")
+	on := func(*automask.Rule) bool { return true }
+	const first, second = "4111 1111 1111 1111", "5500 0000 0000 0004"
+
+	m := newMasker(config.AutomaskConfig{Enabled: true}, path, nil)
+	ms := &maskSession{masks: automask.NewSessionFrom(m.key, nil, nil), cache: map[[20]byte][]byte{}, used: time.Now()}
+	m.sessions["S"] = ms
+	out, hits, _ := ms.masks.Mask("card "+first, "user", on)
+	if len(hits) != 1 || !strings.Contains(out, "[CARD-1") {
+		t.Fatalf("before the restart: %q, %d hits", out, len(hits))
+	}
+	m.mu.Lock()
+	m.totals["card"]++
+	m.recent = append(m.recent, AutomaskHit{At: time.Now(), Session: "S", Rule: "card", Mask: hits[0].Mask})
+	b, seq := m.snapshot()
+	m.mu.Unlock()
+	m.write(b, seq)
+
+	disk, _ := os.ReadFile(path)
+	if len(disk) == 0 || strings.Contains(string(disk), "4111") {
+		t.Fatalf("the value is on disk: %s", disk)
+	}
+
+	again := newMasker(config.AutomaskConfig{Enabled: true}, path, nil)
+	if again.totals["card"] != 1 || len(again.recent) != 1 || !again.since.Equal(m.since) {
+		t.Fatalf("after the restart: totals %v, %d recent, since %v want %v", again.totals, len(again.recent), again.since, m.since)
+	}
+	as := again.sessions["S"]
+	if as == nil {
+		t.Fatal("the session's masks did not come back")
+	}
+	out2, hits2, _ := as.masks.Mask("card "+first+" and "+second, "user", on)
+	if len(hits2) != 1 || !strings.Contains(out2, hits[0].Mask) || !strings.Contains(out2, "[CARD-2") {
+		t.Fatalf("after the restart: %q, %d new", out2, len(hits2))
+	}
+
+	// A state file that does not parse is no masks, not a gateway that
+	// will not start.
+	os.WriteFile(path, []byte("{"), 0600)
+	if broken := newMasker(config.AutomaskConfig{Enabled: true}, path, nil); len(broken.sessions) != 0 || broken.key == nil {
+		t.Fatalf("after a broken file: %d sessions, key %v", len(broken.sessions), broken.key != nil)
 	}
 }

@@ -238,6 +238,9 @@ func compactServer(t *testing.T, f *fakeAnthropic, c config.CompactionConfig) *S
 	}
 	// A summary still saving state when the test ends would race the
 	// TempDir cleanup ("directory not empty"). Cleanups run last-in first.
+	// A request's own save is written just after its lock is released,
+	// which can be after the test has its response.
+	t.Cleanup(func() { unwritten(s.compaction.path).Wait() })
 	t.Cleanup(s.compaction.running.Wait)
 	return s
 }

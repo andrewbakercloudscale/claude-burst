@@ -4,6 +4,9 @@
 package automask
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -177,6 +180,48 @@ type Session struct {
 	counts map[string]int    // rule -> masks handed out
 	words  *regexp.Regexp    // the user's own list, nil when empty
 	seen   time.Time
+	// key, when set, has masks indexed by a keyed hash of rule|value and
+	// not by the value: the table can then be kept on disk (Snapshot) with
+	// no value in it.
+	key []byte
+}
+
+// NewSessionFrom is a session whose table is indexed by a hash keyed with
+// key, starting from masks and counts as Snapshot gave them (nil for none).
+func NewSessionFrom(key []byte, masks map[string]string, counts map[string]int) *Session {
+	s := &Session{masks: map[string]string{}, counts: map[string]int{}, key: key}
+	for k, v := range masks {
+		s.masks[k] = v
+	}
+	for k, v := range counts {
+		s.counts[k] = v
+	}
+	return s
+}
+
+// Snapshot is a copy of the table and of how many masks each rule has
+// handed out, for NewSessionFrom after a restart.
+func (s *Session) Snapshot() (map[string]string, map[string]int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	masks, counts := make(map[string]string, len(s.masks)), make(map[string]int, len(s.counts))
+	for k, v := range s.masks {
+		masks[k] = v
+	}
+	for k, v := range s.counts {
+		counts[k] = v
+	}
+	return masks, counts
+}
+
+// index is what a value is filed under in masks.
+func (s *Session) index(k string) string {
+	if s.key == nil {
+		return k
+	}
+	h := hmac.New(sha256.New, s.key)
+	h.Write([]byte(k))
+	return hex.EncodeToString(h.Sum(nil)[:16])
 }
 
 // SetWords gives the session the user's own word list. Words already
@@ -252,6 +297,7 @@ func (s *Session) mask(text, where string, on func(*Rule) bool, env bool) (strin
 			} else if !r.exact {
 				key = r.ID + "|" + normalise(v)
 			}
+			key = s.index(key)
 			mask, ok := s.masks[key]
 			if !ok {
 				s.counts[r.ID]++

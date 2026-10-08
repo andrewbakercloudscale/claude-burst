@@ -76,7 +76,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 
 	s := &Server{
 		compaction:      newCompactor(cfg.PrimaryCompaction, compactionStatePath(statePath), logger),
-		automask:        newMasker(cfg.Automask),
+		automask:        newMasker(cfg.Automask, automaskStatePath(statePath), logger),
 		inspect:         newInspectStore(),
 		removals:        ctxview.Shared(removalsPath(statePath)),
 		repos:           repo.New(),
