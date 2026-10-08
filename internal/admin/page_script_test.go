@@ -472,11 +472,11 @@ func TestStrategyTrackSetsTheReplayBesideWhatHappened(t *testing.T) {
 	}
 	runPageJS(t, []string{"strategyTrack"}, `
 const track = {since: "2026-10-08T12:00:00Z", requests: 400, planned: {usd: 80}, actual: {usd: 100}, fixed: {usd: 130}};
-out({some: strategyTrack({track}), none: strategyTrack({actual: {usd: 5}}), empty: strategyTrack({track: {requests: 0, planned: {usd: 0}}})});`, &got)
+out({some: strategyTrack({track}), none: strategyTrack({actual: {usd: 5}}), empty: strategyTrack({track: {requests: 0, planned: {usd: 0}}}), few: strategyTrack({track: {...track, requests: 199}})});`, &got)
 	if a := got["some"]; a == nil || a.Planned != 80 || a.Actual != 100 || a.Off != 20 || a.Miss != 0.25 || a.Gain != 30 {
 		t.Errorf("a track: %+v", a)
 	}
-	if got["none"] != nil || got["empty"] != nil {
-		t.Errorf("nothing on record, want nothing: %+v %+v", got["none"], got["empty"])
+	if got["none"] != nil || got["empty"] != nil || got["few"] != nil {
+		t.Errorf("nothing on record or too few requests, want nothing: %+v %+v %+v", got["none"], got["empty"], got["few"])
 	}
 }

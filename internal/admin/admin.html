@@ -1217,7 +1217,7 @@
       <h3 class="mac-h" style="margin-top:0">Compaction mode <span class="pill" id="icState">static</span></h3>
       <div class="row" style="gap:10px;margin:6px 0 10px;flex-wrap:wrap" role="radiogroup" aria-label="When to compact">
         <label class="ic-choice"><input type="radio" name="icMode" value="" style="width:auto;margin:0 8px 0 0"><span><strong>Static</strong><br><span class="hint">One size for every repository.</span></span></label>
-        <label class="ic-choice"><input type="radio" name="icMode" value="intelligent" style="width:auto;margin:0 8px 0 0"><span><strong>Intelligent</strong><br><span class="hint">A size learned for each repository, adjusted daily.</span></span></label>
+        <label class="ic-choice"><input type="radio" name="icMode" value="intelligent" style="width:auto;margin:0 8px 0 0"><span><strong>Intelligent</strong><br><span class="hint">A size learned for each repository from a replay of its own requests.</span></span></label>
       </div>
       <div class="row" style="align-items:flex-end">
         <div>
@@ -3334,7 +3334,7 @@ function renderLearned(v) {
   }
   const src = {learned: ["learned", "p"], override: ["your override", "s"], off: ["never", "s"], fixed: ["fixed", "s"], start: ["starting size", "s"]};
   $("icTable").innerHTML = `<div class="hint" style="margin-bottom:4px">${on
-      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, as late as costs no more than 5% more a turn than the cheapest size${v.buffer_percent ? `, plus ${v.buffer_percent}%` : ""}, at most once every ${v.delay_minutes} minutes for a session.`
+      ? `On: sessions compact at each repository's learned size, between ${k(v.floor)} and ${k(v.fixed)}, the latest size that costs no more than 5% above the cheapest, at most once every ${v.delay_minutes} minutes for a session.`
       : `Off: every repository compacts at ${k(v.fixed)}. <b>Would be</b> shows what this mode would use.`}</div>
     <div class="ic-scroll"><table><thead><tr><th>Repository</th><th class="num">Compact at now</th><th class="num">${on ? "Target" : "Would be"}</th>
       <th class="num" title="The context a compaction leaves behind (median)">Leaves</th>
@@ -4796,10 +4796,12 @@ function strategyBest(st, view) {
 // record (planned), what Burst did cost (actual), how far out the replay
 // was (off, and miss as a share of planned), and what the sizes were worth
 // against one fixed size over the same requests (gain). null with nothing
-// on record. Pure, for page_script_test.go.
+// on record, or fewer than 200 requests since: a first compaction one way
+// and not yet the other is most of so short a bill. Pure, for
+// page_script_test.go.
 function strategyTrack(view) {
   const t = view && view.track;
-  if (!t || !t.requests || !((t.planned || {}).usd > 0)) return null;
+  if (!t || !(t.requests >= 200) || !((t.planned || {}).usd > 0)) return null;
   const planned = t.planned.usd, actual = (t.actual || {}).usd || 0, fixed = (t.fixed || {}).usd || 0;
   return {since: t.since, requests: t.requests, planned, actual, fixed, off: actual - planned, miss: (actual - planned) / planned, gain: fixed - actual};
 }
