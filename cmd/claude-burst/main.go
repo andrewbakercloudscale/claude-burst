@@ -10,7 +10,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/touchid"
 )
 
-const version = "0.20.21"
+const version = "0.20.22"
 
 func main() {
 	if len(os.Args) < 2 {
