@@ -146,3 +146,37 @@ func TestIntelligentCompactionSettingsAreValidatedAndListed(t *testing.T) {
 		t.Fatalf("saved state %+v", st)
 	}
 }
+
+// Every learn puts the sizes in force on record: a learned repository's
+// own, and the starting size for the rest. Switching compaction off is a
+// change too.
+func TestALearnPutsTheSizesInForceOnRecord(t *testing.T) {
+	s := newTestServer(t)
+	root := seedLearned(t, s)
+	s.learnMu.Lock()
+	st := s.learned
+	s.learnMu.Unlock()
+	buffer := 20
+	c := config.CompactionConfig{Enabled: true, Mode: config.CompactionIntelligent, CompactAtTokens: 500_000, FloorTokens: 100_000, BufferPercent: &buffer}.Resolved()
+	t0 := time.Now().Add(-time.Hour)
+	s.recordSizes(c, st, t0)
+	sizes := s.sizesOnRecord()
+	if at, ok := sizes.At(root, t0); !ok || at != 160_000 {
+		t.Fatalf("the learned repository: %d %v, want its 160k", at, ok)
+	}
+	if at, ok := sizes.At("/some/other", t0); !ok || at != 300_000 {
+		t.Fatalf("a repository with nothing learned: %d %v, want the starting 300k", at, ok)
+	}
+	if _, ok := sizes.At(root, t0.Add(-time.Minute)); ok {
+		t.Fatal("a size from before the first learn")
+	}
+	c.Enabled = false
+	s.recordSizes(c, st, t0.Add(30*time.Minute))
+	sizes = s.sizesOnRecord()
+	if at, ok := sizes.At(root, time.Now()); !ok || at != 0 {
+		t.Fatalf("compaction off: %d %v, want never", at, ok)
+	}
+	if at, _ := sizes.At(root, t0.Add(10*time.Minute)); at != 160_000 {
+		t.Fatalf("before it was switched off: %d, want 160k", at)
+	}
+}

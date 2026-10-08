@@ -461,3 +461,22 @@ out({all: strategyBest(st, st), one: strategyBest(st, repo), old: strategyBest({
 		t.Errorf("no sweep in the data, want nothing: %+v", got["old"])
 	}
 }
+
+func TestStrategyTrackSetsTheReplayBesideWhatHappened(t *testing.T) {
+	var got map[string]*struct {
+		Planned float64 `json:"planned"`
+		Actual  float64 `json:"actual"`
+		Off     float64 `json:"off"`
+		Miss    float64 `json:"miss"`
+		Gain    float64 `json:"gain"`
+	}
+	runPageJS(t, []string{"strategyTrack"}, `
+const track = {since: "2026-10-08T12:00:00Z", requests: 400, planned: {usd: 80}, actual: {usd: 100}, fixed: {usd: 130}};
+out({some: strategyTrack({track}), none: strategyTrack({actual: {usd: 5}}), empty: strategyTrack({track: {requests: 0, planned: {usd: 0}}})});`, &got)
+	if a := got["some"]; a == nil || a.Planned != 80 || a.Actual != 100 || a.Off != 20 || a.Miss != 0.25 || a.Gain != 30 {
+		t.Errorf("a track: %+v", a)
+	}
+	if got["none"] != nil || got["empty"] != nil {
+		t.Errorf("nothing on record, want nothing: %+v %+v", got["none"], got["empty"])
+	}
+}

@@ -132,6 +132,9 @@ type StrategyRepo struct {
 	// Compact at should have been.
 	Sizes    []StrategySize `json:"sizes"`
 	Cheapest *StrategySize  `json:"cheapest,omitempty"`
+	// Track is the replay checked against what happened, nil with no size
+	// on record for this repository's requests.
+	Track *StrategyTrack `json:"track,omitempty"`
 }
 
 // Strategies is the dashboard's comparison over a window.
@@ -150,6 +153,54 @@ type Strategies struct {
 	Sizes      []StrategySize `json:"sizes"`
 	Cheapest   *StrategySize  `json:"cheapest,omitempty"`
 	PerRepoUSD float64        `json:"per_repo_usd"`
+	// Track is the replay checked against what happened, over every
+	// repository; nil when no size in force is on record yet.
+	Track *StrategyTrack `json:"track,omitempty"`
+}
+
+// StrategyTrack is the replay checked against what happened. Since the
+// first moment the size in force is on record, every request is costed four
+// ways: Planned is a twin compacted at the size that was in force for its
+// repository at the time, which is what the replay predicts those sizes
+// cost; Actual is what they did cost. The gap between the two is how far
+// the replay, which the intelligent mode takes its sizes from, can be
+// trusted. Fixed and Default over the same requests say what the sizes were
+// worth.
+type StrategyTrack struct {
+	// Since is the first request with a size on record.
+	Since time.Time `json:"since"`
+	StrategyCosts
+	Planned StrategyCost       `json:"planned"`
+	Daily   []StrategyTrackDay `json:"daily"`
+}
+
+// StrategyTrackDay is one local day of a StrategyTrack.
+type StrategyTrackDay struct {
+	Date string `json:"date"` // 2006-01-02, local
+	StrategyCosts
+	Planned StrategyCost `json:"planned"`
+}
+
+func (t *StrategyTrack) add(i int, at time.Time, c StrategyCosts, planned StrategyCost) {
+	if t.Since.IsZero() || at.Before(t.Since) {
+		t.Since = at
+	}
+	t.StrategyCosts.add(c)
+	t.Planned.add(planned)
+	t.Daily[i].StrategyCosts.add(c)
+	t.Daily[i].Planned.add(planned)
+}
+
+// trimmed is the track from its first day with a request, nil when it has
+// none.
+func (t *StrategyTrack) trimmed() *StrategyTrack {
+	if t == nil || t.Since.IsZero() {
+		return nil
+	}
+	for len(t.Daily) > 0 && t.Daily[0].Requests == 0 && t.Daily[0].Actual.USD == 0 {
+		t.Daily = t.Daily[1:]
+	}
+	return t
 }
 
 // twin is a context under a strategy the session did not run.
@@ -173,6 +224,9 @@ type strategySession struct {
 	after         int64 // what a real compaction left, 0 when none yet
 	def, fixed    twin
 	sizes         []twin // one for each size of the sweep
+	// plan compacts at whatever size was in force at the time: it mirrors
+	// the real context until one is on record.
+	plan twin
 }
 
 // twinCompactionUSD models a compaction of before tokens down to after: the
@@ -241,6 +295,15 @@ func (t *twin) step(s *strategySession, e Event, ctx int64, swap bool) StrategyC
 // under each size of the sweep. repoOf names a session's repository and its
 // root; nil files every session under one row.
 func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, delay time.Duration, repoOf func(session string) (name, root string)) (Strategies, error) {
+	return CompactionStrategiesTracked(path, since, fixedAt, delay, repoOf, nil)
+}
+
+// CompactionStrategiesTracked is CompactionStrategiesSince with the replay
+// checked against what happened (Track). sizeAt is the Compact at that was
+// in force for the repository at root at a time: 0 for never, and false
+// when none is on record that far back, which leaves the request out of the
+// track. nil is no track.
+func CompactionStrategiesTracked(path string, since time.Time, fixedAt int64, delay time.Duration, repoOf func(session string) (name, root string), sizeAt func(root string, at time.Time) (int64, bool)) (Strategies, error) {
 	st := Strategies{FixedAt: fixedAt, DefaultAt: claudeCodeTrigger}
 	if fixedAt <= 0 || fixedAt > claudeCodeTrigger {
 		st.FixedAt = claudeCodeTrigger
@@ -271,6 +334,17 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, dela
 	}
 	st.Daily = newDays()
 	st.Sizes = newSizes()
+	newTrack := func() *StrategyTrack {
+		if sizeAt == nil {
+			return nil
+		}
+		t := &StrategyTrack{Daily: make([]StrategyTrackDay, len(dates))}
+		for i, d := range dates {
+			t.Daily[i].Date = d
+		}
+		return t
+	}
+	st.Track = newTrack()
 
 	sessions := map[string]*strategySession{}
 	repos := map[string]*StrategyRepo{}
@@ -285,19 +359,40 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, dela
 		}
 		r := repos[name]
 		if r == nil {
-			r = &StrategyRepo{Repo: name, Path: root, Daily: newDays(), Sizes: newSizes()}
+			r = &StrategyRepo{Repo: name, Path: root, Daily: newDays(), Sizes: newSizes(), Track: newTrack()}
 			repos[name] = r
 		}
 		r.Sessions++
 		repoBySession[session] = r
 		return r
 	}
-	record := func(e Event, c StrategyCosts, sizes []StrategyCost) {
+	inWindow := func(e Event) (int, bool) {
 		i, ok := dayIndex[e.Time.Local().Format("2006-01-02")]
-		if e.Time.Before(since) || !ok {
+		return i, ok && !e.Time.Before(since)
+	}
+	// planAt is the size on record for the request's repository, for a
+	// request in the window.
+	planAt := func(e Event) (int64, bool) {
+		if _, in := inWindow(e); !in || sizeAt == nil {
+			return 0, false
+		}
+		at, known := sizeAt(repoFor(e.SessionID).Path, e.Time)
+		if at <= 0 || at > claudeCodeTrigger {
+			at = claudeCodeTrigger // never: what Claude Code does alone
+		}
+		return at, known
+	}
+	// planned is nil for a request with no size on record.
+	record := func(e Event, c StrategyCosts, sizes []StrategyCost, planned *StrategyCost) {
+		i, in := inWindow(e)
+		if !in {
 			return
 		}
 		r := repoFor(e.SessionID)
+		if planned != nil {
+			st.Track.add(i, e.Time, c, *planned)
+			r.Track.add(i, e.Time, c, *planned)
+		}
 		st.add(c)
 		st.Daily[i].add(c)
 		r.add(c)
@@ -330,7 +425,12 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, dela
 					c.Actual.Compactions = 1
 				}
 				c.Actual.USD = c.Actual.CompactionUSD
-				record(e, c, nil)
+				// The twins' summaries are in their compactions' cost.
+				var planned *StrategyCost
+				if _, known := planAt(e); known {
+					planned = &StrategyCost{}
+				}
+				record(e, c, nil, planned)
 				return
 			}
 			ctx := eventContext(e)
@@ -345,6 +445,18 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, dela
 			for j := range s.sizes {
 				sizes[j] = s.sizes[j].step(s, e, ctx, swap)
 			}
+			var planned *StrategyCost
+			if at, known := planAt(e); known {
+				s.plan.at, s.plan.delay = at, delay
+				p := s.plan.step(s, e, ctx, swap)
+				planned = &p
+			} else {
+				// No size on record: the plan is what happened.
+				s.plan.ctx, s.plan.own = ctx, false
+				if swap {
+					s.plan.last = e.Time
+				}
+			}
 			c.Actual.Tokens = ctx
 			c.Actual.ContextUSD = cacheReadUSD(e.Model, ctx)
 			if swap {
@@ -353,7 +465,7 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, dela
 			}
 			c.Actual.USD = c.Actual.ContextUSD + c.Actual.CompactionUSD
 			s.lastCtx, s.lastCompacted = ctx, e.CompactedMessages
-			record(e, c, sizes)
+			record(e, c, sizes, planned)
 		})
 		if err != nil {
 			return st, err
@@ -364,11 +476,13 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, dela
 			r.Cheapest = &best
 			st.PerRepoUSD += best.USD
 		}
+		r.Track = r.Track.trimmed()
 		st.Repos = append(st.Repos, *r)
 	}
 	if best, ok := cheapestSize(st.Sizes); ok && st.Requests > 0 {
 		st.Cheapest = &best
 	}
+	st.Track = st.Track.trimmed()
 	// The repository with the most context to pay for first.
 	sort.Slice(st.Repos, func(i, j int) bool {
 		a, b := st.Repos[i].Default.USD, st.Repos[j].Default.USD

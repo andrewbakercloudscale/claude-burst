@@ -73,8 +73,60 @@ func (s *Server) learnCompaction(cfg config.Config, now time.Time) autocompact.S
 	if path != "" {
 		_ = autocompact.Save(path, st)
 	}
+	s.recordSizes(c, st, now)
 	s.gateway.SetLearnedCompaction(st.Thresholds())
 	return st
+}
+
+// sizesPath is the record of the Compact at in force, beside the learner's
+// file. "" keeps it in memory.
+func (s *Server) sizesPath() string {
+	p := s.learnedPath()
+	if p == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(p), "compaction-sizes.jsonl")
+}
+
+// recordSizes puts on record the Compact at each repository has from now:
+// what the replay is later checked against (metrics.StrategyTrack). c is
+// the resolved settings.
+func (s *Server) recordSizes(c config.CompactionConfig, st autocompact.State, now time.Time) {
+	s.sizesMu.Lock()
+	defer s.sizesMu.Unlock()
+	if !s.sizesRead {
+		if p := s.sizesPath(); p != "" {
+			s.sizes = autocompact.ReadSizes(p)
+		}
+		s.sizesRead = true
+	}
+	c.Learned = st.Thresholds()
+	roots := append([]string{""}, s.sizes.Roots()...)
+	for root := range st.Repos {
+		roots = append(roots, root)
+	}
+	for _, o := range c.RepoOverrides {
+		if o.Repo != "" {
+			roots = append(roots, filepath.Clean(o.Repo))
+		}
+	}
+	inForceNow := map[string]autocompact.SizeChange{}
+	for _, root := range roots {
+		at, source := inForce(c, root)
+		if !c.Enabled {
+			at, source = 0, "off"
+		}
+		inForceNow[root] = autocompact.SizeChange{At: at, Source: source}
+	}
+	_, _ = s.sizes.Record(s.sizesPath(), now, inForceNow)
+}
+
+// sizesOnRecord is the record as it stands, for a replay to read while the
+// learner goes on adding to it.
+func (s *Server) sizesOnRecord() autocompact.Sizes {
+	s.sizesMu.Lock()
+	defer s.sizesMu.Unlock()
+	return s.sizes.Snapshot()
 }
 
 // reseatLearned makes the next learn take every repository straight to its

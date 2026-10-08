@@ -150,3 +150,68 @@ func TestATwinKeepsItsOwnCompactionUntilTheUserClears(t *testing.T) {
 		t.Fatalf("default %+v, actual %+v", st.Default, st.Actual)
 	}
 }
+
+// The size in force goes on record after the third request. From then on a
+// twin compacted at that size is costed beside what happened: here the real
+// session never compacted, so the plan said 130k over two requests and the
+// log says 530k.
+func TestTheReplayIsCheckedAgainstWhatHappenedFromTheFirstSizeOnRecord(t *testing.T) {
+	at := time.Now().Add(-2 * time.Hour)
+	var lines []string
+	for i, k := range []int{100, 150, 200, 260, 270} {
+		lines = append(lines, fmt.Sprintf(`{"time":"%s","session_id":"S","slot":"primary","model":"m","http_status":200,"cache_read_tokens":%d}`,
+			at.Add(time.Duration(i+1)*time.Minute).Format(time.RFC3339), k*1000))
+	}
+	// A repository that is never compacted: its plan is its real context.
+	lines = append(lines, fmt.Sprintf(`{"time":"%s","session_id":"T","slot":"primary","model":"m","http_status":200,"cache_read_tokens":400000}`,
+		at.Add(10*time.Minute).Format(time.RFC3339)))
+	p := filepath.Join(t.TempDir(), "m.jsonl")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	from := at.Add(3*time.Minute + 30*time.Second)
+	repoOf := func(session string) (string, string) {
+		if session == "S" {
+			return "big", "/r/big"
+		}
+		return "off", "/r/off"
+	}
+	st, err := CompactionStrategiesTracked(p, at, 300_000, 0, repoOf, func(root string, when time.Time) (int64, bool) {
+		if when.Before(from) {
+			return 0, false
+		}
+		if root == "/r/off" {
+			return 0, true
+		}
+		return 250_000, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var big, off StrategyRepo
+	for _, r := range st.Repos {
+		if r.Repo == "big" {
+			big = r
+		} else {
+			off = r
+		}
+	}
+	tr := big.Track
+	if tr == nil || tr.Requests != 2 || tr.Planned.Tokens != 130_000 || tr.Planned.Compactions != 1 || tr.Actual.Tokens != 530_000 {
+		t.Fatalf("big track: %+v", tr)
+	}
+	if !tr.Since.Equal(at.Add(4*time.Minute).Truncate(time.Second)) || len(tr.Daily) == 0 || tr.Daily[0].Planned.Tokens != 130_000 {
+		t.Fatalf("big track since %v, daily %+v", tr.Since, tr.Daily)
+	}
+	if off.Track == nil || off.Track.Planned.Tokens != 400_000 || off.Track.Planned.Compactions != 0 {
+		t.Fatalf("a repository never compacted: %+v", off.Track)
+	}
+	if st.Track == nil || st.Track.Requests != 3 || st.Track.Planned.Tokens != 530_000 || st.Track.Actual.Tokens != 930_000 {
+		t.Fatalf("every repository: %+v", st.Track)
+	}
+	// With no sizes on record there is no track.
+	plain, _ := CompactionStrategiesSince(p, at, 300_000, 0, repoOf)
+	if plain.Track != nil || plain.Repos[0].Track != nil {
+		t.Fatalf("a track with no sizes on record: %+v", plain.Track)
+	}
+}

@@ -4791,6 +4791,18 @@ function strategyBest(st, view) {
   if (view === st && st.per_repo_usd > 0) out.perRepo = st.per_repo_usd;
   return out;
 }
+// strategyTrack is the replay checked against what happened, for a view:
+// what the replay said the sizes in force would cost since they went on
+// record (planned), what Burst did cost (actual), how far out the replay
+// was (off, and miss as a share of planned), and what the sizes were worth
+// against one fixed size over the same requests (gain). null with nothing
+// on record. Pure, for page_script_test.go.
+function strategyTrack(view) {
+  const t = view && view.track;
+  if (!t || !t.requests || !((t.planned || {}).usd > 0)) return null;
+  const planned = t.planned.usd, actual = (t.actual || {}).usd || 0, fixed = (t.fixed || {}).usd || 0;
+  return {since: t.since, requests: t.requests, planned, actual, fixed, off: actual - planned, miss: (actual - planned) / planned, gain: fixed - actual};
+}
 function strategyNames(st) {
   const k = n => Math.round((n || 0) / 1000) + "k";
   return {default: `Claude Code alone (compacts at ${k(st.default_at)})`, fixed: `Fixed Compact at ${k(st.fixed_at)}`, actual: "Burst, as it ran"};
@@ -4828,10 +4840,18 @@ function drawStrategies() {
     $("stSum").innerHTML += `<br>Best size in hindsight <b>${esc(kk(best.at))}</b>, ${esc(money(best.usd))}: Burst cost ${esc(money(Math.abs(best.over)))} (${Math.round(Math.abs(best.share) * 100)}%) ${best.over >= 0 ? "more" : "less"}` +
       (best.perRepo ? `. Each repository on its own best size: ${esc(money(best.perRepo))}` : "");
   }
+  const track = strategyTrack(view);
+  if (track) {
+    const since = new Date(track.since).toLocaleString(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
+    $("stSum").innerHTML += `<br>Predicted against actual since ${esc(since)} (${track.requests.toLocaleString()} requests): the replay said the sizes in force would cost <b>${esc(money(track.planned))}</b>, ` +
+      `Burst cost <b>${esc(money(track.actual))}</b>, ${esc(money(Math.abs(track.off)))} (${Math.round(Math.abs(track.miss) * 100)}%) ${track.off >= 0 ? "more" : "less"}. ` +
+      `Against the fixed size over the same requests: ${netUSD(track.gain)}`;
+  }
   $("stNote").textContent = "Each line is the context every request resent, at the cache-read price, plus what that strategy's compactions cost (the summary and the cache rewrite). " +
     "Burst's line is what was recorded; the other two are the same sessions replayed with a compaction where that strategy would have made one. " +
     "Output and new input are the same three ways and are left out. API-equivalent dollars. " +
-    "The best size in hindsight is the cheapest of the same replay at every size from 100k to 500k, with the same least time between a session's compactions: it is what the intelligent mode now takes each repository's size from.";
+    "The best size in hindsight is the cheapest of the same replay at every size from 100k to 500k, with the same least time between a session's compactions: it is what the intelligent mode now takes each repository's size from. " +
+    "Predicted against actual checks that replay: from the moment the sizes in force went on record, the same requests replayed at those sizes, beside what Burst was billed. A replay that is far out is one the sizes should not be taken from.";
 
   const W = Math.max(320, host.clientWidth || 640), H = 210;
   const padL = 56, padR = 12, padT = 10, padB = 24;
