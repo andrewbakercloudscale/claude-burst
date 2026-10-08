@@ -2034,7 +2034,7 @@
   </section>
 
   <section id="sec-codex-requests" style="scroll-margin-top:70px">
-    <h2>Codex requests <span class="hint">model calls, and anything else that failed or was refused at the port; metadata only; In is uncached input, cached input is counted apart</span></h2>
+    <h2>Codex requests <span class="hint">model calls, and anything else that failed or was not HTTP; metadata only; In is uncached input, cached input is counted apart</span></h2>
     <div class="scroll" id="codexRequests"><div class="empty">No requests yet.</div></div>
   </section>
 
@@ -2639,7 +2639,7 @@ function renderRequests(rows, el = "requests") {
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
         <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "-")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--muted)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
-        <td class="mono st-${slot === "refused" ? 5 : String(e.http_status)[0]}">${esc(slot === "refused" && !e.http_status ? "no answer" : e.http_status)}</td>
+        <td class="mono st-${slot === "refused" || slot === "not http" ? 5 : String(e.http_status)[0]}">${esc((slot === "refused" || slot === "not http") && !e.http_status ? "no answer" : e.http_status)}</td>
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
         <td class="num">${e.cache_read_tokens ? num(e.cache_read_tokens) : "-"}</td>
@@ -5310,14 +5310,15 @@ function codexChecks(c, s, now) {
       : bad ? `the last turn, at ${t(last.time)}, failed: ${why}${last.note ? `: ${String(last.note).slice(0, 200)}` : ""}`
       : `last turn ${t(last.time)}, HTTP ${last.http_status}`,
   });
-  // A connection the port could not read as HTTP was passed nowhere: an
-  // hour old, it stops counting against the score but is still stated.
+  // A connection that was not HTTP was forwarded unread, or refused if it
+  // did not parse: an hour old, it stops counting against the score but is
+  // still stated.
   const rf = c.refused;
   if (c.listening) out.push({
-    key: "cxrefused", label: "Nothing turned away at the port", target: "sec-codex", critical: false,
+    key: "cxrefused", label: "Only HTTP at the port", target: "sec-codex", critical: false,
     ok: !rf || now - Date.parse(rf.last) > 60 * 60 * 1000,
-    detail: !rf ? "every connection since the gateway started was passed on to ChatGPT"
-      : `${rf.count} connection${rf.count === 1 ? "" : "s"} refused since the gateway started, the last at ${t(rf.last)}: ${String(rf.what).slice(0, 200)}`,
+    detail: !rf ? "every connection since the gateway started was HTTP, which Burst can read"
+      : `${rf.count} connection${rf.count === 1 ? "" : "s"} not HTTP since the gateway started, the last at ${t(rf.last)}, ${String(rf.what).slice(0, 200)}`,
   });
   const hd = (c.limits || {}).headers;
   if (hd) {

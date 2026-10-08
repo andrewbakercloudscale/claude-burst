@@ -2,7 +2,7 @@ package codex
 
 import (
 	"bytes"
-	"fmt"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"regexp"
@@ -13,17 +13,20 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
 
-// A connection the Codex port turned away without passing anything on.
+// What reaches the Codex port and is not a request Burst can read.
 //
 // Everything that is HTTP goes to ChatGPT whatever its method or path, and
-// so does a WebSocket. What cannot be passed on is what Go's server could
-// not read as a request at all: it answers 400 itself (or says nothing)
-// and calls no handler, so until 8 Oct 2026 nothing recorded it, and a
+// so does a WebSocket. A connection that is not HTTP at all is forwarded
+// too, byte for byte, so that it is ChatGPT that answers it and never
+// Burst (tunnel.go). What is left is a connection that starts like HTTP
+// and then does not parse: Go's server answers that 400 itself and calls
+// no handler. Until 8 Oct 2026 none of this was recorded anywhere, and a
 // Codex feature failing that way would have looked like a fault of
-// ChatGPT's. Each one is now an error line in the log and a count on the
-// Codex tab.
+// ChatGPT's. Each one is now an error line in the log, a row in the Codex
+// requests table and a count on the Codex tab.
 
-// Refused is what the port has turned away since the gateway started.
+// Refused is what was not HTTP at the port since the gateway started,
+// forwarded or turned away.
 type Refused struct {
 	Count int64     `json:"count"`
 	Last  time.Time `json:"last"`
@@ -37,44 +40,106 @@ func (g *Gateway) Refused() Refused {
 	return g.refused
 }
 
-// noteRefused logs one refusal. "codex: refused a connection" is what
-// makes the line level=error (internal/logline).
-func (g *Gateway) noteRefused(status int, what string) {
+// noteOdd counts one connection that was not HTTP.
+func (g *Gateway) noteOdd(what string) {
 	g.mu.Lock()
 	g.refused.Count++
 	g.refused.Last, g.refused.What = time.Now(), what
 	g.mu.Unlock()
-	g.logger.Printf("codex: refused a connection on the Codex port, nothing was passed on to ChatGPT: %s", what)
+}
+
+// noteRefused logs one refusal. "codex: refused a connection" is what
+// makes the line level=error (internal/logline).
+func (g *Gateway) noteRefused(status int, what string) {
+	g.noteOdd(what)
+	g.logger.Printf("codex: refused a connection to the Codex port, nothing was passed on to ChatGPT, %s", what)
 	g.keepFailure(metrics.Event{Time: time.Now(), Slot: "refused", Route: "REFUSED", Destination: "not passed on",
-		HTTPStatus: status, Note: "refused at the Codex port, nothing was passed on to ChatGPT: " + what})
+		HTTPStatus: status, Note: "refused at the Codex port, nothing was passed on to ChatGPT, " + what})
 }
 
-// Serve answers Codex on ln until it closes.
+// Serve answers Codex on ln until it closes. Each connection is sorted by
+// its first bytes: HTTP goes to the server, anything else is forwarded to
+// ChatGPT as it came (tunnel.go).
 func (g *Gateway) Serve(ln net.Listener) error {
-	srv := &http.Server{
-		Handler:           g,
-		ReadHeaderTimeout: 30 * time.Second,
-		ConnState: func(c net.Conn, s http.ConnState) {
-			if wc, ok := c.(*watchedConn); ok && s == http.StateClosed {
-				wc.closed()
-			}
-		},
-	}
+	srv := &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second}
 	allowH2C(srv)
-	return srv.Serve(&watchedListener{Listener: ln, g: g})
+	sorted := &sortedListener{Listener: ln, conns: make(chan net.Conn), done: make(chan struct{})}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				sorted.fail(err)
+				return
+			}
+			go g.sort(c, sorted)
+		}
+	}()
+	return srv.Serve(sorted)
 }
 
-type watchedListener struct {
+// sortedListener hands the HTTP server the connections that are HTTP.
+type sortedListener struct {
 	net.Listener
-	g *Gateway
+	conns chan net.Conn
+	done  chan struct{}
+	once  sync.Once
+	err   error
 }
 
-func (l *watchedListener) Accept() (net.Conn, error) {
-	c, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
+func (l *sortedListener) fail(err error) {
+	l.once.Do(func() { l.err = err; close(l.done) })
+}
+
+func (l *sortedListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case <-l.done:
+		return nil, l.err
 	}
-	return &watchedConn{Conn: c, g: l.g}, nil
+}
+
+func (l *sortedListener) Close() error {
+	l.fail(net.ErrClosed)
+	return l.Listener.Close()
+}
+
+// sort reads enough of a new connection to tell HTTP from anything else.
+// A client may connect and send nothing for a while, so there is no
+// deadline: the wait ends when it sends or hangs up.
+func (g *Gateway) sort(c net.Conn, l *sortedListener) {
+	first := make([]byte, 0, headBytes)
+	for {
+		n, err := c.Read(first[len(first):cap(first)])
+		first = first[:len(first)+n]
+		if err != nil && len(first) == 0 {
+			c.Close()
+			return
+		}
+		if err != nil || len(first) == cap(first) || !methodSoFar(first) {
+			break
+		}
+	}
+	if !looksHTTP(first) {
+		g.tunnel(c, first)
+		return
+	}
+	select {
+	case l.conns <- &watchedConn{Conn: c, g: g, pre: first}:
+	case <-l.done:
+		c.Close()
+	}
+}
+
+// methodSoFar reports whether b is only the capitals of an HTTP method
+// with its space still to come: too little to decide on.
+func methodSoFar(b []byte) bool {
+	for _, ch := range b {
+		if ch < 'A' || ch > 'Z' {
+			return false
+		}
+	}
+	return len(b) < 16
 }
 
 // headBytes is how much of what a client sent is kept to describe it.
@@ -87,14 +152,21 @@ type watchedConn struct {
 	net.Conn
 	g *Gateway
 
+	pre []byte // read while sorting, handed to the server first
+
 	mu    sync.Mutex
 	head  []byte
 	wrote bool
 	gone  bool // a read failed: the client hung up or went quiet
 }
 
-func (c *watchedConn) Read(p []byte) (int, error) {
-	n, err := c.Conn.Read(p)
+func (c *watchedConn) Read(p []byte) (n int, err error) {
+	if len(c.pre) > 0 {
+		n = copy(p, c.pre)
+		c.pre = c.pre[n:]
+	} else {
+		n, err = c.Conn.Read(p)
+	}
 	if n > 0 {
 		c.mu.Lock()
 		if room := headBytes - len(c.head); room > 0 {
@@ -125,21 +197,15 @@ func (c *watchedConn) Write(p []byte) (int, error) {
 			what += "; it began " + describe(head)
 		}
 		code, _ := strconv.Atoi(status[:3])
-		c.g.noteRefused(code, what)
+		c.g.noteRefused(code, c.where()+": "+what)
 	}
 	return c.Conn.Write(p)
 }
 
-// closed is called once the connection is gone: bytes that were not HTTP
-// and were never answered are a refusal too (a client that waits for the
-// server to speak first, or one cut off at the header timeout).
-func (c *watchedConn) closed() {
-	c.mu.Lock()
-	head, wrote := c.head, c.wrote
-	c.mu.Unlock()
-	if !wrote && len(head) > 0 && !looksHTTP(head) {
-		c.g.noteRefused(0, "it was closed with no answer; it began "+describe(head))
-	}
+// where names the port the connection came to and the one it came from,
+// which is what lsof needs to say which program that was.
+func (c *watchedConn) where() string {
+	return "on " + c.LocalAddr().String() + " from " + c.RemoteAddr().String()
 }
 
 // refusal matches the reply Go's server writes by itself when it cannot
@@ -162,7 +228,7 @@ func ownRefusal(p []byte) string {
 func looksHTTP(b []byte) bool {
 	for i, ch := range b {
 		if ch == ' ' {
-			return i >= 3
+			return i >= 3 && i <= 16
 		}
 		if ch < 'A' || ch > 'Z' {
 			return false
@@ -190,11 +256,11 @@ func describe(b []byte) string {
 	}
 	for _, ch := range line {
 		if ch < 0x20 || ch > 0x7e {
-			return fmt.Sprintf("with bytes that are not text (hex %x)", b[:min(len(b), 16)])
+			return "with bytes that are not text (hex " + hex.EncodeToString(b[:min(len(b), 16)]) + ")"
 		}
 	}
 	if i := bytes.IndexByte(line, '?'); i >= 0 {
 		line = line[:i]
 	}
-	return fmt.Sprintf("%q", line)
+	return strconv.Quote(string(line))
 }
