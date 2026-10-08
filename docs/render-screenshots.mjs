@@ -286,7 +286,7 @@ const SHOTS = {
     ['compaction-strategies', (page) => shoot(page, 'compaction-strategies', ['#sec-strategies'])],
     ['usage', (page) => shoot(page, 'usage', ['#sec-usage'])],
     ['context-and-cache', (page) => shoot(page, 'context-and-cache', ['#sec-context'])],
-    ['automask', (page) => shoot(page, 'automask', ['#sec-automask'], { allow: ['AWS, GitHub, GitLab'] })],
+    ['automask', (page) => shoot(page, 'automask', ['#sec-automask'], { allow: ['AWS, GitHub, GitLab'], prepare: () => { document.querySelector('#amWords').value = 'bluebird\nacme-prod.internal\nAcme Holdings'; document.querySelector('#amWordsCount').textContent = '(3 saved)' } })],
     ['context-inspector', (page) => shoot(page, 'context-inspector', ['#sec-inspect'], { prepare: openGroups })],
     ['coordination', (page) => shoot(page, 'coordination', ['#sec-coord'])],
     ['handover', (page) => shoot(page, 'handover', ['#handoverSection'], { prepare: () => document.querySelector('#handoverSection').classList.remove('collapsed') })],

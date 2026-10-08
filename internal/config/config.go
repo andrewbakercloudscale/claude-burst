@@ -441,9 +441,13 @@ func (i InterceptConfig) Transparent() bool {
 // AutomaskConfig: Enabled is the master switch. Rules holds only the rules
 // switched away from their default (internal/automask.Rules), so a new rule
 // arrives with its own default rather than off.
+//
+// Words is your own list: project code names, customer names, internal
+// host names. Each is masked wherever it appears, whatever its case.
 type AutomaskConfig struct {
 	Enabled bool            `json:"enabled,omitempty"`
 	Rules   map[string]bool `json:"rules,omitempty"`
+	Words   []string        `json:"words,omitempty"`
 }
 
 type Config struct {

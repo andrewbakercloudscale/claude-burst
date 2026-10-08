@@ -48,6 +48,17 @@ func TestAutomaskSwitchesAreSavedAndShown(t *testing.T) {
 		t.Fatalf("shown %+v", on)
 	}
 
+	// The word list is cleaned and kept by a save that does not name it.
+	mutate(t, s, "/api/automask-save", `{"enabled":true,"words":[" Bluebird ","bluebird","ab","acme"]}`)
+	mutate(t, s, "/api/automask-save", `{"enabled":true}`)
+	if st := get(); len(st.Words) != 2 || st.Words[0] != "Bluebird" || st.Words[1] != "acme" || st.Recent == nil {
+		t.Fatalf("words = %q, recent = %v", st.Words, st.Recent)
+	}
+	mutate(t, s, "/api/automask-save", `{"enabled":true,"words":[]}`)
+	if st := get(); len(st.Words) != 0 {
+		t.Fatalf("words not cleared: %q", st.Words)
+	}
+
 	if rr := mutate(t, s, "/api/automask-save", `{"enabled":true,"rules":{"nope":true}}`); rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown rule accepted: %d", rr.Code)
 	}

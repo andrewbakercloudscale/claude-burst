@@ -17,11 +17,12 @@ In `config.json`:
 ```json
 "automask": {
   "enabled": true,
-  "rules": { "email": true, "envfile": false }
+  "rules": { "email": true, "envfile": false },
+  "words": ["bluebird", "acme-prod.internal"]
 }
 ```
 
-`rules` only needs the rules you changed from their default.
+`rules` only needs the rules you changed from their default. `words` is your own list, below.
 
 ## What it masks
 
@@ -49,6 +50,20 @@ Personal data, on once Automask is on:
 | UK National Insurance number | `nino` | Prefixes that are never issued excluded |
 | IBAN | `iban` | The mod-97 check |
 | Passport machine-readable line | `passport` | The check digits |
+
+## Your own words
+
+Under the rules is a box for your own list, one to a line: project code names, customer names, internal host names, anything no pattern could know. Each is masked as `[WORD-1]`, `[WORD-2]` wherever it appears.
+
+- **Whole words, whatever their case.** `bluebird` masks `Bluebird` and `BLUEBIRD`, not `bluebirds` or `bluebird_v2`. Add those forms as lines of their own if you want them gone too.
+- **A line can hold dots, dashes and spaces**: `acme-prod.internal`, `Acme Holdings`. The longest line wins where two overlap.
+- **3 characters or more, up to 500 lines.** Shorter lines are dropped when you save.
+- **Think before adding a word your code uses.** If `bluebird` is also a folder name, Claude sees `src/[WORD-1]/main.go` and cannot open that path.
+- The list is kept in `config.json` on this Mac (`automask.words`) and is switched by the **Your own words** rule (`words`).
+
+## Last 50 masks
+
+The section ends with the last 50 masks: when, which repository, which rule, where it was found (your prompt, tool output, Claude's reply, the system prompt) and the mask. A value is listed the first time it is masked in a session, and the value itself is never kept. The list starts again when the gateway restarts; the gateway log holds the same lines for longer.
 
 There to switch on (noisy in code, so off):
 
@@ -81,7 +96,7 @@ set -a; . ./.env; set +a; ./deploy.sh
 ## Limits
 
 - **It is pattern matching, not understanding.** A key with no recognisable shape (Datadog, Cloudflare and Azure keys are plain hex or base64) is only caught in a `.env` file or by the `secret` rule. A password in a sentence is not caught at all.
-- **Names, addresses and other free text** are not masked.
+- **Names, addresses and other free text** are not masked, unless they are on your own word list.
 - **Tool calls are not masked.** If Claude itself types a secret into a command, that text is sent as written.
 - **Requests only.** Claude's answers are not changed on the way back.
 - **Claude Code only.** Codex requests pass through unchanged.
