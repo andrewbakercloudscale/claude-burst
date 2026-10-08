@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -2178,5 +2179,32 @@ func TestThreadsSurviveARestart(t *testing.T) {
 	os.WriteFile(filepath.Join(filepath.Dir(path), "compaction-threads.json"), []byte("{"), 0600)
 	if broken := newCompactor(config.CompactionConfig{}, path, nil); len(broken.threads) != 0 || broken.sessions["S|m|first"] == nil {
 		t.Fatalf("after a broken threads file: %d threads, sessions %v", len(broken.threads), broken.sessions)
+	}
+}
+
+// The names earlier restarts left behind go at the next start; the one a
+// saved reply belongs to, each session's latest and any with a summary stay.
+func TestDeadThreadsAreForgottenAtStart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compaction-state.json")
+	at := func(min int) string { return time.Now().Add(time.Duration(min) * time.Minute).Format(time.RFC3339) }
+	os.WriteFile(path, []byte(`{
+ "S|m|thread-old1":{"last_context":100,"seen":"`+at(-90)+`"},
+ "S|m|thread-old2":{"last_context":200,"seen":"`+at(-60)+`"},
+ "S|m|thread-sum":{"last_context":300,"seen":"`+at(-80)+`","summary":"s","swap_at":3,"hash":"h"},
+ "S|m|thread-live":{"last_context":400,"seen":"`+at(-70)+`"},
+ "S|m|thread-last":{"last_context":500,"seen":"`+at(-5)+`"},
+ "S|m|abc123":{"last_context":600,"seen":"`+at(-95)+`"},
+ "T|m|thread-only":{"last_context":700,"seen":"`+at(-99)+`"}}`), 0600)
+	os.WriteFile(filepath.Join(dir, "compaction-threads.json"), []byte(`[{"id":"msg_9","key":"S|m|thread-live","context":400}]`), 0600)
+	c := newCompactor(config.CompactionConfig{}, path, nil)
+	var got []string
+	for k := range c.sessions {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	want := "S|m|abc123 S|m|thread-last S|m|thread-live S|m|thread-sum T|m|thread-only"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("kept %v, want %s", got, want)
 	}
 }

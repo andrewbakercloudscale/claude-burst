@@ -222,6 +222,12 @@ func (g *Gateway) observe(resp *http.Response) error {
 		return nil
 	}
 	if !isTurn(r) {
+		// Not counted, but a refusal is logged: on 8 Oct 2026 ChatGPT
+		// answered Codex's model list with 401 "token has expired" for two
+		// hours and this log had nothing to tell it from a fault of Burst's.
+		if resp.StatusCode >= 400 {
+			g.logger.Printf("codex: %s %s answered %d by ChatGPT (passed on to Codex as it came): %s", r.Method, r.URL.Path, resp.StatusCode, snippet(peekBody(resp, 4<<10)))
+		}
 		return nil
 	}
 	g.noteLimits(resp.Header)
