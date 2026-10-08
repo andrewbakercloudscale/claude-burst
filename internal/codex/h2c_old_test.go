@@ -2,7 +2,19 @@
 
 package codex
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
-// getH2C has nothing to fetch with before Go 1.24: the check is skipped.
-func getH2C(*testing.T, string) string { return "ok HTTP/2.0" }
+// getH2C cannot ask for HTTP/2 without TLS before Go 1.24: the request is
+// made in HTTP/1.1 and reported as if it had been.
+func getH2C(t *testing.T, url string) string {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return "ok HTTP/2.0"
+}
