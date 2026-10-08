@@ -82,6 +82,9 @@ type Gateway struct {
 	listenErr string
 
 	refused Refused
+	// failures is the latest of what failed and is not a turn, newest
+	// last: a refused connection, a model list ChatGPT would not give.
+	failures []metrics.Event
 }
 
 // SetListenState records whether the gateway's port is bound, and why not.
@@ -101,7 +104,7 @@ func (g *Gateway) ListenState() (bound bool, why string) {
 // persist saves the limits and windows; called with g.mu held. A failure
 // costs only the tab's readings after a restart, so it is logged, not fatal.
 func (g *Gateway) persist() {
-	b, err := json.Marshal(saved{Limits: g.limits, Windows: g.windows})
+	b, err := json.Marshal(saved{Limits: g.limits, Windows: g.windows, Failures: g.failures})
 	if err != nil {
 		return
 	}
@@ -122,6 +125,9 @@ type startKey struct{}
 type saved struct {
 	Limits  Limits           `json:"limits"`
 	Windows map[string]int64 `json:"windows"`
+	// Failures are kept so the requests table still shows them after a
+	// restart; a turn's are in codex-metrics.jsonl already.
+	Failures []metrics.Event `json:"failures,omitempty"`
 }
 
 // New builds the gateway; metricsPath is where each Codex turn is recorded,
@@ -137,7 +143,7 @@ func New(upstream, metricsPath string, logger *log.Logger) (*Gateway, error) {
 	if b, err := os.ReadFile(g.statePath); err == nil {
 		var sv saved
 		if json.Unmarshal(b, &sv) == nil {
-			g.limits, g.windows = sv.Limits, sv.Windows
+			g.limits, g.windows, g.failures = sv.Limits, sv.Windows, sv.Failures
 		}
 	}
 	g.proxy = &httputil.ReverseProxy{
@@ -165,6 +171,7 @@ func New(upstream, metricsPath string, logger *log.Logger) (*Gateway, error) {
 				return
 			}
 			logger.Printf("codex: %s %s failed: %v", r.Method, r.URL.Path, err)
+			g.noteFailure(r, http.StatusBadGateway, "upstream unreachable: "+err.Error())
 			g.record(r, http.StatusBadGateway, usage{}, "upstream unreachable: "+err.Error())
 			http.Error(w, "Claude Burst could not reach "+u.Host+": "+err.Error(), http.StatusBadGateway)
 		},
@@ -228,7 +235,9 @@ func (g *Gateway) observe(resp *http.Response) error {
 		// answered Codex's model list with 401 "token has expired" for two
 		// hours and this log had nothing to tell it from a fault of Burst's.
 		if resp.StatusCode >= 400 {
-			g.logger.Printf("codex: %s %s answered %d by ChatGPT (passed on to Codex as it came): %s", r.Method, r.URL.Path, resp.StatusCode, snippet(peekBody(resp, 4<<10)))
+			why := snippet(peekBody(resp, 4<<10))
+			g.logger.Printf("codex: %s %s answered %d by ChatGPT (passed on to Codex as it came): %s", r.Method, r.URL.Path, resp.StatusCode, why)
+			g.noteFailure(r, resp.StatusCode, why)
 		}
 		return nil
 	}
@@ -384,6 +393,55 @@ type usage struct {
 	Input   int64 // including cached, as OpenAI counts it
 	Cached  int64
 	Output  int64
+}
+
+// maxFailures is how many failures that are not turns are kept.
+const maxFailures = 50
+
+// Failures returns what failed and is not a turn, oldest first. They are
+// kept apart from the turns: no count, error rate or check reads them, so
+// a model list refused every few minutes cannot pass for failing turns.
+func (g *Gateway) Failures() []metrics.Event {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]metrics.Event(nil), g.failures...)
+}
+
+// noteFailure keeps a request that failed and is not a turn, with which
+// Codex client sent it: the desktop app and its helpers sign in apart.
+func (g *Gateway) noteFailure(r *http.Request, status int, why string) {
+	if isTurn(r) {
+		return
+	}
+	start, _ := r.Context().Value(startKey{}).(time.Time)
+	if start.IsZero() {
+		start = time.Now()
+	}
+	note := "not a model call: " + r.Method + " " + r.URL.Path
+	if o := r.Header.Get("Originator"); o != "" {
+		note += ", sent by " + o
+	}
+	g.keepFailure(metrics.Event{
+		Time:        start,
+		RequestID:   r.Header.Get("X-Client-Request-Id"),
+		SessionID:   r.Header.Get("Session-Id"),
+		Slot:        "primary",
+		Route:       "PRIMARY",
+		Destination: g.upstream.Scheme + "://" + g.upstream.Host + r.URL.Path,
+		HTTPStatus:  status,
+		DurationMS:  time.Since(start).Milliseconds(),
+		Note:        note + ": " + why,
+	})
+}
+
+func (g *Gateway) keepFailure(e metrics.Event) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.failures = append(g.failures, e)
+	if n := len(g.failures) - maxFailures; n > 0 {
+		g.failures = append([]metrics.Event(nil), g.failures[n:]...)
+	}
+	g.persist()
 }
 
 func (g *Gateway) record(r *http.Request, status int, u usage, note string) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
 
 type lockedBuf struct {
@@ -83,6 +84,9 @@ func TestAConnectionThatIsNotHTTPIsLoggedAsAnError(t *testing.T) {
 	rf := waitRefused(t, g, 1)
 	if !strings.Contains(rf.What, "400 Bad Request") || !strings.Contains(rf.What, `"hello burst"`) {
 		t.Errorf("what = %q", rf.What)
+	}
+	if fs := g.Failures(); len(fs) != 1 || fs[0].Slot != "refused" || fs[0].HTTPStatus != 400 || !strings.Contains(fs[0].Note, `"hello burst"`) {
+		t.Errorf("the requests table must list it: %+v", fs)
 	}
 	line := out.String()
 	if !strings.Contains(line, " level=error codex: refused a connection") {
@@ -156,5 +160,39 @@ func TestWhatIsPassedOnIsNotRefused(t *testing.T) {
 	defer mu.Unlock()
 	if strings.Join(protos, " ") != "/bad /two" {
 		t.Errorf("reached ChatGPT: %v", protos)
+	}
+}
+
+// A request that is not a turn and that ChatGPT refuses is listed for the
+// requests table with the client that sent it, survives a restart, and is
+// kept out of the turns that the counts and checks read.
+func TestAFailedRequestThatIsNotATurnIsListed(t *testing.T) {
+	g, mp, gw := newTestGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":{"message":"Your authentication token has expired."}}`)
+	}))
+	req, _ := http.NewRequest("GET", gw.URL+"/backend-api/codex/models?client_version=1", nil)
+	req.Header.Set("Originator", "codex-browser-use")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	fs := g.Failures()
+	if len(fs) != 1 || fs[0].HTTPStatus != 401 || !strings.HasSuffix(fs[0].Destination, "/backend-api/codex/models") ||
+		!strings.Contains(fs[0].Note, "sent by codex-browser-use") || !strings.Contains(fs[0].Note, "token has expired") {
+		t.Fatalf("failures = %+v", fs)
+	}
+	if evs, _ := metrics.Recent(mp, 10); len(evs) != 0 {
+		t.Errorf("it is not a turn and must not be counted as one: %+v", evs)
+	}
+	again, err := New(gw.URL, mp, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fs := again.Failures(); len(fs) != 1 || fs[0].HTTPStatus != 401 {
+		t.Errorf("after a restart: %+v", fs)
 	}
 }

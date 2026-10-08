@@ -6,8 +6,11 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
 
 // A connection the Codex port turned away without passing anything on.
@@ -36,12 +39,14 @@ func (g *Gateway) Refused() Refused {
 
 // noteRefused logs one refusal. "codex: refused a connection" is what
 // makes the line level=error (internal/logline).
-func (g *Gateway) noteRefused(what string) {
+func (g *Gateway) noteRefused(status int, what string) {
 	g.mu.Lock()
 	g.refused.Count++
 	g.refused.Last, g.refused.What = time.Now(), what
 	g.mu.Unlock()
 	g.logger.Printf("codex: refused a connection on the Codex port, nothing was passed on to ChatGPT: %s", what)
+	g.keepFailure(metrics.Event{Time: time.Now(), Slot: "refused", Route: "REFUSED", Destination: "not passed on",
+		HTTPStatus: status, Note: "refused at the Codex port, nothing was passed on to ChatGPT: " + what})
 }
 
 // Serve answers Codex on ln until it closes.
@@ -119,7 +124,8 @@ func (c *watchedConn) Write(p []byte) (int, error) {
 		if status[:3] != "431" {
 			what += "; it began " + describe(head)
 		}
-		c.g.noteRefused(what)
+		code, _ := strconv.Atoi(status[:3])
+		c.g.noteRefused(code, what)
 	}
 	return c.Conn.Write(p)
 }
@@ -132,7 +138,7 @@ func (c *watchedConn) closed() {
 	head, wrote := c.head, c.wrote
 	c.mu.Unlock()
 	if !wrote && len(head) > 0 && !looksHTTP(head) {
-		c.g.noteRefused("it was closed with no answer; it began " + describe(head))
+		c.g.noteRefused(0, "it was closed with no answer; it began "+describe(head))
 	}
 }
 
