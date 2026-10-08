@@ -2034,7 +2034,7 @@
   </section>
 
   <section id="sec-codex-requests" style="scroll-margin-top:70px">
-    <h2>Codex requests <span class="hint">model calls only, metadata only; In is uncached input, cached input is counted apart</span></h2>
+    <h2>Codex requests <span class="hint">model calls, and anything else that failed or was refused at the port; metadata only; In is uncached input, cached input is counted apart</span></h2>
     <div class="scroll" id="codexRequests"><div class="empty">No requests yet.</div></div>
   </section>
 
@@ -2639,7 +2639,7 @@ function renderRequests(rows, el = "requests") {
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
         <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "-")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--muted)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
-        <td class="mono st-${String(e.http_status)[0]}">${esc(e.http_status)}</td>
+        <td class="mono st-${slot === "refused" ? 5 : String(e.http_status)[0]}">${esc(slot === "refused" && !e.http_status ? "no answer" : e.http_status)}</td>
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
         <td class="num">${e.cache_read_tokens ? num(e.cache_read_tokens) : "-"}</td>
@@ -5408,8 +5408,11 @@ function renderCodex(c) {
       <td class="mono">${esc(stamp(x.last))}</td>
     </tr>`).join("")}</tbody></table>` : `<div class="empty">No Codex sessions yet. Route Codex through Burst above, then start a Codex session.</div>`;
 
-  setCount("nc-codex-requests", (c.recent || []).length || null);
-  renderRequests(c.recent || [], "codexRequests");
+  // Failures that are not turns (a refused connection, a model list
+  // ChatGPT would not give) are listed among the turns, newest first.
+  const reqRows = (c.recent || []).concat(c.failures || []).sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+  setCount("nc-codex-requests", reqRows.length || null);
+  renderRequests(reqRows, "codexRequests");
 }
 
 // Codex insights: /api/codex/insights over the window picked here.
