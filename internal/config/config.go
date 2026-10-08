@@ -249,13 +249,29 @@ type ModelPrice struct {
 	// a Claude model (Anthropic's published multiplier), the ordinary write
 	// rate for anything else.
 	CacheWrite1hPerMTok float64 `json:"cache_write_1h_per_mtok,omitempty"`
+	// LongPromptOverTokens and LongPromptMultiplier price a model that
+	// charges more for a long prompt: every rate is multiplied when the
+	// prompt (input, cache reads and cache writes together) is over that
+	// many tokens. Claude Haiku 5.5 is five times the price over 100,000.
+	LongPromptOverTokens int64   `json:"long_prompt_over_tokens,omitempty"`
+	LongPromptMultiplier float64 `json:"long_prompt_multiplier,omitempty"`
+}
+
+// promptRate is what a prompt of that many tokens multiplies every rate by:
+// 1 unless the model charges more for a long prompt and this is one.
+func (p ModelPrice) promptRate(prompt int64) float64 {
+	if p.LongPromptOverTokens > 0 && p.LongPromptMultiplier > 0 && prompt > p.LongPromptOverTokens {
+		return p.LongPromptMultiplier
+	}
+	return 1
 }
 
 // LongWriteExtraUSD is what tokens written to the one-hour cache cost over
 // the ordinary write rate PriceTokens charged them at. Until 7 Oct 2026
 // every write was priced as a five-minute one, 1.25 times input, while this
 // Mac's sessions wrote to the one-hour cache at 2 times: 14 days of writes
-// read as $105 and were $168.
+// read as $105 and were $168. It is given no prompt size, so on a model
+// with a long prompt price the extra is counted at the short prompt rate.
 func (c Config) LongWriteExtraUSD(model string, tokens int64) float64 {
 	if tokens <= 0 {
 		return 0
@@ -282,7 +298,7 @@ func (c Config) PriceTokens(model string, input, output, cacheRead, cacheWrite i
 	readRate, writeRate := price.CacheRates(model)
 	usd := (float64(input)/1_000_000)*price.InputPerMTok + (float64(output)/1_000_000)*price.OutputPerMTok +
 		(float64(cacheRead)/1_000_000)*readRate + (float64(cacheWrite)/1_000_000)*writeRate
-	return usd, priced
+	return usd * price.promptRate(input+cacheRead+cacheWrite), priced
 }
 
 func (p ModelPrice) CacheRates(model string) (read, write float64) {
@@ -725,12 +741,13 @@ func Default() Config {
 		// verify these against the AWS price list.
 		Pricing: map[string]ModelPrice{
 			// Fable 5.1, Opus 5.5 and Sonnet 5.5 cache reads are listed prices
-			// ($0.25, $0.20 and $0.20/MTok). Opus 5.5's is well under the
-			// 0.1x-of-input default CacheRates uses; Sonnet 5.5's is listed
-			// explicitly so it is a price, not an inference.
+			// ($0.25, $0.20 and $0.10/MTok), under the 0.1x-of-input default
+			// CacheRates uses. Haiku 5.5 is priced by prompt length: these
+			// rates up to 100,000 tokens, five times them over that.
 			"claude-fable-5-1":                                {InputPerMTok: 10, OutputPerMTok: 50, CacheReadPerMTok: 0.25},
 			"claude-opus-5-5":                                 {InputPerMTok: 4, OutputPerMTok: 20, CacheReadPerMTok: 0.20},
-			"claude-sonnet-5-5":                               {InputPerMTok: 2, OutputPerMTok: 10, CacheReadPerMTok: 0.20},
+			"claude-sonnet-5-5":                               {InputPerMTok: 2, OutputPerMTok: 10, CacheReadPerMTok: 0.10},
+			"claude-haiku-5-5":                                {InputPerMTok: 0.10, OutputPerMTok: 0.50, LongPromptOverTokens: 100_000, LongPromptMultiplier: 5},
 			"claude-opus-4-8":                                 {InputPerMTok: 5, OutputPerMTok: 25},
 			"claude-opus-4-7":                                 {InputPerMTok: 5, OutputPerMTok: 25},
 			"claude-opus-4-6":                                 {InputPerMTok: 5, OutputPerMTok: 25},

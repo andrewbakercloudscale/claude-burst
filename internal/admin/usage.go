@@ -29,6 +29,10 @@ type usagePrice struct {
 	CacheRead    float64 `json:"cache_read"`
 	CacheWrite   float64 `json:"cache_write"`
 	CacheDerived bool    `json:"cache_derived"`
+	// Set for a model that charges more for a long prompt: every rate is
+	// multiplied over that many prompt tokens.
+	LongPromptOverTokens int64   `json:"long_prompt_over_tokens,omitempty"`
+	LongPromptMultiplier float64 `json:"long_prompt_multiplier,omitempty"`
 }
 
 type usageResponse struct {
@@ -168,7 +172,8 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		for m, p := range cfg.Pricing {
 			read, write := p.CacheRates(m)
 			out.Prices = append(out.Prices, usagePrice{Model: m, Input: p.InputPerMTok, Output: p.OutputPerMTok,
-				CacheRead: read, CacheWrite: write, CacheDerived: p.CacheReadPerMTok == 0 || p.CacheWritePerMTok == 0})
+				CacheRead: read, CacheWrite: write, CacheDerived: p.CacheReadPerMTok == 0 || p.CacheWritePerMTok == 0,
+				LongPromptOverTokens: p.LongPromptOverTokens, LongPromptMultiplier: p.LongPromptMultiplier})
 		}
 		sort.Slice(out.Prices, func(i, j int) bool { return out.Prices[i].Model < out.Prices[j].Model })
 	}

@@ -34,6 +34,9 @@ const { chromium } = require("playwright");
     report.permissions = (await page.textContent("#sec-permissions")).replace(/\s+/g, " ").trim().slice(0, 1500);
     report.compactSessions = (await page.textContent("#compactSessions")).replace(/\s+/g, " ").trim().slice(0, 200);
     report.usage = (await page.textContent("#ugTiles")).replace(/\s+/g, " ").trim().slice(0, 600);
+    // The requests sit under their repository: open the first one.
+    await page.click("#ugRows button.ug-open");
+    await page.waitForSelector("#ugRows table.ug-inner tr.ug-row", { timeout: 15000 });
     report.usageRows = (await page.textContent("#ugRows")).replace(/\s+/g, " ").trim().slice(0, 600);
     report.title = await page.title();
   } catch (e) {

@@ -208,6 +208,9 @@ func validatePrice(m string, p config.ModelPrice) error {
 			return fmt.Errorf("%s: prices are per million tokens, between 0 and 1000", m)
 		}
 	}
+	if p.LongPromptOverTokens < 0 || p.LongPromptMultiplier < 0 || p.LongPromptMultiplier > 100 {
+		return fmt.Errorf("%s: the long prompt multiplier is between 0 and 100", m)
+	}
 	if p.InputPerMTok == 0 && p.OutputPerMTok == 0 {
 		return fmt.Errorf("%s: set at least the input and output price", m)
 	}
@@ -243,7 +246,19 @@ func (s *Server) handleSettingsPost(w http.ResponseWriter, r *http.Request) {
 				if err := validatePrice(m, *p); err != nil {
 					return badRequest(err)
 				}
-				c.Pricing[m] = *p
+				// The editor sends the four rates it shows. What it does
+				// not show stays as it was, or a save would turn a model
+				// priced by prompt length into one with a single price.
+				np := *p
+				if old, ok := c.Pricing[m]; ok {
+					if np.LongPromptOverTokens == 0 && np.LongPromptMultiplier == 0 {
+						np.LongPromptOverTokens, np.LongPromptMultiplier = old.LongPromptOverTokens, old.LongPromptMultiplier
+					}
+					if np.CacheWrite1hPerMTok == 0 {
+						np.CacheWrite1hPerMTok = old.CacheWrite1hPerMTok
+					}
+				}
+				c.Pricing[m] = np
 			}
 			changed = append(changed, "pricing")
 		}

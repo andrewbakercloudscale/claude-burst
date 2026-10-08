@@ -264,6 +264,14 @@ func Usage(path string, f UsageFilter, repoOf func(session string) string) (Usag
 			if !f.AllTraffic && !IsModelRequest(e) {
 				return
 			}
+			// A request with no repository goes by one of two names in the
+			// repository table, and the table's rows open by that name.
+			if repo == "" {
+				repo = "(no session)"
+				if e.SessionID != "" {
+					repo = "(unknown)"
+				}
+			}
 			if f.Model != "" && e.Model != f.Model ||
 				f.Provider != "" && f.Provider != prov && f.Provider != slotOf(e) ||
 				f.Repo != "" && repo != f.Repo ||
@@ -320,12 +328,6 @@ func Usage(path string, f UsageFilter, repoOf func(session string) string) (Usag
 			}
 			addGroup("model", model, e, res)
 			addGroup("provider", prov, e, res)
-			if repo == "" {
-				repo = "(no session)"
-				if e.SessionID != "" {
-					repo = "(unknown)"
-				}
-			}
 			addGroup("repo", repo, e, res)
 			addGroup("result", res, e, res)
 
