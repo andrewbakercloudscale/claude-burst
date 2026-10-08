@@ -79,3 +79,27 @@ func TestAutomaskMasksCountTokens(t *testing.T) {
 		t.Fatalf("count_tokens sent %s", got)
 	}
 }
+
+// The output of a tool call that names a .env file has its values masked by
+// where they sit; the same text from any other call is left alone.
+func TestAutomaskMasksTheValuesOfAnEnvFile(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	env := `     1\tPORT=3000\n     2\tDATADOG_KEY=0a1b2c3d4e5f60718293a4b5c6d7e8f9`
+	send(t, s, "S1", []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"show me the config"}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/app/.env.local"}},{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/app/environment.txt"}}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"` + env + `"},{"type":"tool_result","tool_use_id":"t2","content":"` + env + `"}]}`),
+	})
+	got := f.last()
+	if n := strings.Count(got, "DATADOG_KEY=[ENV-1]"); n != 1 {
+		t.Errorf("the .env read masked %d time(s), want 1: %s", n, got)
+	}
+	if n := strings.Count(got, "DATADOG_KEY=0a1b2c3d"); n != 1 {
+		t.Errorf("the other file's text is left alone once, got %d: %s", n, got)
+	}
+	if strings.Count(got, "PORT=3000") != 2 {
+		t.Errorf("a port is not a secret: %s", got)
+	}
+}
