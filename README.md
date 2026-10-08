@@ -215,8 +215,8 @@ chmod +x ~/burst-bypass.sh && ~/burst-bypass.sh
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.20.21 at the time of writing)
-git clone --branch v0.20.21 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.20.22 at the time of writing)
+git clone --branch v0.20.22 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 # 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
