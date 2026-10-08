@@ -111,9 +111,9 @@ Last updated 8 October 2026, at v0.20.21.
 
 **Today.** Automask covers every request Claude Code sends, whichever model or provider it goes to, and nothing Codex sends. Its section is in the Claude tab, which reads as if it were Claude only.
 
-**Plan.** Mask a Codex turn's instructions and input the same way, with the same rules, word list and counts. The Codex gateway already reads and rewrites a turn's body for the context inspector, so this is the same step. Move the section to the General tab and show each mask's source (Claude Code or Codex). Two limits to state on the page: a turn Codex sends compressed or over a WebSocket is passed through as it is, and with Automask on a Codex request is no longer sent unchanged.
+**Plan.** Mask a Codex turn's instructions and input the same way, with the same rules, word list and counts. The Codex gateway already reads and rewrites a turn's body for the context inspector, so this is the same step. Move the section to the General tab and show each mask's source (Claude Code or Codex). Add a choice of where it applies: everywhere (the default), or only the providers ticked, from Anthropic, each secondary and ChatGPT. A provider that is not ticked gets the request as it was written. Two limits to state on the page: a turn Codex sends compressed or over a WebSocket is passed through as it is, and with Automask on a Codex request is no longer sent unchanged.
 
-**Done when.** A made-up word typed into Codex reaches ChatGPT as its mask, and the Last 50 masks list shows it as Codex's.
+**Done when.** A made-up word typed into Codex reaches ChatGPT as its mask, the Last 50 masks list shows it as Codex's, and with only one provider ticked the same word reaches the others unmasked.
 
 ### 11. Codex traffic by client
 
