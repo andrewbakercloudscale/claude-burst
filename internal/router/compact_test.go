@@ -407,6 +407,10 @@ func TestCompactionFailedSummaryNeverSwaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The failed summary saves its state just after the lock this test
+	// waits on is released, which can be after the test has returned.
+	t.Cleanup(func() { unwritten(s.compaction.path).Wait() })
+	t.Cleanup(s.compaction.running.Wait)
 	all := msgs(t, session)
 	send(t, s, "S", all[:5])
 	send(t, s, "S", all[:7])
