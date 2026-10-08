@@ -104,12 +104,19 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 		fixedAt = config.DefaultCompactionCompactAt
 	}
 	delay := time.Duration(pc.WindowMinutes) * time.Minute
-	ci.Strategies, _ = cachedScan(fmt.Sprintf("strategies|%d|%d|%s", fixedAt, pc.WindowMinutes, s.metricsPath), func() (metrics.Strategies, error) {
+	// The sizes in force, as far back as they are on record: the replay at
+	// those is set beside what happened.
+	sizes := s.sizesOnRecord()
+	ci.Strategies, _ = cachedScan(fmt.Sprintf("strategies|%d|%d|%d|%s", fixedAt, pc.WindowMinutes, sizes.Len(), s.metricsPath), func() (metrics.Strategies, error) {
 		var repoOf func(string) (string, string)
 		if s.repos != nil {
 			repoOf = s.repos.resolve
 		}
-		return metrics.CompactionStrategiesSince(s.metricsPath, time.Now().Add(-contextWindow), fixedAt, delay, repoOf)
+		var sizeAt func(string, time.Time) (int64, bool)
+		if sizes.Len() > 0 {
+			sizeAt = sizes.At
+		}
+		return metrics.CompactionStrategiesTracked(s.metricsPath, time.Now().Add(-contextWindow), fixedAt, delay, repoOf, sizeAt)
 	})
 	ci.Overflow = s.overflowStats()
 	if s.repos != nil {

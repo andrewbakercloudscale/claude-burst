@@ -49,8 +49,14 @@ type Server struct {
 	gateway    *router.Server
 	modNotices modNotices
 	// learned is Intelligent Compaction Mode's state, under learnMu.
-	learnMu     sync.Mutex
-	learned     autocompact.State
+	learnMu sync.Mutex
+	learned autocompact.State
+	// sizes is the Compact at in force over time, under sizesMu (not
+	// learnMu, which a learn holds for as long as its replay takes), read
+	// from its file on the first learn.
+	sizesMu     sync.Mutex
+	sizes       autocompact.Sizes
+	sizesRead   bool
 	metricsPath string
 	version     string
 	// extraHost is an optional friendly hostname accepted in addition to the
