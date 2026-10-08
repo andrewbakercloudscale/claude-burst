@@ -2142,3 +2142,38 @@ func TestIdleCompactionLeavesAloneWhatItWouldLoseOn(t *testing.T) {
 		}
 	}
 }
+
+// A session on a message thread continues its latest response, and a
+// restart must still know which conversation that response belongs to:
+// otherwise the thread goes on under a name of its own, apart from its
+// summary and its limit.
+func TestThreadsSurviveARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compaction-state.json")
+	c := newCompactor(config.CompactionConfig{}, path, nil)
+	c.mu.Lock()
+	c.state("S|m|first").seen = time.Now()
+	c.noteThread("msg_1", threadResponse{key: "S|m|first", context: 300_000})
+	c.noteThread("msg_2", threadResponse{key: "S|m|first", context: 410_000, summary: "h1", removedMsgs: 7, removedBytes: 900})
+	c.save()
+	c.mu.Unlock()
+
+	again := newCompactor(config.CompactionConfig{}, path, nil)
+	got := again.threads["msg_2"]
+	if got != (threadResponse{key: "S|m|first", context: 410_000, summary: "h1", removedMsgs: 7, removedBytes: 900}) {
+		t.Fatalf("msg_2 after a restart: %+v", got)
+	}
+	if again.threads["msg_1"].key != "S|m|first" || len(again.threadIDs) != 2 || again.threadIDs[1] != "msg_2" {
+		t.Fatalf("threads after a restart: %+v in order %v", again.threads, again.threadIDs)
+	}
+	b, _ := os.ReadFile(filepath.Join(filepath.Dir(path), "compaction-threads.json"))
+	if strings.Contains(string(b), "content") {
+		t.Fatalf("the threads file holds more than ids and sizes: %s", b)
+	}
+
+	// A file that does not parse is no thread known, not a gateway that
+	// will not start.
+	os.WriteFile(filepath.Join(filepath.Dir(path), "compaction-threads.json"), []byte("{"), 0600)
+	if broken := newCompactor(config.CompactionConfig{}, path, nil); len(broken.threads) != 0 || broken.sessions["S|m|first"] == nil {
+		t.Fatalf("after a broken threads file: %d threads, sessions %v", len(broken.threads), broken.sessions)
+	}
+}
