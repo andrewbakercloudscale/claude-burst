@@ -171,7 +171,20 @@ func TestASummaryClaudeCodeTookInIsNoLongerOnOffer(t *testing.T) {
  {"role":"user","content":[{"type":"text","text":"fifth task, which is to read the whole file and say what it does"}]}
 ]`)...)
 	send(t, s, "S", taken)
-	waitFor(t, func() bool { return s.compactionReady("S") })
+	// compactionReady would be true at once: the first conversation's
+	// summary is still held. The new history is a conversation of its own,
+	// and it is that one's summary the next request needs.
+	waitFor(t, func() bool {
+		s.compaction.mu.Lock()
+		defer s.compaction.mu.Unlock()
+		ready := 0
+		for k, st := range s.compaction.sessions {
+			if strings.HasPrefix(k, "S|") && (st.summary != "" || st.next != "") {
+				ready++
+			}
+		}
+		return ready >= 2
+	})
 	taken = append(taken, msgs(t, `[
  {"role":"assistant","content":[{"type":"text","text":"done with fifth, the file sets the gateway up and starts it"}]},
  {"role":"user","content":[{"type":"text","text":"sixth task"}]}
