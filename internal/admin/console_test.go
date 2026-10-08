@@ -23,7 +23,10 @@ func newTestConsole(t *testing.T) (*Console, *[]string, *string) {
 	dir, _ := config.ConfigDir()
 	os.MkdirAll(dir, 0o700)
 	notice.SetDefault(notice.New(notice.Path(dir), nil))
-	t.Cleanup(func() { notice.SetDefault(nil) })
+	// The publisher writes on its own goroutine: an audit entry still queued
+	// would be written into HOME while the test removes it (directory not
+	// empty, which failed the build of 0.20.25 once).
+	t.Cleanup(func() { notice.Default().Flush(2 * time.Second); notice.SetDefault(nil) })
 	var ran []string
 	var opened string
 	c := &Console{

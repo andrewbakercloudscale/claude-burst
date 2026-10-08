@@ -16,7 +16,7 @@ func TestRestartIsAnnouncedAndResolved(t *testing.T) {
 	t.Cleanup(func() { plannedRestartPath = old })
 	path := filepath.Join(t.TempDir(), "notices.json")
 	notice.SetDefault(notice.New(path, nil))
-	t.Cleanup(func() { notice.SetDefault(nil) })
+	t.Cleanup(func() { notice.Default().Flush(2 * time.Second); notice.SetDefault(nil) })
 
 	announceDrain(2)
 	announceReady("9.9.9")
@@ -45,7 +45,7 @@ func TestPlannedRestartIsQuietOnce(t *testing.T) {
 	t.Cleanup(func() { plannedRestartPath = old })
 	path := filepath.Join(t.TempDir(), "notices.json")
 	notice.SetDefault(notice.New(path, nil))
-	t.Cleanup(func() { notice.SetDefault(nil) })
+	t.Cleanup(func() { notice.Default().Flush(2 * time.Second); notice.SetDefault(nil) })
 
 	if err := os.WriteFile(marker, nil, 0o644); err != nil {
 		t.Fatal(err)
