@@ -178,6 +178,7 @@ func (c *compactor) load() {
 		c.sessions[k] = st
 	}
 	c.loadThreads()
+	c.dropDeadThreads()
 	// The files are what the mod reads, and the rules for which summary a
 	// session offers may have changed with this build.
 	writeHandoffFiles(c.handoffFiles())
@@ -249,6 +250,41 @@ func (c *compactor) savedThreads() []byte {
 	}
 	b, _ := json.Marshal(out)
 	return b
+}
+
+// dropDeadThreads forgets the conversations a restart used to leave behind:
+// until 8 Oct 2026 each restart put every session on a message thread under
+// a new name ("thread-" and the reply it continued), and the old name stayed
+// for 48 hours with nothing ever sent under it again. One session had 52.
+// Kept: a name a saved reply still belongs to, the one each session and
+// model was last seen under, and any that holds a summary.
+func (c *compactor) dropDeadThreads() {
+	live := map[string]bool{}
+	for _, r := range c.threads {
+		live[r.key] = true
+	}
+	latest := map[string]string{} // session and model -> its name seen last
+	for k, st := range c.sessions {
+		i := strings.LastIndex(k, "|thread-")
+		if i < 0 {
+			continue
+		}
+		if l := latest[k[:i]]; l == "" || st.seen.After(c.sessions[l].seen) {
+			latest[k[:i]] = k
+		}
+	}
+	n := 0
+	for k, st := range c.sessions {
+		i := strings.LastIndex(k, "|thread-")
+		if i < 0 || live[k] || latest[k[:i]] == k || st.summary != "" || st.next != "" || st.pending || st.hand != nil {
+			continue
+		}
+		delete(c.sessions, k)
+		n++
+	}
+	if n > 0 && c.logger != nil {
+		c.logger.Printf("compaction forgot %d conversation(s) left behind by earlier restarts: threads nothing continues any more", n)
+	}
 }
 
 // loadThreads reads what savedThreads wrote. A file that is missing or
