@@ -226,6 +226,13 @@ func isTurn(r *http.Request) bool {
 // observe reads a reply on its way back to Codex without holding it up.
 func (g *Gateway) observe(resp *http.Response) error {
 	r := resp.Request
+	if !isTurn(r) {
+		// One line for every request that is not a turn, as a turn has its
+		// own: the log then holds everything Codex sent, and which of its
+		// clients sent it (the desktop app and its helpers sign in apart).
+		start, _ := r.Context().Value(startKey{}).(time.Time)
+		g.logger.Printf("codex: request %s %s status=%d ms=%d client=%q", r.Method, r.URL.Path, resp.StatusCode, time.Since(start).Milliseconds(), r.Header.Get("Originator"))
+	}
 	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/models") && resp.StatusCode == http.StatusOK {
 		g.noteModels(resp)
 		return nil
