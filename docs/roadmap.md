@@ -15,6 +15,8 @@ Last updated 8 October 2026, at v0.20.21.
 | 7 | [A fast deploy](#7-a-fast-deploy) | Development | Open |
 | 8 | [One release command](#8-one-release-command) | Development | Open |
 | 9 | [A live test script](#9-a-live-test-script) | Development | Open |
+| 10 | [Automask for Codex, in the General tab](#10-automask-for-codex-in-the-general-tab) | Privacy | Next |
+| 11 | [Codex traffic by client](#11-codex-traffic-by-client) | Codex | Open |
 
 ## Resilience
 
@@ -102,6 +104,24 @@ Last updated 8 October 2026, at v0.20.21.
 **Plan.** One script that starts a throwaway Claude Code session through the gateway, drives each of those, and reports what it saw against what was expected.
 
 **Done when.** The script passes on this Mac and its report is kept with each release.
+
+## Privacy and Codex
+
+### 10. Automask for Codex, in the General tab
+
+**Today.** Automask covers every request Claude Code sends, whichever model or provider it goes to, and nothing Codex sends. Its section is in the Claude tab, which reads as if it were Claude only.
+
+**Plan.** Mask a Codex turn's instructions and input the same way, with the same rules, word list and counts. The Codex gateway already reads and rewrites a turn's body for the context inspector, so this is the same step. Move the section to the General tab and show each mask's source (Claude Code or Codex). Two limits to state on the page: a turn Codex sends compressed or over a WebSocket is passed through as it is, and with Automask on a Codex request is no longer sent unchanged.
+
+**Done when.** A made-up word typed into Codex reaches ChatGPT as its mask, and the Last 50 masks list shows it as Codex's.
+
+### 11. Codex traffic by client
+
+**Today.** A Codex record holds the session, the model and the tokens, and not which client sent it. Every session in Codex's own files on this Mac names the same client, Codex Desktop, so traffic can be split by model and by session but not by client.
+
+**Plan.** Record the client each turn names in its headers, and add it as a filter and a column in Codex insights and Requests.
+
+**Done when.** Insights can be narrowed to one client and its turns, tokens and latency read on their own.
 
 ## Smaller things, not yet ordered
 
