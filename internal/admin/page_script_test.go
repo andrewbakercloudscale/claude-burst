@@ -436,3 +436,28 @@ out([hashOf("claude", "sec-inspect", menu), hashOf("codex", "sec-codex-inspect",
 		t.Fatalf("got %v\nwant %v", got, want)
 	}
 }
+
+// The best size in hindsight: named for the view shown, with what Burst
+// cost over it, and each repository on its own only beside all of them.
+func TestStrategyBestNamesTheCheapestReplayedSize(t *testing.T) {
+	var got map[string]*struct {
+		At      int64   `json:"at"`
+		USD     float64 `json:"usd"`
+		Over    float64 `json:"over"`
+		Share   float64 `json:"share"`
+		PerRepo float64 `json:"perRepo"`
+	}
+	runPageJS(t, []string{"strategyBest"}, `
+const repo = {repo: "a", actual: {usd: 90}, cheapest: {at: 150000, usd: 100}};
+const st = {actual: {usd: 600}, cheapest: {at: 200000, usd: 480}, per_repo_usd: 450, repos: [repo]};
+out({all: strategyBest(st, st), one: strategyBest(st, repo), old: strategyBest({actual: {usd: 5}}, {actual: {usd: 5}})});`, &got)
+	if a := got["all"]; a == nil || a.At != 200_000 || a.USD != 480 || a.Over != 120 || a.Share != 0.25 || a.PerRepo != 450 {
+		t.Errorf("all repositories: %+v", a)
+	}
+	if o := got["one"]; o == nil || o.At != 150_000 || o.Over != -10 || o.PerRepo != 0 {
+		t.Errorf("one repository: %+v", o)
+	}
+	if got["old"] != nil {
+		t.Errorf("no sweep in the data, want nothing: %+v", got["old"])
+	}
+}

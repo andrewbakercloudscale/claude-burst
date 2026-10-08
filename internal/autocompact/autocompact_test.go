@@ -347,3 +347,86 @@ func TestOnlyAStreakOfLossesRaisesTheThresholdAtOnce(t *testing.T) {
 		t.Fatalf("after one that paid: %+v threshold %d (%s)", r.Failures, r.Threshold, r.Reason)
 	}
 }
+
+// replay is a repository's requests replayed at each size: usd by size in
+// thousands, every size having compacted 5 times.
+func replay(requests int, actual float64, usd map[int64]float64) metrics.StrategyRepo {
+	m := metrics.StrategyRepo{}
+	m.Requests, m.Actual.USD = requests, actual
+	for at := int64(100); at <= 500; at += 25 {
+		z := metrics.StrategySize{At: at * 1000}
+		z.USD, z.Compactions = usd[at], 5
+		if z.USD == 0 {
+			z.USD = 1000
+		}
+		m.Sizes = append(m.Sizes, z)
+	}
+	return m
+}
+
+// A repository with requests enough takes its size from their replay: the
+// latest size within the slack of the cheapest, with no buffer on top,
+// whatever the formula says, at once and again whenever it moves. It needs
+// no compaction of its own to learn from.
+func TestAReplayedSizeIsTakenAtOnceAndBeatsTheFormula(t *testing.T) {
+	b := Bounds{Floor: 100_000, Ceiling: 500_000, Start: 300_000, BufferPercent: 20}
+	in := inputs(metrics.CompactionRun{Session: "a1", Model: "m", At: now.Add(-48 * time.Hour), Last: now.Add(-47 * time.Hour), Start: 50_000, End: 90_000, Turns: 20})
+	// Cheapest at 150k; 175k and 200k are within 5% of it, 225k is not.
+	in.Measured = map[string]metrics.StrategyRepo{"/src/repo-a": replay(1000, 140, map[int64]float64{125: 110, 150: 100, 175: 103, 200: 104.9, 225: 106, 300: 120})}
+	st := Learn(empty(), in, b, true)
+	r := st.Repos["/src/repo-a"]
+	if r == nil || r.Target != 200_000 || r.Threshold != 200_000 || r.Previous != 300_000 {
+		t.Fatalf("%+v, want 200k at once from the starting size", r)
+	}
+	if m := r.Measured; m == nil || m.CheapestAt != 150_000 || m.LatestAt != 200_000 || m.ActualUSD != 140 || m.Requests != 1000 {
+		t.Fatalf("measured %+v", r.Measured)
+	}
+	if !strings.Contains(r.Reason, "cheapest at 150k ($100.00), as late as costs no more than 5% more: 200k ($104.90)") || strings.Contains(r.Reason, "buffer") {
+		t.Fatalf("reason %q", r.Reason)
+	}
+	// The same day the replay moves by more than a tenth: so does the size.
+	in.Measured["/src/repo-a"] = replay(1000, 140, map[int64]float64{125: 100, 150: 120})
+	if r = Learn(st, in, b, true).Repos["/src/repo-a"]; r.Threshold != 125_000 || r.Previous != 200_000 {
+		t.Fatalf("threshold %d previous %d, want 125k from 200k", r.Threshold, r.Previous)
+	}
+	// Not stepping (the intelligent mode is off) leaves the threshold be.
+	if r = Learn(st, in, b, false).Repos["/src/repo-a"]; r.Threshold != 200_000 || r.Target != 125_000 {
+		t.Fatalf("no step: threshold %d target %d", r.Threshold, r.Target)
+	}
+	// Too few requests, or a cheapest size that hardly compacted: nothing
+	// is taken from the replay and the repository is not listed.
+	few := replay(minMeasuredRequests-1, 140, map[int64]float64{150: 100})
+	rare := replay(1000, 140, map[int64]float64{150: 100})
+	for i := range rare.Sizes {
+		rare.Sizes[i].Compactions = MinCompactions - 1
+	}
+	for name, m := range map[string]metrics.StrategyRepo{"few requests": few, "few compactions": rare} {
+		in.Measured["/src/repo-a"] = m
+		if got := Learn(empty(), in, b, true).Repos["/src/repo-a"]; got != nil {
+			t.Fatalf("%s: %+v, want nothing learned", name, got)
+		}
+	}
+}
+
+// The bounds hold a replayed size as they hold a modelled one, and the
+// guards against compactions that lose money still apply.
+func TestAReplayedSizeStaysInsideTheBoundsAndTheGuards(t *testing.T) {
+	b := Bounds{Floor: 150_000, Ceiling: 250_000, Start: 200_000}
+	in := inputs(metrics.CompactionRun{Session: "a1", Model: "m", At: now.Add(-48 * time.Hour), Last: now.Add(-47 * time.Hour), Start: 50_000, End: 90_000, Turns: 20})
+	// Cheapest of all at 100k and nearly as cheap at 400k: both outside.
+	in.Measured = map[string]metrics.StrategyRepo{"/src/repo-a": replay(1000, 140, map[int64]float64{100: 50, 175: 100, 200: 104, 400: 51})}
+	r := Learn(empty(), in, b, true).Repos["/src/repo-a"]
+	if r == nil || r.Measured.CheapestAt != 175_000 || r.Threshold != 200_000 {
+		t.Fatalf("%+v, want the cheapest inside the bounds (175k) and the latest within its slack (200k)", r)
+	}
+	// Most compactions losing money: back to the ceiling all the same.
+	var runs []metrics.CompactionRun
+	for i := 0; i < 4; i++ {
+		runs = append(runs, swapped(fmt.Sprintf("a%d", i), 200_000, 190_000, 0.50, 3, 1_000))
+	}
+	in2 := inputs(runs...)
+	in2.Measured = in.Measured
+	if r = Learn(empty(), in2, b, true).Repos["/src/repo-a"]; r.Target != b.Ceiling || !strings.Contains(r.Reason, "lost money") {
+		t.Fatalf("target %d (%s), want the ceiling", r.Target, r.Reason)
+	}
+}

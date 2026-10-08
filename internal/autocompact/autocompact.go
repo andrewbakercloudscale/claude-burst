@@ -41,6 +41,23 @@
 // and a compaction comes every 75 requests where the cheapest size has one
 // every 47.
 //
+// Measured, not modelled. The formula above is a model of a repository:
+// one growth rate, one size a compaction leaves, and a compaction whenever
+// the context reaches T. The log has the repository's real requests, so
+// each size from the floor to the ceiling is replayed over them
+// (metrics.CompactionStrategiesSince), with the compaction settings' delay
+// between a session's compactions, and the target is the latest size whose
+// replay cost no more than slackShare above the cheapest one's. On 8 Oct
+// 2026 the formula's cheapest size for one repository was 126k and the
+// replay's curve was flat from 100k to 200k, and what Burst had done over
+// the same 14 days ($622) cost more than one fixed 300k would have ($568)
+// and a quarter more than each repository on its replayed best ($464). A
+// replayed target is taken at once and whenever it moves, not a tenth a
+// day: it is every size tried on the same requests, which is the
+// experiment a slow step was waiting for. The buffer is for the formula's
+// errors and is not added to it. The formula remains for a repository the
+// replay has too little of.
+//
 // Guards, since the log measures money and not what a summary loses: never
 // below the floor, never above the fixed Compact at, a tenth a day at most
 // once a threshold is in use (the first one learned goes straight there),
@@ -92,6 +109,9 @@ const (
 	// slackShare is how much more than the cheapest a turn may cost so that
 	// compactions come less often: see the package comment.
 	slackShare = 0.05
+	// minMeasuredRequests is how many requests a repository needs in the
+	// window before a size is taken from their replay.
+	minMeasuredRequests = 300
 )
 
 // Outcome kinds the gateway records (router), beside the summary calls
@@ -159,11 +179,56 @@ type Repo struct {
 	PaybackTurn int     `json:"payback_turns"`
 	// SavedTurnUSD is what a turn costs less at Target than at the fixed
 	// Compact at, by the model.
-	SavedTurnUSD float64   `json:"saved_per_turn_usd"`
-	Failures     Failures  `json:"failures"`
-	Reason       string    `json:"reason"`
-	LearnedAt    time.Time `json:"learned_at"`
-	SteppedOn    string    `json:"stepped_on,omitempty"` // 2006-01-02, local
+	SavedTurnUSD float64  `json:"saved_per_turn_usd"`
+	Failures     Failures `json:"failures"`
+	// Measured is set when Target comes from the replay of the
+	// repository's own requests and not from the formula.
+	Measured  *Measured `json:"measured,omitempty"`
+	Reason    string    `json:"reason"`
+	LearnedAt time.Time `json:"learned_at"`
+	SteppedOn string    `json:"stepped_on,omitempty"` // 2006-01-02, local
+}
+
+// Measured is what the replay of a repository's requests said: the
+// cheapest size and its cost, what the target's replay cost, and beside
+// them what Burst did and what the one fixed Compact at would have.
+type Measured struct {
+	Requests    int     `json:"requests"`
+	CheapestAt  int64   `json:"cheapest_at"`
+	CheapestUSD float64 `json:"cheapest_usd"`
+	LatestAt    int64   `json:"latest_at"`
+	LatestUSD   float64 `json:"latest_usd"`
+	ActualUSD   float64 `json:"actual_usd"`
+	FixedUSD    float64 `json:"fixed_usd"`
+}
+
+// measuredSizes is the cheapest replayed size inside the bounds and the
+// latest one that cost no more than slackShare above it. ok is false when
+// the replay has too little to say: too few requests, or a cheapest size
+// that compacted fewer than MinCompactions times.
+func measuredSizes(m metrics.StrategyRepo, b Bounds) (cheapest, latest metrics.StrategySize, ok bool) {
+	if m.Requests < minMeasuredRequests {
+		return cheapest, latest, false
+	}
+	found := false
+	for _, z := range m.Sizes {
+		if z.At < b.Floor || z.At > b.Ceiling {
+			continue
+		}
+		if !found || z.USD <= cheapest.USD {
+			cheapest, found = z, true
+		}
+	}
+	if !found || cheapest.Compactions < MinCompactions || cheapest.USD <= 0 {
+		return cheapest, latest, false
+	}
+	latest = cheapest
+	for _, z := range m.Sizes {
+		if z.At > latest.At && z.At <= b.Ceiling && z.USD <= cheapest.USD*(1+slackShare) {
+			latest = z
+		}
+	}
+	return cheapest, latest, true
 }
 
 // State is the learner's file.
@@ -301,6 +366,10 @@ type Inputs struct {
 	Resolve   func(session string) (name, root string)
 	ReadPrice func(model string) float64
 	Now       time.Time
+	// Measured is the replay of each repository's requests over the window
+	// at every size, by root: see the package comment. nil leaves every
+	// repository to the formula.
+	Measured map[string]metrics.StrategyRepo
 }
 
 // Learn works out each repository's target from in and, when step is true,
@@ -401,9 +470,11 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 	today := in.Now.Local().Format("2006-01-02")
 	for root, a := range by {
 		r := out.Repos[root]
-		// A repository that has never had a summary started has nothing to
-		// show: it is on the fixed Compact at like any folder not listed.
-		if r == nil && len(a.swapped) == 0 && a.fails.SummaryFailed+a.fails.Unused == 0 {
+		cheapest, latest, measured := measuredSizes(in.Measured[root], b)
+		// A repository that has never had a summary started, and too few
+		// requests to replay, has nothing to show: it is on the starting
+		// size like any folder not listed.
+		if r == nil && !measured && len(a.swapped) == 0 && a.fails.SummaryFailed+a.fails.Unused == 0 {
 			continue
 		}
 		if r == nil {
@@ -424,28 +495,37 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		r.GrowthTurn = int64(median(a.growth))
 		r.CostUSD = median(a.costs)
 		r.TurnsAfter = int(median(a.turnsAfter))
-		r.PaybackTurn, r.SavedTurnUSD = 0, 0
+		r.PaybackTurn, r.SavedTurnUSD, r.Measured = 0, 0, nil
 
+		extraUSD := median(a.c0)
+		// Room to work in: half as much again as a compaction leaves.
+		low := max(b.Floor, r.AfterTokens*3/2)
+		// best is the size before the bounds are applied to it.
+		var best int64
 		switch {
+		case measured:
+			m := in.Measured[root]
+			best = latest.At
+			r.Measured = &Measured{Requests: m.Requests, CheapestAt: cheapest.At, CheapestUSD: cheapest.USD,
+				LatestAt: latest.At, LatestUSD: latest.USD, ActualUSD: m.Actual.USD, FixedUSD: m.Fixed.USD}
+			r.Reason = fmt.Sprintf("replayed over the %d requests of the last %d days, which cost $%.2f as Burst ran them: cheapest at %dk ($%.2f)", m.Requests, int(Window.Hours()/24), m.Actual.USD, cheapest.At/1000, cheapest.USD)
+			if latest.At > cheapest.At {
+				r.Reason += fmt.Sprintf(", as late as costs no more than %d%% more: %dk ($%.2f)", int(slackShare*100), latest.At/1000, latest.USD)
+			}
 		case n < MinCompactions:
 			r.Target = 0
 			r.Reason = fmt.Sprintf("%d of the %d compactions needed in the last %d days: on the starting size, the middle of the range, until then", n, MinCompactions, int(Window.Hours()/24))
+			continue
 		case r.GrowthTurn <= 0 || a.price <= 0:
 			r.Target = 0
 			r.Reason = "no run long enough to measure how fast the context grows: on the starting size, the middle of the range"
+			continue
 		default:
-			extraUSD := median(a.c0)
-			best := Optimal(r.AfterTokens, r.GrowthTurn, int64(extraUSD/a.price), a.fails.Rate)
-			// Room to work in: half as much again as a compaction leaves.
-			low := max(b.Floor, r.AfterTokens*3/2)
+			best = Optimal(r.AfterTokens, r.GrowthTurn, int64(extraUSD/a.price), a.fails.Rate)
 			cheapest := best
 			best = Latest(best, r.AfterTokens, r.GrowthTurn, a.price, extraUSD)
 			late := best
 			best = best * int64(100+max(b.BufferPercent, 0)) / 100
-			target := min(max(best, low), b.Ceiling)
-			if gap := float64(target - r.AfterTokens); gap > 0 {
-				r.PaybackTurn = int(math.Ceil((a.price*float64(target) + extraUSD) / (a.price * gap)))
-			}
 			r.Reason = fmt.Sprintf("a compaction leaves %dk and costs $%.2f, the context grows %.1fk a turn: cheapest at %dk", r.AfterTokens/1000, r.CostUSD, float64(r.GrowthTurn)/1000, cheapest/1000)
 			if late > cheapest {
 				r.Reason += fmt.Sprintf(", as late as costs no more than %d%% more a turn: %dk", int(slackShare*100), late/1000)
@@ -453,26 +533,30 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 			if b.BufferPercent > 0 {
 				r.Reason += fmt.Sprintf(", plus the %d%% buffer: %dk", b.BufferPercent, best/1000)
 			}
-			if c := a.fails.Streak; c >= lossStreak {
-				raised := min(max(best, low)*int64(100+lossRaisePercent)/100, b.Ceiling)
-				r.Reason += fmt.Sprintf(", plus %d%% because the last %d compactions lost money: %dk", lossRaisePercent, c, raised/1000)
-				target = raised
-			}
-			switch {
-			case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare:
-				target = b.Ceiling
-				r.Reason = fmt.Sprintf("%d of %d compactions lost money: back to the fixed Compact at", a.fails.Count(), a.fails.Attempts)
-			case len(a.turnsAfter) >= MinCompactions && r.TurnsAfter < 2*r.PaybackTurn:
-				target = b.Ceiling
-				r.Reason = fmt.Sprintf("sessions go on %d turns after a compaction and one needs %d to pay for itself: back to the fixed Compact at", r.TurnsAfter, r.PaybackTurn)
-			case best < low:
-				r.Reason += fmt.Sprintf(", held at %dk (the floor, or room above what a compaction leaves)", low/1000)
-			case best > b.Ceiling:
-				r.Reason += fmt.Sprintf(", held at the fixed Compact at of %dk", b.Ceiling/1000)
-			}
-			r.Target = roundTo(target)
-			r.SavedTurnUSD = costPerTurn(b.Ceiling, r.AfterTokens, r.GrowthTurn, a.price, extraUSD) - costPerTurn(r.Target, r.AfterTokens, r.GrowthTurn, a.price, extraUSD)
 		}
+		target := min(max(best, low), b.Ceiling)
+		if gap := float64(target - r.AfterTokens); gap > 0 && a.price > 0 && n > 0 {
+			r.PaybackTurn = int(math.Ceil((a.price*float64(target) + extraUSD) / (a.price * gap)))
+		}
+		if c := a.fails.Streak; c >= lossStreak {
+			raised := min(max(best, low)*int64(100+lossRaisePercent)/100, b.Ceiling)
+			r.Reason += fmt.Sprintf(", plus %d%% because the last %d compactions lost money: %dk", lossRaisePercent, c, raised/1000)
+			target = raised
+		}
+		switch {
+		case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare:
+			target = b.Ceiling
+			r.Reason = fmt.Sprintf("%d of %d compactions lost money: back to the fixed Compact at", a.fails.Count(), a.fails.Attempts)
+		case len(a.turnsAfter) >= MinCompactions && r.TurnsAfter < 2*r.PaybackTurn:
+			target = b.Ceiling
+			r.Reason = fmt.Sprintf("sessions go on %d turns after a compaction and one needs %d to pay for itself: back to the fixed Compact at", r.TurnsAfter, r.PaybackTurn)
+		case best < low:
+			r.Reason += fmt.Sprintf(", held at %dk (the floor, or room above what a compaction leaves)", low/1000)
+		case best > b.Ceiling:
+			r.Reason += fmt.Sprintf(", held at the fixed Compact at of %dk", b.Ceiling/1000)
+		}
+		r.Target = roundTo(target)
+		r.SavedTurnUSD = costPerTurn(b.Ceiling, r.AfterTokens, r.GrowthTurn, a.price, extraUSD) - costPerTurn(r.Target, r.AfterTokens, r.GrowthTurn, a.price, extraUSD)
 	}
 	for _, r := range out.Repos {
 		// Bounds the user has since moved apply at once, step or no step.
@@ -483,6 +567,22 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		// the day.
 		if r.Failures.Streak >= lossStreak && r.Threshold > 0 && r.Target > r.Threshold {
 			r.Previous, r.Threshold = r.Threshold, min(max(r.Target, b.Floor), b.Ceiling)
+		}
+		// A size replayed over the repository's own requests: taken at
+		// once and whenever it moves, see the package comment.
+		if step && r.Measured != nil && r.Target > 0 {
+			if next := min(max(r.Target, b.Floor), b.Ceiling); next != r.Threshold {
+				from := r.Threshold
+				if from <= 0 {
+					from = b.Start
+				}
+				if from <= 0 {
+					from = b.Ceiling
+				}
+				r.Previous, r.Threshold = from, next
+			}
+			r.SteppedOn = today
+			continue
 		}
 		if !step || r.SteppedOn == today {
 			continue

@@ -94,13 +94,22 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.CompactionStats, _ = cachedScan("compaction|"+s.metricsPath, func() (metrics.CompactionStats, error) {
 		return metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
 	})
-	fixedAt := cfg.PrimaryCompaction.Resolved().CompactAtTokens
-	ci.Strategies, _ = cachedScan(fmt.Sprintf("strategies|%d|%s", fixedAt, s.metricsPath), func() (metrics.Strategies, error) {
+	// The fixed line is the one Compact at a user would set without the
+	// intelligent mode: their own in the fixed mode, and in the intelligent
+	// mode the fixed mode's default, since Compact at is then the ceiling
+	// (500k) and no size anyone would choose to run every repository on.
+	pc := cfg.PrimaryCompaction.Resolved()
+	fixedAt := pc.CompactAtTokens
+	if pc.Intelligent() {
+		fixedAt = config.DefaultCompactionCompactAt
+	}
+	delay := time.Duration(pc.WindowMinutes) * time.Minute
+	ci.Strategies, _ = cachedScan(fmt.Sprintf("strategies|%d|%d|%s", fixedAt, pc.WindowMinutes, s.metricsPath), func() (metrics.Strategies, error) {
 		var repoOf func(string) (string, string)
 		if s.repos != nil {
 			repoOf = s.repos.resolve
 		}
-		return metrics.CompactionStrategiesSince(s.metricsPath, time.Now().Add(-contextWindow), fixedAt, repoOf)
+		return metrics.CompactionStrategiesSince(s.metricsPath, time.Now().Add(-contextWindow), fixedAt, delay, repoOf)
 	})
 	ci.Overflow = s.overflowStats()
 	if s.repos != nil {

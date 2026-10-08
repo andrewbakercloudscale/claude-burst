@@ -89,15 +89,17 @@ type StrategySize struct {
 	StrategyCost
 }
 
-// cheapestSize is the entry of sizes with the lowest cost, the smallest
-// size among equals; false when there are none.
+// cheapestSize is the entry of sizes with the lowest cost, the largest size
+// among equals (a repository nothing would have compacted costs the same at
+// every size, and the size to name for it is not the smallest); false when
+// there are none.
 func cheapestSize(sizes []StrategySize) (StrategySize, bool) {
 	if len(sizes) == 0 {
 		return StrategySize{}, false
 	}
 	best := sizes[0]
 	for _, z := range sizes[1:] {
-		if z.USD < best.USD {
+		if z.USD <= best.USD {
 			best = z
 		}
 	}
@@ -154,6 +156,12 @@ type Strategies struct {
 type twin struct {
 	at  int64 // where it compacts
 	ctx int64 // 0 until known
+	// delay is the least time between two of its compactions, as the
+	// compaction settings' delay is for a real session, and last when it
+	// compacted last. Without it a small size is costed as compacting
+	// every few requests, which Burst would never do.
+	delay time.Duration
+	last  time.Time
 	// own is set once the twin has compacted where the real session did
 	// not: from then on it follows the real context's growth, not its size.
 	own bool
@@ -207,14 +215,14 @@ func (t *twin) step(s *strategySession, e Event, ctx int64, swap bool) StrategyC
 	default:
 		t.ctx = max(t.ctx+delta, 1)
 	}
-	if t.ctx >= t.at {
-		// What the real compaction left is copied only where it is a
-		// compaction's worth below this twin's size. A real one that left
-		// 170k had a twin at 175k compacting every few requests, each one
-		// paid for: $59 over a repository that cost $24 at 150k and $25 at
-		// 200k.
+	if t.ctx >= t.at && (t.last.IsZero() || e.Time.Sub(t.last) >= t.delay) {
+		t.last = e.Time
+		// What the real compaction left is copied only where it leaves this
+		// twin a third of its size to grow into. A real one that left 170k
+		// had a twin at 175k compacting every few requests, each one paid
+		// for: $59 over a repository that cost $24 at 150k and $25 at 200k.
 		after := s.after
-		if after <= 0 || after > t.at/2 {
+		if after <= 0 || after > t.at*2/3 {
 			after = min(assumedAfter, t.at/2)
 		}
 		c.Compactions = 1
@@ -228,10 +236,11 @@ func (t *twin) step(s *strategySession, e Event, ctx int64, swap bool) StrategyC
 }
 
 // CompactionStrategiesSince replays the log since `since` under the three
-// strategies. fixedAt is the one Compact at the Fixed twin uses. repoOf
-// names a session's repository and its root; nil files every session under
-// one row.
-func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repoOf func(session string) (name, root string)) (Strategies, error) {
+// strategies. fixedAt is the one Compact at the Fixed twin uses, and delay
+// the least time between two compactions of a session under Fixed and
+// under each size of the sweep. repoOf names a session's repository and its
+// root; nil files every session under one row.
+func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, delay time.Duration, repoOf func(session string) (name, root string)) (Strategies, error) {
 	st := Strategies{FixedAt: fixedAt, DefaultAt: claudeCodeTrigger}
 	if fixedAt <= 0 || fixedAt > claudeCodeTrigger {
 		st.FixedAt = claudeCodeTrigger
@@ -307,9 +316,9 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repo
 			key := e.SessionID + "|" + e.Model
 			s := sessions[key]
 			if s == nil {
-				s = &strategySession{def: twin{at: claudeCodeTrigger}, fixed: twin{at: st.FixedAt}}
+				s = &strategySession{def: twin{at: claudeCodeTrigger}, fixed: twin{at: st.FixedAt, delay: delay}}
 				for _, z := range st.Sizes {
-					s.sizes = append(s.sizes, twin{at: z.At})
+					s.sizes = append(s.sizes, twin{at: z.At, delay: delay})
 				}
 				sessions[key] = s
 			}

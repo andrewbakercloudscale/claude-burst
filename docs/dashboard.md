@@ -80,7 +80,7 @@ Everything under **Observe** reads the same log, `metrics.jsonl`, and every doll
 
 ![Compaction savings: savings per day above the line and costs below, and the net saving for each repository. Example repository names](screenshots/compaction-savings.png)
 
-**Compaction strategies** costs the same sessions three ways, a line each: Claude Code alone, one fixed Compact at, and Burst as it ran. Pick one repository or all, and cost or average context. The table gives each repository's average context and cost under each, and what Burst saved against the other two. See [Three strategies side by side](compaction.md#three-strategies-side-by-side).
+**Compaction strategies** costs the same sessions three ways, a line each: Claude Code alone, one fixed Compact at, and Burst as it ran. Pick one repository or all, and cost or average context. The table gives each repository's average context and cost under each, and what Burst saved against the other two. Under the totals, the best size in hindsight: the same replay at every size from 100k to 500k, and how far Burst was from the cheapest. See [Three strategies side by side](compaction.md#three-strategies-side-by-side).
 
 ![Compaction strategies: three lines of context cost per day and a table per repository with average context, cost under each strategy and the saving. Example repository names](screenshots/compaction-strategies.png)
 
