@@ -293,7 +293,7 @@ The usage panel's sidebar shows the learned size for the session's own repositor
 
 **One plan only** (Claude Enterprise, or a single Pro/Max subscription)? No secondary is needed. Compaction, fallback models on your own plan, handover, coordination and the dashboard all work as they are, and with nowhere to overflow to, Anthropic's own responses, a limit included, reach Claude Code unchanged. **No subscription?** A metered Anthropic API key works as the primary; failover then waits for sustained failures rather than a limit header. See [Providers](docs/providers.md#no-subscription-setup-metered-api-key-primary).
 
-Every setting is listed in [Configuration](docs/configuration.md).
+Every setting is listed in [Configuration](docs/configuration.md). What is planned next is in the [Roadmap](docs/roadmap.md).
 
 ## Trust and risk
 

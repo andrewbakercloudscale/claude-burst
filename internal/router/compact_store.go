@@ -177,6 +177,7 @@ func (c *compactor) load() {
 		}
 		c.sessions[k] = st
 	}
+	c.loadThreads()
 	// The files are what the mod reads, and the rules for which summary a
 	// session offers may have changed with this build.
 	writeHandoffFiles(c.handoffFiles())
@@ -205,7 +206,68 @@ func (c *compactor) save() {
 	w := &diskWrite{}
 	w.dir, w.handoffs = c.handoffFiles()
 	w.state, w.err = json.Marshal(out)
+	w.threads = c.savedThreads()
 	c.mu.queue(c, w)
+}
+
+// savedThread is one threadResponse on disk, with the id of its response.
+// No conversation content: ids, sizes and a summary's hash.
+type savedThread struct {
+	ID           string `json:"id"`
+	Key          string `json:"key"`
+	Context      int64  `json:"context,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	RemovedMsgs  int    `json:"removed_msgs,omitempty"`
+	RemovedBytes int64  `json:"removed_bytes,omitempty"`
+}
+
+// savedThreadsMax is how many of the latest responses survive a restart: a
+// session continues its latest one, so a few for each live session is all
+// that is ever asked for.
+const savedThreadsMax = 512
+
+// threadsPath is where the latest responses are kept, beside the state.
+// Without it every deploy left each session on a message thread under a
+// conversation of its own, named by a response nobody knew: its summary,
+// its limit and what the inspector held all belonged to another name until
+// the session next sent its history whole.
+func (c *compactor) threadsPath() string {
+	return filepath.Join(filepath.Dir(c.path), "compaction-threads.json")
+}
+
+// savedThreads is the latest responses as they go to disk, oldest first.
+// Caller holds c.mu.
+func (c *compactor) savedThreads() []byte {
+	ids := c.threadIDs
+	if len(ids) > savedThreadsMax {
+		ids = ids[len(ids)-savedThreadsMax:]
+	}
+	out := make([]savedThread, 0, len(ids))
+	for _, id := range ids {
+		r := c.threads[id]
+		out = append(out, savedThread{ID: id, Key: r.key, Context: r.context, Summary: r.summary, RemovedMsgs: r.removedMsgs, RemovedBytes: r.removedBytes})
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+// loadThreads reads what savedThreads wrote. A file that is missing or
+// does not parse leaves no thread known, as before there was one.
+func (c *compactor) loadThreads() {
+	b, err := os.ReadFile(c.threadsPath())
+	if err != nil {
+		return
+	}
+	var saved []savedThread
+	if err := json.Unmarshal(b, &saved); err != nil {
+		if c.logger != nil {
+			c.logger.Printf("error stage=compaction_load path=%s err=%v (starting with no thread known)", c.threadsPath(), err)
+		}
+		return
+	}
+	for _, t := range saved {
+		c.noteThread(t.ID, threadResponse{key: t.Key, context: t.Context, summary: t.Summary, removedMsgs: t.RemovedMsgs, removedBytes: t.RemovedBytes})
+	}
 }
 
 // diskWrite is one save, as bytes: what save decided under the lock, for
@@ -213,6 +275,7 @@ func (c *compactor) save() {
 type diskWrite struct {
 	seq      uint64
 	state    []byte
+	threads  []byte
 	err      error
 	dir      string
 	handoffs map[string][]byte
@@ -281,6 +344,12 @@ func (c *compactor) writeDisk(w *diskWrite) {
 		tmp := c.path + ".tmp"
 		if err = os.WriteFile(tmp, w.state, 0600); err == nil {
 			err = os.Rename(tmp, c.path)
+		}
+	}
+	if err == nil && w.threads != nil {
+		tmp := c.threadsPath() + ".tmp"
+		if err = os.WriteFile(tmp, w.threads, 0600); err == nil {
+			err = os.Rename(tmp, c.threadsPath())
 		}
 	}
 	if err != nil && c.logger != nil {
