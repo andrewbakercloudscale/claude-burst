@@ -88,6 +88,27 @@ func TestThreeWaysOfCompactingAreCostedOverTheSameRequests(t *testing.T) {
 	if small.Default.USD != small.Actual.USD || small.Fixed.USD != small.Actual.USD || small.Actual.Tokens != 30_000 {
 		t.Fatalf("small: %+v", small.StrategyCosts)
 	}
+	// The sweep's 250k is the same twin as Fixed at 250k, every size is in
+	// it, and the cheapest of them is named. A repository nothing would
+	// have compacted costs the same at every size.
+	if len(big.Sizes) != 17 || big.Sizes[0].At != 100_000 || big.Sizes[16].At != 500_000 {
+		t.Fatalf("sweep sizes: %+v", big.Sizes)
+	}
+	if at250 := big.Sizes[6]; at250.At != 250_000 || at250.StrategyCost != big.Fixed {
+		t.Fatalf("sweep at 250k: %+v, want what Fixed cost: %+v", at250, big.Fixed)
+	}
+	for _, z := range big.Sizes {
+		if big.Cheapest == nil || z.USD < big.Cheapest.USD {
+			t.Fatalf("cheapest %+v, yet %dk cost $%.4f", big.Cheapest, z.At/1000, z.USD)
+		}
+	}
+	if small.Cheapest == nil || small.Cheapest.At != 100_000 || small.Cheapest.USD != small.Actual.USD {
+		t.Fatalf("small's cheapest: %+v", small.Cheapest)
+	}
+	near("each repository on its own cheapest size", st.PerRepoUSD, big.Cheapest.USD+small.Cheapest.USD)
+	if st.Cheapest == nil || st.PerRepoUSD > st.Cheapest.USD+1e-9 {
+		t.Fatalf("one size for all %+v cannot beat a size each ($%.4f)", st.Cheapest, st.PerRepoUSD)
+	}
 	// The days and the repositories add up to the total.
 	var days, repos float64
 	for _, d := range st.Daily {
