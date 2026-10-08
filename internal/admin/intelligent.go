@@ -57,7 +57,7 @@ func (s *Server) learnCompaction(cfg config.Config, now time.Time) autocompact.S
 		Resolve:   s.repos.resolve,
 		ReadPrice: metrics.CacheReadPrice,
 		Now:       now,
-	}, autocompact.Bounds{Floor: c.FloorTokens, Ceiling: c.CompactAtTokens, BufferPercent: *c.BufferPercent}, c.Enabled && c.Intelligent())
+	}, autocompact.Bounds{Floor: c.FloorTokens, Ceiling: c.CompactAtTokens, Start: c.StartTokens(), BufferPercent: *c.BufferPercent}, c.Enabled && c.Intelligent())
 	s.learned = st
 	if path != "" {
 		_ = autocompact.Save(path, st)
@@ -99,7 +99,8 @@ func (s *Server) StartLearner(ctx context.Context) {
 type learnedRepo struct {
 	autocompact.Repo
 	// InForce is the Compact at this repository's sessions get now, 0 when
-	// never, and Source why: learned, override, off or fixed.
+	// never, and Source why: learned, override, off, fixed or (in the
+	// intelligent mode, with nothing learned yet) start.
 	InForce int64  `json:"in_force"`
 	Source  string `json:"source"`
 }
@@ -108,6 +109,7 @@ type learnedView struct {
 	Mode    string        `json:"mode"` // "" fixed, "intelligent"
 	Enabled bool          `json:"enabled"`
 	Fixed   int64         `json:"fixed"`
+	Start   int64         `json:"start"` // what a repository with nothing learned compacts at
 	Floor   int64         `json:"floor"`
 	Buffer  int           `json:"buffer_percent"`
 	Delay   int           `json:"delay_minutes"`
@@ -119,6 +121,8 @@ type learnedView struct {
 func inForce(c config.CompactionConfig, root string) (int64, string) {
 	res, o := c.ForRepo(root)
 	switch {
+	case o == nil && c.Intelligent():
+		return res.CompactAtTokens, "start"
 	case o == nil:
 		return res.CompactAtTokens, "fixed"
 	case o.Off:
@@ -132,7 +136,7 @@ func inForce(c config.CompactionConfig, root string) (int64, string) {
 func (s *Server) learnedView(cfg config.Config, st autocompact.State) learnedView {
 	c := cfg.PrimaryCompaction.Resolved()
 	c.Learned = st.Thresholds()
-	v := learnedView{Mode: c.Mode, Enabled: c.Enabled, Fixed: c.CompactAtTokens, Floor: c.FloorTokens, Buffer: *c.BufferPercent, Delay: c.WindowMinutes,
+	v := learnedView{Mode: c.Mode, Enabled: c.Enabled, Fixed: c.CompactAtTokens, Start: c.StartTokens(), Floor: c.FloorTokens, Buffer: *c.BufferPercent, Delay: c.WindowMinutes,
 		Days: int(autocompact.Window.Hours() / 24), Repos: []learnedRepo{}}
 	for _, r := range st.Sorted() {
 		row := learnedRepo{Repo: r}
@@ -250,6 +254,9 @@ func (s *Server) handleThreshold(w http.ResponseWriter, r *http.Request) {
 		a.Target, a.Previous, a.Failures, a.Reason = known.Target, known.Previous, known.Failures, known.Reason
 	} else {
 		a.Reason = fmt.Sprintf("nothing learned for this folder yet: the fixed Compact at of %dk", c.CompactAtTokens/1000)
+		if c.Intelligent() {
+			a.Reason = fmt.Sprintf("nothing learned for this folder yet: the starting size of %dk, the middle of %dk to %dk", c.StartTokens()/1000, c.FloorTokens/1000, c.CompactAtTokens/1000)
+		}
 	}
 	if !c.Enabled {
 		a.Threshold, a.Source = 0, "off"

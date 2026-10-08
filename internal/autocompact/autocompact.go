@@ -233,6 +233,9 @@ func (st State) Sorted() []Repo {
 type Bounds struct {
 	Floor   int64 // never compact below this
 	Ceiling int64 // the fixed Compact at: never above it
+	// Start is what a repository compacts at before anything is learned
+	// for it, the middle of the range; 0 is the Ceiling.
+	Start int64
 	// BufferPercent is added to the cheapest size: room for what the money
 	// does not measure.
 	BufferPercent int
@@ -426,10 +429,10 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		switch {
 		case n < MinCompactions:
 			r.Target = 0
-			r.Reason = fmt.Sprintf("%d of the %d compactions needed in the last %d days: on the fixed Compact at until then", n, MinCompactions, int(Window.Hours()/24))
+			r.Reason = fmt.Sprintf("%d of the %d compactions needed in the last %d days: on the starting size, the middle of the range, until then", n, MinCompactions, int(Window.Hours()/24))
 		case r.GrowthTurn <= 0 || a.price <= 0:
 			r.Target = 0
-			r.Reason = "no run long enough to measure how fast the context grows: on the fixed Compact at"
+			r.Reason = "no run long enough to measure how fast the context grows: on the starting size, the middle of the range"
 		default:
 			extraUSD := median(a.c0)
 			best := Optimal(r.AfterTokens, r.GrowthTurn, int64(extraUSD/a.price), a.fails.Rate)
@@ -486,7 +489,7 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		}
 		r.SteppedOn = today
 		if r.Target <= 0 {
-			// Nothing to learn from any more: the fixed Compact at.
+			// Nothing to learn from any more: the starting size.
 			r.Previous, r.Threshold = r.Threshold, 0
 			continue
 		}
@@ -494,7 +497,11 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		if cur <= 0 {
 			// Learned for the first time: straight to the target. The daily
 			// step is for adjusting a threshold already in use.
-			r.Previous, r.Threshold = b.Ceiling, r.Target
+			start := b.Start
+			if start <= 0 {
+				start = b.Ceiling
+			}
+			r.Previous, r.Threshold = start, r.Target
 			continue
 		}
 		limit := int64(float64(cur) * stepShare)

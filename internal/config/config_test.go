@@ -343,8 +343,20 @@ func TestForRepoTakesTheLearnedCompactAtInTheIntelligentMode(t *testing.T) {
 	if got, o := c.ForRepo("/src/pinned"); got.CompactAtTokens != 500_000 || o == nil || o.Learned {
 		t.Fatalf("an override must win: %d %+v", got.CompactAtTokens, o)
 	}
-	if got, o := c.ForRepo("/src/other"); got.CompactAtTokens != 300_000 || o != nil {
+	// Nothing learned: the middle of the 100k to 300k range, not the top of it.
+	if got, o := c.ForRepo("/src/other"); got.CompactAtTokens != 200_000 || o != nil {
 		t.Fatalf("nothing learned: %d %+v", got.CompactAtTokens, o)
+	}
+	if got, _ := c.ForRepo(""); got.CompactAtTokens != 200_000 {
+		t.Fatalf("a session whose repository is unknown: %d", got.CompactAtTokens)
+	}
+	// Unset, the range is 100k to 500k, so a repository starts at 300k; the buffer is 20%.
+	d := CompactionConfig{Enabled: true, Mode: CompactionIntelligent}
+	if r := d.Resolved(); r.CompactAtTokens != 500_000 || d.StartTokens() != 300_000 || *r.BufferPercent != 20 {
+		t.Fatalf("intelligent defaults: up to %d, starting at %d, buffer %d", r.CompactAtTokens, d.StartTokens(), *r.BufferPercent)
+	}
+	if got := (CompactionConfig{Enabled: true}).StartTokens(); got != DefaultCompactionCompactAt {
+		t.Fatalf("fixed mode starts at Compact at: %d", got)
 	}
 	if c.Resolved().FloorTokens != DefaultCompactionFloor || DefaultCompactionFloor != 100_000 {
 		t.Fatal("the floor defaults to 100k")
