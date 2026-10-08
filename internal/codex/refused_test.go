@@ -65,9 +65,77 @@ func waitRefused(t *testing.T, g *Gateway, n int64) Refused {
 	return Refused{}
 }
 
-// Bytes that are not a request are answered 400 by Go's server with no
-// handler called: that is counted and is an error line, without the query.
-func TestAConnectionThatIsNotHTTPIsLoggedAsAnError(t *testing.T) {
+// A connection that is not HTTP is forwarded as it came, so the answer is
+// ChatGPT's and not Burst's, and it is an error line without the query.
+func TestAConnectionThatIsNotHTTPIsForwardedAndLogged(t *testing.T) {
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	gotUp := make(chan string, 1)
+	go func() {
+		c, err := up.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		b := make([]byte, 256)
+		n, _ := c.Read(b)
+		gotUp <- string(b[:n])
+		io.WriteString(c, "HTTP/1.1 400 Bad Request\r\nServer: chatgpt\r\n\r\nfrom chatgpt")
+	}()
+	out := &lockedBuf{}
+	g, err := New("http://"+up.Addr().String(), filepath.Join(t.TempDir(), "codex-metrics.jsonl"), log.New(&logline.Writer{W: out}, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go g.Serve(ln)
+
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	const sent = "hello burst?token=secret-1 are you there\r\n\r\n"
+	io.WriteString(c, sent)
+	reply, _ := io.ReadAll(c)
+	if !strings.HasSuffix(string(reply), "from chatgpt") {
+		t.Fatalf("the answer must be ChatGPT's own: %q", reply)
+	}
+	if got := <-gotUp; got != sent {
+		t.Errorf("ChatGPT got %q, want it as it came", got)
+	}
+	rf := waitRefused(t, g, 1)
+	for _, want := range []string{"forwarded to " + up.Addr().String(), `"hello burst"`, "on " + ln.Addr().String() + " from " + c.LocalAddr().String(), "ChatGPT answered 400"} {
+		if !strings.Contains(rf.What, want) {
+			t.Errorf("what = %q, want %q in it", rf.What, want)
+		}
+	}
+	var fs []metrics.Event
+	for end := time.Now().Add(2 * time.Second); len(fs) == 0 && time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		fs = g.Failures()
+	}
+	if len(fs) != 1 || fs[0].Slot != "not http" || fs[0].HTTPStatus != 400 {
+		t.Errorf("the requests table must list it: %+v", fs)
+	}
+	line := out.String()
+	if !strings.Contains(line, " level=error codex: not HTTP, ") {
+		t.Errorf("want an error line, got %q", line)
+	}
+	if strings.Contains(line, "secret-1") {
+		t.Errorf("the query must not be logged: %q", line)
+	}
+}
+
+// What starts like HTTP and does not parse is the one thing still answered
+// by Burst itself: counted, listed and an error line, with both ports.
+func TestARequestThatDoesNotParseIsRefusedAndLogged(t *testing.T) {
 	g, addr, out := servedGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("nothing may reach ChatGPT")
 	}))
@@ -76,30 +144,26 @@ func TestAConnectionThatIsNotHTTPIsLoggedAsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	io.WriteString(c, "hello burst?token=secret-1 are you there\r\n\r\n")
+	io.WriteString(c, "GET /x?token=secret-1 HTTP/1.1\r\nthis is no header\r\n\r\n")
 	reply, _ := io.ReadAll(c)
 	if !strings.HasPrefix(string(reply), "HTTP/1.1 400") {
 		t.Fatalf("reply %q", reply)
 	}
 	rf := waitRefused(t, g, 1)
-	if !strings.Contains(rf.What, "400 Bad Request") || !strings.Contains(rf.What, `"hello burst"`) {
+	if !strings.Contains(rf.What, "400 Bad Request") || !strings.Contains(rf.What, `"GET /x"`) || !strings.Contains(rf.What, "on "+addr+" from "+c.LocalAddr().String()) {
 		t.Errorf("what = %q", rf.What)
 	}
-	if fs := g.Failures(); len(fs) != 1 || fs[0].Slot != "refused" || fs[0].HTTPStatus != 400 || !strings.Contains(fs[0].Note, `"hello burst"`) {
+	if fs := g.Failures(); len(fs) != 1 || fs[0].Slot != "refused" || fs[0].HTTPStatus != 400 {
 		t.Errorf("the requests table must list it: %+v", fs)
 	}
 	line := out.String()
-	if !strings.Contains(line, " level=error codex: refused a connection") {
-		t.Errorf("want an error line, got %q", line)
-	}
-	if strings.Contains(line, "secret-1") {
-		t.Errorf("the query must not be logged: %q", line)
+	if !strings.Contains(line, " level=error codex: refused a connection") || strings.Contains(line, "secret-1") {
+		t.Errorf("want an error line without the query, got %q", line)
 	}
 }
 
-// A client that speaks first in another protocol and hangs up unanswered
-// is recorded too, by what it was.
-func TestATLSHandshakeLeftUnansweredIsLogged(t *testing.T) {
+// A TLS handshake sent to the plain port is forwarded untouched too.
+func TestATLSHandshakeIsForwarded(t *testing.T) {
 	g, addr, _ := servedGateway(t, http.NotFoundHandler())
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -108,7 +172,7 @@ func TestATLSHandshakeLeftUnansweredIsLogged(t *testing.T) {
 	c.Write([]byte{0x16, 0x03, 0x01, 0x00, 0x05, 0x01, 0x00, 0x00, 0x01, 0x00})
 	time.Sleep(50 * time.Millisecond)
 	c.Close()
-	if rf := waitRefused(t, g, 1); !strings.Contains(rf.What, "TLS handshake") {
+	if rf := waitRefused(t, g, 1); !strings.Contains(rf.What, "TLS handshake") || !strings.Contains(rf.What, "forwarded to ") {
 		t.Errorf("what = %q", rf.What)
 	}
 }
