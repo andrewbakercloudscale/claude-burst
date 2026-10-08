@@ -28,6 +28,7 @@ type Rule struct {
 	keep4   bool // show the last four digits in the mask
 	exact   bool // the value is told apart as written: a dash is part of a key
 	envOnly bool // tried only on the output of a tool call that names a .env file
+	words   bool // matches the session's own word list, not re
 }
 
 // Rules is every rule, in the order they are tried. A later rule never sees
@@ -100,6 +101,65 @@ var Rules = []*Rule{
 	{ID: "ipv4", One: "IP address", Name: "IPv4 address", Plural: "IP addresses", Prefix: "IP",
 		Note: "off by default: logs and configs are full of them",
 		re:   regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`), valid: validIPv4},
+	// Last, so a word inside a key or a link does not stop that rule seeing it.
+	{ID: "words", One: "word of yours", Name: "Your own words", Plural: "words of yours", Prefix: "WORD", Default: true,
+		Note: "the list below: code names, customer names, internal host names. Whole words, whatever their case", words: true},
+}
+
+// MaxWords and the lengths bound the word list: a two-letter word would
+// mask half of every file.
+const (
+	MaxWords   = 500
+	MinWordLen = 3
+	MaxWordLen = 100
+)
+
+// CleanWords is the list as it is kept: trimmed, without doubles (whatever
+// the case) or lines too short or too long to use, and no longer than MaxWords.
+func CleanWords(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, w := range in {
+		w = strings.TrimSpace(w)
+		k := strings.ToLower(w)
+		if len(w) < MinWordLen || len(w) > MaxWordLen || seen[k] || len(out) >= MaxWords {
+			continue
+		}
+		seen[k] = true
+		out = append(out, w)
+	}
+	return out
+}
+
+// wordsPattern matches any of words as a whole word, whatever its case,
+// the longest first so "acme-prod" wins over "acme".
+func wordsPattern(words []string) *regexp.Regexp {
+	words = CleanWords(words)
+	if len(words) == 0 {
+		return nil
+	}
+	sort.SliceStable(words, func(i, j int) bool { return len(words[i]) > len(words[j]) })
+	parts := make([]string, len(words))
+	for i, w := range words {
+		parts[i] = regexp.QuoteMeta(w)
+	}
+	return regexp.MustCompile(`(?i)(?:` + strings.Join(parts, "|") + `)`)
+}
+
+func wordChar(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+}
+
+// wholeWord says text[lo:hi] is not part of a longer word, and is not the
+// name inside a mask such as [CARD-1].
+func wholeWord(text string, lo, hi int) bool {
+	if lo > 0 && wordChar(text[lo-1]) && wordChar(text[lo]) {
+		return false
+	}
+	if hi < len(text) && wordChar(text[hi]) && wordChar(text[hi-1]) {
+		return false
+	}
+	return !(lo > 0 && text[lo-1] == '[' && hi < len(text) && text[hi] == '-')
 }
 
 // Hit is one value masked for the first time in a session.
@@ -115,7 +175,17 @@ type Session struct {
 	mu     sync.Mutex
 	masks  map[string]string // rule|value -> mask
 	counts map[string]int    // rule -> masks handed out
+	words  *regexp.Regexp    // the user's own list, nil when empty
 	seen   time.Time
+}
+
+// SetWords gives the session the user's own word list. Words already
+// masked keep their masks.
+func (s *Session) SetWords(words []string) {
+	re := wordsPattern(words)
+	s.mu.Lock()
+	s.words = re
+	s.mu.Unlock()
 }
 
 func NewSession() *Session {
@@ -145,7 +215,14 @@ func (s *Session) mask(text, where string, on func(*Rule) bool, env bool) (strin
 		if !on(r) || r.envOnly && !env {
 			continue
 		}
-		idx := r.re.FindAllStringSubmatchIndex(text, -1)
+		re := r.re
+		if r.words {
+			re = s.words
+		}
+		if re == nil {
+			continue
+		}
+		idx := re.FindAllStringSubmatchIndex(text, -1)
 		if len(idx) == 0 {
 			continue
 		}
@@ -166,11 +243,13 @@ func (s *Session) mask(text, where string, on func(*Rule) bool, env bool) (strin
 				continue
 			}
 			v := text[lo:hi]
-			if r.valid != nil && !r.valid(v) {
+			if r.valid != nil && !r.valid(v) || r.words && !wholeWord(text, lo, hi) {
 				continue
 			}
 			key := r.ID + "|" + v
-			if !r.exact {
+			if r.words {
+				key = r.ID + "|" + strings.ToLower(v)
+			} else if !r.exact {
 				key = r.ID + "|" + normalise(v)
 			}
 			mask, ok := s.masks[key]

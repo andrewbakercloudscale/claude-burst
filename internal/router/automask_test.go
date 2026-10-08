@@ -3,11 +3,13 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/automask"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
@@ -101,5 +103,33 @@ func TestAutomaskMasksTheValuesOfAnEnvFile(t *testing.T) {
 	}
 	if strings.Count(got, "PORT=3000") != 2 {
 		t.Errorf("a port is not a secret: %s", got)
+	}
+}
+
+// The user's own words are masked from the next request after a save, and
+// each new mask is listed for the dashboard without its value.
+func TestAutomaskMasksTheUsersWordsAndListsTheLastMasks(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	history := []json.RawMessage{json.RawMessage(`{"role":"user","content":"deploy Bluebird for the customer"}`)}
+	send(t, s, "S1", history)
+	if !strings.Contains(f.last(), "deploy Bluebird") {
+		t.Fatalf("masked without a list: %s", f.last())
+	}
+	s.SetAutomask(config.AutomaskConfig{Enabled: true, Words: []string{"bluebird"}})
+	send(t, s, "S1", history)
+	if !strings.Contains(f.last(), "deploy [WORD-1] for the customer") {
+		t.Fatalf("not masked: %s", f.last())
+	}
+	recent := s.AutomaskRecent()
+	if len(recent) != 1 || recent[0].Rule != "words" || recent[0].Mask != "[WORD-1]" || recent[0].Where != "user" || recent[0].Session != "S1" {
+		t.Fatalf("recent = %+v", recent)
+	}
+	for i := 0; i < 60; i++ {
+		s.noteMasked("S1", []automask.Hit{{Rule: automask.Rules[0], Mask: fmt.Sprintf("[PRIVATEKEY-%d]", i), Where: "user"}})
+	}
+	if recent = s.AutomaskRecent(); len(recent) != 50 || recent[0].Mask != "[PRIVATEKEY-59]" {
+		t.Fatalf("kept %d, newest %s", len(recent), recent[0].Mask)
 	}
 }

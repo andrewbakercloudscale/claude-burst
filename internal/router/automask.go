@@ -24,6 +24,33 @@ type masker struct {
 	sessions map[string]*maskSession
 	notices  map[string][]string // session -> lines for under the prompt
 	totals   map[string]int      // rule -> values masked since the gateway started
+	recent   []AutomaskHit       // the last maskRecentMax new masks, oldest first
+}
+
+// AutomaskHit is one new mask as the dashboard lists it. The mask only:
+// the value is never kept.
+type AutomaskHit struct {
+	At      time.Time `json:"at"`
+	Session string    `json:"session"`
+	Repo    string    `json:"repo,omitempty"`
+	Rule    string    `json:"rule"`
+	Name    string    `json:"name"`
+	Where   string    `json:"where"`
+	Mask    string    `json:"mask"`
+}
+
+const maskRecentMax = 50
+
+// AutomaskRecent is the last 50 new masks since the gateway started,
+// newest first.
+func (s *Server) AutomaskRecent() []AutomaskHit {
+	s.automask.mu.Lock()
+	defer s.automask.mu.Unlock()
+	out := make([]AutomaskHit, 0, len(s.automask.recent))
+	for i := len(s.automask.recent) - 1; i >= 0; i-- {
+		out = append(out, s.automask.recent[i])
+	}
+	return out
 }
 
 type maskSession struct {
@@ -49,6 +76,7 @@ func (s *Server) SetAutomask(c config.AutomaskConfig) {
 	s.automask.cfg = c
 	for _, ms := range s.automask.sessions {
 		ms.cache = map[[20]byte][]byte{}
+		ms.masks.SetWords(c.Words)
 	}
 }
 
@@ -106,6 +134,7 @@ func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
 	ms := m.sessions[sid]
 	if ms == nil {
 		ms = &maskSession{masks: automask.NewSession(), cache: map[[20]byte][]byte{}, env: map[string]bool{}, used: time.Now()}
+		ms.masks.SetWords(cfg.Words)
 		m.sessions[sid] = ms
 		m.pruneSessions()
 	}
@@ -170,9 +199,16 @@ func (s *Server) noteMasked(sid string, hits []automask.Hit) {
 		s.logger.Printf("automask session=%s rule=%s where=%s mask=%s", sid, h.Rule.ID, h.Where, h.Mask)
 	}
 	sum := automask.Summary(hits)
+	repo, _ := s.repos.Resolve(sid)
+	now := time.Now()
 	s.automask.mu.Lock()
 	for _, h := range hits {
 		s.automask.totals[h.Rule.ID]++
+		s.automask.recent = append(s.automask.recent, AutomaskHit{At: now, Session: sid, Repo: repo,
+			Rule: h.Rule.ID, Name: h.Rule.Name, Where: h.Where, Mask: h.Mask})
+	}
+	if n := len(s.automask.recent); n > maskRecentMax {
+		s.automask.recent = append([]AutomaskHit(nil), s.automask.recent[n-maskRecentMax:]...)
 	}
 	if sid != "" {
 		s.automask.notices[sid] = append(s.automask.notices[sid],
@@ -180,8 +216,8 @@ func (s *Server) noteMasked(sid string, hits []automask.Hit) {
 	}
 	s.automask.mu.Unlock()
 	where := ""
-	if name, _ := s.repos.Resolve(sid); name != "" {
-		where = " in " + name
+	if repo != "" {
+		where = " in " + repo
 	}
 	notice.PublishFor(sid, "automask", notice.Warn, "Sensitive data masked",
 		"Masked "+sum+where+" before it left this Mac. Claude sees only the masks.")

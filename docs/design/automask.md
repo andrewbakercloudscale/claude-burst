@@ -43,6 +43,7 @@ masked request on, logs the hit and shows a warning in that session.
 | Webhook URL | Slack, Discord, Teams incoming webhook paths | none | on |
 | Signed URL | `X-Amz-Signature=`, `X-Amz-Security-Token=`, `X-Goog-Signature=`, `Signature=`, `sig=` | 16 characters or more | on |
 | Values in a .env file | `NAME=value` lines, only in the output of a tool call whose input names a `.env` file | 8 characters or more with a digit or mixed case; not a number, link, path or host name | on |
+| Your own words | the user's list (`automask.words`), whole words, any case; runs last | 3 to 100 characters, 500 at most | on |
 | Secret in an assignment | value after a name holding key, secret, token or password | letters and digits, 12 characters or more | off (noisy) |
 | Credit card (Visa, Mastercard, Amex, Discover, Diners, JCB) | `\b(?:\d[ -]?){13,19}\b` | Luhn + known IIN prefix (4, 51-55, 2221-2720, 34/37, 6011/65, 36/38, 35) | on |
 | South African ID number | `\b\d{2}(0[1-9]\|1[0-2])(0[1-9]\|[12]\d\|3[01])\d{4}[01][89]\d\b` | Luhn on all 13 digits, valid date | on |

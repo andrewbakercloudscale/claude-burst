@@ -155,3 +155,26 @@ func TestMasksTheValuesOfAnEnvFile(t *testing.T) {
 		t.Errorf("hits = %d, want 2", len(hits))
 	}
 }
+
+// The user's own list: whole words, whatever their case, one mask a word.
+func TestMasksTheUsersOwnWords(t *testing.T) {
+	s := NewSession()
+	s.SetWords([]string{" Bluebird ", "acme", "acme-prod.internal", "bluebird", "ab", "card"})
+	in := "Project BLUEBIRD ships to Acme on acme-prod.internal; bluebirds and pacmen stay, bluebird_v2 stays, [CARD-1 ...1111] stays, a card goes"
+	out, hits, _ := s.Mask(in, "user", defaults)
+	want := "Project [WORD-1] ships to [WORD-2] on [WORD-3]; bluebirds and pacmen stay, bluebird_v2 stays, [CARD-1 ...1111] stays, a [WORD-4] goes"
+	if out != want {
+		t.Errorf("got  %s\nwant %s", out, want)
+	}
+	if len(hits) != 4 || Summary(hits) != "4 words of yours" {
+		t.Errorf("hits = %d, %q", len(hits), Summary(hits))
+	}
+	// A word taken off the list is left alone; one still on it keeps its mask.
+	s.SetWords([]string{"acme"})
+	if out, _, _ := s.Mask("bluebird at ACME", "user", defaults); out != "bluebird at [WORD-2]" {
+		t.Errorf("after the list changed: %s", out)
+	}
+	if out, _, changed := NewSession().Mask("bluebird", "user", defaults); changed {
+		t.Errorf("masked without a list: %s", out)
+	}
+}
