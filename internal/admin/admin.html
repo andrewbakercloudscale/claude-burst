@@ -1348,15 +1348,15 @@
   </section>
 
   <section id="sec-automask" style="scroll-margin-top:70px">
-    <h2>Automask <span class="applies" data-where="config.json" data-when="next request"></span> <span class="hint">personal data masked before a request leaves this Mac</span></h2>
+    <h2>Automask <span class="applies" data-where="config.json" data-when="next request"></span> <span class="hint">personal data, API keys and connection string passwords masked before a request leaves this Mac</span></h2>
     <div class="body">
       <div class="row" style="align-items:flex-start;margin:4px 0 12px">
         <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
           <input type="checkbox" id="amMaster" style="width:auto;margin:0;transform:scale(1.25)">
-          Mask personal data <span id="amState" class="pill"></span>
+          Mask personal data and secrets <span id="amState" class="pill"></span>
         </label>
       </div>
-      <div class="hint" style="margin:-4px 0 12px 0">Burst looks through every request, your prompts, tool output and earlier turns included, and replaces what a rule finds with a mask such as <code>[CARD-1 ...4242]</code> or <code>[SAID-1]</code>. It never refuses a request. The same value gets the same mask for the whole session, so Claude can still tell values apart, and Anthropic's prompt cache and Burst's compaction keep working. Each new mask is logged (the mask only, never the value) and said once under your prompt and as a pop-up. Thinking blocks and tool calls are left exactly as they are. Off by default; applies to the primary and the secondary alike.</div>
+      <div class="hint" style="margin:-4px 0 12px 0">Burst looks through every request, your prompts, tool output and earlier turns included, and replaces what a rule finds with a mask such as <code>[CARD-1 ...4242]</code>, <code>[APIKEY-1]</code> or <code>postgres://app:[CONNSTR-1]@db/shop</code>. A masked key is one Claude cannot use, so a command that needs it must read it from the environment or a file when it runs. It never refuses a request. The same value gets the same mask for the whole session, so Claude can still tell values apart, and Anthropic's prompt cache and Burst's compaction keep working. Each new mask is logged (the mask only, never the value) and said once under your prompt and as a pop-up. Thinking blocks and tool calls are left exactly as they are. Off by default; applies to the primary and the secondary alike.</div>
       <table class="stbl" id="amRules"></table>
       <div class="row" style="align-items:center;gap:12px;margin-top:12px">
         <button class="primary" id="amSave">&#x2713; Save</button>

@@ -24,7 +24,7 @@ func TestAutomaskSwitchesAreSavedAndShown(t *testing.T) {
 		return st
 	}
 	st := get()
-	if st.Enabled || len(st.Rules) < 9 || !st.Rules[0].On || st.Rules[0].ID != "card" {
+	if st.Enabled || len(st.Rules) < 13 || !st.Rules[0].On || st.Rules[0].ID != "privatekey" {
 		t.Fatalf("defaults = %+v", st)
 	}
 

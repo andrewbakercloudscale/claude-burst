@@ -34,6 +34,10 @@ masked request on, logs the hit and shows a warning in that session.
 
 | Rule | Regex (sketch) | Validator | Default |
 |---|---|---|---|
+| Private key block | `-----BEGIN ... PRIVATE KEY-----` to `-----END ... PRIVATE KEY-----` | none | on |
+| API key | known prefixes: `sk-`, `AKIA`/`ASIA`, `ghp_`/`github_pat_`, `glpat-`, `AIza`, `xox?-`, `sk_live_`/`rk_live_`, `npm_`, `hf_`, `SG.` | an `sk-` match needs a digit and mixed case (or 40 characters), so dashed names are left alone | on |
+| Connection string password | `scheme://user:PASSWORD@host`; `;Password=`, `;Pwd=`, `;AccountKey=`, `;SharedAccessKey=` | not a placeholder (`$VAR`, `<password>`, `%s`, `****`) | on |
+| Secret in an assignment | value after a name holding key, secret, token or password | letters and digits, 12 characters or more | off (noisy) |
 | Credit card (Visa, Mastercard, Amex, Discover, Diners, JCB) | `\b(?:\d[ -]?){13,19}\b` | Luhn + known IIN prefix (4, 51-55, 2221-2720, 34/37, 6011/65, 36/38, 35) | on |
 | South African ID number | `\b\d{2}(0[1-9]\|1[0-2])(0[1-9]\|[12]\d\|3[01])\d{4}[01][89]\d\b` | Luhn on all 13 digits, valid date | on |
 | US Social Security number | `\b(?!000\|666\|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b` | area/group/serial not zero | on |
