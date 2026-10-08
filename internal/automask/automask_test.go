@@ -106,3 +106,52 @@ func TestMasksKeysAndConnectionStrings(t *testing.T) {
 		t.Errorf("secret rule: %q", out)
 	}
 }
+
+func TestMasksTokensCookiesWebhooksAndSignedLinks(t *testing.T) {
+	body := strings.Repeat("aB3dE6gH9", 5)
+	jwt := "eyJ" + body[:20] + ".eyJ" + body[:30] + "." + body[:40]
+	in := strings.Join([]string{
+		"token " + jwt,
+		"Authorization: Bearer " + body[:32],
+		"Authorization: Basic " + "dXNlcjpwYXNzd29yZDEyMw==",
+		"curl -s -u deploy:Tr0ub4dor3 https://ci.example.com/job",
+		"Set-Cookie: session=" + body[:24] + "; Path=/; HttpOnly",
+		"post to https://hooks.slack" + ".com/services/T00000000/B00000000/" + body[:24],
+		"https://bucket.s3.amazonaws.com/report.pdf?X-Amz-Expires=3600&X-Amz-Signature=" + strings.Repeat("0a1b", 16),
+		"twilio SK" + strings.Repeat("0a1b", 8) + " and telegram 123456789:AA" + body[:33],
+		"docker run -u 1000:1000 img, Bearer token_goes_here_in_your_request and cookie: jar stay",
+		"import com.example.MyVeryLongNamespaceXy.Module.SomeExtremelyLongClassNameHereOk stays",
+		"API_URL=abcDEF123456 stays outside a .env file",
+	}, "\n")
+	out, hits, _ := NewSession().Mask(in, "tool_result", defaults)
+	for _, want := range []string{"token [TOKEN-1]", "Authorization: Bearer [TOKEN-2]", "Authorization: Basic [BASICAUTH-1]",
+		"-u deploy:[BASICAUTH-2] https://ci.example.com/job", "Set-Cookie: [COOKIE-1]", "https://hooks.slack.com/services/[WEBHOOK-1]",
+		"report.pdf?X-Amz-Expires=3600&X-Amz-Signature=[SIGNATURE-1]", "twilio [APIKEY-1] and telegram [APIKEY-2]",
+		"-u 1000:1000", "Bearer token_goes_here_in_your_request", "cookie: jar", "SomeExtremelyLongClassNameHereOk", "API_URL=abcDEF123456"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, body[:20]) || strings.Contains(out, "Tr0ub4dor3") || strings.Contains(out, "dXNlcjpw") {
+		t.Errorf("a value got through:\n%s", out)
+	}
+	if got := Summary(hits); got != "2 API keys, 2 access tokens, 2 basic auth credentials, 1 cookie, 1 webhook URL and 1 signed URL" {
+		t.Errorf("summary = %q", got)
+	}
+}
+
+// In a .env file every value that could be a secret goes, by where it sits.
+func TestMasksTheValuesOfAnEnvFile(t *testing.T) {
+	in := "     1\tPORT=3000\n     2\tNODE_ENV=production\n     3\tDEBUG=true\n     4\tAPI_URL=https://api.example.com/v1\n" +
+		"     5\tDB_HOST=db1.internal.example\n     6\texport DATADOG_KEY=\"0a1b2c3d4e5f60718293a4b5c6d7e8f9\"\n     7\tAPP_SECRET=xYz12345AbC # rotate\n     8\tCERT=/etc/ssl/app1.pem"
+	out, hits, _ := NewSession().MaskEnvFile(in, "tool_result", defaults)
+	for _, want := range []string{"PORT=3000", "NODE_ENV=production", "DEBUG=true", "API_URL=https://api.example.com/v1", "DB_HOST=db1.internal.example",
+		`export DATADOG_KEY="[ENV-1]"`, "APP_SECRET=[ENV-2] # rotate", "CERT=/etc/ssl/app1.pem"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if len(hits) != 2 {
+		t.Errorf("hits = %d, want 2", len(hits))
+	}
+}

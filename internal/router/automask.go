@@ -1,9 +1,11 @@
 package router
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
@@ -27,6 +29,7 @@ type masker struct {
 type maskSession struct {
 	masks *automask.Session
 	cache map[[20]byte][]byte // raw message -> what to send (itself when clean)
+	env   map[string]bool     // tool calls that name a .env file, by id
 	used  time.Time
 }
 
@@ -102,7 +105,7 @@ func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
 	m.mu.Lock()
 	ms := m.sessions[sid]
 	if ms == nil {
-		ms = &maskSession{masks: automask.NewSession(), cache: map[[20]byte][]byte{}, used: time.Now()}
+		ms = &maskSession{masks: automask.NewSession(), cache: map[[20]byte][]byte{}, env: map[string]bool{}, used: time.Now()}
 		m.sessions[sid] = ms
 		m.pruneSessions()
 	}
@@ -121,7 +124,10 @@ func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
 		m.mu.Unlock()
 		if !ok {
 			var h []automask.Hit
-			out, h = maskMessage(ms.masks, raw, on)
+			// Messages are scanned in order, so a tool call is noted
+			// before the message that carries its output.
+			noteEnvCalls(ms.env, raw)
+			out, h = maskMessage(ms.masks, raw, on, ms.env)
 			hits = append(hits, h...)
 			m.mu.Lock()
 			ms.cache[key] = out
@@ -133,7 +139,7 @@ func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
 		}
 	}
 	if sys, ok := top["system"]; ok {
-		if out, h, c := maskContent(ms.masks, sys, "system", on); c {
+		if out, h, c := maskContent(ms.masks, sys, "system", on, nil, false); c {
 			top["system"] = out
 			hits = append(hits, h...)
 			changed = true
@@ -177,7 +183,7 @@ func (s *Server) noteMasked(sid string, hits []automask.Hit) {
 	if name, _ := s.repos.Resolve(sid); name != "" {
 		where = " in " + name
 	}
-	notice.PublishFor(sid, "automask", notice.Warn, "Personal data masked",
+	notice.PublishFor(sid, "automask", notice.Warn, "Sensitive data masked",
 		"Masked "+sum+where+" before it left this Mac. Claude sees only the masks.")
 }
 
@@ -191,17 +197,44 @@ func (m *masker) pruneSessions() {
 	}
 }
 
+// envFileNamed finds a .env file named in a tool call's input: .env,
+// .env.local, config/.env.production. Not .envrc, and not "environment".
+var envFileNamed = regexp.MustCompile(`(?:^|[/\s"'=])\.env(?:\.[A-Za-z0-9_-]+)*(?:["'\s\\]|$)`)
+
+// noteEnvCalls records the tool calls in raw that name a .env file, so the
+// message that carries their output has its values masked.
+func noteEnvCalls(env map[string]bool, raw json.RawMessage) {
+	if !bytes.Contains(raw, []byte(`.env`)) || !bytes.Contains(raw, []byte(`"tool_use"`)) {
+		return
+	}
+	var msg struct {
+		Content []struct {
+			Type  string          `json:"type"`
+			ID    string          `json:"id"`
+			Input json.RawMessage `json:"input"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &msg) != nil {
+		return
+	}
+	for _, b := range msg.Content {
+		if b.Type == "tool_use" && b.ID != "" && envFileNamed.Match(b.Input) {
+			env[b.ID] = true
+		}
+	}
+}
+
 // maskMessage masks one message's text: plain string content, text blocks
 // and tool results. Thinking blocks, tool calls, images and cache_control
 // are never touched. Returns raw itself when nothing matched.
-func maskMessage(ms *automask.Session, raw json.RawMessage, on func(*automask.Rule) bool) (json.RawMessage, []automask.Hit) {
+func maskMessage(ms *automask.Session, raw json.RawMessage, on func(*automask.Rule) bool, env map[string]bool) (json.RawMessage, []automask.Hit) {
 	var msg map[string]json.RawMessage
 	if json.Unmarshal(raw, &msg) != nil {
 		return raw, nil
 	}
 	var role string
 	_ = json.Unmarshal(msg["role"], &role)
-	out, hits, changed := maskContent(ms, msg["content"], role, on)
+	out, hits, changed := maskContent(ms, msg["content"], role, on, env, false)
 	if !changed {
 		return raw, hits
 	}
@@ -214,10 +247,15 @@ func maskMessage(ms *automask.Session, raw json.RawMessage, on func(*automask.Ru
 }
 
 // maskContent masks a content value: a string, or an array of blocks.
-func maskContent(ms *automask.Session, c json.RawMessage, where string, on func(*automask.Rule) bool) (json.RawMessage, []automask.Hit, bool) {
+// inEnv says c is the output of a tool call that named a .env file.
+func maskContent(ms *automask.Session, c json.RawMessage, where string, on func(*automask.Rule) bool, env map[string]bool, inEnv bool) (json.RawMessage, []automask.Hit, bool) {
 	var str string
 	if json.Unmarshal(c, &str) == nil {
-		out, hits, changed := ms.Mask(str, where, on)
+		mask := ms.Mask
+		if inEnv {
+			mask = ms.MaskEnvFile
+		}
+		out, hits, changed := mask(str, where, on)
 		if !changed {
 			return c, hits, false
 		}
@@ -240,12 +278,15 @@ func maskContent(ms *automask.Session, c json.RawMessage, where string, on func(
 		}
 		var typ string
 		_ = json.Unmarshal(blk["type"], &typ)
-		field, w := "", where
+		field, w, e := "", where, inEnv
 		switch typ {
 		case "text":
 			field = "text"
 		case "tool_result":
 			field, w = "content", "tool_result"
+			var id string
+			_ = json.Unmarshal(blk["tool_use_id"], &id)
+			e = env[id]
 		default:
 			continue
 		}
@@ -253,7 +294,7 @@ func maskContent(ms *automask.Session, c json.RawMessage, where string, on func(
 		if !ok {
 			continue
 		}
-		out, h, changed := maskContent(ms, v, w, on)
+		out, h, changed := maskContent(ms, v, w, on, env, e)
 		hits = append(hits, h...)
 		if !changed {
 			continue

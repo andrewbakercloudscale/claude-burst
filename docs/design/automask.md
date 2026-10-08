@@ -1,6 +1,6 @@
 # Automask
 
-Status: built 2026-10-04 (`internal/automask`, `internal/router/automask.go`, the dashboard's Automask section). Off by default. Asked for 2026-10-03.
+User guide: [../automask.md](../automask.md). Status: built 2026-10-04 (`internal/automask`, `internal/router/automask.go`, the dashboard's Automask section). Off by default. Asked for 2026-10-03.
 
 ## What it does
 
@@ -37,6 +37,12 @@ masked request on, logs the hit and shows a warning in that session.
 | Private key block | `-----BEGIN ... PRIVATE KEY-----` to `-----END ... PRIVATE KEY-----` | none | on |
 | API key | known prefixes: `sk-`, `AKIA`/`ASIA`, `ghp_`/`github_pat_`, `glpat-`, `AIza`, `xox?-`, `sk_live_`/`rk_live_`, `npm_`, `hf_`, `SG.` | an `sk-` match needs a digit and mixed case (or 40 characters), so dashed names are left alone | on |
 | Connection string password | `scheme://user:PASSWORD@host`; `;Password=`, `;Pwd=`, `;AccountKey=`, `;SharedAccessKey=` | not a placeholder (`$VAR`, `<password>`, `%s`, `****`) | on |
+| Bearer token or JWT | `eyJ...` three-part token; what follows `Bearer` or `Authorization:` | a digit, not a placeholder | on |
+| Basic auth credentials | `Authorization: Basic ...`; `curl -u user:PASSWORD` | not a placeholder | on |
+| Session cookie | value of `Cookie:` / `Set-Cookie:` holding `name=value` | none | on |
+| Webhook URL | Slack, Discord, Teams incoming webhook paths | none | on |
+| Signed URL | `X-Amz-Signature=`, `X-Amz-Security-Token=`, `X-Goog-Signature=`, `Signature=`, `sig=` | 16 characters or more | on |
+| Values in a .env file | `NAME=value` lines, only in the output of a tool call whose input names a `.env` file | 8 characters or more with a digit or mixed case; not a number, link, path or host name | on |
 | Secret in an assignment | value after a name holding key, secret, token or password | letters and digits, 12 characters or more | off (noisy) |
 | Credit card (Visa, Mastercard, Amex, Discover, Diners, JCB) | `\b(?:\d[ -]?){13,19}\b` | Luhn + known IIN prefix (4, 51-55, 2221-2720, 34/37, 6011/65, 36/38, 35) | on |
 | South African ID number | `\b\d{2}(0[1-9]\|1[0-2])(0[1-9]\|[12]\d\|3[01])\d{4}[01][89]\d\b` | Luhn on all 13 digits, valid date | on |

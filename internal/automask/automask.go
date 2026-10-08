@@ -27,6 +27,7 @@ type Rule struct {
 	valid   func(string) bool
 	keep4   bool // show the last four digits in the mask
 	exact   bool // the value is told apart as written: a dash is part of a key
+	envOnly bool // tried only on the output of a tool call that names a .env file
 }
 
 // Rules is every rule, in the order they are tried. A later rule never sees
@@ -37,13 +38,34 @@ var Rules = []*Rule{
 		Note: "a PEM block from BEGIN to END PRIVATE KEY (RSA, EC, OpenSSH, PGP)",
 		re:   regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]+?-----END (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----`), exact: true},
 	{ID: "apikey", One: "API key", Name: "API key", Plural: "API keys", Prefix: "APIKEY", Default: true,
-		Note:  "keys with a known shape: Anthropic, OpenAI, AWS, GitHub, GitLab, Google, Slack, Stripe, npm, Hugging Face, SendGrid",
-		re:    regexp.MustCompile(`\b(?:sk-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|xox[abeprs]-[A-Za-z0-9-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|npm_[A-Za-z0-9]{36}|hf_[A-Za-z0-9]{30,}|SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})`),
+		Note:  "keys with a known shape: Anthropic, OpenAI, AWS, GitHub, GitLab, Google, Slack, Stripe, npm, PyPI, Hugging Face, SendGrid, Twilio, Mailgun, DigitalOcean, Shopify, Databricks, Discord and Telegram bots",
+		re:    regexp.MustCompile(`\b(?:sk-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|xox[abeprs]-[A-Za-z0-9-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|npm_[A-Za-z0-9]{36}|hf_[A-Za-z0-9]{30,}|SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}|SK[0-9a-f]{32}|key-[0-9a-f]{32}|do[opr]_v1_[a-f0-9]{64}|shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}|[MNO][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}|\d{8,10}:AA[A-Za-z0-9_-]{33}|pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}|dapi[a-f0-9]{32})`),
 		valid: validAPIKey, exact: true},
 	{ID: "connstr", One: "connection string password", Name: "Connection string password", Plural: "connection string passwords", Prefix: "CONNSTR", Default: true,
 		Note: "the password in scheme://user:password@host, and Password=, Pwd=, AccountKey= or SharedAccessKey= after a semicolon; the rest of the string is left to read",
 		re:   regexp.MustCompile(`(?i)(?:\b[a-z][a-z0-9+.-]*://[^\s:/@"'<>]+:([^\s@/"'<>]{3,})@|;\s*(?:password|pwd|accountkey|sharedaccesskey|sharedaccesssignature)\s*=\s*([^;\s"']{3,}))`), group: -1,
 		valid: validConnPassword, exact: true},
+	{ID: "token", One: "access token", Name: "Bearer token or JWT", Plural: "access tokens", Prefix: "TOKEN", Default: true,
+		Note: "a JSON Web Token anywhere, and what follows Bearer or an Authorization header",
+		re:   regexp.MustCompile(`(\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})|(?i:\bauthorization["']?\s*[:=]\s*["']?(?:bearer|token)\s+([A-Za-z0-9._~+/=-]{16,}))|(?i:\bbearer\s+([A-Za-z0-9._~+/=-]{20,}))`), group: -1,
+		valid: validToken, exact: true},
+	{ID: "basicauth", One: "basic auth credential", Name: "Basic auth credentials", Plural: "basic auth credentials", Prefix: "BASICAUTH", Default: true,
+		Note: "what follows Authorization: Basic, and the password in curl -u user:password",
+		re:   regexp.MustCompile(`(?i:\bauthorization["']?\s*[:=]\s*["']?basic\s+([A-Za-z0-9+/=]{8,}))|\bcurl\b[^\n|;&]*?\s(?:-u|--user)[\s=]+["']?[^\s:"']+:([^\s"']{3,})`), group: -1,
+		valid: validConnPassword, exact: true},
+	{ID: "cookie", One: "cookie", Name: "Session cookie", Plural: "cookies", Prefix: "COOKIE", Default: true,
+		Note: "the value of a Cookie or Set-Cookie header",
+		re:   regexp.MustCompile(`(?i)\b(?:set-)?cookie["']?\s*:\s*["']?([^\r\n"'=;\s]+=[^\r\n"']{4,})`), group: 1, exact: true},
+	{ID: "webhook", One: "webhook URL", Name: "Webhook URL", Plural: "webhook URLs", Prefix: "WEBHOOK", Default: true,
+		Note: "Slack, Discord and Microsoft Teams incoming webhooks: the address is the secret",
+		re:   regexp.MustCompile(`https://hooks\.slack\.com/(?:services|workflows|triggers)/([A-Za-z0-9/_-]{20,})|https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/(\d+/[A-Za-z0-9_-]{20,})|https://[a-z0-9-]+\.webhook\.office\.com/([^\s"'<>]{20,})`), group: -1, exact: true},
+	{ID: "signedurl", One: "signed URL", Name: "Signed URL", Plural: "signed URLs", Prefix: "SIGNATURE", Default: true,
+		Note: "the signature or session token in an S3, Google Cloud or Azure SAS link; the rest of the link is left to read",
+		re:   regexp.MustCompile(`(?i)[?&](?:X-Amz-Signature|X-Amz-Security-Token|X-Goog-Signature|Signature|sig)=([A-Za-z0-9%/+_.-]{16,})`), group: 1, exact: true},
+	{ID: "envfile", One: ".env value", Name: "Values in a .env file", Plural: ".env values", Prefix: "ENV", Default: true,
+		Note: "only in the output of a tool call that names a .env file: every value of 8 characters or more with a digit or mixed case. Numbers, true and false, plain words, links and paths are left to read",
+		re:   regexp.MustCompile(`(?m)^(?:\s*\d+[\t→])?[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_.]*[ \t]*=[ \t]*["']?([^\s"'#]{8,})`), group: 1,
+		valid: validEnvValue, exact: true, envOnly: true},
 	{ID: "secret", One: "secret value", Name: "Secret in an assignment", Plural: "secret values", Prefix: "SECRET",
 		Note: "off by default: noisy. The value after a name holding key, secret, token or password, such as API_KEY=..., when it has letters and digits",
 		re:   regexp.MustCompile(`(?i)\b[A-Z0-9_.-]*(?:api[_-]?key|secret|token|passw(?:or)?d)[A-Z0-9_]*["']?\s*[:=]\s*["']?([A-Za-z0-9+/_.~-]{12,}={0,2})`), group: 1,
@@ -104,13 +126,23 @@ func NewSession() *Session {
 // values masked for the first time in this session; a value seen before
 // gets its old mask and is not a hit.
 func (s *Session) Mask(text, where string, on func(*Rule) bool) (string, []Hit, bool) {
+	return s.mask(text, where, on, false)
+}
+
+// MaskEnvFile is Mask for the output of a tool call that names a .env
+// file: the rules that mask a file's values by where they sit apply too.
+func (s *Session) MaskEnvFile(text, where string, on func(*Rule) bool) (string, []Hit, bool) {
+	return s.mask(text, where, on, true)
+}
+
+func (s *Session) mask(text, where string, on func(*Rule) bool, env bool) (string, []Hit, bool) {
 	var hits []Hit
 	changed := false
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seen = time.Now()
 	for _, r := range Rules {
-		if !on(r) {
+		if !on(r) || r.envOnly && !env {
 			continue
 		}
 		idx := r.re.FindAllStringSubmatchIndex(text, -1)
@@ -289,10 +321,13 @@ func mixed(v string) (digit, upper, lower bool) {
 // such as sk-learn-something-or-other has no digit or no mixed case. The
 // other prefixes are distinctive enough as they are.
 func validAPIKey(v string) bool {
+	digit, upper, lower := mixed(v)
+	if strings.Contains(v, ".") && !strings.HasPrefix(v, "SG.") {
+		return digit // a bot token; a dotted name in code has none
+	}
 	if !strings.HasPrefix(v, "sk-") {
 		return true
 	}
-	digit, upper, lower := mixed(v)
 	return digit && (upper && lower || len(v) >= 40)
 }
 
@@ -300,6 +335,29 @@ func validAPIKey(v string) bool {
 // <password>, %s and **** are not passwords.
 func validConnPassword(v string) bool {
 	return !strings.ContainsAny(v[:1], "$<{%*[")
+}
+
+// validToken wants a digit in what follows Bearer: "Bearer token_goes_here"
+// in a document is not a token. A JWT always has one.
+func validToken(v string) bool {
+	digit, _, _ := mixed(v)
+	return digit && validConnPassword(v)
+}
+
+// validEnvValue is a .env value worth masking: one with a digit or mixed
+// case that is not a number, a link, a path, a host name or already a mask.
+func validEnvValue(v string) bool {
+	digit, upper, lower := mixed(v)
+	if !digit && !(upper && lower) || strings.ContainsAny(v, "[]") || strings.ContainsAny(v[:1], "$<{%*/~.") {
+		return false
+	}
+	if _, err := strconv.ParseFloat(v, 64); err == nil {
+		return false
+	}
+	if strings.Contains(v, "://") || !upper && strings.Contains(v, ".") {
+		return false // a link (its password is the connection string rule's) or a host name
+	}
+	return true
 }
 
 // validSecret wants letters and digits: a name, a path or a call on the

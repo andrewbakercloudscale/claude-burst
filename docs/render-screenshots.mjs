@@ -223,7 +223,9 @@ async function open(tab) {
 // One picture: the box around the elements named, top of the first to the
 // bottom of the last, or down to the top of the element `until` names.
 const failed = []
-async function shoot(page, name, selectors, { until = '', prepare } = {}) {
+// allow: phrases the section prints itself that hold a hidden word (a
+// vendor in a rule's note), taken out before the check.
+async function shoot(page, name, selectors, { until = '', prepare, allow = [] } = {}) {
   if (prepare) await page.evaluate(prepare)
   // Pictures below the fold are lazy, and a clip does not scroll to them.
   await page.evaluate(() => Promise.all([...document.images].map((i) => {
@@ -248,7 +250,7 @@ async function shoot(page, name, selectors, { until = '', prepare } = {}) {
     return { x: left, y: top, width: right - left, height: h, text }
   }, { selectors, until })
   if (!box) return failed.push(name + ': not on the page: ' + selectors.join(', '))
-  const hits = found(box.text)
+  const hits = found(allow.reduce((t, a) => t.split(a).join(' '), box.text))
   if (hits.length) {
     // With where: the words either side say which field still leaks.
     const at = box.text.toLowerCase().indexOf(hits[0])
@@ -284,6 +286,7 @@ const SHOTS = {
     ['compaction-strategies', (page) => shoot(page, 'compaction-strategies', ['#sec-strategies'])],
     ['usage', (page) => shoot(page, 'usage', ['#sec-usage'])],
     ['context-and-cache', (page) => shoot(page, 'context-and-cache', ['#sec-context'])],
+    ['automask', (page) => shoot(page, 'automask', ['#sec-automask'], { allow: ['AWS, GitHub, GitLab'] })],
     ['context-inspector', (page) => shoot(page, 'context-inspector', ['#sec-inspect'], { prepare: openGroups })],
     ['coordination', (page) => shoot(page, 'coordination', ['#sec-coord'])],
     ['handover', (page) => shoot(page, 'handover', ['#handoverSection'], { prepare: () => document.querySelector('#handoverSection').classList.remove('collapsed') })],
