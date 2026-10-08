@@ -23,6 +23,8 @@ Then **restart Codex**: quit and reopen the ChatGPT app, and restart any `codex`
 - The gateway forwards each request to `chatgpt.com` **unchanged** and reads the reply on its way back: the turn's tokens (from `response.completed`), each model's context window (from the model list), and the plan usage ChatGPT reports in its `x-codex-*` headers.
 - Only model calls (`/models`, `/responses`) go through Burst. Codex's sign-in, plugins and cloud tasks go to ChatGPT directly.
 - Each turn is recorded, metadata only, in `~/.config/claude-burst/codex-metrics.jsonl`, apart from Claude Code's `metrics.jsonl`: no Claude Code total ever includes a Codex turn. The gateway log gets one `codex: turn ...` line per turn.
+- **Everything that is HTTP is passed on**, whatever its method or path: a request, a streamed reply, a WebSocket, and HTTP/2 without TLS. A reply ChatGPT refuses (a 401 on the model list, say) goes back to Codex as it came and is logged as `codex: GET ... answered 401 by ChatGPT`.
+- **What cannot be passed on is logged as an error.** A connection that is not HTTP at all (a TLS handshake sent to the plain port, another protocol, a request line that does not parse) has no request to forward, and ChatGPT would refuse the same bytes. Burst answers `400` itself, writes `level=error codex: refused a connection on the Codex port ...` with what the connection began with (the first line only, never headers or a query), and the Codex tab's check **Nothing turned away at the port** goes red for an hour. Search the log for `codex: refused`.
 - The listener runs whenever Burst runs, routed or not: a Codex session keeps sending to the port it started with until it exits.
 - If `config.toml` already sets its own `model_provider`, Burst refuses rather than override it, and says which.
 
@@ -30,7 +32,7 @@ Checked against codex-cli 0.159.2. The other route, `chatgpt_base_url`, was reje
 
 ## The Codex tab
 
-![The Codex tab's overview: six checks, the routing state and its buttons, 14-day turns, sessions, tokens and errors, and the ChatGPT plan's weekly window](screenshots/codex.png)
+![The Codex tab's overview: its checks, the routing state and its buttons, 14-day turns, sessions, tokens and errors, and the ChatGPT plan's weekly window](screenshots/codex.png)
 
 ![Codex insights: tokens per day split into cached input, uncached input and output, latency, error rate and cached share tiles, and each model's share of the tokens](screenshots/codex-insights.png)
 
