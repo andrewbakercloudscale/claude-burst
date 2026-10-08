@@ -38,6 +38,14 @@ const (
 	sharedDrop = 0.5
 )
 
+// sweepFrom, sweepTo and sweepStep are the sizes the sweep replays: every
+// Compact at a setting could hold.
+const (
+	sweepFrom = 100_000
+	sweepTo   = 500_000
+	sweepStep = 25_000
+)
+
 // StrategyCost is one strategy's cost over some requests.
 type StrategyCost struct {
 	// Tokens is the context sent, summed over the requests.
@@ -72,6 +80,38 @@ func (c *StrategyCosts) add(o StrategyCosts) {
 	c.Actual.add(o.Actual)
 }
 
+// StrategySize is what one Compact at would have cost over the same
+// requests: a twin, as Fixed is, so the sizes compare with each other and
+// with Fixed. They compare less exactly with Actual, which waited out the
+// compaction settings' delay and was billed what a summary really cost.
+type StrategySize struct {
+	At int64 `json:"at"`
+	StrategyCost
+}
+
+// cheapestSize is the entry of sizes with the lowest cost, the smallest
+// size among equals; false when there are none.
+func cheapestSize(sizes []StrategySize) (StrategySize, bool) {
+	if len(sizes) == 0 {
+		return StrategySize{}, false
+	}
+	best := sizes[0]
+	for _, z := range sizes[1:] {
+		if z.USD < best.USD {
+			best = z
+		}
+	}
+	return best, true
+}
+
+func newSizes() []StrategySize {
+	var out []StrategySize
+	for at := int64(sweepFrom); at <= sweepTo; at += sweepStep {
+		out = append(out, StrategySize{At: at})
+	}
+	return out
+}
+
 // StrategyDay is one local day.
 type StrategyDay struct {
 	Date string `json:"date"` // 2006-01-02, local
@@ -85,6 +125,11 @@ type StrategyRepo struct {
 	Sessions int    `json:"sessions"`
 	StrategyCosts
 	Daily []StrategyDay `json:"daily"`
+	// Sizes is the sweep over this repository's requests, and Cheapest the
+	// size of it that cost least: what hindsight says the repository's
+	// Compact at should have been.
+	Sizes    []StrategySize `json:"sizes"`
+	Cheapest *StrategySize  `json:"cheapest,omitempty"`
 }
 
 // Strategies is the dashboard's comparison over a window.
@@ -95,6 +140,14 @@ type Strategies struct {
 	StrategyCosts
 	Daily []StrategyDay  `json:"daily"`
 	Repos []StrategyRepo `json:"repos"`
+	// Sizes is the sweep over every request: one Compact at for every
+	// repository, at each size. Cheapest is the best of those, and
+	// PerRepoUSD what the window would have cost with each repository on
+	// its own cheapest size: the least any choice of sizes could have cost,
+	// which Actual is measured against.
+	Sizes      []StrategySize `json:"sizes"`
+	Cheapest   *StrategySize  `json:"cheapest,omitempty"`
+	PerRepoUSD float64        `json:"per_repo_usd"`
 }
 
 // twin is a context under a strategy the session did not run.
@@ -111,6 +164,7 @@ type strategySession struct {
 	lastCompacted int64
 	after         int64 // what a real compaction left, 0 when none yet
 	def, fixed    twin
+	sizes         []twin // one for each size of the sweep
 }
 
 // twinCompactionUSD models a compaction of before tokens down to after: the
@@ -154,8 +208,13 @@ func (t *twin) step(s *strategySession, e Event, ctx int64, swap bool) StrategyC
 		t.ctx = max(t.ctx+delta, 1)
 	}
 	if t.ctx >= t.at {
+		// What the real compaction left is copied only where it is a
+		// compaction's worth below this twin's size. A real one that left
+		// 170k had a twin at 175k compacting every few requests, each one
+		// paid for: $59 over a repository that cost $24 at 150k and $25 at
+		// 200k.
 		after := s.after
-		if after <= 0 || after >= t.at {
+		if after <= 0 || after > t.at/2 {
 			after = min(assumedAfter, t.at/2)
 		}
 		c.Compactions = 1
@@ -202,6 +261,7 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repo
 		return days
 	}
 	st.Daily = newDays()
+	st.Sizes = newSizes()
 
 	sessions := map[string]*strategySession{}
 	repos := map[string]*StrategyRepo{}
@@ -216,14 +276,14 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repo
 		}
 		r := repos[name]
 		if r == nil {
-			r = &StrategyRepo{Repo: name, Path: root, Daily: newDays()}
+			r = &StrategyRepo{Repo: name, Path: root, Daily: newDays(), Sizes: newSizes()}
 			repos[name] = r
 		}
 		r.Sessions++
 		repoBySession[session] = r
 		return r
 	}
-	record := func(e Event, c StrategyCosts) {
+	record := func(e Event, c StrategyCosts, sizes []StrategyCost) {
 		i, ok := dayIndex[e.Time.Local().Format("2006-01-02")]
 		if e.Time.Before(since) || !ok {
 			return
@@ -233,6 +293,10 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repo
 		st.Daily[i].add(c)
 		r.add(c)
 		r.Daily[i].add(c)
+		for j, z := range sizes {
+			st.Sizes[j].add(z)
+			r.Sizes[j].add(z)
+		}
 	}
 
 	for _, f := range historyFiles(path, since) {
@@ -244,6 +308,9 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repo
 			s := sessions[key]
 			if s == nil {
 				s = &strategySession{def: twin{at: claudeCodeTrigger}, fixed: twin{at: st.FixedAt}}
+				for _, z := range st.Sizes {
+					s.sizes = append(s.sizes, twin{at: z.At})
+				}
 				sessions[key] = s
 			}
 			if SummaryPaid(e.Note) {
@@ -254,7 +321,7 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repo
 					c.Actual.Compactions = 1
 				}
 				c.Actual.USD = c.Actual.CompactionUSD
-				record(e, c)
+				record(e, c, nil)
 				return
 			}
 			ctx := eventContext(e)
@@ -265,6 +332,10 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repo
 			c := StrategyCosts{Requests: 1}
 			c.Default = s.def.step(s, e, ctx, swap)
 			c.Fixed = s.fixed.step(s, e, ctx, swap)
+			sizes := make([]StrategyCost, len(s.sizes))
+			for j := range s.sizes {
+				sizes[j] = s.sizes[j].step(s, e, ctx, swap)
+			}
 			c.Actual.Tokens = ctx
 			c.Actual.ContextUSD = cacheReadUSD(e.Model, ctx)
 			if swap {
@@ -273,14 +344,21 @@ func CompactionStrategiesSince(path string, since time.Time, fixedAt int64, repo
 			}
 			c.Actual.USD = c.Actual.ContextUSD + c.Actual.CompactionUSD
 			s.lastCtx, s.lastCompacted = ctx, e.CompactedMessages
-			record(e, c)
+			record(e, c, sizes)
 		})
 		if err != nil {
 			return st, err
 		}
 	}
 	for _, r := range repos {
+		if best, ok := cheapestSize(r.Sizes); ok && r.Requests > 0 {
+			r.Cheapest = &best
+			st.PerRepoUSD += best.USD
+		}
 		st.Repos = append(st.Repos, *r)
+	}
+	if best, ok := cheapestSize(st.Sizes); ok && st.Requests > 0 {
+		st.Cheapest = &best
 	}
 	// The repository with the most context to pay for first.
 	sort.Slice(st.Repos, func(i, j int) bool {
