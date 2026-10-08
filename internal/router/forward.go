@@ -46,6 +46,9 @@ func (s *Server) clientFor(path string) *http.Client {
 func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, slot string, p Provider, fd FailoverDetector, allowFailover bool, note string, ladder []string) {
 	rid := requestIDFrom(in.Context())
 	start := time.Now()
+	if slot == "secondary" {
+		body = s.applyAutomaskAtSecondary(in, body)
+	}
 
 	req, model, err := p.Prepare(in.Context(), in, body)
 	if err != nil {

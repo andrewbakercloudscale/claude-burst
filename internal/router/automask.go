@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,6 +182,7 @@ func (s *Server) AutomaskSince() time.Time {
 type AutomaskHit struct {
 	At      time.Time `json:"at"`
 	Session string    `json:"session"`
+	Source  string    `json:"source,omitempty"` // "Codex"; empty is Claude Code
 	Repo    string    `json:"repo,omitempty"`
 	Rule    string    `json:"rule"`
 	Name    string    `json:"name"`
@@ -259,14 +261,68 @@ func (s *Server) takeAutomaskNotices(sid string) []string {
 	return out
 }
 
-// applyAutomask returns body with personal data masked, or body itself when
-// automask is off or nothing matched. It never refuses a request.
+// The providers Automask can be limited to (config automask.providers).
+const (
+	MaskAnthropic = "anthropic"
+	MaskSecondary = "secondary"
+	MaskChatGPT   = "chatgpt"
+)
+
+// MaskProviders is every provider, in the order the dashboard lists them.
+var MaskProviders = []string{MaskAnthropic, MaskSecondary, MaskChatGPT}
+
+// Covers reports whether Automask under c applies to what goes to
+// provider: it is on, and either applies everywhere or names it.
+func Covers(c config.AutomaskConfig, provider string) bool {
+	if !c.Enabled {
+		return false
+	}
+	if len(c.Providers) == 0 {
+		return true
+	}
+	for _, p := range c.Providers {
+		if p == provider {
+			return true
+		}
+	}
+	return false
+}
+
+// AutomaskCovers is Covers for the running gateway's settings.
+func (s *Server) AutomaskCovers(provider string) bool {
+	s.automask.mu.Lock()
+	defer s.automask.mu.Unlock()
+	return Covers(s.automask.cfg, provider)
+}
+
+// applyAutomask masks a Claude Code request before anything else reads it,
+// when what is sent to Anthropic is to be masked. The summary, the
+// compaction hash and a secondary that takes over all then see the masked
+// history, whether or not the secondary is named itself.
 func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
+	return s.applyAutomaskFor(in, body, MaskAnthropic)
+}
+
+// applyAutomaskAtSecondary masks a request on its way to the secondary
+// when Automask covers the secondary and not Anthropic: the history was
+// left as written for Anthropic, so it is masked here, for this request
+// only, and nothing kept about the conversation changes.
+func (s *Server) applyAutomaskAtSecondary(in *http.Request, body []byte) []byte {
+	if body == nil || !isInference(in.URL.Path) || s.AutomaskCovers(MaskAnthropic) {
+		return body
+	}
+	return s.applyAutomaskFor(in, body, MaskSecondary)
+}
+
+// applyAutomaskFor returns body with personal data masked, or body itself
+// when automask does not cover provider or nothing matched. It never
+// refuses a request.
+func (s *Server) applyAutomaskFor(in *http.Request, body []byte, provider string) []byte {
 	m := s.automask
 	m.mu.Lock()
 	cfg := m.cfg
 	m.mu.Unlock()
-	if !cfg.Enabled {
+	if !Covers(cfg, provider) {
 		return body
 	}
 	on := func(r *automask.Rule) bool { return RuleOn(cfg, r) }
@@ -338,30 +394,39 @@ func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
 		return body
 	}
 	if len(hits) > 0 {
-		s.noteMasked(sid, hits)
+		s.noteMasked(sid, "", "", hits)
 	}
 	return nb
 }
 
 // noteMasked logs each new mask (the mask only, never the value) and says
 // so in the session and on the panel.
-func (s *Server) noteMasked(sid string, hits []automask.Hit) {
+// source is "" for Claude Code, whose repository is looked up, or "Codex",
+// which names its own.
+func (s *Server) noteMasked(sid, source, repo string, hits []automask.Hit) {
+	from, reader := "", "Claude"
+	if source != "" {
+		from, reader = " source="+strings.ToLower(source), "ChatGPT"
+	}
 	for _, h := range hits {
-		s.logger.Printf("automask session=%s rule=%s where=%s mask=%s", sid, h.Rule.ID, h.Where, h.Mask)
+		s.logger.Printf("automask session=%s%s rule=%s where=%s mask=%s", sid, from, h.Rule.ID, h.Where, h.Mask)
 	}
 	sum := automask.Summary(hits)
-	repo, _ := s.repos.Resolve(sid)
+	if source == "" {
+		repo, _ = s.repos.Resolve(sid)
+	}
 	now := time.Now()
 	s.automask.mu.Lock()
 	for _, h := range hits {
 		s.automask.totals[h.Rule.ID]++
-		s.automask.recent = append(s.automask.recent, AutomaskHit{At: now, Session: sid, Repo: repo,
+		s.automask.recent = append(s.automask.recent, AutomaskHit{At: now, Session: sid, Source: source, Repo: repo,
 			Rule: h.Rule.ID, Name: h.Rule.Name, Where: h.Where, Mask: h.Mask})
 	}
 	if n := len(s.automask.recent); n > maskRecentMax {
 		s.automask.recent = append([]AutomaskHit(nil), s.automask.recent[n-maskRecentMax:]...)
 	}
-	if sid != "" {
+	// Under the prompt in Claude Code only: Codex has no such line.
+	if sid != "" && source == "" {
 		s.automask.notices[sid] = append(s.automask.notices[sid],
 			"⚡ Claude Burst, automask: masked "+sum+" before sending. Claude sees only the masks; the originals never leave this Mac")
 	}
@@ -374,7 +439,7 @@ func (s *Server) noteMasked(sid string, hits []automask.Hit) {
 		where = " in " + repo
 	}
 	notice.PublishFor(sid, "automask", notice.Warn, "Sensitive data masked",
-		"Masked "+sum+where+" before it left this Mac. Claude sees only the masks.")
+		"Masked "+sum+where+" before it left this Mac. "+reader+" sees only the masks.")
 }
 
 // pruneSessions drops sessions idle for a day. Called with mu held.

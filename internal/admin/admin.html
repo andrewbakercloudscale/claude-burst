@@ -876,7 +876,6 @@
   <div class="navgroup">Context</div>
   <a class="navlink nav-pc" data-target="sec-compaction"><span class="nd" id="nd-compaction"></span><span class="label">Pauseless Compaction</span></a>
   <a class="navlink" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
-  <a class="navlink" data-target="sec-automask"><span class="nd" id="nd-automask"></span><span class="label">Automask</span></a>
 
   <div class="navgroup">Routing</div>
   <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Routing</span></a>
@@ -891,6 +890,9 @@
   <a class="navlink" data-target="sec-band"><span class="nd" id="nd-band"></span><span class="label">In-session band</span></a>
   <a class="navlink" data-target="sec-inspect"><span class="nd" id="nd-inspect"></span><span class="label">Context inspector</span></a>
   <a class="navlink" data-target="sec-finder"><span class="nd" id="nd-finder"></span><span class="label">Finder shortcuts</span></a>
+
+  <div class="navgroup">Privacy</div>
+  <a class="navlink" data-target="sec-automask"><span class="nd" id="nd-automask"></span><span class="label">Automask</span></a>
 
   <div class="navgroup">This Mac</div>
   <a class="navlink" data-target="sec-mac"><span class="nd" id="nd-mac"></span><span class="label">Lid &amp; hotspot</span></a>
@@ -1347,33 +1349,6 @@
     </div>
   </section>
 
-  <section id="sec-automask" style="scroll-margin-top:70px">
-    <h2>Automask <span class="applies" data-where="config.json" data-when="next request"></span> <span class="hint">secrets and personal data masked before a request leaves this Mac</span></h2>
-    <div class="body">
-      <div class="row" style="align-items:flex-start;margin:4px 0 12px">
-        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
-          <input type="checkbox" id="amMaster" style="width:auto;margin:0;transform:scale(1.25)">
-          Mask personal data and secrets <span id="amState" class="pill"></span>
-        </label>
-      </div>
-      <div class="hint" style="margin:-4px 0 12px 0">Burst looks through every request, your prompts, tool output and earlier turns included, and replaces what a rule finds with a mask such as <code>[CARD-1 ...4242]</code>, <code>[APIKEY-1]</code> or <code>postgres://app:[CONNSTR-1]@db/shop</code>. A masked key is one Claude cannot use, so a command that needs it must read it from the environment or a file when it runs. It never refuses a request. The same value gets the same mask for the whole session, so Claude can still tell values apart, and Anthropic's prompt cache and Burst's compaction keep working. Each new mask is logged (the mask only, never the value) and said once under your prompt and as a pop-up. Thinking blocks and tool calls are left exactly as they are. Off by default; applies to the primary and the secondary alike.</div>
-      <table class="stbl" id="amRules"></table>
-      <div style="margin-top:14px">
-        <label for="amWords" style="font-weight:700">Your own words <span class="hint" id="amWordsCount" style="font-weight:400"></span></label>
-        <div class="hint" style="margin:2px 0 6px 0">One to a line: project code names, customer names, internal host names. Each is masked as <code>[WORD-1]</code> wherever it stands as a whole word, whatever its case. 3 characters or more, up to 500 lines. Kept in config.json on this Mac.</div>
-        <textarea id="amWords" rows="5" spellcheck="false" autocomplete="off" style="width:100%;max-width:520px;font-family:ui-monospace,Menlo,monospace;font-size:13px"></textarea>
-      </div>
-      <div class="row" style="align-items:center;gap:12px;margin-top:12px">
-        <button class="primary" id="amSave">&#x2713; Save</button>
-        <span class="hint" id="amSince">Masked counts are kept across restarts.</span>
-      </div>
-      <div id="amNote"></div>
-      <h3 style="margin:18px 0 4px">Last 50 masks</h3>
-      <div class="hint" style="margin-bottom:6px">Each value masked for the first time in a session, newest first, kept across restarts. The mask only: the value itself is never kept. Every one is also a line in the gateway log.</div>
-      <table class="stbl" id="amRecent"></table>
-    </div>
-  </section>
-
   <div class="pagegroup">Routing</div>
 
   <section id="sec-config" style="scroll-margin-top:70px">
@@ -1720,6 +1695,42 @@
         <button id="finderRemove">&#x2715; Remove Finder shortcuts</button>
       </div>
       <div id="finderNote"></div>
+    </div>
+  </section>
+
+  <div class="pagegroup">Privacy</div>
+
+  <section id="sec-automask" style="scroll-margin-top:70px">
+    <h2>Automask <span class="applies" data-where="config.json" data-when="next request"></span> <span class="hint">secrets and personal data masked before a request leaves this Mac, for Claude Code and Codex</span></h2>
+    <div class="body">
+      <div class="row" style="align-items:flex-start;margin:4px 0 12px">
+        <label style="display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:700;font-size:15px">
+          <input type="checkbox" id="amMaster" style="width:auto;margin:0;transform:scale(1.25)">
+          Mask personal data and secrets <span id="amState" class="pill"></span>
+        </label>
+      </div>
+      <div class="hint" style="margin:-4px 0 12px 0">Burst looks through every request, your prompts, tool output and earlier turns included, and replaces what a rule finds with a mask such as <code>[CARD-1 ...4242]</code>, <code>[APIKEY-1]</code> or <code>postgres://app:[CONNSTR-1]@db/shop</code>. A masked key is one Claude cannot use, so a command that needs it must read it from the environment or a file when it runs. It never refuses a request. The same value gets the same mask for the whole session, so Claude can still tell values apart, and Anthropic's prompt cache and Burst's compaction keep working. Each new mask is logged (the mask only, never the value) and said once under your prompt and as a pop-up. Thinking blocks and tool calls are left exactly as they are. The line under the prompt is Claude Code's; a Codex mask is in the list below, the log and the pop-up. Off by default. One set of rules, words and counts covers Claude Code and Codex.</div>
+      <div style="margin:0 0 14px">
+        <div style="font-weight:700;margin-bottom:4px">Where it applies</div>
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:3px 0"><input type="radio" name="amScope" id="amEverywhere" value="all" style="width:auto;margin:0"> Everywhere: whatever Claude Code and Codex send, to any provider</label>
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:3px 0"><input type="radio" name="amScope" id="amOnly" value="only" style="width:auto;margin:0"> Only what goes to the providers ticked</label>
+        <div id="amProviders" style="margin:4px 0 0 26px"></div>
+        <div class="hint" style="margin-top:6px">A provider that is not ticked gets the request as it was written. For Codex, Burst masks the turns it can read: one that Codex sends compressed, or over a WebSocket, goes to ChatGPT as Codex wrote it, with a line in the gateway log saying so.</div>
+      </div>
+      <table class="stbl" id="amRules"></table>
+      <div style="margin-top:14px">
+        <label for="amWords" style="font-weight:700">Your own words <span class="hint" id="amWordsCount" style="font-weight:400"></span></label>
+        <div class="hint" style="margin:2px 0 6px 0">One to a line: project code names, customer names, internal host names. Each is masked as <code>[WORD-1]</code> wherever it stands as a whole word, whatever its case. 3 characters or more, up to 500 lines. Kept in config.json on this Mac.</div>
+        <textarea id="amWords" rows="5" spellcheck="false" autocomplete="off" style="width:100%;max-width:520px;font-family:ui-monospace,Menlo,monospace;font-size:13px"></textarea>
+      </div>
+      <div class="row" style="align-items:center;gap:12px;margin-top:12px">
+        <button class="primary" id="amSave">&#x2713; Save</button>
+        <span class="hint" id="amSince">Masked counts are kept across restarts.</span>
+      </div>
+      <div id="amNote"></div>
+      <h3 style="margin:18px 0 4px">Last 50 masks</h3>
+      <div class="hint" style="margin-bottom:6px">Each value masked for the first time in a session, newest first, kept across restarts. The mask only: the value itself is never kept. Every one is also a line in the gateway log.</div>
+      <table class="stbl" id="amRecent"></table>
     </div>
   </section>
 
@@ -5169,7 +5180,7 @@ refresh();
 // where everything lived before Codex. The rail's entries and the page's
 // group headings follow their sections, so a tab never shows an empty
 // heading or an entry that scrolls nowhere.
-const TAB_GENERAL = ["sec-finder", "sec-mac", "sec-notify", "guardsSection", "sec-audit", "sec-actions", "sec-advanced"];
+const TAB_GENERAL = ["sec-automask", "sec-finder", "sec-mac", "sec-notify", "guardsSection", "sec-audit", "sec-actions", "sec-advanced"];
 const TAB_CODEX = ["sec-codex", "sec-codex-insights", "sec-codex-context", "sec-codex-inspect", "sec-codex-requests"];
 function tabOf(id) {
   if (TAB_CODEX.includes(id)) return "codex";
@@ -6726,7 +6737,26 @@ async function loadAutomask() {
 }
 let amWordsDirty = false;
 $("amWords").addEventListener("input", () => { amWordsDirty = true; });
-const amWhere = {user: "your prompt", tool_result: "tool output", assistant: "Claude's reply", system: "system prompt"};
+const amWhere = {user: "your prompt", tool_result: "tool output", assistant: "the model's reply", system: "system prompt", developer: "developer instructions"};
+// The provider choice is redrawn from the server only while it is not
+// being changed: a refresh must not untick what was just ticked.
+let amScopeDirty = false;
+function amDrawProviders(st) {
+  const picked = st.providers || [];
+  $("amEverywhere").checked = !picked.length;
+  $("amOnly").checked = !!picked.length;
+  $("amProviders").innerHTML = (st.choices || []).map(c =>
+    `<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin:4px 0"><input type="checkbox" data-provider="${esc(c.id)}" ${!picked.length || picked.includes(c.id) ? "checked" : ""} style="width:auto;margin:3px 0 0">` +
+    `<span><b>${esc(c.name)}</b><br><span class="hint">${esc(c.note)}</span></span></label>`).join("");
+  amScopeLock();
+}
+function amScopeLock() {
+  const only = $("amOnly").checked;
+  document.querySelectorAll("#amProviders input").forEach(i => { i.disabled = !only; if (!only) i.checked = true; });
+  $("amProviders").style.opacity = only ? "1" : ".55";
+}
+["amEverywhere", "amOnly"].forEach(id => $(id).addEventListener("change", () => { amScopeDirty = true; amScopeLock(); }));
+$("amProviders").addEventListener("change", () => { amScopeDirty = true; });
 function drawAutomask(st) {
   $("amMaster").checked = !!st.enabled;
   $("amState").textContent = st.enabled ? "on" : "off";
@@ -6735,15 +6765,16 @@ function drawAutomask(st) {
     `<tr><td><label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" data-rule="${esc(r.id)}" ${r.on ? "checked" : ""} style="width:auto;margin:3px 0 0">` +
     `<span><b>${esc(r.name)}</b>${r.default ? "" : ` <span class="pill">off by default</span>`}<br><span class="hint">${esc(r.note)}</span></span></label></td>` +
     `<td class="num">${r.masked ? num(r.masked) : "-"}</td></tr>`).join("") + `</tbody>`;
+  if (!amScopeDirty) amDrawProviders(st);
   // Not while it is being typed in: the refresh would take the edit away.
   const words = st.words || [];
   if (document.activeElement !== $("amWords") && !amWordsDirty) $("amWords").value = words.join("\n");
   $("amWordsCount").textContent = words.length ? `(${num(words.length)} saved)` : "(none yet)";
   const recent = st.recent || [];
   $("amRecent").innerHTML = recent.length
-    ? `<thead><tr><th>When</th><th>Repository</th><th>Rule</th><th>Found in</th><th>Mask</th></tr></thead><tbody>` + recent.map(h =>
+    ? `<thead><tr><th>When</th><th>From</th><th>Repository</th><th>Rule</th><th>Found in</th><th>Mask</th></tr></thead><tbody>` + recent.map(h =>
       `<tr><td>${esc(new Date(h.at).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit"}))}</td>` +
-      `<td title="${esc(h.session)}">${esc(h.repo || (h.session ? h.session.slice(0, 8) : "(no session)"))}</td><td>${esc(h.name)}</td>` +
+      `<td>${esc(h.source || "Claude Code")}</td><td title="${esc(h.session)}">${esc(h.repo || (h.session ? h.session.slice(0, 8) : "(no session)"))}</td><td>${esc(h.name)}</td>` +
       `<td>${esc(amWhere[h.where] || h.where)}</td><td><code>${esc(h.mask)}</code></td></tr>`).join("") + `</tbody>`
     : `<tbody><tr><td class="hint">Nothing masked yet.</td></tr></tbody>`;
   if (st.since) $("amSince").textContent = `Masked counts are since ${new Date(st.since).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"})}, and are kept across restarts.`;
@@ -6755,8 +6786,10 @@ $("amSave").onclick = async () => {
   document.querySelectorAll("#amRules input[data-rule]").forEach(i => { rules[i.dataset.rule] = i.checked; });
   try {
     const words = $("amWords").value.split("\n").map(w => w.trim()).filter(Boolean);
-    const r = await post("/api/automask-save", {enabled: $("amMaster").checked, rules, words});
-    amWordsDirty = false;
+    const providers = $("amOnly").checked ? [...document.querySelectorAll("#amProviders input:checked")].map(i => i.dataset.provider) : [];
+    if ($("amOnly").checked && !providers.length) throw new Error("Tick at least one provider, or choose Everywhere.");
+    const r = await post("/api/automask-save", {enabled: $("amMaster").checked, rules, words, providers});
+    amWordsDirty = amScopeDirty = false;
     note($("amNote"), "ok", "Saved: " + r.ok + ".");
     drawAutomask(r.status);
   } catch (e) {

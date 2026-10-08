@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -59,6 +60,26 @@ func TestAutomaskSwitchesAreSavedAndShown(t *testing.T) {
 		t.Fatalf("words not cleared: %q", st.Words)
 	}
 
+	// Where it applies: everywhere until some are named, kept by a save
+	// that does not say, and naming all of them is everywhere again.
+	if st := get(); len(st.Providers) != 0 || len(st.Choices) != 3 || st.Choices[2].ID != "chatgpt" {
+		t.Fatalf("providers = %+v choices = %+v", st.Providers, st.Choices)
+	}
+	mutate(t, s, "/api/automask-save", `{"enabled":true,"providers":["chatgpt","secondary"]}`)
+	mutate(t, s, "/api/automask-save", `{"enabled":true}`)
+	if st := get(); strings.Join(st.Providers, ",") != "secondary,chatgpt" {
+		t.Fatalf("providers = %+v", st.Providers)
+	}
+	if !s.gateway.AutomaskCovers("chatgpt") || s.gateway.AutomaskCovers("anthropic") {
+		t.Error("the running gateway must follow the save")
+	}
+	mutate(t, s, "/api/automask-save", `{"enabled":true,"providers":["chatgpt","secondary","anthropic"]}`)
+	if st := get(); len(st.Providers) != 0 {
+		t.Fatalf("all of them is everywhere: %+v", st.Providers)
+	}
+	if rr := mutate(t, s, "/api/automask-save", `{"enabled":true,"providers":["openai"]}`); rr.Code != http.StatusBadRequest {
+		t.Errorf("unknown provider: %d", rr.Code)
+	}
 	if rr := mutate(t, s, "/api/automask-save", `{"enabled":true,"rules":{"nope":true}}`); rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown rule accepted: %d", rr.Code)
 	}
