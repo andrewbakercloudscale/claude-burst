@@ -85,16 +85,16 @@ func TestGetAutoCompactionThreshold(t *testing.T) {
 			t.Fatalf("%s: %d %+v", q, code, a)
 		}
 	}
-	if a.Fixed != 300_000 || a.Floor != 120_000 || a.BufferPercent != config.DefaultCompactionBuffer || a.DelayMinutes != 45 || a.Previous != 300_000 || a.Failures.Unpaid != 1 || a.Failures.LostUSD != 0.31 {
+	if a.Fixed != 300_000 || a.Floor != 120_000 || a.BufferPercent != config.DefaultCompactionBuffer || a.DelayMinutes != 45 || a.Previous != 210_000 || a.Failures.Unpaid != 1 || a.Failures.LostUSD != 0.31 {
 		t.Fatalf("the rest of the answer: %+v", a)
 	}
 	// The running gateway has it too.
 	if cfg, err := config.Load(); err != nil || !cfg.PrimaryCompaction.Intelligent() || cfg.PrimaryCompaction.FloorTokens != 120_000 {
 		t.Fatalf("config.json: %+v %v", cfg.PrimaryCompaction, err)
 	}
-	// A folder nothing is known about is on the fixed Compact at.
+	// A folder nothing is known about starts in the middle of the range, 120k to 300k.
 	a, _ = threshold(t, s, "folder=never-seen")
-	if a.Threshold != 300_000 || a.Source != "fixed" || !strings.Contains(a.Reason, "nothing learned") {
+	if a.Threshold != 210_000 || a.Source != "start" || !strings.Contains(a.Reason, "nothing learned") {
 		t.Fatalf("unknown folder: %+v", a)
 	}
 	// The user's own override for the repository wins over the learned one.
@@ -132,7 +132,7 @@ func TestIntelligentCompactionSettingsAreValidatedAndListed(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil || w.Code != http.StatusOK {
 		t.Fatalf("%d %v %s", w.Code, err, w.Body.String())
 	}
-	if v.Mode != "intelligent" || !v.Enabled || v.Fixed != 300_000 || v.Floor != 100_000 || v.Buffer != config.DefaultCompactionBuffer || v.Delay != 30 || v.Days != 14 {
+	if v.Mode != "intelligent" || !v.Enabled || v.Fixed != 500_000 || v.Start != 300_000 || v.Floor != 100_000 || v.Buffer != config.DefaultCompactionBuffer || v.Delay != 30 || v.Days != 14 {
 		t.Fatalf("view %+v", v)
 	}
 	if len(v.Repos) != 1 || v.Repos[0].InForce != 150_000 || v.Repos[0].Source != "learned" || v.Repos[0].Name != "my-project" {

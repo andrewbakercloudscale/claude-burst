@@ -140,7 +140,7 @@ const NeverTokens = int64(1) << 62
 func (c CompactionConfig) ForRepo(root string) (CompactionConfig, *RepoCompaction) {
 	c = c.Resolved()
 	if root == "" {
-		return c, nil
+		return c.unlearned(), nil
 	}
 	root = filepath.Clean(root)
 	for i := range c.RepoOverrides {
@@ -164,15 +164,40 @@ func (c CompactionConfig) ForRepo(root string) (CompactionConfig, *RepoCompactio
 		c.WarnAtTokens = c.warnAt(at)
 		return c, &RepoCompaction{Repo: root, CompactAtTokens: at, Learned: true}
 	}
-	return c, nil
+	return c.unlearned(), nil
+}
+
+// StartTokens is the size a repository compacts at in the intelligent mode
+// before anything has been learned for it: the middle of the range, since
+// the top of it (500k of a 100k to 500k range) is the most a guess can
+// cost. In the fixed mode it is Compact at.
+func (c CompactionConfig) StartTokens() int64 {
+	c = c.Resolved()
+	if !c.Intelligent() || c.FloorTokens >= c.CompactAtTokens {
+		return c.CompactAtTokens
+	}
+	const step = 5_000
+	return (c.FloorTokens + c.CompactAtTokens + step) / 2 / step * step
+}
+
+// unlearned is c for a repository with no override and nothing learned.
+func (c CompactionConfig) unlearned() CompactionConfig {
+	if c.Intelligent() {
+		c.CompactAtTokens = c.StartTokens()
+		c.WarnAtTokens = c.warnAt(c.CompactAtTokens)
+	}
+	return c
 }
 
 const (
 	DefaultCompactionWarnPercent = 80
 	DefaultCompactionCompactAt   = 300_000
-	DefaultCompactionWindow      = 30
-	DefaultCompactionFloor       = 100_000
-	DefaultCompactionBuffer      = 0
+	// The intelligent mode's range unless set: 100k to 500k, so a
+	// repository starts at 300k (StartTokens) and learns either way.
+	DefaultCompactionIntelligentCeiling = 500_000
+	DefaultCompactionWindow             = 30
+	DefaultCompactionFloor              = 100_000
+	DefaultCompactionBuffer             = 20
 )
 
 // warnAt is the warning size for a Compact at. Intelligent mode has none:
@@ -189,6 +214,9 @@ func (c CompactionConfig) warnAt(at int64) int64 {
 func (c CompactionConfig) Resolved() CompactionConfig {
 	if c.CompactAtTokens <= 0 {
 		c.CompactAtTokens = DefaultCompactionCompactAt
+		if c.Intelligent() {
+			c.CompactAtTokens = DefaultCompactionIntelligentCeiling
+		}
 	}
 	if c.WarnAtPercent <= 0 {
 		c.WarnAtPercent = DefaultCompactionWarnPercent
