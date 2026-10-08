@@ -23,14 +23,31 @@ type Rule struct {
 	Default bool   // on unless the config says otherwise
 	Note    string // why it is off by default, or what it checks
 	re      *regexp.Regexp
-	group   int // submatch to mask; 0 is the whole match
+	group   int // submatch to mask; 0 is the whole match, -1 the first that matched
 	valid   func(string) bool
 	keep4   bool // show the last four digits in the mask
+	exact   bool // the value is told apart as written: a dash is part of a key
 }
 
 // Rules is every rule, in the order they are tried. A later rule never sees
 // text an earlier one masked.
 var Rules = []*Rule{
+	// Keys go first: a later rule must not mask a run of digits inside one.
+	{ID: "privatekey", One: "private key", Name: "Private key block", Plural: "private keys", Prefix: "PRIVATEKEY", Default: true,
+		Note: "a PEM block from BEGIN to END PRIVATE KEY (RSA, EC, OpenSSH, PGP)",
+		re:   regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]+?-----END (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----`), exact: true},
+	{ID: "apikey", One: "API key", Name: "API key", Plural: "API keys", Prefix: "APIKEY", Default: true,
+		Note:  "keys with a known shape: Anthropic, OpenAI, AWS, GitHub, GitLab, Google, Slack, Stripe, npm, Hugging Face, SendGrid",
+		re:    regexp.MustCompile(`\b(?:sk-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|xox[abeprs]-[A-Za-z0-9-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|npm_[A-Za-z0-9]{36}|hf_[A-Za-z0-9]{30,}|SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})`),
+		valid: validAPIKey, exact: true},
+	{ID: "connstr", One: "connection string password", Name: "Connection string password", Plural: "connection string passwords", Prefix: "CONNSTR", Default: true,
+		Note: "the password in scheme://user:password@host, and Password=, Pwd=, AccountKey= or SharedAccessKey= after a semicolon; the rest of the string is left to read",
+		re:   regexp.MustCompile(`(?i)(?:\b[a-z][a-z0-9+.-]*://[^\s:/@"'<>]+:([^\s@/"'<>]{3,})@|;\s*(?:password|pwd|accountkey|sharedaccesskey|sharedaccesssignature)\s*=\s*([^;\s"']{3,}))`), group: -1,
+		valid: validConnPassword, exact: true},
+	{ID: "secret", One: "secret value", Name: "Secret in an assignment", Plural: "secret values", Prefix: "SECRET",
+		Note: "off by default: noisy. The value after a name holding key, secret, token or password, such as API_KEY=..., when it has letters and digits",
+		re:   regexp.MustCompile(`(?i)\b[A-Z0-9_.-]*(?:api[_-]?key|secret|token|passw(?:or)?d)[A-Z0-9_]*["']?\s*[:=]\s*["']?([A-Za-z0-9+/_.~-]{12,}={0,2})`), group: 1,
+		valid: validSecret, exact: true},
 	{ID: "card", One: "credit card number", Name: "Credit card number", Plural: "credit card numbers", Prefix: "CARD", Default: true,
 		Note: "Visa, Mastercard, Amex, Discover, Diners, JCB; Luhn checked, so random long numbers are left alone",
 		re:   regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`), valid: validCard, keep4: true},
@@ -103,7 +120,16 @@ func (s *Session) Mask(text, where string, on func(*Rule) bool) (string, []Hit, 
 		var b strings.Builder
 		last := 0
 		for _, m := range idx {
-			lo, hi := m[2*r.group], m[2*r.group+1]
+			g := r.group
+			for i := 1; g < 0 && 2*i < len(m); i++ {
+				if m[2*i] >= 0 {
+					g = i
+				}
+			}
+			if g < 0 {
+				continue
+			}
+			lo, hi := m[2*g], m[2*g+1]
 			if lo < 0 {
 				continue
 			}
@@ -111,7 +137,10 @@ func (s *Session) Mask(text, where string, on func(*Rule) bool) (string, []Hit, 
 			if r.valid != nil && !r.valid(v) {
 				continue
 			}
-			key := r.ID + "|" + normalise(v)
+			key := r.ID + "|" + v
+			if !r.exact {
+				key = r.ID + "|" + normalise(v)
+			}
 			mask, ok := s.masks[key]
 			if !ok {
 				s.counts[r.ID]++
@@ -239,6 +268,45 @@ func validCard(v string) bool {
 		return true
 	}
 	return false
+}
+
+// mixed reports whether v has a digit, and a letter of each case.
+func mixed(v string) (digit, upper, lower bool) {
+	for _, c := range v {
+		switch {
+		case c >= '0' && c <= '9':
+			digit = true
+		case c >= 'A' && c <= 'Z':
+			upper = true
+		case c >= 'a' && c <= 'z':
+			lower = true
+		}
+	}
+	return
+}
+
+// validAPIKey leaves alone what only looks like an sk- key: a dashed name
+// such as sk-learn-something-or-other has no digit or no mixed case. The
+// other prefixes are distinctive enough as they are.
+func validAPIKey(v string) bool {
+	if !strings.HasPrefix(v, "sk-") {
+		return true
+	}
+	digit, upper, lower := mixed(v)
+	return digit && (upper && lower || len(v) >= 40)
+}
+
+// validConnPassword leaves a placeholder alone: $DB_PASSWORD, ${pw},
+// <password>, %s and **** are not passwords.
+func validConnPassword(v string) bool {
+	return !strings.ContainsAny(v[:1], "$<{%*[")
+}
+
+// validSecret wants letters and digits: a name, a path or a call on the
+// right of the equals sign is code, not a secret.
+func validSecret(v string) bool {
+	digit, upper, lower := mixed(v)
+	return digit && (upper || lower) && !strings.Contains(v, "..") && !strings.HasPrefix(v, "process.") && !strings.HasPrefix(v, "os.")
 }
 
 func validSAID(v string) bool {
