@@ -448,6 +448,9 @@ type AutomaskConfig struct {
 	Enabled bool            `json:"enabled,omitempty"`
 	Rules   map[string]bool `json:"rules,omitempty"`
 	Words   []string        `json:"words,omitempty"`
+	// Providers is where Automask applies: empty means everywhere, else
+	// only the ones named, from "anthropic", "secondary" and "chatgpt".
+	Providers []string `json:"providers,omitempty"`
 }
 
 type Config struct {

@@ -150,3 +150,60 @@ func TestAnOversizedChunkedTurnArrivesWhole(t *testing.T) {
 		t.Fatalf("ChatGPT got %d bytes of %d", len(got), len(want))
 	}
 }
+
+type fakeMasker struct{ on bool }
+
+func (f *fakeMasker) AutomaskCovers(p string) bool { return f.on && p == "chatgpt" }
+func (f *fakeMasker) MaskCodex(sid, repo string, body []byte) []byte {
+	return []byte(strings.ReplaceAll(string(body), "bluebird", "[WORD-1]"))
+}
+
+// With Automask covering ChatGPT a turn goes out masked, with its length
+// put right, and the inspector holds what was sent; a turn Burst cannot
+// read goes as Codex wrote it; and without Automask nothing changes.
+func TestATurnIsMaskedOnItsWayToChatGPT(t *testing.T) {
+	var got string
+	g, _, gw := newTestGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		io.WriteString(w, completedSSE)
+	}))
+	m := &fakeMasker{}
+	g.SetMasker(m)
+	post := func(sid, enc string) {
+		t.Helper()
+		req, _ := http.NewRequest("POST", gw.URL+"/backend-api/codex/responses", strings.NewReader(`{"model":"m","input":[{"type":"message","role":"user","content":"ship bluebird"}]}`))
+		if sid != "" {
+			req.Header.Set("Session-Id", sid)
+		}
+		if enc != "" {
+			req.Header.Set("Content-Encoding", enc)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	post("s1", "")
+	if !strings.Contains(got, "ship bluebird") {
+		t.Fatalf("masked while Automask does not cover ChatGPT: %s", got)
+	}
+	m.on = true
+	post("s1", "")
+	if !strings.Contains(got, "ship [WORD-1]") {
+		t.Fatalf("not masked: %s", got)
+	}
+	if text, ok := g.InspectItem("s1", 0); !ok || !strings.Contains(text, "[WORD-1]") {
+		t.Errorf("the inspector must hold what was sent: %q %v", text, ok)
+	}
+	post("", "")
+	if !strings.Contains(got, "ship [WORD-1]") {
+		t.Errorf("a turn with no session id is masked too: %s", got)
+	}
+	post("s1", "zstd")
+	if !strings.Contains(got, "ship bluebird") {
+		t.Errorf("a compressed turn goes as Codex wrote it: %s", got)
+	}
+}

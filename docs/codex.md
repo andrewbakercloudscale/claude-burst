@@ -20,7 +20,7 @@ Then **restart Codex**: quit and reopen the ChatGPT app, and restart any `codex`
 
 - `enable` adds a model provider at the **top** of `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`), between `# BEGIN claude-burst` and `# END claude-burst`, after saving a copy of the file to `~/.config/claude-burst/backups/`. Nothing outside the markers is touched.
 - The provider points Codex at `http://127.0.0.1:7779/backend-api/codex` with `requires_openai_auth = true`, so Codex keeps its ChatGPT sign-in and sends its own token with every request.
-- The gateway forwards each request to `chatgpt.com` **unchanged** and reads the reply on its way back: the turn's tokens (from `response.completed`), each model's context window (from the model list), and the plan usage ChatGPT reports in its `x-codex-*` headers.
+- The gateway forwards each request to `chatgpt.com` **unchanged**, unless [Automask](automask.md) covers ChatGPT and found something to mask in a turn, or an item was removed in the context inspector, and reads the reply on its way back: the turn's tokens (from `response.completed`), each model's context window (from the model list), and the plan usage ChatGPT reports in its `x-codex-*` headers.
 - Only model calls (`/models`, `/responses`) go through Burst. Codex's sign-in, plugins and cloud tasks go to ChatGPT directly.
 - Each turn is recorded, metadata only, in `~/.config/claude-burst/codex-metrics.jsonl`, apart from Claude Code's `metrics.jsonl`: no Claude Code total ever includes a Codex turn. The gateway log gets one `codex: turn ...` line per turn. Every other request gets one `codex: request GET /path status=200 ms=... client="..."` line, naming the Codex client that sent it, and a WebSocket one `codex: websocket ...` line when it opens.
 - **Everything that is HTTP is passed on**, whatever its method or path: a request, a streamed reply, a WebSocket, and HTTP/2 without TLS. A reply ChatGPT refuses (a 401 on the model list, say) goes back to Codex as it came and is logged as `codex: GET ... answered 401 by ChatGPT`.
@@ -86,4 +86,4 @@ By hand: delete the lines from `# BEGIN claude-burst` to `# END claude-burst` in
 
 - No failover for Codex: when the ChatGPT plan is out, Codex stops as it would without Burst (the alert says when it resets). A secondary needs Responses API translation.
 - No API-equivalent price for Codex models yet: tokens only.
-- Compaction, coordination, automask and the band are Claude Code features and do not apply to Codex.
+- Compaction, coordination and the band are Claude Code features and do not apply to Codex. [Automask](automask.md) does: it masks a Codex turn's instructions, messages and tool output with the same rules as Claude Code's.

@@ -81,6 +81,9 @@ type Gateway struct {
 	listening bool
 	listenErr string
 
+	// masker is Automask, nil until the daemon sets it.
+	masker Masker
+
 	refused Refused
 	// failures is the latest of what failed and is not a turn, newest
 	// last: a refused connection, a model list ChatGPT would not give.
@@ -210,12 +213,45 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// diagnose shows when Codex uses one and the counts would be short.
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		g.logger.Printf("codex: websocket %s (passed through; its turns are not counted)", r.URL.Path)
+		if g.masks() != nil {
+			g.logger.Printf("codex: automask could not read the turns of websocket %s: they go to ChatGPT as Codex wrote them", r.URL.Path)
+		}
 	}
 	r = r.WithContext(context.WithValue(r.Context(), startKey{}, time.Now()))
 	if isTurn(r) {
 		g.prepareTurn(r)
 	}
 	g.proxy.ServeHTTP(w, r)
+}
+
+// Masker is Automask as the Codex gateway uses it: the router's, so one
+// set of rules, words and counts covers Claude Code and Codex.
+type Masker interface {
+	// AutomaskCovers reports whether Automask applies to a provider.
+	AutomaskCovers(provider string) bool
+	// MaskCodex returns a turn's body masked, or the body itself.
+	MaskCodex(sid, repo string, body []byte) []byte
+}
+
+// maskProvider is the name Automask knows ChatGPT by (router.MaskChatGPT).
+const maskProvider = "chatgpt"
+
+// SetMasker gives the gateway Automask.
+func (g *Gateway) SetMasker(m Masker) {
+	g.mu.Lock()
+	g.masker = m
+	g.mu.Unlock()
+}
+
+// masks returns Automask when it covers what goes to ChatGPT, else nil.
+func (g *Gateway) masks() Masker {
+	g.mu.Lock()
+	m := g.masker
+	g.mu.Unlock()
+	if m == nil || !m.AutomaskCovers(maskProvider) {
+		return nil
+	}
+	return m
 }
 
 // isTurn reports whether a request is a model call: the only ones counted.

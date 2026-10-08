@@ -130,7 +130,7 @@ func TestAutomaskMasksTheUsersWordsAndListsTheLastMasks(t *testing.T) {
 		t.Fatalf("recent = %+v", recent)
 	}
 	for i := 0; i < 60; i++ {
-		s.noteMasked("S1", []automask.Hit{{Rule: automask.Rules[0], Mask: fmt.Sprintf("[PRIVATEKEY-%d]", i), Where: "user"}})
+		s.noteMasked("S1", "", "", []automask.Hit{{Rule: automask.Rules[0], Mask: fmt.Sprintf("[PRIVATEKEY-%d]", i), Where: "user"}})
 	}
 	if recent = s.AutomaskRecent(); len(recent) != 50 || recent[0].Mask != "[PRIVATEKEY-59]" {
 		t.Fatalf("kept %d, newest %s", len(recent), recent[0].Mask)
@@ -182,5 +182,96 @@ func TestAutomaskMasksSurviveARestart(t *testing.T) {
 	os.WriteFile(path, []byte("{"), 0600)
 	if broken := newMasker(config.AutomaskConfig{Enabled: true}, path, nil); len(broken.sessions) != 0 || broken.key == nil {
 		t.Fatalf("after a broken file: %d sessions, key %v", len(broken.sessions), broken.key != nil)
+	}
+}
+
+// A Codex turn has its instructions, its messages and its tool output
+// masked with the same rules and word list, listed as Codex's; a tool call
+// the model wrote and encrypted reasoning are left alone; and the same
+// value keeps its mask from one turn to the next.
+func TestAutomaskMasksACodexTurn(t *testing.T) {
+	s := compactServer(t, &fakeAnthropic{context: 1000}, config.CompactionConfig{})
+	turn := func(extra string) []byte {
+		return []byte(`{"model":"gpt-6.1-sol","instructions":"You work on Bluebird.","input":[` +
+			`{"type":"message","role":"user","content":[{"type":"input_text","text":"ship bluebird today"},{"type":"input_image","image_url":"data:bluebird"}]},` +
+			`{"type":"reasoning","encrypted_content":"bluebird-sealed"},` +
+			`{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"cmd\":\"cat .env\"}"},` +
+			`{"type":"function_call_output","call_id":"c1","output":"DB_PASSWORD=hunter2hunter2\nNAME=bluebird"},` +
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Bluebird is ready"}]}` + extra + `],"stream":true}`)
+	}
+	if got := s.MaskCodex("cx1", "shop", turn("")); string(got) != string(turn("")) {
+		t.Fatalf("changed while automask is off: %s", got)
+	}
+	s.SetAutomask(config.AutomaskConfig{Enabled: true, Words: []string{"bluebird"}})
+	got := string(s.MaskCodex("cx1", "shop", turn("")))
+	for _, want := range []string{`"instructions":"You work on [WORD-1]."`, `"text":"ship [WORD-1] today"`, `"image_url":"data:bluebird"`,
+		`"encrypted_content":"bluebird-sealed"`, `cat .env`, `NAME=[WORD-1]`, `"text":"[WORD-1] is ready"`, `"stream":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in %s", want, got)
+		}
+	}
+	if strings.Contains(got, "hunter2hunter2") {
+		t.Errorf("the .env value went out: %s", got)
+	}
+	recent := s.AutomaskRecent()
+	if len(recent) == 0 || recent[0].Source != "Codex" || recent[0].Repo != "shop" || recent[0].Session != "cx1" {
+		t.Fatalf("recent = %+v", recent)
+	}
+	n := len(recent)
+	again := string(s.MaskCodex("cx1", "shop", turn(`,{"type":"message","role":"user","content":"and bluebird again"}`)))
+	if !strings.Contains(again, `"content":"and [WORD-1] again"`) {
+		t.Errorf("the same value must keep its mask: %s", again)
+	}
+	if len(s.AutomaskRecent()) != n {
+		t.Errorf("a value already masked was reported again: %+v", s.AutomaskRecent())
+	}
+}
+
+// With only some providers named, a request to one that is not named goes
+// as it was written.
+func TestAutomaskOnlyForTheProvidersNamed(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	history := []json.RawMessage{json.RawMessage(`{"role":"user","content":"deploy Bluebird"}`)}
+	body, _ := json.Marshal(map[string]any{"model": "m", "messages": history})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
+	req.Header.Set("x-claude-code-session-id", "S1")
+	codex := []byte(`{"instructions":"Bluebird","input":[]}`)
+
+	// ChatGPT only: Claude Code's requests are untouched wherever they go.
+	s.SetAutomask(config.AutomaskConfig{Enabled: true, Words: []string{"bluebird"}, Providers: []string{MaskChatGPT}})
+	send(t, s, "S1", history)
+	if !strings.Contains(f.last(), "deploy Bluebird") {
+		t.Errorf("Anthropic is not named: %s", f.last())
+	}
+	if got := s.applyAutomaskAtSecondary(req, body); string(got) != string(body) {
+		t.Errorf("the secondary is not named: %s", got)
+	}
+	if got := s.MaskCodex("cx", "", codex); !strings.Contains(string(got), `"instructions":"[WORD-1]"`) {
+		t.Errorf("ChatGPT is named: %s", got)
+	}
+
+	// The secondary only: Anthropic gets it as written, the secondary masked.
+	s.SetAutomask(config.AutomaskConfig{Enabled: true, Words: []string{"bluebird"}, Providers: []string{MaskSecondary}})
+	send(t, s, "S1", history)
+	if !strings.Contains(f.last(), "deploy Bluebird") {
+		t.Errorf("Anthropic is not named: %s", f.last())
+	}
+	if got := s.applyAutomaskAtSecondary(req, body); !strings.Contains(string(got), "deploy [WORD-1]") {
+		t.Errorf("the secondary is named: %s", got)
+	}
+	if got := s.MaskCodex("cx", "", codex); string(got) != string(codex) {
+		t.Errorf("ChatGPT is not named: %s", got)
+	}
+
+	// Anthropic only: masked before anything else, so nothing is left for
+	// the step at the secondary to do.
+	s.SetAutomask(config.AutomaskConfig{Enabled: true, Words: []string{"bluebird"}, Providers: []string{MaskAnthropic}})
+	send(t, s, "S1", history)
+	if !strings.Contains(f.last(), "deploy [WORD-1]") {
+		t.Errorf("Anthropic is named: %s", f.last())
+	}
+	if got := s.applyAutomaskAtSecondary(req, body); string(got) != string(body) {
+		t.Errorf("the step at the secondary must stand aside: %s", got)
 	}
 }

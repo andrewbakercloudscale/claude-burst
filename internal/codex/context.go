@@ -50,12 +50,24 @@ func RemovalKey(sid string) string { return "codex:" + sid }
 // Removals is the store the inspector's Remove and Restore write.
 func (g *Gateway) Removals() *ctxview.Store { return g.removals }
 
-// prepareTurn applies the session's removals to a turn's body and keeps it
-// for the inspector. Anything it cannot read (compressed, too large, not
-// JSON) goes on exactly as Codex sent it.
+// prepareTurn masks a turn's body when Automask covers ChatGPT, applies
+// the session's removals and keeps it for the inspector. Anything it
+// cannot read (compressed, too large, not JSON) goes on exactly as Codex
+// sent it, and with Automask on that is said in the log.
 func (g *Gateway) prepareTurn(r *http.Request) {
 	sid := r.Header.Get("Session-Id")
-	if sid == "" || r.Body == nil || r.Header.Get("Content-Encoding") != "" || r.ContentLength > inspectLimit {
+	mask := g.masks()
+	if r.Body == nil || (sid == "" && mask == nil) {
+		return
+	}
+	if enc := r.Header.Get("Content-Encoding"); enc != "" || r.ContentLength > inspectLimit {
+		if mask != nil {
+			why := "it is larger than Burst reads"
+			if enc != "" {
+				why = "it is compressed (" + enc + ")"
+			}
+			g.logger.Printf("codex: automask could not read a turn of session %s, %s: it goes to ChatGPT as Codex wrote it", sid, why)
+		}
 		return
 	}
 	orig := r.Body
@@ -77,13 +89,22 @@ func (g *Gateway) prepareTurn(r *http.Request) {
 		return
 	}
 	_ = orig.Close()
-	if out, ok := applyRemovals(body, g.removals.For(RemovalKey(sid))); ok {
-		body = out
+	// Masked first, so the inspector lists, and a removal names, the items
+	// as they are sent.
+	if mask != nil {
+		body = mask.MaskCodex(sid, cwdName(body), body)
+	}
+	if sid != "" {
+		if out, ok := applyRemovals(body, g.removals.For(RemovalKey(sid))); ok {
+			body = out
+		}
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
-	g.capture(sid, body)
+	if sid != "" {
+		g.capture(sid, body)
+	}
 }
 
 type errReader struct{ err error }

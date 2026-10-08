@@ -15,7 +15,7 @@ Last updated 8 October 2026, at v0.20.22.
 | 7 | [A fast deploy](#7-a-fast-deploy) | Development | Open |
 | 8 | [One release command](#8-one-release-command) | Development | Open |
 | 9 | [A live test script](#9-a-live-test-script) | Development | Open |
-| 10 | [Automask for Codex, in the General tab](#10-automask-for-codex-in-the-general-tab) | Privacy | Next |
+| 10 | [Automask for Codex, in the General tab](#10-automask-for-codex-in-the-general-tab) | Privacy | Done |
 | 11 | [Codex traffic by client](#11-codex-traffic-by-client) | Codex | Open |
 
 ## Resilience
@@ -111,7 +111,12 @@ Last updated 8 October 2026, at v0.20.22.
 
 **Today.** Automask covers every request Claude Code sends, whichever model or provider it goes to, and nothing Codex sends. Its section is in the Claude tab, which reads as if it were Claude only.
 
-**Plan.** Mask a Codex turn's instructions and input the same way, with the same rules, word list and counts. The Codex gateway already reads and rewrites a turn's body for the context inspector, so this is the same step. Move the section to the General tab and show each mask's source (Claude Code or Codex). Add a choice of where it applies: everywhere (the default), or only the providers ticked, from Anthropic, each secondary and ChatGPT. A provider that is not ticked gets the request as it was written. Two limits to state on the page: a turn Codex sends compressed or over a WebSocket is passed through as it is, and with Automask on a Codex request is no longer sent unchanged.
+**What was built.**
+
+- A Codex turn's instructions, messages and tool output are masked with the same rules, word list and counts. Tool calls the model wrote and encrypted reasoning are left alone.
+- The section is in the General tab, under Privacy, and the Last 50 masks list says which of Claude Code and Codex each came from.
+- A choice of where it applies: everywhere (the default), or only the providers ticked, from Anthropic, the secondary and ChatGPT. There is one tick for the secondary, not one for each: one is active at a time.
+- Two limits, stated on the page and in the guide: a turn Codex sends compressed or over a WebSocket goes as Codex wrote it, with a log line, and with Anthropic ticked and the secondary not, the secondary still gets masks.
 
 **Done when.** A made-up word typed into Codex reaches ChatGPT as its mask, the Last 50 masks list shows it as Codex's, and with only one provider ticked the same word reaches the others unmasked.
 

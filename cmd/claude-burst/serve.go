@@ -189,6 +189,9 @@ func serve(args []string) {
 
 	// Before the dashboard, which reports on it.
 	codexGW := startCodexGateway(cfg, logger)
+	if codexGW != nil {
+		codexGW.SetMasker(srv)
+	}
 
 	if cfg.AdminListen != "" {
 		a := admin.New(srv, metricsPath, version, cfg.AdminHostname, rootHelperPath())
