@@ -1128,7 +1128,11 @@
       #sec-usage tr.ug-detail td { background: var(--panel-2); font: 11.5px/1.6 var(--mono); }
       #sec-usage tr.ug-detail span { display: inline-block; margin-right: 18px; }
       #sec-usage tr.ug-detail b { color: var(--faint); font-weight: 600; }
-      #sec-usage .ug-pager { display: flex; gap: 10px; align-items: center; padding: 8px 16px 12px; }
+      #sec-usage .ug-pager { display: flex; gap: 10px; align-items: center; padding: 8px 0 4px; flex-wrap: wrap; }
+      #sec-usage tr.ug-repo.on td { background: var(--panel-2); }
+      #sec-usage tr.ug-repo-detail > td { padding: 4px 16px 12px 28px; background: var(--panel-2); }
+      #sec-usage table.ug-inner { width: 100%; background: var(--panel); border: 1px solid var(--border); }
+      #sec-usage button.ug-open { white-space: nowrap; }
       #sec-usage details { padding: 0 16px 12px; }
       #sec-usage details summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
     </style>
@@ -1163,8 +1167,8 @@
     </div>
     <div class="chart-wrap" id="ugChartWrap"><div id="ugChart"></div><div class="chart-tip" id="ugTip"></div></div>
     <div class="ug-groups" id="ugGroups"></div>
+    <div class="chart-head"><strong style="font-size:13px;font-weight:620">Requests by repository</strong> <span class="hint">Show requests opens a repository's requests, newest first</span></div>
     <div class="scroll"><table id="ugRows"></table></div>
-    <div class="ug-pager"><button id="ugPrev">Newer</button><button id="ugNext">Older</button><span class="hint" id="ugPage"></span></div>
     <details><summary>Prices used for the cost estimate</summary><div class="hint" id="ugPriceSource" style="margin:6px 0"></div><div class="scroll" id="ugPrices"></div></details>
     <div class="hint" style="padding:0 16px 12px" id="ugCoverage"></div>
   </section>
@@ -7008,7 +7012,7 @@ loadBand();
 // stamp) from the main script above. The filter is remembered per browser.
 (() => {
   const F = ["ugRange", "ugFrom", "ugTo", "ugModel", "ugProvider", "ugRepo", "ugResult", "ugTraffic", "ugSession"];
-  let metric = "tokens", offset = 0, last = null, open = null;
+  let metric = "tokens", offset = 0, last = null, open = null, openRepo = null, repoList = null;
   const LIMIT = 25;
   const TOKENS = [
     {k: "input_tokens", name: "Input", color: "var(--s-primary)"},
@@ -7052,16 +7056,24 @@ loadBand();
     el.value = cur;
   }
 
-  async function load() {
-    custom();
+  // The window and filters as the API takes them; null when a custom window
+  // has no start or end yet.
+  function query() {
     const q = new URLSearchParams({range: $("ugRange").value, limit: LIMIT, offset});
     if ($("ugRange").value === "custom") {
-      if (!$("ugFrom").value || !$("ugTo").value) { note($("ugNote"), "warn", "Pick a start and an end for the custom window."); return; }
+      if (!$("ugFrom").value || !$("ugTo").value) { note($("ugNote"), "warn", "Pick a start and an end for the custom window."); return null; }
       q.set("from", $("ugFrom").value);
       q.set("to", $("ugTo").value);
     }
     for (const [id, k] of [["ugModel", "model"], ["ugProvider", "provider"], ["ugRepo", "repo"], ["ugResult", "result"], ["ugTraffic", "traffic"], ["ugSession", "session"]])
       if ($(id).value.trim()) q.set(k, $(id).value.trim());
+    return q;
+  }
+
+  async function load() {
+    custom();
+    const q = query();
+    if (!q) return;
     let r;
     try {
       const res = await fetch("/api/usage?" + q);
@@ -7075,6 +7087,7 @@ loadBand();
     fillSelect("ugProvider", r.options.providers || [], "All providers");
     fillSelect("ugRepo", r.options.repos || [], "All repositories");
     render();
+    loadRepo();
   }
 
   function render() {
@@ -7161,7 +7174,7 @@ loadBand();
   // A row that used tokens but rounds to $0.00 says so, rather than free.
   function cost(x) { return x.usd > 0 && x.usd < 0.005 ? "<$0.01" : money(x.usd); }
 
-  // Four breakdowns of the same requests. One figure per column: errors are
+  // Three breakdowns of the same requests (by repository is the table below). One figure per column: errors are
   // a count (the rate is in its tooltip), and each row's share of the cost
   // sits beside its bar. "By result" has no error column, since it is the
   // error split; its bar is the share of requests instead.
@@ -7190,8 +7203,7 @@ loadBand();
         };
       }))}</div>`;
     };
-    $("ugGroups").innerHTML = g("By model", last.by_model, "ugModel") + g("By provider", last.by_provider, "ugProvider") +
-      g("By repository", last.by_repo, "ugRepo") + g("By result", last.by_result, "ugResult", true);
+    $("ugGroups").innerHTML = g("By model", last.by_model, "ugModel") + g("By provider", last.by_provider, "ugProvider") + g("By result", last.by_result, "ugResult", true);
   }
 
   // The path of a call that is not a model request, the IDs in it shortened.
@@ -7201,40 +7213,84 @@ loadBand();
     return p.split("/").map(x => x.length > 16 ? x.slice(0, 8) + "..." : x).join("/");
   }
 
-  function rows() {
-    const list = last.recent || [];
+  // One request, and under it everything recorded about it when it is open.
+  function requestRows(list, base) {
     const nr = v => v ? num(v) : "-";
     const pill = res => `<span class="pill ${res === "ok" ? "p" : res === "error" ? "bad" : "s"}">${esc(res)}</span>`;
-    $("ugRows").innerHTML = `<thead><tr><th>Time</th><th>Result</th><th>Model</th><th>Provider</th><th>Repository</th>
-      <th class="n">In</th><th class="n">Cache read</th><th class="n">Out</th><th class="n">ms</th><th class="n">Cost</th></tr></thead><tbody>` +
-      (list.map((e, i) => {
-        const id = e.request_id || String(offset + i);
-        const detail = open === id ? `<tr class="ug-detail"><td colspan="10">${[
-          ["request", e.request_id], ["session", e.session_id], ["agent", e.agent_id], ["slot", e.slot], ["route", e.route],
-          ["requested", e.requested_model], ["destination", e.destination], ["status", e.http_status],
-          ["cache write", e.cache_write_tokens], ["pruned bytes", e.pruned_bytes], ["compacted messages", e.compacted_messages],
-          ["limit", e.limit_claim], ["note", e.note], ["pricing", e.pricing_unknown ? "unpriced" : e.repriced ? "repriced at today's rates" : ""],
-        ].filter(([, v]) => v !== undefined && v !== null && v !== "" && v !== 0).map(([k, v]) => `<span><b>${esc(k)}</b> ${esc(v)}</span>`).join("")}</td></tr>` : "";
-        return `<tr class="ug-row" data-ug-open="${esc(id)}"><td class="nowrap">${esc(stamp(e.time))}</td><td>${pill(e.result)}</td>
-          <td class="mono">${e.model ? esc(e.model) : `<span class="hint" title="not a model request">${esc(endpoint(e.destination))}</span>`}</td><td>${esc(e.provider || "-")}</td><td>${esc(e.repo || "-")}</td>
-          <td class="n">${nr(e.input_tokens)}</td><td class="n">${nr(e.cache_read_tokens)}</td><td class="n">${nr(e.output_tokens)}</td>
-          <td class="n">${nr(e.duration_ms)}</td><td class="n">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? money(e.api_equivalent_usd) : "-"}</td></tr>` + detail;
-      }).join("") || `<tr><td colspan="10" class="hint">No requests match.</td></tr>`) + "</tbody>";
-    $("ugPrev").disabled = offset === 0;
-    $("ugNext").disabled = list.length < LIMIT || offset + LIMIT > 10000 - LIMIT;
-    $("ugPage").textContent = list.length ? `requests ${num(offset + 1)} to ${num(offset + list.length)} of ${num(last.totals.requests)}, newest first; click one for detail` : "";
+    return list.map((e, i) => {
+      const id = e.request_id || String(base + i);
+      const detail = open === id ? `<tr class="ug-detail"><td colspan="9">${[
+        ["request", e.request_id], ["session", e.session_id], ["agent", e.agent_id], ["slot", e.slot], ["route", e.route],
+        ["requested", e.requested_model], ["destination", e.destination], ["status", e.http_status],
+        ["cache write", e.cache_write_tokens], ["pruned bytes", e.pruned_bytes], ["compacted messages", e.compacted_messages],
+        ["limit", e.limit_claim], ["note", e.note], ["pricing", e.pricing_unknown ? "unpriced" : e.repriced ? "repriced at today's rates" : ""],
+      ].filter(([, v]) => v !== undefined && v !== null && v !== "" && v !== 0).map(([k, v]) => `<span><b>${esc(k)}</b> ${esc(v)}</span>`).join("")}</td></tr>` : "";
+      return `<tr class="ug-row" data-ug-open="${esc(id)}"><td class="nowrap">${esc(stamp(e.time))}</td><td>${pill(e.result)}</td>
+        <td class="mono">${e.model ? esc(e.model) : `<span class="hint" title="not a model request">${esc(endpoint(e.destination))}</span>`}</td><td>${esc(e.provider || "-")}</td>
+        <td class="n">${nr(e.input_tokens)}</td><td class="n">${nr(e.cache_read_tokens)}</td><td class="n">${nr(e.output_tokens)}</td>
+        <td class="n">${nr(e.duration_ms)}</td><td class="n">${e.pricing_unknown ? "unpriced" : e.api_equivalent_usd ? money(e.api_equivalent_usd) : "-"}</td></tr>` + detail;
+    }).join("");
+  }
+
+  // The requests of the repository that is open: a table inside its row.
+  function repoDetail(x) {
+    if (!repoList) return `<div class="hint">Loading the requests...</div>`;
+    if (repoList.error) return `<div class="hint" style="color:var(--bad)">${esc(repoList.error)}</div>`;
+    const list = repoList.rows;
+    if (!list.length) return `<div class="hint">No requests match.</div>`;
+    return `<table class="ug-inner"><thead><tr><th>Time</th><th>Result</th><th>Model</th><th>Provider</th>
+      <th class="n">In</th><th class="n">Cache read</th><th class="n">Out</th><th class="n">ms</th><th class="n">Cost</th></tr></thead><tbody>${requestRows(list, offset)}</tbody></table>
+      <div class="ug-pager"><button data-ug-page="-1"${offset === 0 ? " disabled" : ""}>Newer</button>
+      <button data-ug-page="1"${list.length < LIMIT || offset + LIMIT > 10000 - LIMIT ? " disabled" : ""}>Older</button>
+      <span class="hint">requests ${num(offset + 1)} to ${num(offset + list.length)} of ${num(x.requests)}, newest first; click one for everything recorded about it</span></div>`;
+  }
+
+  // One row per repository, biggest cost first. Details opens its requests.
+  function rows() {
+    const list = (last.by_repo || []).slice().sort((a, b) => (b.usd || 0) - (a.usd || 0) || b.requests - a.requests);
+    const totUSD = list.reduce((t, x) => t + (x.usd || 0), 0);
+    $("ugRows").innerHTML = `<thead><tr><th>Repository</th><th class="n">Requests</th><th class="n">Errors</th><th class="n">Tokens</th>
+      <th class="n">Cost</th><th class="n">Share of cost</th><th></th></tr></thead><tbody>` +
+      (list.map(x => {
+        const on = openRepo === x.key;
+        return `<tr class="ug-repo${on ? " on" : ""}"><td><strong>${esc(x.key)}</strong></td><td class="n">${esc(num(x.requests))}</td>
+          <td class="n"${x.errors ? ` style="color:var(--bad)" title="${esc(errPct(x) + " of its requests failed")}"` : ""}>${esc(num(x.errors))}</td>
+          <td class="n">${esc(short(x.tokens))}</td><td class="n">${esc(x.unpriced ? "unpriced" : cost(x))}</td>
+          <td class="n">${totUSD ? (100 * (x.usd || 0) / totUSD).toFixed(0) + "%" : "-"}</td>
+          <td class="n"><button class="ug-open" data-ug-repo="${esc(x.key)}" aria-expanded="${on}">${on ? "Hide requests" : "Show requests"}</button></td></tr>` +
+          (on ? `<tr class="ug-repo-detail"><td colspan="7">${repoDetail(x)}</td></tr>` : "");
+      }).join("") || `<tr><td colspan="7" class="hint">No requests match.</td></tr>`) + "</tbody>";
+  }
+
+  // The open repository's page of requests, with the filters above applied.
+  async function loadRepo() {
+    const repo = openRepo;
+    if (!repo) return;
+    const q = query();
+    if (!q) return;
+    q.set("repo", repo);
+    let got;
+    try {
+      const res = await fetch("/api/usage?" + q);
+      const text = await res.text();
+      if (!res.ok) throw new Error(text.trim() || res.statusText);
+      got = {rows: JSON.parse(text).recent || []};
+    } catch (e) { got = {error: e.message}; }
+    if (openRepo !== repo) return;
+    repoList = got;
+    rows();
   }
 
   function prices() {
     $("ugPriceSource").textContent = "Per million tokens. Source: " + (last.price_source || "");
     const p = last.prices || [];
     $("ugPrices").innerHTML = p.length ? `<table><thead><tr><th>Model</th><th class="n">Input</th><th class="n">Output</th><th class="n">Cache read</th><th class="n">Cache write</th></tr></thead><tbody>${
-      p.map(x => `<tr><td class="mono">${esc(x.model)}</td><td class="n">$${x.input}</td><td class="n">$${x.output}</td>
+      p.map(x => `<tr><td class="mono">${esc(x.model)}${x.long_prompt_multiplier ? ` <span class="hint" style="font-family:var(--sans, inherit)">${esc("x" + x.long_prompt_multiplier + " for a prompt over " + num(x.long_prompt_over_tokens) + " tokens")}</span>` : ""}</td><td class="n">$${x.input}</td><td class="n">$${x.output}</td>
         <td class="n">$${+x.cache_read.toFixed(4)}${x.cache_derived ? "*" : ""}</td><td class="n">$${+x.cache_write.toFixed(4)}${x.cache_derived ? "*" : ""}</td></tr>`).join("")
     }</tbody></table><div class="hint" style="margin-top:4px">* derived from the input rate (Claude: reads 0.1x, writes 1.25x; others: full input rate). Edit prices under Failover &amp; pricing.</div>` : `<div class="hint">No prices configured.</div>`;
   }
 
-  const refilter = () => { offset = 0; open = null; save(); load(); };
+  const refilter = () => { offset = 0; open = null; repoList = null; save(); load(); };
   for (const id of F) $(id).addEventListener("change", refilter);
   $("ugReset").onclick = () => {
     $("ugRange").value = "24h";
@@ -7258,18 +7314,26 @@ loadBand();
     refilter();
   };
   $("ugRows").onclick = e => {
-    const tr = e.target.closest("[data-ug-open]");
-    if (!tr) return;
-    open = open === tr.dataset.ugOpen ? null : tr.dataset.ugOpen;
-    rows();
+    const b = e.target.closest("[data-ug-repo]"), pg = e.target.closest("[data-ug-page]"), tr = e.target.closest("[data-ug-open]");
+    if (b) {
+      openRepo = openRepo === b.dataset.ugRepo ? null : b.dataset.ugRepo;
+      offset = 0; open = null; repoList = null;
+      rows();
+      loadRepo();
+    } else if (pg) {
+      offset = Math.max(0, offset + LIMIT * +pg.dataset.ugPage);
+      open = null;
+      loadRepo();
+    } else if (tr) {
+      open = open === tr.dataset.ugOpen ? null : tr.dataset.ugOpen;
+      rows();
+    }
   };
-  $("ugPrev").onclick = () => { offset = Math.max(0, offset - LIMIT); open = null; load(); };
-  $("ugNext").onclick = () => { offset += LIMIT; open = null; load(); };
   window.addEventListener("resize", () => { if (last) chart(); });
   restore();
   load();
   // Live windows move: refresh the short ones while the tab is visible.
-  setInterval(() => { if (!document.hidden && ["1h", "24h"].includes($("ugRange").value) && offset === 0) load(); }, 60000);
+  setInterval(() => { if (!document.hidden && ["1h", "24h"].includes($("ugRange").value) && offset === 0 && !open) load(); }, 60000);
 })();
 </script>
 <script src="/audit.js"></script>

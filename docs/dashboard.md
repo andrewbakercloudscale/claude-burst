@@ -89,16 +89,16 @@ Everything under **Observe** reads the same log, `metrics.jsonl`, and every doll
 
 ## Usage
 
-![Usage: filters, totals, the trend, breakdowns by model, provider, repository and result, and the newest requests. Example repository names](screenshots/usage.png)
+![Usage: filters, totals, the trend, breakdowns by model, provider and result, and a row per repository that opens into its requests. Example repository names](screenshots/usage.png)
 
 **Usage** (Observe menu) is every request in a window you choose, narrowed down with filters. The views above answer fixed questions over whole days; this one answers questions like "the secondary, in this repository, in the last hour, only the failures".
 
 - **Filters**: window (last hour, 24 hours, 7 days, 30 days, or a custom range up to 92 days), model, provider (the primary or secondary slot, or a route such as `anthropic`), repository, session, result and traffic. Traffic is model requests by default; **All traffic** adds the other calls Claude Code makes through the gateway (Remote Control heartbeats, telemetry, token counts), which have no model, tokens or cost and show their path instead of a model. Your last filter is remembered in this browser.
 - **Totals**: requests split into ok, errors and cancelled; success rate (cancelled requests, which are you pressing Esc, are left out); tokens by type; cache hit rate (cache reads as a share of everything the model read); estimated cost; output speed in tokens a second; latency p50 and p95 over successful model requests.
 - **Trend**: stacked tokens by type (input, cache read, cache write, output), or requests and errors, or cost. Bars are 5 minutes for the last hour, hourly for 24 hours and local days for 7 and 30 days. Empty bars stay in, because a gap is information.
-- **Breakdowns** by model, provider, repository and result: one figure per column (requests, errors, tokens, cost), and a bar with each row's share of the cost (of the requests, for the result split). Hover an error count for its rate. A row that used tokens but costs under a cent shows `<$0.01`. Click a name to filter by it.
-- **Requests**: the newest first, 25 a page. Click one for its detail: request and session ids, slot, route, requested model, destination, cache writes, pruning and compaction, limit and note.
-- **Prices used for the cost estimate**: the table the costs come from, which is `config.json`'s `pricing` over the built-in prices. Cache rates not set there are derived from the input rate and marked.
+- **Breakdowns** by model, provider and result: one figure per column (requests, errors, tokens, cost), and a bar with each row's share of the cost (of the requests, for the result split). Hover an error count for its rate. A row that used tokens but costs under a cent shows `<$0.01`. Click a name to filter by it.
+- **Requests by repository**: one row per repository with its requests, errors, tokens, cost and share of the cost, biggest cost first. **Show requests** opens that repository's requests under its row, newest first, 25 a page. Click a request for everything recorded about it: request and session ids, slot, route, requested model, destination, cache writes, pruning and compaction, limit and note.
+- **Prices used for the cost estimate**: the table the costs come from, which is `config.json`'s `pricing` over the built-in prices. Cache rates not set there are derived from the input rate and marked. A model priced by prompt length says so beside its name: Claude Haiku 5.5 is five times its listed rates for a prompt over 100,000 tokens (`long_prompt_over_tokens` and `long_prompt_multiplier` in a `pricing` entry).
 
 Times are local. Status 0 requests are counted as "unknown": they come from before the gateway recorded what it answered. When the log rotation means the window reaches back further than the log, the section says so. The data comes from `GET /api/usage`, which takes the same filters as query parameters.
 
