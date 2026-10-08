@@ -45,8 +45,23 @@ func TestCodexChecks(t *testing.T) {
 		"history": map[string]any{"window": map[string]any{"Requests": 100}, "days": []any{map[string]any{"errors": 1}}},
 	}
 	cs, st := runCodexChecks(t, healthy, state)
-	if got, want := codexKeys(cs), "cxroute,cxport,cxchatgpt,cxlimits,cxwatchdog,cxerrors"; got != want || st != "ok" {
+	if got, want := codexKeys(cs), "cxroute,cxport,cxchatgpt,cxrefused,cxlimits,cxwatchdog,cxerrors"; got != want || st != "ok" {
 		t.Fatalf("healthy: %s (%s), want %s ok", got, st, want)
+	}
+
+	// A connection turned away at the port ten minutes ago is a warning,
+	// and one from three hours ago is stated but no longer counts.
+	turned := map[string]any{}
+	for k, v := range healthy {
+		turned[k] = v
+	}
+	turned["refused"] = map[string]any{"count": 2, "last": "2026-10-04T17:50:00Z", "what": "Burst answered 400 Bad Request itself"}
+	if cs, st = runCodexChecks(t, turned, state); codexKeys(cs) != "cxroute,cxport,cxchatgpt,cxrefused!,cxlimits,cxwatchdog,cxerrors" || st != "warn" {
+		t.Fatalf("refused: %s (%s)", codexKeys(cs), st)
+	}
+	turned["refused"] = map[string]any{"count": 2, "last": "2026-10-04T15:00:00Z", "what": "x"}
+	if cs, st = runCodexChecks(t, turned, state); codexKeys(cs) != "cxroute,cxport,cxchatgpt,cxrefused,cxlimits,cxwatchdog,cxerrors" || st != "ok" {
+		t.Fatalf("old refusal: %s (%s)", codexKeys(cs), st)
 	}
 
 	// The newest real answer was a 401 four minutes ago: red. A 499 after it
@@ -62,7 +77,7 @@ func TestCodexChecks(t *testing.T) {
 	broken["limits"] = map[string]any{"headers": map[string]any{
 		"x-codex-secondary-used-percent": "95", "x-codex-secondary-window-minutes": "10080"}}
 	cs, st = runCodexChecks(t, broken, state)
-	if got := codexKeys(cs); got != "cxroute,cxport,cxchatgpt!,cxlimits!,cxwatchdog,cxerrors" || st != "bad" {
+	if got := codexKeys(cs); got != "cxroute,cxport,cxchatgpt!,cxrefused,cxlimits!,cxwatchdog,cxerrors" || st != "bad" {
 		t.Fatalf("401 and 95%% weekly: %s (%s)", got, st)
 	}
 	for _, c := range cs {
@@ -99,7 +114,7 @@ func TestCodexChecks(t *testing.T) {
 
 	// Going straight to ChatGPT is a choice: amber, not red.
 	direct := map[string]any{"status": map[string]any{"installed": true, "path": "x"}, "listen": "127.0.0.1:7779", "listening": true}
-	if cs, st = runCodexChecks(t, direct, nil); codexKeys(cs) != "cxroute!,cxport,cxchatgpt" || st != "warn" {
+	if cs, st = runCodexChecks(t, direct, nil); codexKeys(cs) != "cxroute!,cxport,cxchatgpt,cxrefused" || st != "warn" {
 		t.Errorf("not routed: %s (%s)", codexKeys(cs), st)
 	}
 

@@ -36,7 +36,7 @@ const (
 // line is, and the events worth finding among the requests: a failover, a
 // window opening or closing, the network going, a start after a crash.
 var (
-	errorMarks = []string{"PANIC", "FATAL", "error stage=", " crash", "deadlock", "http: panic"}
+	errorMarks = []string{"PANIC", "FATAL", "error stage=", " crash", "deadlock", "http: panic", "codex: refused a connection"}
 	warnMarks  = []string{"warn stage=", "WARNING", " failover route=", " rejected until ", "no_failover", "released outage window",
 		"network-snapshot", " REJECTED ", "compaction dropped", "could not ", " failed", "upstream_error"}
 )

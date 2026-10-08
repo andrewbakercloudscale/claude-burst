@@ -5310,6 +5310,15 @@ function codexChecks(c, s, now) {
       : bad ? `the last turn, at ${t(last.time)}, failed: ${why}${last.note ? `: ${String(last.note).slice(0, 200)}` : ""}`
       : `last turn ${t(last.time)}, HTTP ${last.http_status}`,
   });
+  // A connection the port could not read as HTTP was passed nowhere: an
+  // hour old, it stops counting against the score but is still stated.
+  const rf = c.refused;
+  if (c.listening) out.push({
+    key: "cxrefused", label: "Nothing turned away at the port", target: "sec-codex", critical: false,
+    ok: !rf || now - Date.parse(rf.last) > 60 * 60 * 1000,
+    detail: !rf ? "every connection since the gateway started was passed on to ChatGPT"
+      : `${rf.count} connection${rf.count === 1 ? "" : "s"} refused since the gateway started, the last at ${t(rf.last)}: ${String(rf.what).slice(0, 200)}`,
+  });
   const hd = (c.limits || {}).headers;
   if (hd) {
     const used = Object.keys(hd).map(k => (k.match(/^x-codex-(.+)-used-percent$/) || [])[1]).filter(Boolean)

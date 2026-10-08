@@ -80,6 +80,8 @@ type Gateway struct {
 	// "starting" until the first report.
 	listening bool
 	listenErr string
+
+	refused Refused
 }
 
 // SetListenState records whether the gateway's port is bound, and why not.

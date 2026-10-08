@@ -25,6 +25,7 @@ type codexState struct {
 	ListenError string          `json:"listen_error,omitempty"`
 	LastRequest *time.Time      `json:"last_request,omitempty"`
 	Limits      *codex.Limits   `json:"limits,omitempty"`
+	Refused     *codex.Refused  `json:"refused,omitempty"`
 	History     metrics.History `json:"history"`
 	Recent      []metrics.Event `json:"recent"`
 	Sessions    []codexSession  `json:"sessions"`
@@ -57,6 +58,9 @@ func (s *Server) handleCodex(w http.ResponseWriter, r *http.Request) {
 		}
 		if l := s.codex.Limits(); !l.Seen.IsZero() {
 			st.Limits = &l
+		}
+		if rf := s.codex.Refused(); rf.Count > 0 {
+			st.Refused = &rf
 		}
 	}
 	if mp, err := config.CodexMetricsPath(); err == nil {

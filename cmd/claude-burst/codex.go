@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/codex"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -60,8 +59,7 @@ func serveCodex(g *codex.Gateway, addr, upstream string, logger *log.Logger) {
 	}
 	g.SetListenState(true, "")
 	logger.Printf("codex: gateway listening on http://%s, forwarding to %s", addr, upstream)
-	srv := &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second}
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := g.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		g.SetListenState(false, "stopped: "+err.Error())
 		logger.Printf("codex: server stopped: %v", err)
 	}
