@@ -2,7 +2,7 @@
 
 What is planned next, in the order it will be done. Each task says what is wrong today, what will be built, and how to tell it is done. Nothing here is a promise of a date.
 
-Last updated 8 October 2026, at v0.20.24.
+Last updated 8 October 2026, at v0.20.25.
 
 | # | Task | Area | State |
 |---|---|---|---|
