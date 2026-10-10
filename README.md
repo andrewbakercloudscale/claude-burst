@@ -11,7 +11,7 @@ Written and designed by [Andrew Baker](https://github.com/andrewbakercloudscale)
 > claude "$(curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/SETUP_PROMPT.md)"
 > ```
 >
-> Claude Code opens with the setup prompt: it tells you what will change and waits for your go-ahead, checks what is needed, installs with no password asked for, verifies, and reports. The prompt it runs is [`SETUP_PROMPT.md`](SETUP_PROMPT.md); already in a session, paste that file's text instead. By hand: [Quickstart](#quickstart).
+> Claude Code opens with the setup prompt: it tells you what will change and waits for your go-ahead, checks what is needed, hands you the one install line that asks for your password (transparent mode, so Remote Control keeps working), then verifies and reports. The prompt it runs is [`SETUP_PROMPT.md`](SETUP_PROMPT.md); already in a session, paste that file's text instead. By hand: [Quickstart](#quickstart).
 
 > **Broken?** Open the [**support console**](#support-console) at http://127.0.0.1:7789/: what happened, the log around it, and Restart and Repair buttons, up even when the gateway is not. Or paste one line into Terminal: [**Repair**](#repair-burst) fixes the common problems, [**Diagnose**](#diagnose-burst) copies a report to the clipboard. Also: [**Update and reinstall**](#update-and-reinstall-burst) · [**Bypass Burst**](#bypass-burst)
 
