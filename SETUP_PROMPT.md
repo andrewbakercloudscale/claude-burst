@@ -11,7 +11,9 @@ Set up Claude Burst on this Mac from https://github.com/andrewbakercloudscale/cl
    password, which you cannot type, so do not run the installer yourself. Give me this one
    line to paste into a terminal of my own, and wait until I say it has finished:
      cd ~/claude-burst && CLAUDE_BURST_MODE=transparent CLAUDE_BURST_PANEL=yes ./install.sh
-   CLAUDE_BURST_PANEL=yes also installs the cost sidebar; ask me first, and use =no if I
+   The cost sidebar: check whether ~/.local/bin/ccusage-panel.sh exists. If it does, the
+   sidebar is installed and the installer brings it up to date by itself: say so, and do not
+   ask. If it does not, CLAUDE_BURST_PANEL=yes installs it; ask me first, and use =no if I
    decline. Only if I say I cannot give a password, run it yourself with
    CLAUDE_BURST_MODE=base-url CLAUDE_BURST_SIGNING=no instead, and tell me Remote Control
    is off in that mode.
