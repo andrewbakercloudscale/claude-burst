@@ -273,3 +273,30 @@ func writeHandoffFiles(dir string, files map[string][]byte) {
 		}
 	}
 }
+
+// TookIn is the mod saying Claude Code compacted session sid with the
+// hand-off of: what Claude Code holds is now what Burst sends, so that is
+// the conversation's held history at once. Until 2026-10-11 it stood at what
+// was held before until the session's next request, and a session that had
+// just been compacted went on reading 1.68M held. Reports whether a
+// conversation of the session had that hand-off.
+func (s *Server) TookIn(sid, of string) bool {
+	if sid == "" || of == "" {
+		return false
+	}
+	s.compaction.mu.Lock()
+	defer s.compaction.mu.Unlock()
+	found := false
+	for key, st := range s.compaction.sessions {
+		if !strings.HasPrefix(key, sid+"|") || st.hand == nil || st.hand.Of != of {
+			continue
+		}
+		found = true
+		s.logger.Printf("compaction taken in session=%s: Claude Code compacted with Burst's summary, and holds %dk where it held %dk", key, st.lastContext/1000, st.rawContext/1000)
+		st.rawContext = st.lastContext
+	}
+	if found {
+		s.compaction.save()
+	}
+	return found
+}

@@ -282,6 +282,20 @@ async function handOver($, h) {
   }
 }
 
+// Tells the gateway Claude Code took the summary in: what it holds is then
+// what Burst sends at once, not at the session's next request.
+async function taken($, h) {
+  try {
+    await $.http.fetch(DASHBOARD + '/api/handoff/taken', {
+      method: 'POST',
+      headers: { 'X-Claude-Burst-Admin': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: sid, of: h.of }),
+    })
+  } catch (err) {
+    // The session's next request says what it holds.
+  }
+}
+
 const FAST = 'compact-async-full'
 async function compactFast($) {
   if (asking) return
@@ -348,6 +362,7 @@ export function register(on) {
     if (cut < 1) return next(e)
     handed = h.of
     tookIn = true
+    await taken($, h)
     $.ui.toast("Compacted with Burst's summary: " + cut + ' messages replaced, nothing written by Claude Code', { timeoutMs: TOAST_MS.info })
     return { messages: [{ role: 'user', text: h.lead, toolUses: [] }, ...e.messages.slice(cut).map(asNewIfResult)] }
   })

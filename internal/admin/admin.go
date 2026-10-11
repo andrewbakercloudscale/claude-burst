@@ -146,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/inspect/remove", s.mutating(s.handleInspectRemove))
 	mux.HandleFunc("/api/inspect/prune", s.mutating(s.handleInspectPrune))
 	mux.HandleFunc("/api/inspect/refresh", s.mutating(s.handleInspectRefresh))
+	mux.HandleFunc("/api/handoff/taken", s.mutating(s.handleHandoffTaken))
 	mux.HandleFunc("/api/automask-save", s.mutating(s.handleAutomaskSave))
 	mux.HandleFunc("/api/compaction/repo", s.mutating(s.handleCompactionRepo))
 	mux.HandleFunc("/api/compaction/drop", s.mutating(s.handleCompactionDrop))

@@ -257,3 +257,17 @@ func (s *Server) handleInspectRefresh(w http.ResponseWriter, r *http.Request) {
 	s.gateway.WantHistory(req.Session, "its context was asked for (/burst-dump), and the last request seen whole is behind")
 	writeJSON(w, map[string]string{"detail": "The session's next request brings its whole conversation."})
 }
+
+// handleHandoffTaken is the mod saying Claude Code has compacted a session
+// with the summary Burst wrote, so what it holds is no longer what it held.
+func (s *Server) handleHandoffTaken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+		Of      string `json:"of"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Session == "" || req.Of == "" {
+		http.Error(w, "need session and of", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": s.gateway.TookIn(req.Session, req.Of)})
+}

@@ -47,7 +47,7 @@ function mod(over: Record<string, unknown> = {}) {
 // panel's pop-up already took, `lines` what the gateway's notice queue holds
 // (handed over once), `runs` and `posts` what the mod ran and posted,
 // `commands` the slash commands it added, `missing` a program that is not there.
-type World = { sid?: string; claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string>; pid?: string }
+type World = { sid?: string; claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; taken?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string>; pid?: string }
 
 function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}, world: World = {}) {
   const clock = mock.clock(on, { now: 1_000_000_000_000 })
@@ -82,6 +82,10 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
       world.lines = []
       if (lines.length === 0) return { value: { status: 204, ok: true, headers: {}, text: '' } }
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ systemMessage: lines.join('\n') }) } }
+    }
+    if (e.url.endsWith('/api/handoff/taken')) {
+      world.taken?.push(e.init.body)
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
     }
     urls.push(e.url)
     const a = answers[Math.min(i++, answers.length - 1)]
@@ -406,11 +410,14 @@ function core(on, calls: string[]) {
 test("Claude Code's compaction is answered with Burst's summary: no summary request, the kept messages whole", async ($, on) => {
   const toasts: string[] = []
   const calls: string[] = []
-  stubs(on, [mod()], toasts, [], false, [], {}, { files: { [HANDOFF_FILE]: handoff() } })
+  const world: World = { files: { [HANDOFF_FILE]: handoff() }, taken: [] }
+  stubs(on, [mod()], toasts, [], false, [], {}, world)
   core(on, calls)
   await start($)
   const r = await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
   expect(calls).toEqual([])
+  // The gateway is told, so what Claude Code holds is right before its next request.
+  expect(world.taken.map((b) => JSON.parse(b))).toEqual([{ session: 'S1', of: 'abc' }])
   // The cut is the start of the reply, not of its tool call: "Looking." is kept.
   // The kept tool result (h7) goes back without its handle: with it, Claude
   // Code writes the row pointing at the history this compaction replaced,

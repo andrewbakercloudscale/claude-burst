@@ -224,3 +224,50 @@ func TestAConversationLeftBehindHandsNothingOver(t *testing.T) {
 		t.Fatalf("the session is in another conversation now: %d messages still on offer", h.Messages)
 	}
 }
+
+// Claude Code compacting with Burst's summary is told to the gateway, and
+// what it holds is then what Burst sends, before the session's next request.
+func TestTakingTheSummaryInSetsWhatClaudeCodeHolds(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	h, ok := readHandoff(t, s, "S")
+	if !ok {
+		t.Fatal("want a hand-off once the summary is in force")
+	}
+	held := func() (raw, sent int64) {
+		for _, cs := range s.CompactionSessions() {
+			if cs.Session == "S" && cs.Summarised > 0 {
+				return cs.Raw, cs.Context
+			}
+		}
+		return 0, 0
+	}
+	s.compaction.mu.Lock()
+	for _, st := range s.compaction.sessions {
+		if st.hand != nil {
+			st.rawContext = 4 * st.lastContext
+		}
+	}
+	s.compaction.mu.Unlock()
+	if raw, sent := held(); raw <= sent {
+		t.Fatalf("before: held %d must be over what is sent, %d", raw, sent)
+	}
+	if s.TookIn("S", "not-this-one") {
+		t.Fatal("another summary's hand-off is not this session's")
+	}
+	if raw, _ := held(); raw == 0 {
+		t.Fatal("a hand-off that is not the session's must change nothing")
+	}
+	if !s.TookIn("S", h.Of) {
+		t.Fatal("the session's own hand-off must be found")
+	}
+	// Raw is only reported while it is over what Burst sends.
+	if raw, _ := held(); raw != 0 {
+		t.Fatalf("after: held = %d, want what Burst sends", raw)
+	}
+}
