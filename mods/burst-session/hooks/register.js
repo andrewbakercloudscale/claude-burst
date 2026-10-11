@@ -363,7 +363,7 @@ export function register(on) {
     handed = h.of
     tookIn = true
     await taken($, h)
-    $.ui.toast("Compacted with Burst's summary: " + cut + ' messages replaced, nothing written by Claude Code', { timeoutMs: TOAST_MS.info })
+    $.ui.toast("Async Full Compaction: " + cut + ' messages replaced with the summary Burst already wrote', { timeoutMs: TOAST_MS.info })
     return { messages: [{ role: 'user', text: h.lead, toolUses: [] }, ...e.messages.slice(cut).map(asNewIfResult)] }
   })
 

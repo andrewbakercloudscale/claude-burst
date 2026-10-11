@@ -425,7 +425,7 @@ test("Claude Code's compaction is answered with Burst's summary: no summary requ
   expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h5', 'h6', undefined, 'h8'])
   expect(r.messages[3]).toEqual({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't2', text: 'output' }] })
   expect(r.messages[0]).toEqual({ role: 'user', text: LEAD, toolUses: [] })
-  expect(toasts).toContain("Compacted with Burst's summary: 5 messages replaced, nothing written by Claude Code")
+  expect(toasts).toContain("Async Full Compaction: 5 messages replaced with the summary Burst already wrote")
 })
 
 test('/resume and /clear carry on under another session with no session.start: the mod follows it', async ($, on) => {
