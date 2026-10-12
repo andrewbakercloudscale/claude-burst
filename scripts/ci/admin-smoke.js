@@ -39,6 +39,11 @@ const { chromium } = require("playwright");
     await page.waitForSelector("#ugRows table.ug-inner tr.ug-row", { timeout: 15000 });
     report.usageRows = (await page.textContent("#ugRows")).replace(/\s+/g, " ").trim().slice(0, 600);
     report.title = await page.title();
+    // A section that throws while drawing no longer surfaces as a page
+    // error: the page catches it, names it in the header and carries on.
+    for (const id of ["drawErr", "gwStale"]) {
+      if (await page.isVisible("#" + id)) errors.push(id + ": " + (await page.textContent("#" + id)).trim());
+    }
   } catch (e) {
     errors.push("smoke: " + e.message.split("\n")[0]);
   }

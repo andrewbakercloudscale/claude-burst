@@ -80,6 +80,16 @@
   .ver { color: var(--faint); font: 12px var(--mono); }
   .spacer { flex: 1; }
   .updated { color: var(--faint); font-size: 12px; }
+  /* Two notices in the sticky header, so they are seen from anywhere on the
+     page: the gateway has stopped answering (what is below is the last state
+     it gave, dimmed so it cannot be read as current), and a section this
+     page failed to draw. Both are hidden while there is nothing to say. */
+  .gw-notice { flex: 1 1 100%; margin-top: 4px; white-space: normal; }
+  .gw-notice a { color: inherit; font-weight: 600; }
+  main.stale .wrap > :not(header) { opacity: .55; }
+  /* Read out by a screen reader, never drawn: see say() in the script. */
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+             clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
@@ -474,6 +484,10 @@
     border-left: 2px solid transparent;
   }
   .navlink:hover { background: var(--panel-2); color: var(--text); }
+  /* Keyboard focus only, so the rail looks the same under a pointer. Drawn
+     inside the entry: the rail clips anything outside it. */
+  .navlink:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .navlink.on:focus-visible, .navlink.alarm:focus-visible { outline-color: var(--text); }
   /* The section you are reading, as the page scrolls: a solid accent bar,
      so it reads at a glance. Text takes the panel colour, which is white
      in light mode and near black on the lighter dark-mode accent. */
@@ -854,60 +868,60 @@
   <a class="navlink" id="navHome" data-target="~home" href="#" title="Back to the top of the page"><span class="nd"></span><span class="label">Home</span></a>
 
   <div class="navgroup" data-tab="codex">Codex</div>
-  <a class="navlink" data-target="sec-codex"><span class="nd" id="nd-codex"></span><span class="label">Overview</span></a>
-  <a class="navlink" data-target="sec-codex-insights"><span class="nd" id="nd-codex-insights"></span><span class="label">Insights</span></a>
-  <a class="navlink" data-target="sec-codex-context"><span class="nd" id="nd-codex-context"></span><span class="label">Context</span><span class="count" id="nc-codex-context"></span></a>
-  <a class="navlink" data-target="sec-codex-inspect"><span class="nd" id="nd-cx-inspect"></span><span class="label">Context inspector</span></a>
-  <a class="navlink" data-target="sec-codex-requests"><span class="nd"></span><span class="label">Requests</span><span class="count" id="nc-codex-requests"></span></a>
+  <a class="navlink" href="#" data-target="sec-codex"><span class="nd" id="nd-codex"></span><span class="label">Overview</span></a>
+  <a class="navlink" href="#" data-target="sec-codex-insights"><span class="nd" id="nd-codex-insights"></span><span class="label">Insights</span></a>
+  <a class="navlink" href="#" data-target="sec-codex-context"><span class="nd" id="nd-codex-context"></span><span class="label">Context</span><span class="count" id="nc-codex-context"></span></a>
+  <a class="navlink" href="#" data-target="sec-codex-inspect"><span class="nd" id="nd-cx-inspect"></span><span class="label">Context inspector</span></a>
+  <a class="navlink" href="#" data-target="sec-codex-requests"><span class="nd"></span><span class="label">Requests</span><span class="count" id="nc-codex-requests"></span></a>
 
   <div class="navgroup">Setup</div>
-  <a class="navlink" data-target="installSection"><span class="nd" id="nd-install"></span><span class="label">Install &amp; test</span></a>
+  <a class="navlink" href="#" data-target="installSection"><span class="nd" id="nd-install"></span><span class="label">Install &amp; test</span></a>
 
   <div class="navgroup">Observe</div>
-  <a class="navlink" data-target="cards"><span class="nd" id="nd-overview"></span><span class="label">Overview</span><span class="count" id="nc-overview"></span></a>
-  <a class="navlink" data-target="sec-activity"><span class="nd" id="nd-activity"></span><span class="label">Activity</span><span class="count" id="nc-activity"></span></a>
-  <a class="navlink" data-target="sec-analytics"><span class="nd"></span><span class="label">Analytics</span></a>
-  <a class="navlink" data-target="sec-savings"><span class="nd"></span><span class="label">Compaction savings</span></a>
-  <a class="navlink" data-target="sec-strategies" hidden><span class="nd"></span><span class="label">Compaction strategies</span></a>
-  <a class="navlink" data-target="sec-models"><span class="nd"></span><span class="label">Spend by model</span></a>
-  <a class="navlink" data-target="sec-repos"><span class="nd"></span><span class="label">Spend by repository</span></a>
-  <a class="navlink" data-target="sec-usage"><span class="nd"></span><span class="label">Usage</span></a>
+  <a class="navlink" href="#" data-target="cards"><span class="nd" id="nd-overview"></span><span class="label">Overview</span><span class="count" id="nc-overview"></span></a>
+  <a class="navlink" href="#" data-target="sec-activity"><span class="nd" id="nd-activity"></span><span class="label">Activity</span><span class="count" id="nc-activity"></span></a>
+  <a class="navlink" href="#" data-target="sec-analytics"><span class="nd"></span><span class="label">Analytics</span></a>
+  <a class="navlink" href="#" data-target="sec-savings"><span class="nd"></span><span class="label">Compaction savings</span></a>
+  <a class="navlink" href="#" data-target="sec-strategies" hidden><span class="nd"></span><span class="label">Compaction strategies</span></a>
+  <a class="navlink" href="#" data-target="sec-models"><span class="nd"></span><span class="label">Spend by model</span></a>
+  <a class="navlink" href="#" data-target="sec-repos"><span class="nd"></span><span class="label">Spend by repository</span></a>
+  <a class="navlink" href="#" data-target="sec-usage"><span class="nd"></span><span class="label">Usage</span></a>
 
   <div class="navgroup">Context</div>
-  <a class="navlink nav-pc" data-target="sec-compaction"><span class="nd" id="nd-compaction"></span><span class="label">Pauseless Compaction</span></a>
-  <a class="navlink" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
+  <a class="navlink nav-pc" href="#" data-target="sec-compaction"><span class="nd" id="nd-compaction"></span><span class="label">Pauseless Compaction</span></a>
+  <a class="navlink" href="#" data-target="sec-context"><span class="nd" id="nd-context"></span><span class="label">Context &amp; cache</span></a>
 
   <div class="navgroup">Routing</div>
-  <a class="navlink" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Routing</span></a>
-  <a class="navlink" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary (optional)</span></a>
-  <a class="navlink" data-target="sec-failover"><span class="nd" id="nd-failover"></span><span class="label">Failover &amp; pricing</span></a>
+  <a class="navlink" href="#" data-target="sec-config"><span class="nd" id="nd-config"></span><span class="label">Routing</span></a>
+  <a class="navlink" href="#" data-target="secondarySection"><span class="nd" id="nd-secondary"></span><span class="label">Secondary (optional)</span></a>
+  <a class="navlink" href="#" data-target="sec-failover"><span class="nd" id="nd-failover"></span><span class="label">Failover &amp; pricing</span></a>
 
   <div class="navgroup">Sessions</div>
-  <a class="navlink" data-target="handoverSection"><span class="nd" id="nd-handover"></span><span class="label">Session handover</span></a>
-  <a class="navlink" data-target="sec-coord"><span class="nd" id="nd-coord"></span><span class="label">Session coordination</span></a>
-  <a class="navlink" data-target="sec-sessions"><span class="nd" id="nd-sessions"></span><span class="label">Session options</span></a>
-  <a class="navlink" data-target="sec-panel"><span class="nd" id="nd-panel"></span><span class="label">Usage panel</span></a>
-  <a class="navlink" data-target="sec-band"><span class="nd" id="nd-band"></span><span class="label">In-session band</span></a>
-  <a class="navlink" data-target="sec-inspect"><span class="nd" id="nd-inspect"></span><span class="label">Context inspector</span></a>
-  <a class="navlink" data-target="sec-finder"><span class="nd" id="nd-finder"></span><span class="label">Finder shortcuts</span></a>
+  <a class="navlink" href="#" data-target="handoverSection"><span class="nd" id="nd-handover"></span><span class="label">Session handover</span></a>
+  <a class="navlink" href="#" data-target="sec-coord"><span class="nd" id="nd-coord"></span><span class="label">Session coordination</span></a>
+  <a class="navlink" href="#" data-target="sec-sessions"><span class="nd" id="nd-sessions"></span><span class="label">Session options</span></a>
+  <a class="navlink" href="#" data-target="sec-panel"><span class="nd" id="nd-panel"></span><span class="label">Usage panel</span></a>
+  <a class="navlink" href="#" data-target="sec-band"><span class="nd" id="nd-band"></span><span class="label">In-session band</span></a>
+  <a class="navlink" href="#" data-target="sec-inspect"><span class="nd" id="nd-inspect"></span><span class="label">Context inspector</span></a>
+  <a class="navlink" href="#" data-target="sec-finder"><span class="nd" id="nd-finder"></span><span class="label">Finder shortcuts</span></a>
 
   <div class="navgroup">Privacy</div>
-  <a class="navlink" data-target="sec-automask"><span class="nd" id="nd-automask"></span><span class="label">Automask</span></a>
+  <a class="navlink" href="#" data-target="sec-automask"><span class="nd" id="nd-automask"></span><span class="label">Automask</span></a>
 
   <div class="navgroup">This Mac</div>
-  <a class="navlink" data-target="sec-mac"><span class="nd" id="nd-mac"></span><span class="label">Lid &amp; hotspot</span></a>
-  <a class="navlink" data-target="sec-notify"><span class="nd" id="nd-notify"></span><span class="label">Notifications</span></a>
-  <a class="navlink" data-target="sec-permissions"><span class="nd" id="nd-permissions"></span><span class="label">Permissions</span></a>
+  <a class="navlink" href="#" data-target="sec-mac"><span class="nd" id="nd-mac"></span><span class="label">Lid &amp; hotspot</span></a>
+  <a class="navlink" href="#" data-target="sec-notify"><span class="nd" id="nd-notify"></span><span class="label">Notifications</span></a>
+  <a class="navlink" href="#" data-target="sec-permissions"><span class="nd" id="nd-permissions"></span><span class="label">Permissions</span></a>
 
   <div class="navgroup">Health</div>
-  <a class="navlink" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
-  <a class="navlink" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
-  <a class="navlink" data-target="sec-audit"><span class="nd"></span><span class="label">Audit</span></a>
-  <a class="navlink" data-target="sec-advanced"><span class="nd"></span><span class="label">Advanced</span></a>
+  <a class="navlink" href="#" data-target="guardsSection"><span class="nd" id="nd-guards"></span><span class="label">Guards</span><span class="count" id="nc-guards"></span></a>
+  <a class="navlink" href="#" data-target="sec-actions"><span class="nd"></span><span class="label">Actions</span></a>
+  <a class="navlink" href="#" data-target="sec-audit"><span class="nd"></span><span class="label">Audit</span></a>
+  <a class="navlink" href="#" data-target="sec-advanced"><span class="nd"></span><span class="label">Advanced</span></a>
 
   <div class="navgroup">Requests</div>
-  <a class="navlink" data-target="sec-responses"><span class="nd" id="nd-responses"></span><span class="label">Responses</span><span class="count" id="nc-responses"></span></a>
-  <a class="navlink" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
+  <a class="navlink" href="#" data-target="sec-responses"><span class="nd" id="nd-responses"></span><span class="label">Responses</span><span class="count" id="nc-responses"></span></a>
+  <a class="navlink" href="#" data-target="sec-requests"><span class="nd" id="nd-requests"></span><span class="label">Requests</span><span class="count" id="nc-requests"></span></a>
 
   <div class="sidefoot">
     <span id="gatewayAddr"></span>
@@ -949,7 +963,13 @@
          something newer to install. -->
     <button id="upgradeTop" style="margin-left:10px">&#x27F3; Check version</button>
     <button class="primary" id="refreshBtn" style="margin-left:10px">↻ Refresh</button>
+    <!-- Filled by gatewayFailed and drew in the script. -->
+    <div class="note bad gw-notice" id="gwStale" hidden></div>
+    <div class="note warn gw-notice" id="drawErr" hidden></div>
   </header>
+  <!-- What a sighted user sees change is said here for a screen reader:
+       the gateway stopping and answering again, a save, a failure. -->
+  <div class="sr-only" id="live" role="status" aria-live="polite"></div>
 
   <!-- The hero. The meter is a SCORE, which this project is otherwise
        suspicious of for good reason -- a single number is how a dashboard
@@ -2214,7 +2234,156 @@ $("installRevealBtn").onclick = () => {
   scrollToEl($("installSection"), "nearest");
 };
 
-function note(el, cls, msg) { el.innerHTML = `<div class="note ${cls}">${esc(msg)}</div>`; }
+function note(el, cls, msg) {
+  el.innerHTML = `<div class="note ${cls}">${esc(msg)}</div>`;
+  // The answer to something you just did: saved, failed, needs attention.
+  // Not while a refresh is redrawing the page, which would read every
+  // standing verdict out again after each save.
+  if (!drawing && ["ok", "bad", "warn", "err"].includes(cls)) say(msg);
+}
+
+// say reads a change out through the polite live region (#live), so what a
+// sighted user sees change is also announced. The same words again within
+// 20 seconds are dropped: a poll that keeps failing says so once.
+let lastSaid = "", lastSaidAt = 0;
+function say(msg) {
+  msg = String(msg || "").replace(/\s+/g, " ").trim().slice(0, 300);
+  if (!msg || (msg === lastSaid && Date.now() - lastSaidAt < 20000)) return;
+  lastSaid = msg; lastSaidAt = Date.now();
+  $("live").textContent = msg;
+}
+
+// A read from the gateway fails in three ways, and the page says which:
+//   it did not answer    getJSON throws kind "net" (refused, dropped, or
+//                        nothing within the time limit)
+//   it answered badly    getJSON throws kind "http" (an error status, or a
+//                        body that is not JSON)
+//   the page broke       a render threw: the answer was fine and the bug is
+//                        here, so draw() names it instead of blaming the
+//                        gateway, and the other sections still draw.
+async function getJSON(path, ms) {
+  ms = ms || 15000;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  let r, text;
+  try {
+    r = await fetch(path, {signal: ac.signal});
+    // Inside the limit too: headers can arrive and the body never finish.
+    text = await r.text();
+  } catch (e) {
+    const err = new Error(ac.signal.aborted ? `no answer in ${ms / 1000} seconds` : e.message);
+    err.kind = "net";
+    throw err;
+  } finally { clearTimeout(timer); }
+  const bad = msg => { const err = new Error(msg); err.kind = "http"; err.status = r.status; return err; };
+  if (!r.ok) throw bad(text.trim().slice(0, 300) || r.statusText || "HTTP " + r.status);
+  try { return JSON.parse(text); } catch { throw bad("the answer was not JSON"); }
+}
+
+// serial makes a loader run one at a time. A call while one is running does
+// not start a second request behind a slow gateway: it asks for one more run
+// once the current one ends, so a refresh after Save still shows what was
+// saved, and answers are drawn in the order they were asked for. A loader
+// that throws is the page failing to draw (the reads catch their own
+// errors), so it is named like any other section.
+function serial(name, fn) {
+  let busy = null, next = null;
+  const loop = async args => {
+    for (;;) {
+      try { await fn(...args); drew(name); } catch (e) { drew(name, e); }
+      if (!next) return;
+      args = next; next = null;
+    }
+  };
+  return (...args) => {
+    if (busy) { next = args; return busy; }
+    busy = loop(args).finally(() => { busy = null; });
+    return busy;
+  };
+}
+
+// draw runs one section's render. drew keeps the list of what could not be
+// read or drawn and shows it in the header (#drawErr) until that section
+// next succeeds; the error itself goes to the console, where it has a stack.
+let drawing = false;
+const troubles = {};
+function draw(name, fn) {
+  const was = drawing;
+  drawing = true;
+  try { fn(); drew(name); } catch (e) { drew(name, e); } finally { drawing = was; }
+}
+function drew(name, e, read) {
+  const isNew = !!e && !(name in troubles);
+  if (e) {
+    const msg = (e && e.message) || String(e);
+    troubles[name] = read ? `${name} could not be read (${e.status ? "HTTP " + e.status + ": " : ""}${msg})`
+      : `${name} could not be drawn (${e.name && e.name !== "Error" ? e.name + ": " : ""}${msg})`;
+    if (!read) console.error(`Claude Burst dashboard: ${name} could not be drawn. This is a fault in the page, not in the gateway.`, e);
+  } else {
+    delete troubles[name];
+  }
+  const names = Object.keys(troubles), el = $("drawErr");
+  el.hidden = !names.length;
+  if (!names.length) return;
+  const bug = names.some(n => troubles[n].includes("could not be drawn"));
+  el.textContent = names.map(n => troubles[n]).join("; ") + ". The rest of the page is still updating." +
+    (bug ? " The gateway answered: a section that cannot be drawn is a fault in this page, and the error is in the browser console." : "");
+  if (isNew) say(troubles[name] + ".");
+}
+
+// The gateway's answer to /api/state is the page's heartbeat: Refresh asks
+// for it and so does the 15 second poll. While it fails the page says since
+// when, keeps the last state on screen marked as old, and says so once more
+// when it is answered again. asked/settled drop an answer that arrives
+// after a newer one has already been drawn.
+let stateAsked = 0, stateSettled = 0;
+let gwDown = null, gwLastGood = null;
+async function getState() {
+  const n = ++stateAsked;
+  let s, err;
+  try { s = await getJSON("/api/state", 10000); } catch (e) { err = e; }
+  if (n < stateSettled) {
+    const late = new Error("a newer answer is already on the page");
+    late.kind = "late";
+    throw late;
+  }
+  stateSettled = n;
+  if (err) { gatewayFailed(err); throw err; }
+  gatewayAnswered();
+  return s;
+}
+function gatewayFailed(e) {
+  const first = !gwDown;
+  if (first) gwDown = new Date();
+  // The badges are a claim about this instant, and nothing answered, so
+  // leaving a green ACTIVE bubble up would be the dashboard asserting
+  // health from a response it never got.
+  $("activeBadge").innerHTML = "";
+  $("routeBadge").innerHTML = "";
+  $("liveAlert").innerHTML = "";
+  $("secStatus").innerHTML = "";
+  liveVerdict = undefined;
+  clearNav();
+  const since = gwDown.toLocaleTimeString();
+  const head = e.kind === "net"
+    ? `The gateway has not answered since ${since} (${e.message}).`
+    : `The gateway has answered with an error since ${since} (HTTP ${e.status}: ${e.message}).`;
+  const shows = gwLastGood ? `This page shows the last state it gave, at ${gwLastGood.toLocaleTimeString()}, and asks again every 15 seconds.`
+    : "This page has no state from it yet, and asks again every 15 seconds.";
+  $("gwStale").innerHTML = `${esc(head)} ${esc(shows)} <a href="${esc($("consoleLink").href)}" target="_blank" rel="noopener">Open the support console</a>, which runs on its own and has the log and the Restart and Repair buttons.`;
+  $("gwStale").hidden = false;
+  document.querySelector("main").classList.add("stale");
+  $("updated").textContent = (e.kind === "net" ? "gateway not answering since " : "gateway error since ") + since;
+  if (first) say(head + " " + shows);
+}
+function gatewayAnswered() {
+  gwLastGood = new Date();
+  if (!gwDown) return;
+  gwDown = null;
+  $("gwStale").hidden = true;
+  document.querySelector("main").classList.remove("stale");
+  say("The gateway is answering again.");
+}
 
 // A bare wall-clock time is only unambiguous for today. Both tables here
 // outlive a day -- metrics.jsonl is the whole history, and the response
@@ -2500,16 +2669,22 @@ function routeBadgeHTML(s, verdict, now) {
 // timeout, and blocking the whole page on it would mean the one situation
 // where you need the dashboard fastest is the one where it takes longest to
 // paint. The page renders immediately showing CHECKING, and this resolves it.
+let liveAsked = 0;
 async function liveCheck(s) {
+  const n = ++liveAsked;
   liveVerdict = undefined;
   renderActiveBadge(s, undefined);
   $("liveAlert").innerHTML = "";
   let verdict;
   try {
-    verdict = await fetch("/api/test-connection").then(r => r.json());
+    verdict = await getJSON("/api/test-connection");
   } catch (e) {
     verdict = {ok: false, detail: "the admin server did not answer the connection test: " + e.message};
   }
+  // A verdict for a state that is no longer the one on the page: a newer
+  // refresh has asked again, or the gateway has stopped answering since and
+  // the badges were cleared for that.
+  if (n !== liveAsked || gwDown) return;
   liveVerdict = verdict;
   renderActiveBadge(s, verdict);
   renderLiveAlert(s, verdict);
@@ -2723,123 +2898,124 @@ function renderResponses(rows) {
 }
 
 async function refresh() {
-  try {
-    const [s, reqs, resps] = await Promise.all([
-      fetch("/api/state").then(r => r.json()),
-      fetch("/api/requests?limit=50").then(r => r.json()),
-      fetch("/api/responses").then(r => r.json()),
-      // Sets lastHistory as a side effect rather than returning it: the
-      // window buttons reload it on their own, without a full refresh.
-      loadHistory(),
-    ]);
+  // The two lists and the chart are read beside the state, and a failure
+  // of one of them is its own: it is named in the header and the rest of
+  // the page still draws from what did answer.
+  const lists = Promise.allSettled([
+    getJSON("/api/requests?limit=50"),
+    getJSON("/api/responses"),
+    // Sets lastHistory as a side effect rather than returning it: the
+    // window buttons reload it on their own, without a full refresh.
+    loadHistory(),
+  ]);
+  let s;
+  // On failure getState has already said so on the page: see gatewayFailed.
+  try { s = await getState(); } catch (e) { await lists; return; }
+  const [reqsGot, respsGot] = await lists;
+  const reqs = reqsGot.status === "fulfilled" ? reqsGot.value : null;
+  const resps = respsGot.status === "fulfilled" ? respsGot.value : null;
+  // A list that could not be read keeps what it showed.
+  const drawLists = () => {
+    if (reqs) draw("Requests", () => renderRequests(reqs)); else drew("Requests", reqsGot.reason, true);
+    if (resps) draw("Responses", () => renderResponses(resps)); else drew("Responses", respsGot.reason, true);
+  };
 
-    // config.json failed to load: /api/state still answers (200, not an
-    // HTTP error) but every routing/usage field is a zero value and must
-    // not be trusted. Recent requests/responses don't depend on config at
-    // all, so still render those -- often the most useful thing to look at
-    // while working out what broke. This is deliberately a normal render
-    // path, not the exception handler below: the gateway IS reachable,
-    // config.json specifically is what's broken, and those need different
-    // guidance.
-    if (s.config_error) {
-      $("cards").innerHTML = "";
-      // The in-use banner is a claim about settings.json and /etc/hosts that
-      // this response cannot support: with config.json unreadable we don't
-      // even know which mode to judge. Clear it rather than leave the
-      // previous render's verdict standing over unrelated new text.
-      $("inuse").innerHTML = "";
-      $("activeBadge").innerHTML = "";
-      $("routeBadge").innerHTML = "";
-      // Same reasoning for the live-probe alert and its cached state: with
-      // config.json unreadable we don't know the intercept mode, so any
-      // verdict still on screen is about a configuration we can no longer
-      // describe.
-      $("liveAlert").innerHTML = "";
-      // Same reasoning as the badges: the secondary verdict ("key found",
-      // "nothing to fail over to") is read out of a config we could not
-      // parse, so any of it still on screen describes nothing.
-      $("secStatus").innerHTML = "";
-      $("guardsSection").hidden = true;
-      liveVerdict = undefined;
-      lastState = null;
-      // The meter is made of checks read out of a config we could not
-      // parse. The activity chart is not -- it reads metrics.jsonl, and is
-      // often the most useful thing on screen while config.json is broken.
-      $("hero").hidden = true;
-      clearNav();
-      // Same reasoning for the panel: it is hidden on the strength of a
-      // verdict this response cannot give, so show it rather than hide the
-      // one control that might be the way out.
-      $("installSection").hidden = false;
-      $("installRevealBtn").hidden = true;
-      $("installTop").hidden = true;
-      $("installSection").classList.remove("alert");
-      $("installTitle").textContent = "Install";
-      note($("bailout"), "bad",
-        `config.json failed to load, so routing/usage state can't be shown: ${s.config_error}\n\nFix ~/.config/claude-burst/config.json, then click Refresh. Recent requests below still reflect real traffic.`);
-      renderRequests(reqs);
-      renderResponses(resps);
-      renderActivity();
-      $("updated").textContent = "config error, " + new Date().toLocaleTimeString();
-      return;
-    }
-
-    lastState = s;
-    // Codex's checks read the watchdog from here.
-    if (codexState) renderCodex(codexState);
-    renderCards(s);
-    renderAttention();
-    // Not awaited on purpose -- see liveCheck's comment. The page below is
-    // already correct; only the two header badges are pending.
-    liveCheck(s);
-    renderRequests(reqs);
-    renderResponses(resps);
-    // The "Force -> secondary" confirmation names a wall-clock expiry
-    // ("until 15:48:19") and otherwise just sits in actNote forever -- there
-    // is no auto-refresh (see the no-timer note below), so a window that
-    // expires on its own (or gets cleared from elsewhere) left that message
-    // claiming SECONDARY long after the live Routing card above had already
-    // gone back to PRIMARY. Only clear it once the claim it made is actually
-    // stale, so the message set moments ago by this exact click -- when
-    // s.overflow is still true -- survives the refresh() that click triggers.
-    if ($("actNote").dataset.overflowClaim === "1" && !s.overflow) {
-      $("actNote").innerHTML = "";
-      delete $("actNote").dataset.overflowClaim;
-    }
-    // Never clobber something the user is halfway through typing.
-    if (!dirty) {
-      $("strategy").value = s.primary.strategy || "subscription-limit";
-      $("mode").value = s.intercept.mode || "base-url";
-    }
-    renderSecondary(s);
-    renderDowngrade(s);
-    renderContext(s);
-    renderCompaction(s);
-    renderHandover(s);
-    $("hero").hidden = false;
-    lastCounts = {requests: reqs.length, responses: resps.length};
-    renderActivity();
-    // Drawn now with liveVerdict still undefined, so the meter reads
-    // "checking" rather than scoring the page without its one live check;
-    // liveCheck redraws both the moment the probe answers.
-    renderHero(s);
-    renderNav(s, lastCounts);
-    $("updated").textContent = "updated " + new Date().toLocaleTimeString();
-  } catch (e) {
-    // The badges are a claim about this instant, and nothing answered, so
-    // leaving a green ACTIVE bubble up would be the dashboard asserting
-    // health from a response it never got.
+  // config.json failed to load: /api/state still answers (200, not an
+  // HTTP error) but every routing/usage field is a zero value and must
+  // not be trusted. Recent requests/responses don't depend on config at
+  // all, so still render those -- often the most useful thing to look at
+  // while working out what broke. This is deliberately a normal render
+  // path, not the exception handler below: the gateway IS reachable,
+  // config.json specifically is what's broken, and those need different
+  // guidance.
+  if (s.config_error) {
+    $("cards").innerHTML = "";
+    // The in-use banner is a claim about settings.json and /etc/hosts that
+    // this response cannot support: with config.json unreadable we don't
+    // even know which mode to judge. Clear it rather than leave the
+    // previous render's verdict standing over unrelated new text.
+    $("inuse").innerHTML = "";
     $("activeBadge").innerHTML = "";
     $("routeBadge").innerHTML = "";
+    // Same reasoning for the live-probe alert and its cached state: with
+    // config.json unreadable we don't know the intercept mode, so any
+    // verdict still on screen is about a configuration we can no longer
+    // describe.
     $("liveAlert").innerHTML = "";
+    // Same reasoning as the badges: the secondary verdict ("key found",
+    // "nothing to fail over to") is read out of a config we could not
+    // parse, so any of it still on screen describes nothing.
     $("secStatus").innerHTML = "";
+    $("guardsSection").hidden = true;
     liveVerdict = undefined;
     lastState = null;
+    // The meter is made of checks read out of a config we could not
+    // parse. The activity chart is not -- it reads metrics.jsonl, and is
+    // often the most useful thing on screen while config.json is broken.
     $("hero").hidden = true;
     clearNav();
-    $("updated").textContent = "gateway unreachable, " + e.message;
+    // Same reasoning for the panel: it is hidden on the strength of a
+    // verdict this response cannot give, so show it rather than hide the
+    // one control that might be the way out.
+    $("installSection").hidden = false;
+    $("installRevealBtn").hidden = true;
+    $("installTop").hidden = true;
+    $("installSection").classList.remove("alert");
+    $("installTitle").textContent = "Install";
+    note($("bailout"), "bad",
+      `config.json failed to load, so routing/usage state can't be shown: ${s.config_error}\n\nFix ~/.config/claude-burst/config.json, then click Refresh. Recent requests below still reflect real traffic.`);
+    drawLists();
+    draw("Activity", () => renderActivity());
+    $("updated").textContent = "config error, " + new Date().toLocaleTimeString();
+    return;
   }
+
+  lastState = s;
+  // Each section draws on its own: one that throws is named in the
+  // header (see draw) and the ones after it still draw.
+  // Codex's checks read the watchdog from here.
+  draw("Codex", () => { if (codexState) renderCodex(codexState); });
+  draw("Overview", () => renderCards(s));
+  draw("Attention", () => renderAttention());
+  // Not awaited on purpose -- see liveCheck's comment. The page below is
+  // already correct; only the two header badges are pending.
+  liveCheck(s).then(() => drew("The live check"), e => drew("The live check", e));
+  drawLists();
+  // The "Force -> secondary" confirmation names a wall-clock expiry
+  // ("until 15:48:19") and otherwise just sits in actNote forever -- there
+  // is no auto-refresh (see the no-timer note below), so a window that
+  // expires on its own (or gets cleared from elsewhere) left that message
+  // claiming SECONDARY long after the live Routing card above had already
+  // gone back to PRIMARY. Only clear it once the claim it made is actually
+  // stale, so the message set moments ago by this exact click -- when
+  // s.overflow is still true -- survives the refresh() that click triggers.
+  if ($("actNote").dataset.overflowClaim === "1" && !s.overflow) {
+    $("actNote").innerHTML = "";
+    delete $("actNote").dataset.overflowClaim;
+  }
+  // Never clobber something the user is halfway through typing.
+  draw("Routing", () => {
+    if (dirty) return;
+    $("strategy").value = s.primary.strategy || "subscription-limit";
+    $("mode").value = s.intercept.mode || "base-url";
+  });
+  draw("Secondary", () => renderSecondary(s));
+  draw("Failover", () => renderDowngrade(s));
+  draw("Context and cache", () => renderContext(s));
+  draw("Pauseless Compaction", () => renderCompaction(s));
+  draw("Session handover", () => renderHandover(s));
+  $("hero").hidden = false;
+  lastCounts = {requests: reqs ? reqs.length : (lastCounts || {}).requests, responses: resps ? resps.length : (lastCounts || {}).responses};
+  draw("Activity", () => renderActivity());
+  // Drawn now with liveVerdict still undefined, so the meter reads
+  // "checking" rather than scoring the page without its one live check;
+  // liveCheck redraws both the moment the probe answers.
+  draw("Readiness checks", () => renderHero(s));
+  draw("Menu", () => renderNav(s, lastCounts));
+  $("updated").textContent = "updated " + new Date().toLocaleTimeString();
 }
+// One refresh at a time: see serial.
+refresh = serial("Refresh", refresh);
 
 // Reveals the stored key in the box. Fetched on demand rather than sent
 // with /api/state: the page holds the secret only for as long as it is
@@ -4153,7 +4329,7 @@ function drawChecks(ids, checks) {
   $(ids.of).textContent = "checks";
   $(ids.fill).setAttribute("stroke-dashoffset", C * (1 - passed / Math.max(1, checks.length)));
   $(ids.checks).innerHTML = checks.map(c =>
-    `<a class="check ${c.ok ? "ok" : c.critical ? "bad" : "warn"}" data-target="${esc(c.target)}"
+    `<a class="check ${c.ok ? "ok" : c.critical ? "bad" : "warn"}" href="#" data-target="${esc(c.target)}"
         title="${esc(c.detail)}"><span class="g">${c.ok ? "&#10003;" : "&#9888;"}</span>${esc(c.label)}</a>`
   ).join("");
   // A failing check spells out what is wrong and what to do, on the page:
@@ -4409,8 +4585,12 @@ function syncNavActive() {
   // otherwise: the first one shown.
   if (scrollY < 40) best = "~home";
   if (!best) best = NAV_TARGETS.find(id => shown($(id))) || null;
-  document.querySelectorAll(".navlink").forEach(a =>
-    a.classList.toggle("on", a.dataset.target === best));
+  document.querySelectorAll(".navlink").forEach(a => {
+    const on = a.dataset.target === best;
+    a.classList.toggle("on", on);
+    // The same thing for a screen reader: where on the page you are.
+    if (on) a.setAttribute("aria-current", "location"); else a.removeAttribute("aria-current");
+  });
   // Not while a target is held in place: the sections above it are still
   // filling in, and the one under the line for a moment is not where you are.
   if (best && !(navPin && Date.now() < navPin.until)) noteHash(best);
@@ -5131,7 +5311,7 @@ window.addEventListener("resize", () => {
 
 async function loadHistory() {
   try {
-    lastHistory = await fetch("/api/history?days=" + chartDays).then(r => r.json());
+    lastHistory = await getJSON("/api/history?days=" + chartDays);
   } catch (e) {
     lastHistory = null;
   }
@@ -5285,6 +5465,12 @@ try {
   if (exact) { const at = placeOf(location.hash, places()); if (at && at.tab !== currentTab) setTab(at.tab); }
   else goToHash(true);
   hashReady = true;
+  // Each menu entry is a real link to its own address (the markup's "#" is
+  // only what it says before this runs), so it takes keyboard focus, and
+  // opening one in a new tab lands on that section.
+  for (const a of document.querySelectorAll(".navlink[data-target]")) {
+    if (a.id !== "navHome") a.setAttribute("href", hashOf(tabOf(a.dataset.target), a.dataset.target, places()));
+  }
 })();
 // A refresh you make yourself comes back to the same spot, as a reload the
 // page makes does.
@@ -5299,17 +5485,19 @@ window.addEventListener("pagehide", () => {
 // tab is open, like the Claude Code checks.
 let codexState = null;
 async function loadCodex() {
-  try {
-    const r = await fetch("/api/codex");
-    if (!r.ok) throw new Error(await r.text() || r.statusText);
-    codexState = await r.json();
-    renderCodex(codexState);
-    loadCodexInsights();
-  } catch (e) {
+  let got;
+  try { got = await getJSON("/api/codex"); } catch (e) {
     $("codexRoute").innerHTML = `<div class="note bad">Could not read Codex's state from the gateway: ${esc(e.message)}</div>`;
     setDot("nd-codex", "bad");
+    return;
   }
+  // Outside the try: a render that throws is this page's fault, and is
+  // named as that (see serial), not as the gateway failing to answer.
+  codexState = got;
+  renderCodex(codexState);
+  loadCodexInsights();
 }
+loadCodex = serial("Codex", loadCodex);
 
 // codexChecks is Codex's equivalent of readinessChecks: is Codex going
 // through Burst, is Burst's Codex port answering, is ChatGPT answering, is
@@ -5720,19 +5908,29 @@ function reloadInPlace() {
     if (Math.abs(scrollY - saved.y) > 2 || Date.now() - started < 2500) setTimeout(tryIt, 200);
   })();
 })();
-setInterval(async () => {
+// One poll in flight at a time (serial), with a time limit (getState): a
+// gateway slower than the interval is asked again when it has answered or
+// timed out, never a second time alongside.
+const pollState = serial("The 15 second check", async () => {
   if (document.hidden) return;
+  const wasDown = !!gwDown;
   let s;
-  try { s = await (await fetch("/api/state")).json(); } catch { return; }
+  // Not answering, or answering with an error: getState has put that on
+  // the page (gatewayFailed) instead of leaving the last state looking live.
+  try { s = await getState(); } catch { return; }
   if (!s || !s.pid) return;
   if (pagePid === null) pagePid = s.pid;
   const busy = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
   if (s.pid !== pagePid && !busy && Date.now() - lastTouch > 30000) { reloadInPlace(); return; }
+  // Back after not answering: everything on the page is from before, so
+  // draw all of it again, not only the checks.
+  if (wasDown) { refresh(); return; }
   if (!lastState || !s.intercept) return;
   lastState = s;
-  renderHero(s);
+  draw("Readiness checks", () => renderHero(s));
   $("updated").textContent = "updated " + new Date().toLocaleTimeString();
-}, 15000);
+});
+setInterval(pollState, 15000);
 
 // This Mac & sessions. Read on demand from /api/mac (pmset and defaults are
 // too slow for the state poll): on load, on Refresh, and after each change.
@@ -6340,7 +6538,7 @@ $("coDays").onchange = () => {
 };
 async function loadCoord() {
   let d;
-  try { d = await (await fetch("/api/coordination?days=" + coDays, {headers: H})).json(); } catch { return; }
+  try { d = await getJSON("/api/coordination?days=" + coDays); } catch { return; }
   const on = !!d.config.enabled;
   if (!document.activeElement || !document.activeElement.closest("#sec-coord .row")) {
     $("coOn").checked = on;
@@ -6421,6 +6619,7 @@ $("coSave").onclick = async () => {
   } catch (e) { note($("coNote"), "err", e.message); }
   loadCoord();
 };
+loadCoord = serial("Session coordination", loadCoord);
 loadCoord();
 setInterval(() => { if (!document.hidden) loadCoord(); }, 10000);
 
@@ -6738,7 +6937,7 @@ function renderAttention() {
     const h = $(id) && $(id).querySelector("h2");
     return nav ? nav.textContent : h ? h.textContent.trim().split("\n")[0] : "the section";
   };
-  const go = (id, text) => items.push(`<li>${text} <a class="att-go" data-go="${id}">Go to ${esc(where(id))} &rarr;</a></li>`);
+  const go = (id, text) => items.push(`<li>${text} <a class="att-go" href="#" data-go="${id}">Go to ${esc(where(id))} &rarr;</a></li>`);
   const s = lastState;
   if (s && s.intercept && !s.config_error && !s.intercept.active)
     go("installSection", "Claude Burst is not in use: Claude Code is talking to Anthropic directly.");
@@ -6762,7 +6961,9 @@ function renderAttention() {
   }
   $("attention").hidden = !items.length;
   $("attention").innerHTML = items.length ? `<h3>Needs attention (${items.length})</h3><ul>${items.join("")}</ul>` : "";
-  for (const a of $("attention").querySelectorAll("[data-go]")) a.onclick = () => {
+  for (const a of $("attention").querySelectorAll("[data-go]")) a.onclick = e => {
+    // A real link, so the keyboard reaches it; the "#" must not jump to the top.
+    e.preventDefault();
     const el = $(a.dataset.go);
     if (el.classList.contains("collapsed")) el.querySelector("h2").click();
     scrollToEl(el);
@@ -6774,9 +6975,10 @@ loadSettings();
 // Automask: the switches and how many values each rule masked.
 async function loadAutomask() {
   let st;
-  try { st = await (await fetch("/api/automask")).json(); } catch (e) { return; }
+  try { st = await getJSON("/api/automask"); } catch (e) { return; }
   drawAutomask(st);
 }
+loadAutomask = serial("Automask", loadAutomask);
 let amWordsDirty = false;
 $("amWords").addEventListener("input", () => { amWordsDirty = true; });
 const amWhere = {user: "your prompt", tool_result: "tool output", assistant: "the model's reply", system: "system prompt", developer: "developer instructions"};
@@ -6898,7 +7100,7 @@ function makeInspector(o) {
   async function loadSessions(quiet) {
     quiet = quiet === true;
     let list = [];
-    try { list = await (await fetch(`/api/inspect?${q}`)).json(); } catch (e) { return; }
+    try { list = await getJSON(`/api/inspect?${q}`); } catch (e) { return; }
     const sel = $(o.sel), keep = sel.value;
     sessions = list;
     if (!list.length) {
@@ -7036,6 +7238,7 @@ function makeInspector(o) {
     $("inRefresh").onclick = () => run({refresh: true});
   }
   $(o.sel).onchange = load;
+  loadSessions = serial("Context inspector", loadSessions);
   $(o.reload).onclick = () => loadSessions();
   loadSessions();
   // New sessions and ones that were waiting come in by themselves.
@@ -7188,12 +7391,7 @@ loadBand();
     const q = query();
     if (!q) return;
     let r;
-    try {
-      const res = await fetch("/api/usage?" + q);
-      const text = await res.text();
-      if (!res.ok) throw new Error(text.trim() || res.statusText);
-      r = JSON.parse(text);
-    } catch (e) { note($("ugNote"), "bad", e.message); return; }
+    try { r = await getJSON("/api/usage?" + q, 30000); } catch (e) { note($("ugNote"), "bad", e.message); return; }
     $("ugNote").innerHTML = "";
     last = r;
     fillSelect("ugModel", r.options.models || [], "All models");
@@ -7202,6 +7400,9 @@ loadBand();
     render();
     loadRepo();
   }
+  // A filter changed while a read is out: one more read with the filters as
+  // they then stand, never two answers racing for the table.
+  load = serial("Usage", load);
 
   function render() {
     const r = last;
