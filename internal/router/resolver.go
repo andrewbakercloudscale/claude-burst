@@ -45,6 +45,13 @@ type interceptResolver struct {
 	// internet. See withFallbacks for why they exist.
 	fallbacks  []string
 	udpServers []string
+	// systemServers lists the DNS servers this Mac's network handed out,
+	// asked after everything above has failed, and localAddrs this Mac's own
+	// addresses, which no answer from them may be. Both are nil unless
+	// withFallbacks is called, so tests run neither scutil nor a query to a
+	// real server. See resolver_system.go.
+	systemServers func(ctx context.Context) ([]string, error)
+	localAddrs    func() []net.IP
 	// cachePath, when set, keeps the last good answer on disk so a restart
 	// on a network that blocks every lookup still has an address to dial.
 	cachePath string
@@ -131,9 +138,9 @@ var defaultDoHFallbacks = []string{
 // resolver.
 var defaultUDPServers = []string{"1.1.1.1:53", "8.8.8.8:53"}
 
-// withFallbacks turns on the extra DoH endpoints, the plain DNS servers and
-// the on-disk cache. Production only; tests build a bare resolver so they
-// never leave the machine.
+// withFallbacks turns on the extra DoH endpoints, the plain DNS servers, the
+// network's own DNS servers and the on-disk cache. Production only; tests
+// build a bare resolver so they never leave the machine.
 func (r *interceptResolver) withFallbacks(cachePath string) *interceptResolver {
 	for _, e := range defaultDoHFallbacks {
 		if e != r.endpoint {
@@ -141,6 +148,8 @@ func (r *interceptResolver) withFallbacks(cachePath string) *interceptResolver {
 		}
 	}
 	r.udpServers = append([]string(nil), defaultUDPServers...)
+	r.systemServers = systemDNSServers
+	r.localAddrs = interfaceAddrs
 	r.cachePath = cachePath
 	r.loadCache()
 	return r
@@ -161,9 +170,12 @@ func (r *interceptResolver) DialContext(ctx context.Context, network, addr strin
 
 	addrs, err := r.lookup(ctx, host)
 	if err != nil {
-		// Deliberately no fallback to the system resolver: that would resolve
-		// via /etc/hosts, connect to ourselves, and produce a confusing hang
-		// instead of a clear error.
+		// Deliberately no fallback to the system resolver (getaddrinfo, or
+		// Go's own): that would resolve via /etc/hosts, connect to ourselves,
+		// and produce a confusing hang instead of a clear error. The DNS
+		// servers the network handed out are a different thing and have been
+		// asked by this point, directly, which reads no hosts file: see
+		// querySystem.
 		return nil, fmt.Errorf("resolve %s over DoH (%s): %w", host, r.endpoint, err)
 	}
 
@@ -340,6 +352,13 @@ func (r *interceptResolver) queryAll(ctx context.Context, host string) ([]string
 		lastErr = err
 		errs = append(errs, "dns://"+srv+": "+err.Error())
 	}
+	if r.systemServers != nil && ctx.Err() == nil {
+		addrs, ttl, sysErrs := r.querySystem(ctx, host)
+		if len(addrs) > 0 {
+			return addrs, ttl, nil
+		}
+		errs = append(errs, sysErrs...)
+	}
 	if len(errs) == 1 {
 		// One resolver configured (tests, or no fallbacks): keep the bare
 		// error so callers can still match on it.
@@ -399,8 +418,8 @@ func (r *interceptResolver) queryEndpoint(ctx context.Context, endpoint, host st
 		}
 		// A poisoned or misconfigured answer pointing back at loopback would
 		// recreate the very loop this type exists to prevent.
-		if ip := net.ParseIP(a.Data); ip.IsLoopback() {
-			return nil, 0, fmt.Errorf("DoH returned loopback %s for %s -- refusing (this would loop back into the gateway)", a.Data, host)
+		if kind := selfAddress(net.ParseIP(a.Data)); kind != "" {
+			return nil, 0, fmt.Errorf("DoH returned %s %s for %s -- refusing (this would loop back into the gateway)", kind, a.Data, host)
 		}
 		addrs = append(addrs, a.Data)
 		if a.TTL > 0 && a.TTL < ttl {

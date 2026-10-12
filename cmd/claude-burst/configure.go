@@ -31,7 +31,17 @@ func configure(args []string) {
 	keepAwake := fs.String("keep-awake-lid-closed", "", "true | false: keep the Mac (and Claude Code in Ghostty, and Remote Control) running with the lid shut")
 	keepAwakePower := fs.String("keep-awake-power", "", "when --keep-awake-lid-closed applies: ac (default, only while plugged in) | always")
 	keepAwakeIdle := fs.Int("keep-awake-idle-minutes", -1, "stay awake with the lid shut only this many minutes after Claude Code was last used or the lid was last open; 0 = as long as the power mode applies")
+	allowNonLoopback := fs.Bool("allow-non-loopback-listen", false, "accept a --listen or --admin-listen address that is not loopback (not a supported setup: the gateway has no login)")
 	_ = fs.Parse(args)
+
+	// Save writes only the settings this version knows, so a key it does
+	// not read is gone from config.json after this. Say which, before it
+	// goes: a typo was never in force, but a setting written by a newer
+	// version (this binary after a rollback) was, and would vanish silently.
+	if keys, err := config.UnknownKeys(); err == nil && len(keys) > 0 {
+		fmt.Fprintf(os.Stderr, "warning: %s\nwarning: this command rewrites config.json without them.\n",
+			config.UnknownKeysMessage(keys))
+	}
 
 	// Under config.Update's lock: `configure` racing a dashboard save would
 	// otherwise drop whichever change landed first. See config.Update.
@@ -52,6 +62,9 @@ func configure(args []string) {
 			}
 		}
 		if *listen != "" {
+			if err := checkListen("--listen", *listen, *allowNonLoopback); err != nil {
+				return err
+			}
 			cfg.Listen = *listen
 		}
 		if *adminHostname == "off" {
@@ -62,6 +75,9 @@ func configure(args []string) {
 		if *adminListen == "off" {
 			cfg.AdminListen = ""
 		} else if *adminListen != "" {
+			if err := checkListen("--admin-listen", *adminListen, *allowNonLoopback); err != nil {
+				return err
+			}
 			cfg.AdminListen = *adminListen
 		}
 		if *primary != "" {
@@ -184,6 +200,35 @@ func configure(args []string) {
 	if *keepAwake != "" || ((*keepAwakePower != "" || *keepAwakeIdle >= 0) && cfg.KeepAwakeLidClosed) {
 		applyKeepAwake(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
 	}
+}
+
+// checkListen refuses a listen address that is not loopback unless the
+// caller acknowledged it, and warns on stderr when they did.
+//
+// Neither listener has a login. docs/limitations.md says not to bind `listen`
+// to anything but 127.0.0.1, and `configure` stored whatever it was given: one
+// mistyped flag put the gateway, and with it the subscription and the paid
+// secondary's key, in reach of the whole network. The two listeners differ in
+// what a wider bind does, and each message says which:
+//
+//   - the gateway (--listen) then answers other machines, since its guard
+//     accepts any IP-literal Host on a wildcard bind (router.hostAllowed);
+//   - the dashboard (--admin-listen) still answers only this Mac, because
+//     admin.guard refuses every peer that is not loopback, so a wider bind
+//     opens a port and gains nothing.
+func checkListen(flagName, addr string, acknowledged bool) error {
+	if config.LoopbackListen(addr) {
+		return nil
+	}
+	what := "The gateway has no login: anything that can reach that address can send requests on your Claude subscription and, while an overflow window is open, on your paid secondary's key."
+	if flagName == "--admin-listen" {
+		what = "The dashboard answers only connections from this Mac whatever address it binds, so a wider one opens a port without making the dashboard reachable from anywhere else."
+	}
+	if !acknowledged {
+		return fmt.Errorf("%s %q is not a loopback address (want 127.0.0.1:PORT). %s Not a supported setup (docs/limitations.md). To store it anyway, add --allow-non-loopback-listen", flagName, addr, what)
+	}
+	fmt.Fprintf(os.Stderr, "WARNING: %s %q is not a loopback address. %s\n", flagName, addr, what)
+	return nil
 }
 
 // baseURLForProvider derives the correct base URL and (for a primary slot)

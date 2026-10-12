@@ -800,6 +800,45 @@ func Default() Config {
 	}
 }
 
+// supersededPricing is every built-in price that has since been corrected,
+// by model. When a default price above changes, its old value goes here.
+//
+// Save writes the whole pricing table, built-in prices included, so the first
+// save after an install freezes that day's defaults into config.json, and on
+// every later load the file's copy wins. A corrected default therefore never
+// reached anyone who had saved once: Sonnet 5.5 cache reads were corrected
+// from $0.20 to $0.10 on 2026-10-08, and an install that had saved before
+// then went on costing them at $0.20.
+//
+// The file does not record which prices the user typed and which it was
+// handed, so loadFile tells them apart by value: a price equal to one listed
+// here is a default that was never touched and follows the current default.
+// The cost of that rule is a user who deliberately set a model to exactly a
+// price Burst once shipped as wrong; they get the corrected one.
+var supersededPricing = map[string][]ModelPrice{
+	// Until 2026-09-29, no listed cache-read price (derived as $1.00).
+	"claude-fable-5-1": {{InputPerMTok: 10, OutputPerMTok: 50}},
+	// Until 2026-10-08.
+	"claude-sonnet-5-5": {{InputPerMTok: 2, OutputPerMTok: 10, CacheReadPerMTok: 0.20}},
+}
+
+// followCorrectedPricing replaces each price in the file that is a superseded
+// default with the current one. See supersededPricing.
+func (c *Config) followCorrectedPricing() {
+	current := Default().Pricing
+	for model, old := range supersededPricing {
+		got, ok := c.Pricing[model]
+		if !ok {
+			continue
+		}
+		for _, was := range old {
+			if got == was {
+				c.Pricing[model] = current[model]
+			}
+		}
+	}
+}
+
 // ResolveRoutes synthesizes Primary/Secondary from the legacy flat fields
 // when the new provider blocks are absent, and applies defaults for the
 // metered-failover window and the response-header timeout. Safe to call
@@ -990,11 +1029,14 @@ func loadFile(p string) (Config, error) {
 	// would come back on every load and a fallback removed in the dashboard
 	// could never stay removed. A chain in the file replaces the default;
 	// a file without one gets the default below. Pricing is left to merge on
-	// purpose: new built-in prices reach old config files that way.
+	// purpose: new built-in prices reach old config files that way. A
+	// corrected one does not, because the file's copy of the old price wins
+	// the merge: followCorrectedPricing is for those.
 	cfg.FallbackChain = nil
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse %s: %w", p, err)
 	}
+	cfg.followCorrectedPricing()
 	cfg.AnthropicBaseURL = strings.TrimRight(cfg.AnthropicBaseURL, "/")
 	cfg.BedrockBaseURL = strings.TrimRight(cfg.BedrockBaseURL, "/")
 	cfg.Primary.BaseURL = strings.TrimRight(cfg.Primary.BaseURL, "/")

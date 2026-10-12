@@ -15,6 +15,12 @@
 // that key could have impersonated any website to every app on the Mac. The
 // key is written 0600 in a 0700 directory and never leaves the machine.
 //
+// A DNS constraint says nothing about IP addresses (RFC 5280 applies each
+// constraint to names of its own type only), so a CA made from 2026-10-12
+// also excludes every IP address and is limited to server authentication.
+// One made between the two dates is DNS-constrained only and could still
+// sign for a site addressed by IP; it is left as it is, for the reason below.
+//
 // The CA is never replaced while it is valid, and never automatically.
 // Node reads its CA bundle once, at startup, so every running Claude Code
 // session trusts exactly the CA that was in force when it started. On
@@ -40,6 +46,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +84,10 @@ func Files(dir string) (caCert, caKey, leafCert, leafKey string) {
 // leaf if they are absent or close to expiry. It also returns the CA in PEM
 // form so the caller can put it in a trust bundle.
 func LoadOrCreate(dir, host string) (*tls.Certificate, []byte, error) {
+	return loadOrCreate(dir, host, time.Now())
+}
+
+func loadOrCreate(dir, host string, now time.Time) (*tls.Certificate, []byte, error) {
 	if host == "" {
 		return nil, nil, fmt.Errorf("tlsca: empty host")
 	}
@@ -86,7 +97,7 @@ func LoadOrCreate(dir, host string) (*tls.Certificate, []byte, error) {
 
 	caCertPath, caKeyPath, leafCertPath, leafKeyPath := Files(dir)
 
-	caCert, caKey, caPEM, err := loadCA(caCertPath, caKeyPath)
+	caCert, caKey, caPEM, err := loadCA(caCertPath, caKeyPath, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -97,18 +108,18 @@ func LoadOrCreate(dir, host string) (*tls.Certificate, []byte, error) {
 		caCert = nil
 	}
 	if caCert == nil {
-		caCert, caKey, caPEM, err = createCA(caCertPath, caKeyPath, host)
+		caCert, caKey, caPEM, err = createCA(caCertPath, caKeyPath, host, now)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 
-	leaf, err := loadLeaf(leafCertPath, leafKeyPath, host, caCert)
+	leaf, err := loadLeaf(leafCertPath, leafKeyPath, host, caCert, now)
 	if err != nil {
 		return nil, nil, err
 	}
 	if leaf == nil {
-		leaf, err = createLeaf(leafCertPath, leafKeyPath, host, caCert, caKey)
+		leaf, err = createLeaf(leafCertPath, leafKeyPath, host, caCert, caKey, now)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -129,8 +140,40 @@ func constrainedTo(ca *x509.Certificate, host string) bool {
 // working, and `claude-burst ca-rotate` replaces it when no session runs.
 func Constrained(dir, host string) bool {
 	caCertPath, caKeyPath, _, _ := Files(dir)
-	c, _, _, err := loadCA(caCertPath, caKeyPath)
+	c, _, _, err := loadCA(caCertPath, caKeyPath, time.Now())
 	return err == nil && c != nil && constrainedTo(c, host)
+}
+
+// Warning is something about the CA that only the user can put right, worded
+// for a log line and an on-screen notice.
+type Warning struct {
+	Title  string
+	Detail string
+}
+
+// Unconstrained returns a warning when the CA in dir carries no name
+// constraint at all, nil otherwise (and nil when there is no CA to judge).
+// Such a CA dates from before 2026-10-02 and is kept on purpose (see the
+// package comment), which until now meant it was kept without a word: its
+// key can sign a certificate for any website, and where the CA is trusted
+// system-wide every app on the Mac would accept it. The remedy is the one
+// trust-ca-systemwide.sh already gives when it refuses such a CA.
+func Unconstrained(dir, host string) *Warning {
+	caCertPath, caKeyPath, _, _ := Files(dir)
+	c, _, _, err := loadCA(caCertPath, caKeyPath, time.Now())
+	// A CA constrained to some other host is not this case: LoadOrCreate
+	// replaces it, since it cannot sign for host at all.
+	if err != nil || c == nil || len(c.PermittedDNSDomains) > 0 {
+		return nil
+	}
+	return &Warning{
+		Title: "The local CA is not limited to " + host,
+		Detail: "The certificate authority in " + dir + " was made before 2026-10-02 and has no name constraint, " +
+			"so its private key could sign a certificate for any website. " +
+			"To replace it: close every Claude Code session, run `claude-burst ca-rotate`, restart the gateway, " +
+			"and if the old CA was trusted system-wide run `sudo scripts/trust-ca-systemwide.sh`. " +
+			"Burst does not do this by itself because running sessions trust only the current CA.",
+	}
 }
 
 // Rotate replaces the CA in dir with a new one constrained to host, and
@@ -158,7 +201,7 @@ func Rotate(dir, host string) ([]byte, error) {
 	return caPEM, err
 }
 
-func loadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
+func loadCA(certPath, keyPath string, now time.Time) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if os.IsNotExist(err) {
 		return nil, nil, nil, nil
@@ -189,7 +232,7 @@ func loadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, []b
 	}
 	// An expired CA is treated as absent so it is regenerated rather than
 	// used to sign leaves nothing will accept.
-	if time.Now().After(cert.NotAfter.Add(-renewBefore)) {
+	if now.After(cert.NotAfter.Add(-renewBefore)) {
 		return nil, nil, nil, nil
 	}
 	// A key that does not belong to the certificate (a crash between the
@@ -200,7 +243,7 @@ func loadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, []b
 	return cert, key, certPEM, nil
 }
 
-func createCA(certPath, keyPath, host string) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
+func createCA(certPath, keyPath, host string, now time.Time) (*x509.Certificate, *ecdsa.PrivateKey, []byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("tlsca: generate CA key: %w", err)
@@ -209,7 +252,6 @@ func createCA(certPath, keyPath, host string) (*x509.Certificate, *ecdsa.Private
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
@@ -226,6 +268,17 @@ func createCA(certPath, keyPath, host string) (*x509.Certificate, *ecdsa.Private
 		// Only host and names under it: see the package comment.
 		PermittedDNSDomainsCritical: true,
 		PermittedDNSDomains:         []string{host},
+		// And no IP address at all. Permitting a DNS name leaves IP names
+		// unconstrained, so without these the key could still sign a
+		// certificate for https://203.0.113.5 that verifiers accept.
+		ExcludedIPRanges: []*net.IPNet{
+			{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)},
+			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+		},
+		// Verifiers that nest key usage down the chain then refuse a
+		// certificate from this CA for anything but a TLS server, such as
+		// signing code or email.
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -253,7 +306,7 @@ func createCA(certPath, keyPath, host string) (*x509.Certificate, *ecdsa.Private
 	return cert, key, certPEM, nil
 }
 
-func loadLeaf(certPath, keyPath, host string, ca *x509.Certificate) (*tls.Certificate, error) {
+func loadLeaf(certPath, keyPath, host string, ca *x509.Certificate, now time.Time) (*tls.Certificate, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -278,7 +331,7 @@ func loadLeaf(certPath, keyPath, host string, ca *x509.Certificate) (*tls.Certif
 		return nil, nil
 	}
 	// Regenerate if it is for a different host or is nearing expiry.
-	if time.Now().After(leaf.NotAfter.Add(-renewBefore)) {
+	if now.After(leaf.NotAfter.Add(-renewBefore)) {
 		return nil, nil
 	}
 	if leaf.VerifyHostname(host) != nil {
@@ -293,7 +346,7 @@ func loadLeaf(certPath, keyPath, host string, ca *x509.Certificate) (*tls.Certif
 	return &pair, nil
 }
 
-func createLeaf(certPath, keyPath, host string, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) (*tls.Certificate, error) {
+func createLeaf(certPath, keyPath, host string, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, now time.Time) (*tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("tlsca: generate leaf key: %w", err)
@@ -302,7 +355,6 @@ func createLeaf(certPath, keyPath, host string, caCert *x509.Certificate, caKey 
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: host},

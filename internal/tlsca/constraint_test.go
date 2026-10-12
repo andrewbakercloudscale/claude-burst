@@ -26,7 +26,7 @@ func TestCAIsNameConstrainedToTheInterceptedHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	caCertPath, caKeyPath, _, _ := Files(dir)
-	ca, key, _, err := loadCA(caCertPath, caKeyPath)
+	ca, key, _, err := loadCA(caCertPath, caKeyPath, time.Now())
 	if err != nil || ca == nil {
 		t.Fatalf("loadCA: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestStartingKeepsAnUnconstrainedCA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, key, _, err := loadCA(caCertPath, caKeyPath)
+	ca, key, _, err := loadCA(caCertPath, caKeyPath, time.Now())
 	if err != nil || ca == nil || !key.Equal(legacyKey) {
 		t.Fatalf("starting replaced the CA running sessions trust: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestRotateReplacesTheCA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, key, _, err := loadCA(caCertPath, caKeyPath)
+	_, key, _, err := loadCA(caCertPath, caKeyPath, time.Now())
 	if err != nil || key == nil || key.Equal(legacyKey) {
 		t.Fatalf("the old key survived rotation: %v", err)
 	}
