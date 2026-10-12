@@ -188,7 +188,7 @@ func (s *Server) handlePermissionsCheck(w http.ResponseWriter, r *http.Request) 
 		results = append(results, res)
 	}
 	if r, ok := s.checkGitAccess(); ok {
-		results = append(results, result{Folder: r.Folder, State: r.State, Detail: r.Detail})
+		results = append(results, result(r))
 	}
 	writeJSON(w, map[string]any{"results": results, "permissions": permissionsResponse{Signing: s.signing(), Folders: folderStatuses()}})
 }

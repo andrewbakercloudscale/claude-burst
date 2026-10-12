@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/ctxview"
 )
@@ -205,5 +207,40 @@ func TestATurnIsMaskedOnItsWayToChatGPT(t *testing.T) {
 	post("s1", "zstd")
 	if !strings.Contains(got, "ship bluebird") {
 		t.Errorf("a compressed turn goes as Codex wrote it: %s", got)
+	}
+}
+
+// What the inspector keeps is bounded by size as well as by count: the
+// oldest sessions go first, and the request just sent is kept whatever its
+// size.
+func TestTheInspectorKeepsAByteBudget(t *testing.T) {
+	old := inspectBudget
+	inspectBudget = 1000
+	t.Cleanup(func() { inspectBudget = old })
+	g := &Gateway{}
+	body := func(n int) []byte { return bytes.Repeat([]byte("x"), n) }
+	for _, sid := range []string{"a", "b", "c"} {
+		g.capture(sid, body(400))
+		time.Sleep(2 * time.Millisecond)
+	}
+	kept := func() string {
+		var ids []string
+		var held int
+		for _, s := range g.InspectSessions() {
+			ids = append(ids, s.Session)
+			held += s.Bytes
+		}
+		if held > 1000 && len(ids) > 1 {
+			t.Errorf("holding %d bytes in %v, over the budget", held, ids)
+		}
+		sort.Strings(ids)
+		return strings.Join(ids, " ")
+	}
+	if got := kept(); got != "b c" {
+		t.Fatalf("after three of 400 bytes: kept %q, want the newest two", got)
+	}
+	g.capture("big", body(5000))
+	if got := kept(); got != "big" {
+		t.Fatalf("after one larger than the budget: kept %q, want it alone", got)
 	}
 }

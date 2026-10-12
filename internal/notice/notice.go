@@ -218,7 +218,7 @@ func (p *Publisher) write(ev Event) error {
 	// support trail its record of the event.
 	auditErr := appendAudit(AuditPath(p.path), ev)
 	if p.logger != nil {
-		p.logger.Printf("notice kind=%s severity=%s audit_only=%v title=%q detail=%q", ev.Kind, ev.Severity, ev.AuditOnly, ev.Title, ev.Detail)
+		p.logger.Printf("notice kind=%q severity=%q audit_only=%v title=%q detail=%q", ev.Kind, ev.Severity, ev.AuditOnly, ev.Title, ev.Detail)
 	}
 	if ev.AuditOnly {
 		return auditErr
@@ -260,7 +260,7 @@ func (p *Publisher) logOnce(err error) {
 		return
 	}
 	p.errLogged = true
-	p.logger.Printf("error stage=notice path=%s err=%v (on-screen alerts may be missing; logged once)", p.path, err)
+	p.logger.Printf("error stage=notice path=%q err=%q (on-screen alerts may be missing; logged once)", p.path, err.Error())
 }
 
 // Read returns the events in path, oldest first. A missing file is no events.

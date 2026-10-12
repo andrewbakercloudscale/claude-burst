@@ -99,3 +99,36 @@ func TestAccessRecordsWhatLookupsSaw(t *testing.T) {
 		t.Errorf("Downloads: %+v", a)
 	}
 }
+
+// A session id is a request header. One that is not a plain id never
+// reaches the filesystem: no walking out of the projects directory, and no
+// pattern that matches another session's transcript.
+func TestResolveRefusesAnIDThatIsNotOne(t *testing.T) {
+	home := t.TempDir()
+	projects := filepath.Join(home, "projects")
+	src := filepath.Join(home, "src", "proj")
+	for _, d := range []string{filepath.Join(src, ".git"), filepath.Join(projects, "-p"), filepath.Join(home, "elsewhere", "x")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := `{"type":"user","cwd":"` + src + `"}` + "\n"
+	for _, p := range []string{filepath.Join(projects, "-p", "0199c1d2-7a5b-7000-8000-000000000001.jsonl"), filepath.Join(home, "elsewhere", "x", "outside.jsonl")} {
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := NewWith(projects, nil)
+	for _, id := range []string{"*", "0199c1d2*", "?199c1d2-7a5b-7000-8000-000000000001", "[0-9]199c1d2-7a5b-7000-8000-000000000001",
+		"../../elsewhere/x/outside", "-p/0199c1d2-7a5b-7000-8000-000000000001", "", strings.Repeat("a", 129)} {
+		if name, root := r.Resolve(id); name != Unknown || root != "" {
+			t.Errorf("id %q resolved to %q %q", id, name, root)
+		}
+	}
+	if len(r.miss) != 0 {
+		t.Errorf("refused ids were remembered: %v", r.miss)
+	}
+	if name, root := r.Resolve("0199c1d2-7a5b-7000-8000-000000000001"); name != "proj" || root != src {
+		t.Fatalf("a real id: %q %q", name, root)
+	}
+}

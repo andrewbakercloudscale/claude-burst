@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -16,7 +17,7 @@ import (
 // What reaches the Codex port and is not a request Burst can read.
 //
 // Everything that is HTTP goes to ChatGPT whatever its method or path, and
-// so does a WebSocket. A connection that is not HTTP at all is forwarded
+// so does a WebSocket, unless a web page sent it (guard.go). A connection that is not HTTP at all is forwarded
 // too, byte for byte, so that it is ChatGPT that answers it and never
 // Burst (tunnel.go). What is left is a connection that starts like HTTP
 // and then does not parse: Go's server answers that 400 itself and calls
@@ -52,29 +53,68 @@ func (g *Gateway) noteOdd(what string) {
 // makes the line level=error (internal/logline).
 func (g *Gateway) noteRefused(status int, what string) {
 	g.noteOdd(what)
+	g.listRefused(status, what)
+}
+
+// listRefused writes a refusal to the log and the requests table.
+func (g *Gateway) listRefused(status int, what string) {
 	g.logger.Printf("codex: refused a connection to the Codex port, nothing was passed on to ChatGPT, %s", what)
 	g.keepFailure(metrics.Event{Time: time.Now(), Slot: "refused", Route: "REFUSED", Destination: "not passed on",
 		HTTPStatus: status, Note: "refused at the Codex port, nothing was passed on to ChatGPT, " + what})
 }
 
+// sortWait is how long a new connection may take to send its first bytes,
+// and after them its request's headers. A variable for tests.
+//
+// Until 12 Oct 2026 the wait for the first bytes had no end: a connection
+// is sorted before Go's server sees it, so the server's own header timeout
+// never started, and each connection opened and left silent held a
+// goroutine and a file descriptor for as long as its client liked.
+var sortWait = 30 * time.Second
+
 // Serve answers Codex on ln until it closes. Each connection is sorted by
 // its first bytes: HTTP goes to the server, anything else is forwarded to
 // ChatGPT as it came (tunnel.go).
 func (g *Gateway) Serve(ln net.Listener) error {
-	srv := &http.Server{Handler: g, ReadHeaderTimeout: 30 * time.Second}
+	srv := &http.Server{Handler: g, ReadHeaderTimeout: sortWait}
 	allowH2C(srv)
 	sorted := &sortedListener{Listener: ln, conns: make(chan net.Conn), done: make(chan struct{})}
 	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				sorted.fail(err)
-				return
-			}
-			go g.sort(c, sorted)
+		for g.acceptOne(ln, sorted) {
 		}
 	}()
 	return srv.Serve(sorted)
+}
+
+// acceptOne takes one connection and reports whether to go on. The accept
+// loop lives as long as the gateway, and each connection is sorted and
+// forwarded on a goroutine of its own: a panic in either would end the
+// whole process, Claude Code's gateway with it, so both say so in the log
+// with the stack and the port goes on answering.
+func (g *Gateway) acceptOne(ln net.Listener, sorted *sortedListener) (more bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			g.logger.Printf("codex: PANIC accepting a connection, the port goes on answering: %v\n%s", rec, debug.Stack())
+			// Not at once: a fault that repeats must not spin or fill the log.
+			time.Sleep(100 * time.Millisecond)
+			more = true
+		}
+	}()
+	c, err := ln.Accept()
+	if err != nil {
+		sorted.fail(err)
+		return false
+	}
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				g.logger.Printf("codex: PANIC on a connection from %s, which was closed: %v\n%s", c.RemoteAddr(), rec, debug.Stack())
+				c.Close()
+			}
+		}()
+		g.sort(c, sorted)
+	}()
+	return true
 }
 
 // sortedListener hands the HTTP server the connections that are HTTP.
@@ -105,10 +145,12 @@ func (l *sortedListener) Close() error {
 }
 
 // sort reads enough of a new connection to tell HTTP from anything else.
-// A client may connect and send nothing for a while, so there is no
-// deadline: the wait ends when it sends or hangs up.
+// It reads at most headBytes and waits at most sortWait: a client that has
+// sent nothing by then is hung up on, as Go's server does with one that has
+// not finished its headers. What did arrive is sorted as it stands.
 func (g *Gateway) sort(c net.Conn, l *sortedListener) {
 	first := make([]byte, 0, headBytes)
+	_ = c.SetReadDeadline(time.Now().Add(sortWait))
 	for {
 		n, err := c.Read(first[len(first):cap(first)])
 		first = first[:len(first)+n]
@@ -120,6 +162,9 @@ func (g *Gateway) sort(c net.Conn, l *sortedListener) {
 			break
 		}
 	}
+	// The deadline was for the first bytes only: the server and the tunnel
+	// set their own.
+	_ = c.SetReadDeadline(time.Time{})
 	if !looksHTTP(first) {
 		g.tunnel(c, first)
 		return

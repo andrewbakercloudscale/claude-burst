@@ -70,20 +70,15 @@ func TestConfigHandlerRefusals(t *testing.T) {
 	}
 }
 
-// /api/keep-awake refusals, and the fallback when sudo has no cached
-// credentials: a generated script opened in Terminal, which is stubbed here.
-// Ghostty's App Nap setting is stubbed too: `defaults` ignores HOME.
+// /api/keep-awake refusals, and how the root half is applied: always a
+// generated script opened in Terminal, which is stubbed here. Ghostty's App
+// Nap setting is stubbed too: `defaults` ignores HOME.
 func TestKeepAwakeRefusalsAndPasswordFallback(t *testing.T) {
 	s := newTestServer(t)
 	writeConfig(t, os.Getenv("HOME"))
-	oldNap, oldSudo, oldTerm := setGhosttyAppNap, sudoNonInteractive, launchTerminal
-	t.Cleanup(func() { setGhosttyAppNap, sudoNonInteractive, launchTerminal = oldNap, oldSudo, oldTerm })
+	oldNap, oldTerm := setGhosttyAppNap, launchTerminal
+	t.Cleanup(func() { setGhosttyAppNap, launchTerminal = oldNap, oldTerm })
 	setGhosttyAppNap = func(bool) error { return nil }
-	var sudoRan int
-	sudoNonInteractive = func(args ...string) ([]byte, error) {
-		sudoRan++
-		return []byte("sudo: a password is required"), os.ErrPermission
-	}
 	var opened []string
 	launchTerminal = func(path string) error { opened = append(opened, path); return nil }
 
@@ -102,8 +97,8 @@ func TestKeepAwakeRefusalsAndPasswordFallback(t *testing.T) {
 			t.Errorf("%s: status=%d body=%s", c.name, rr.Code, rr.Body.String())
 		}
 	}
-	if sudoRan != 0 || len(opened) != 0 {
-		t.Fatalf("a refusal ran something: sudo %d, terminal %v", sudoRan, opened)
+	if len(opened) != 0 {
+		t.Fatalf("a refusal opened Terminal: %v", opened)
 	}
 
 	scripts := filepath.Join(t.TempDir(), "scripts")
@@ -113,7 +108,7 @@ func TestKeepAwakeRefusalsAndPasswordFallback(t *testing.T) {
 	s.rootHelper = filepath.Join(scripts, "transparent-root.sh")
 	rr := mutate(t, s, "/api/keep-awake", `{"mode":"always"}`)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "asking for your password") || len(opened) != 1 {
-		t.Fatalf("password fallback: status=%d body=%s opened=%v", rr.Code, rr.Body.String(), opened)
+		t.Fatalf("the root half: status=%d body=%s opened=%v", rr.Code, rr.Body.String(), opened)
 	}
 	script, err := os.ReadFile(opened[0])
 	if err != nil || !strings.Contains(string(script), "lid-awake-root.sh' 'apply' 'always'") {

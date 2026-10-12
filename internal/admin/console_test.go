@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
@@ -204,5 +205,60 @@ func TestConsoleRestoresAConfigThatWillNotLoad(t *testing.T) {
 	c.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "nothing was restored") {
 		t.Fatalf("a second press: status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// An audit entry older than the log file in use is found in the rotated
+// files, in order, and a file wholly after the window is not read for it.
+func TestLogAroundReadsRotatedFiles(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "claude-burst.log")
+	at := time.Date(2026, 10, 4, 17, 16, 18, 0, time.Local)
+	f := func(d time.Duration, s string) string {
+		return at.Add(d).Format(logline.Stamp) + " level=info " + s + "\n"
+	}
+	os.WriteFile(p+".2", []byte(f(-3*time.Hour, "long before")+f(-2*time.Minute, "the cause")), 0o600)
+	os.WriteFile(p+".1", []byte(f(-time.Minute, "the retry")+f(0, "the failover")+f(20*time.Second, "the recovery")+f(time.Hour, "an hour on")), 0o600)
+	os.WriteFile(p, []byte(f(2*time.Hour, "today")+f(3*time.Hour, "later today")), 0o600)
+	lines, err := logAround(p, at, contextBefore, contextAfter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, l := range lines {
+		got = append(got, l[strings.Index(l, "level=info ")+len("level=info "):])
+	}
+	if want := "the cause|the retry|the failover|the recovery"; strings.Join(got, "|") != want {
+		t.Fatalf("lines %q, want %q", got, want)
+	}
+	// Nothing rotated yet and an entry from before the file began: no
+	// lines, and no error for the missing .1.
+	os.Remove(p + ".1")
+	os.Remove(p + ".2")
+	if lines, err := logAround(p, at, contextBefore, contextAfter); err != nil || len(lines) != 0 {
+		t.Fatalf("with no rotated files: %q, %v", lines, err)
+	}
+}
+
+// /api/log goes through the same backstop as the audit view and the
+// console: a credential that reached the log is not shown by any of them.
+func TestTheLogEndpointRedactsLikeTheAuditView(t *testing.T) {
+	s := newTestServer(t)
+	p, err := config.LogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(p, []byte("2026-10-04T17:16:18.000+02:00 level=warn req=a retry Authorization: Bearer sk-secret-1\n"+
+		"2026-10-04T17:16:19.000+02:00 level=info req=b ok route=anthropic status=200 note=\"kept as it is\"\n"), 0o600)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, localRequest(http.MethodGet, "http://127.0.0.1/api/log", nil))
+	body := rr.Body.String()
+	if rr.Code != http.StatusOK || strings.Contains(body, "sk-secret-1") || !strings.Contains(body, "Bearer REDACTED") {
+		t.Fatalf("status %d:\n%s", rr.Code, body)
+	}
+	if !strings.Contains(body, "2026-10-04T17:16:19.000+02:00 level=info req=b ok route=anthropic status=200 note=\"kept as it is\"\n") {
+		t.Fatalf("a line with nothing to hide was changed:\n%s", body)
 	}
 }

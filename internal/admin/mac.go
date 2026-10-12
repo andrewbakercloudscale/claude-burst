@@ -121,13 +121,6 @@ var setGhosttyAppNap = keepawake.SetGhosttyAppNap
 // readOriginal is a variable for the same reason.
 var readOriginal = keepawake.ReadOriginal
 
-// sudoNonInteractive runs a root command only if sudo has cached
-// credentials. Never prompts: the gateway has no terminal. A variable for
-// tests.
-var sudoNonInteractive = func(args ...string) ([]byte, error) {
-	return exec.Command("sudo", append([]string{"-n"}, args...)...).CombinedOutput()
-}
-
 func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Mode string `json:"mode"`
@@ -170,10 +163,11 @@ func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 		// The window starts now, not at the next Claude turn.
 		keepawake.MarkNow()
 	}
-	if out, err := sudoNonInteractive(args...); err == nil {
-		writeJSON(w, map[string]string{"detail": strings.TrimSpace(string(out)) + napNote})
-		return
-	}
+	// The root half is never run from here, only handed to a Terminal
+	// window to be read and approved. Until 12 Oct 2026 `sudo -n` was tried
+	// first: with sudo set to ask for no password, or a ticket it still
+	// honoured, a click on this page ran a script as root with nobody
+	// watching, which is what SECURITY.md says the dashboard never does.
 	path, err := writeGeneratedScript("keep-awake", keepAwakeScript(args))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -77,13 +78,26 @@ func TestParseBlockersOnlyCountsPreventSystemSleep(t *testing.T) {
 }
 
 // The mode reaches a root script, so anything but the three values is
-// refused before config or sudo is touched.
+// refused before config is touched or a script is written. The root half is
+// only ever handed to Terminal: ran is the sudo line of the script it was
+// given.
 func TestKeepAwakeModeIsValidatedAndSaved(t *testing.T) {
 	s := newTestServer(t)
 	var ran [][]string
-	old := sudoNonInteractive
-	sudoNonInteractive = func(args ...string) ([]byte, error) { ran = append(ran, args); return []byte("applied"), nil }
-	t.Cleanup(func() { sudoNonInteractive = old })
+	old := launchTerminal
+	launchTerminal = func(path string) error {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if rest, ok := strings.CutPrefix(line, "sudo "); ok {
+				ran = append(ran, strings.Split(strings.Trim(rest, "'"), "' '"))
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { launchTerminal = old })
 	var nap []bool
 	oldNap := setGhosttyAppNap
 	setGhosttyAppNap = func(on bool) error { nap = append(nap, on); return nil }
@@ -309,5 +323,28 @@ func TestBypassPermissionsOptionEditsOnlyDefaultMode(t *testing.T) {
 	post(`{"bypass_permissions":false}`)
 	if read()["permissions"].(map[string]any)["defaultMode"] != "plan" {
 		t.Fatal("off must not remove a mode the user chose")
+	}
+}
+
+// SECURITY.md: "The dashboard never escalates by itself." Nothing in this
+// package runs sudo; what needs root is a script handed to Terminal. Read
+// from the source, so a new call is caught the day it is added.
+func TestTheDashboardNeverRunsSudoItself(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil || len(files) < 20 {
+		t.Fatalf("found %d source files (%v): the pattern no longer matches the package", len(files), err)
+	}
+	call := regexp.MustCompile(`exec\.Command(Context)?\([^)\n]*"sudo"`)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := call.Find(src); m != nil {
+			t.Errorf("%s runs sudo itself: %s", f, m)
+		}
 	}
 }

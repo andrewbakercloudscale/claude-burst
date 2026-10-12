@@ -112,7 +112,7 @@ flowchart TD
 
 ## Is it working? Metrics and Issues
 
-Everything coordination does is one line in `~/.config/claude-burst/coord/coord.log` (local time). The dashboard's **Session coordination** section counts those lines; nothing else is stored, so the counts reach back to the day coordination was first switched on. Pick **Today**, **7 days** or **14 days** at the top.
+Everything coordination does is one line in `~/.config/claude-burst/coord/coord.log` (local time). The dashboard's **Session coordination** section counts those lines; nothing else is stored, so the counts reach back to the day coordination was first switched on. Pick **Today**, **7 days** or **14 days** at the top. The `coord` folder is mode 0700 and its files 0600, since `state.json` holds the messages sessions send each other; folders and files an earlier version left readable by other accounts are tightened the next time a session uses them.
 
 | Tile | Counts log lines | What it tells you |
 |---|---|---|

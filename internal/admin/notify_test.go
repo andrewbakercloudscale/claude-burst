@@ -1,10 +1,16 @@
 package admin
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 )
 
 // isolateGuardLogs points both guard logs at temp files, so the real
@@ -79,5 +85,66 @@ func TestAlertPublishEndpoint(t *testing.T) {
 	}
 	if got := alerts(); len(got) != 1 || got[0] != "ok: Claude handover" {
 		t.Fatalf("alerts = %q", got)
+	}
+}
+
+// A config.json that stops loading does not end the alert rounds or the
+// learner: each goes on, reads it again next round, and says once that it
+// is paused, the alert rounds on screen as well. Before, both skipped
+// every round in silence.
+func TestAConfigThatWillNotLoadIsSaidOnceAndTriedAgain(t *testing.T) {
+	s := newTestServer(t)
+	var logged bytes.Buffer
+	dir := t.TempDir()
+	gw, err := router.New(config.Default(), filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(&logged, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.gateway = gw
+	alerts := captureAlerts(t)
+	isolateGuardLogs(t)
+	writeConfig(t, os.Getenv("HOME"))
+
+	n := &notifier{}
+	learner := &configWatch{what: "the compaction learner"}
+	s.notifyRound(n, time.Now())
+	if !n.started || len(alerts()) != 0 {
+		t.Fatalf("a config that loads: started %v, alerts %q", n.started, alerts())
+	}
+
+	breakConfig(t)
+	n.started = false // so a round that got past the load shows
+	for i := 0; i < 3; i++ {
+		s.notifyRound(n, time.Now())
+		if _, ok := s.loadConfig(learner, false); ok {
+			t.Fatal("the learner was given a config that does not load")
+		}
+	}
+	if n.started {
+		t.Fatal("a round ran on a config that did not load")
+	}
+	if got := alerts(); len(got) != 1 || got[0] != "error: config.json cannot be read" {
+		t.Fatalf("on screen: %q, want it said once", got)
+	}
+	if c := strings.Count(logged.String(), "alerts paused"); c != 1 {
+		t.Errorf("the alert rounds logged it %d times, want once:\n%s", c, logged.String())
+	}
+	if c := strings.Count(logged.String(), "the compaction learner paused"); c != 1 {
+		t.Errorf("the learner logged it %d times, want once:\n%s", c, logged.String())
+	}
+
+	writeConfig(t, os.Getenv("HOME"))
+	s.notifyRound(n, time.Now())
+	if _, ok := s.loadConfig(learner, false); !ok {
+		t.Fatal("the learner did not read the file again")
+	}
+	if !n.started {
+		t.Fatal("the alert rounds did not start again once the file loaded")
+	}
+	if got := alerts(); len(got) != 2 || got[1] != "ok: config.json loads again" {
+		t.Fatalf("on screen after the fix: %q", got)
+	}
+	if !strings.Contains(logged.String(), "alerts resumed") || !strings.Contains(logged.String(), "the compaction learner resumed") {
+		t.Errorf("coming back is logged too:\n%s", logged.String())
 	}
 }

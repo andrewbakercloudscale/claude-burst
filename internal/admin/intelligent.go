@@ -146,8 +146,11 @@ func (s *Server) reseatLearned() {
 func (s *Server) StartLearner(ctx context.Context) {
 	t := time.NewTicker(learnEvery)
 	defer t.Stop()
+	// Logged only: the alert rounds read the same file every ten seconds
+	// and put it on screen (configWatch).
+	w := &configWatch{what: "the compaction learner"}
 	for {
-		if cfg, err := config.Load(); err == nil {
+		if cfg, ok := s.loadConfig(w, false); ok {
 			s.learnCompaction(cfg, time.Now())
 		}
 		select {

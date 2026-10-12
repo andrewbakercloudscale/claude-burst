@@ -175,8 +175,7 @@ func scriptPath(name string) string {
 				candidates = append(candidates, recorded)
 			}
 		}
-		candidates = append(candidates, filepath.Join(share, name),
-			filepath.Join(home, "Desktop", "github", "claude-burst", "scripts", name))
+		candidates = append(candidates, filepath.Join(share, name))
 	}
 	for _, c := range candidates {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {

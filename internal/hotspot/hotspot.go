@@ -181,6 +181,12 @@ var OnHotspot = func() bool {
 // join is a variable so tests never touch the real Wi-Fi.
 var join = func(ctx context.Context, ssid string) (string, error) {
 	args := []string{"-setairportnetwork", WiFiDevice(), ssid}
+	// The password goes on the command line, where `ps` shows it to every
+	// account on this Mac for the few seconds the join takes. networksetup
+	// takes it no other way (-setairportnetwork device network [password]:
+	// no stdin, no environment variable, no Keychain item), and leaving it
+	// off is not a way out: macOS then refuses a join made by a background
+	// process (error -3900) even for a network it knows.
 	if pw, err := keychain.Load(KeychainService, "CLAUDE_BURST_HOTSPOT_PASSWORD"); err == nil {
 		args = append(args, pw)
 	}

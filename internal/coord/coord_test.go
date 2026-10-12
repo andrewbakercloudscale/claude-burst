@@ -761,3 +761,57 @@ func TestBusyHooksDoNotStarveTheLock(t *testing.T) {
 		t.Errorf("a hook held the lock over a second:\n%s", b)
 	}
 }
+
+// What sessions write to each other is for the account that runs them
+// only: the state directory and its files are created private, and ones
+// an earlier version left open to every account are closed on the next
+// use.
+func TestCoordinationFilesArePrivate(t *testing.T) {
+	modes := func(dir string) string {
+		var out []string
+		for _, name := range []string{".", "state.lock", "state.json", "coord.log", "coord.log.1"} {
+			st, err := os.Stat(filepath.Join(dir, name))
+			if err != nil {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%s=%04o", name, st.Mode().Perm()))
+		}
+		return strings.Join(out, " ")
+	}
+	nothing := func(*tx) error { return nil }
+
+	fresh := &Coordinator{Dir: filepath.Join(t.TempDir(), "coord"), Settings: Settings{}.Resolved()}
+	if err := fresh.with(nothing); err != nil {
+		t.Fatal(err)
+	}
+	fresh.Log("a line")
+	if got, want := modes(fresh.Dir), ".=0700 state.lock=0600 state.json=0600 coord.log=0600"; got != want {
+		t.Errorf("created:\n got %s\nwant %s", got, want)
+	}
+
+	old := &Coordinator{Dir: filepath.Join(t.TempDir(), "coord"), Settings: Settings{}.Resolved()}
+	if err := os.Mkdir(old.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"state.lock", "state.json", "state.json.tmp", "coord.log", "coord.log.1"} {
+		if err := os.WriteFile(filepath.Join(old.Dir, name), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// WriteFile is subject to the umask: make sure they start open.
+	for _, name := range []string{".", "state.lock", "state.json", "state.json.tmp", "coord.log", "coord.log.1"} {
+		mode := os.FileMode(0o644)
+		if name == "." {
+			mode = 0o755
+		}
+		if err := os.Chmod(filepath.Join(old.Dir, name), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := old.with(nothing); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := modes(old.Dir), ".=0700 state.lock=0600 state.json=0600 coord.log=0600 coord.log.1=0600"; got != want {
+		t.Errorf("left by an earlier version:\n got %s\nwant %s", got, want)
+	}
+}

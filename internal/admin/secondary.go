@@ -133,10 +133,40 @@ func hostOf(base string) string {
 	return strings.ToLower(u.Host)
 }
 
-// movesStoredKey reports a save that points an endpoint already in use at a
-// different host, so a key stored for the first would go to the second.
-func movesStoredKey(from, to string) bool {
-	return hostOf(from) != "" && hostOf(to) != "" && hostOf(from) != hostOf(to)
+// storedKeyGate is the reason to ask for Touch ID before a save, "" when
+// the save needs none. Two saves touch a key that is already stored:
+//
+//   - one with the key field left blank whose provider would read a stored
+//     key and send it to a host it does not go to today. The comparison is
+//     with where that key goes now, not with the base URL on record: saving
+//     "none" first empties the base URL, and the save after it then looked
+//     like a first setup while the key was still in the Keychain. Naming
+//     another provider's Keychain service in the request is the same move.
+//   - one with a key typed in over a Keychain entry, which
+//     `security add-generic-password -U` overwrites for good.
+//
+// Saving "none" touches no key: the entry stays where it is, and a later
+// save that would use it again is the one that asks.
+func (s *Server) storedKeyGate(cur config.Config, req secondaryRequest) string {
+	next, service, envVar, err := secondaryRoute(cur, req)
+	if err != nil || service == "" {
+		return ""
+	}
+	info := s.keyInfo(service, envVar)
+	if !info.Present {
+		return ""
+	}
+	if strings.TrimSpace(req.APIKey) != "" {
+		if info.Source == "keychain" {
+			return "replace the " + next.Provider + " API key stored for Claude Burst"
+		}
+		return ""
+	}
+	curService, _ := credentialNames(cur.Secondary, cur.KeychainService)
+	if curService == service && hostOf(cur.Secondary.BaseURL) == hostOf(next.BaseURL) {
+		return ""
+	}
+	return "send the API key stored for Claude Burst to " + hostOf(next.BaseURL)
 }
 
 // handleSecondary writes the secondary provider slot -- provider, endpoint,
@@ -154,12 +184,11 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 	}
 	// Showing the stored key needs Touch ID, so sending it somewhere new
 	// must too: without this, a new base URL and a test request hand the
-	// key to a host of the caller's choosing. Asked before the config lock
-	// is taken, since the sheet waits for a person.
-	if cur, err := config.Load(); err == nil && strings.TrimSpace(req.APIKey) == "" {
-		if next, service, envVar, err := secondaryRoute(cur, req); err == nil && service != "" &&
-			movesStoredKey(cur.Secondary.BaseURL, next.BaseURL) && s.keyInfo(service, envVar).Present {
-			if err := s.authenticate("send the API key stored for Claude Burst to " + hostOf(next.BaseURL)); err != nil {
+	// key to a host of the caller's choosing (storedKeyGate). Asked before
+	// the config lock is taken, since the sheet waits for a person.
+	if cur, err := config.Load(); err == nil {
+		if reason := s.storedKeyGate(cur, req); reason != "" {
+			if err := s.authenticate(reason); err != nil {
 				http.Error(w, "authentication was not completed, so the secondary was not changed: "+err.Error(), http.StatusForbidden)
 				return
 			}

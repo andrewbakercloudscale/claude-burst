@@ -85,6 +85,7 @@ type Gateway struct {
 	masker Masker
 
 	refused Refused
+	guard   guardState
 	// failures is the latest of what failed and is not a turn, newest
 	// last: a refused connection, a model list ChatGPT would not give.
 	failures []metrics.Event
@@ -173,7 +174,7 @@ func New(upstream, metricsPath string, logger *log.Logger) (*Gateway, error) {
 				g.record(r, metrics.StatusClientClosed, usage{}, "Codex closed the request")
 				return
 			}
-			logger.Printf("codex: %s %s failed: %v", r.Method, r.URL.Path, err)
+			logger.Printf("codex: %s %q failed: %q", r.Method, r.URL.Path, err.Error())
 			g.noteFailure(r, http.StatusBadGateway, "upstream unreachable: "+err.Error())
 			g.record(r, http.StatusBadGateway, usage{}, "upstream unreachable: "+err.Error())
 			http.Error(w, "Claude Burst could not reach "+u.Host+": "+err.Error(), http.StatusBadGateway)
@@ -204,6 +205,12 @@ func (g *Gateway) LastRequest() time.Time {
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Before anything is counted or forwarded: a web page must not pass for
+	// Codex, even as far as "Codex last sent" (guard.go).
+	if reason := g.requestRefusal(r); reason != "" {
+		g.refuse(w, r, reason)
+		return
+	}
 	g.inFlight.Add(1)
 	defer g.inFlight.Add(-1)
 	g.mu.Lock()
@@ -212,9 +219,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A WebSocket is passed through but its turns are not read: logged, so
 	// diagnose shows when Codex uses one and the counts would be short.
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		g.logger.Printf("codex: websocket %s (passed through; its turns are not counted)", r.URL.Path)
+		g.logger.Printf("codex: websocket %q (passed through; its turns are not counted)", r.URL.Path)
 		if g.masks() != nil {
-			g.logger.Printf("codex: automask could not read the turns of websocket %s: they go to ChatGPT as Codex wrote them", r.URL.Path)
+			g.logger.Printf("codex: automask could not read the turns of websocket %q: they go to ChatGPT as Codex wrote them", r.URL.Path)
 			unmaskedNotice("the turns of a Codex WebSocket")
 		}
 	}
@@ -268,7 +275,7 @@ func (g *Gateway) observe(resp *http.Response) error {
 		// own: the log then holds everything Codex sent, and which of its
 		// clients sent it (the desktop app and its helpers sign in apart).
 		start, _ := r.Context().Value(startKey{}).(time.Time)
-		g.logger.Printf("codex: request %s %s status=%d ms=%d client=%q", r.Method, r.URL.Path, resp.StatusCode, time.Since(start).Milliseconds(), r.Header.Get("Originator"))
+		g.logger.Printf("codex: request %s %q status=%d ms=%d client=%q", r.Method, r.URL.Path, resp.StatusCode, time.Since(start).Milliseconds(), r.Header.Get("Originator"))
 	}
 	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/models") && resp.StatusCode == http.StatusOK {
 		g.noteModels(resp)
@@ -280,7 +287,7 @@ func (g *Gateway) observe(resp *http.Response) error {
 		// hours and this log had nothing to tell it from a fault of Burst's.
 		if resp.StatusCode >= 400 {
 			why := snippet(peekBody(resp, 4<<10))
-			g.logger.Printf("codex: %s %s answered %d by ChatGPT (passed on to Codex as it came): %s", r.Method, r.URL.Path, resp.StatusCode, why)
+			g.logger.Printf("codex: %s %q answered %d by ChatGPT (passed on to Codex as it came): %q", r.Method, r.URL.Path, resp.StatusCode, why)
 			g.noteFailure(r, resp.StatusCode, why)
 		}
 		return nil
@@ -421,6 +428,25 @@ func (g *Gateway) noteBackWithin() {
 	}
 }
 
+// logID is a request or session id as a log line shows it. Codex sends
+// both as headers, so they are whatever the sender chose: one made only of
+// the characters an id has is written as it is, so the line reads and greps
+// as before, and anything else is quoted and cut short.
+func logID(s string) string {
+	plain := len(s) <= 128
+	for i := 0; plain && i < len(s); i++ {
+		c := s[i]
+		plain = c == '-' || c == '_' || c == '.' || c == ':' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	}
+	if plain {
+		return s
+	}
+	if len(s) > 128 {
+		s = s[:128] + "..."
+	}
+	return strconv.Quote(s)
+}
+
 func snippet(b []byte) string {
 	s := strings.TrimSpace(string(b))
 	if len(s) > 300 {
@@ -522,7 +548,7 @@ func (g *Gateway) record(r *http.Request, status int, u usage, note string) {
 	// scripts/diagnose.sh) shows Codex's traffic beside Claude Code's.
 	// req is the id codex-metrics.jsonl has as request_id, so a turn's line
 	// here and its record there are one lookup apart.
-	g.logger.Printf("codex: turn req=%s status=%d model=%q in=%d cached=%d out=%d ms=%d session=%s", e.RequestID, status, u.Model, uncached, u.Cached, u.Output, e.DurationMS, e.SessionID)
+	g.logger.Printf("codex: turn req=%s status=%d model=%q in=%d cached=%d out=%d ms=%d session=%s", logID(e.RequestID), status, u.Model, uncached, u.Cached, u.Output, e.DurationMS, logID(e.SessionID))
 	if err := g.metrics.Write(e); err != nil {
 		g.logger.Printf("codex: metrics write failed: %v", err)
 	}

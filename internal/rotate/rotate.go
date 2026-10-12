@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"sync"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
 // RotateIfOversized checks path's current size and, if it exceeds maxBytes,
@@ -70,6 +72,8 @@ type Writer struct {
 	size       int64
 	// rotateFailed: the last rotation failed and that has been said.
 	rotateFailed bool
+	// failed: the last write failed and that has been said (report).
+	failed bool
 }
 
 // retryAfter is how much more is written after a failed rotation before it
@@ -80,9 +84,48 @@ func NewWriter(path string, maxBytes int64, maxBackups int) *Writer {
 	return &Writer{path: path, maxBytes: maxBytes, maxBackups: maxBackups}
 }
 
+// report says, once, that a log cannot be written (err) or can again (nil).
+// log.Logger throws a Write error away, so until 12 Oct 2026 a log on a
+// full disk, or one whose file or folder had lost its permissions, stopped
+// with nothing anywhere to say so, and the first anyone knew was a support
+// question with no log behind it.
+//
+// It goes to stderr, which launchd keeps in a file of its own, and on
+// screen. The notice is published from another goroutine and never from
+// Write itself: the publisher logs what it publishes, through the logger
+// whose Write this is, and that logger holds its lock while Write runs. A
+// variable for tests.
+var report = func(path string, err error) {
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "rotate: %s is being written again\n", path)
+		go notice.Publish(noticeKind, notice.OK, "Claude Burst is writing its log again", path)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "rotate: %s cannot be written, so nothing is being logged (said once): %v\n", path, err)
+	go notice.Publish(noticeKind, notice.Error, "Claude Burst cannot write its log",
+		path+": "+err.Error()+". Routing goes on, but nothing is being recorded there until this is fixed (a full disk, or the file's permissions).")
+}
+
+// noticeKind is the notice kind for a log that cannot be written, so
+// "writing again" resolves the error it follows.
+const noticeKind = "log"
+
 func (w *Writer) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	n, err := w.write(p)
+	switch {
+	case err != nil && !w.failed:
+		w.failed = true
+		report(w.path, err)
+	case err == nil && w.failed:
+		w.failed = false
+		report(w.path, nil)
+	}
+	return n, err
+}
+
+func (w *Writer) write(p []byte) (int, error) {
 	if w.f == nil {
 		if err := w.open(); err != nil {
 			return 0, err

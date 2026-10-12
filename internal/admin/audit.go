@@ -88,21 +88,88 @@ func handleAuditContext(w http.ResponseWriter, r *http.Request) {
 // logAround reads the log lines stamped within [t-before, t+after], local
 // time, skipping noise. Lines from before the log switched to local time
 // are UTC and simply fall outside the window.
+//
+// The audit keeps weeks and the log file hours: it is moved to .1, .2 and
+// on as it fills (internal/rotate). An entry older than the file in use is
+// looked for in those, newest first, until one starts before the window.
+// Until 12 Oct 2026 only the file in use was read, so "Log around this"
+// came back empty for most of the audit.
 func logAround(path string, t time.Time, before, after time.Duration) ([]string, error) {
+	from, to := t.Add(-before), t.Add(after)
+	// Oldest first, which is the order the lines are wanted in.
+	var files []string
+	for i := 0; i <= contextFiles; i++ {
+		p := path
+		if i > 0 {
+			p = path + "." + strconv.Itoa(i)
+		}
+		first, stamped, err := firstStamp(p)
+		if err != nil {
+			if i == 0 {
+				return nil, err
+			}
+			break
+		}
+		// A file that starts after the window holds none of it.
+		if !stamped || !first.After(to) {
+			files = append([]string{p}, files...)
+		}
+		if stamped && first.Before(from) {
+			break
+		}
+	}
+	out := []string{}
+	for _, p := range files {
+		var err error
+		if out, err = logWindow(p, from, to, out); err != nil {
+			return nil, err
+		}
+		if len(out) > contextMax {
+			break
+		}
+	}
+	return out, nil
+}
+
+// contextFiles is how many rotated files are looked back through: more
+// than the gateway keeps.
+const contextFiles = 40
+
+// firstStamp is the time on the first stamped line near the start of a log
+// file, and whether it has one.
+func firstStamp(path string) (time.Time, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return time.Time{}, false, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 4<<20)
+	// A stack trace has lines with no time: look past a few.
+	for i := 0; i < 200 && sc.Scan(); i++ {
+		line := sc.Bytes()
+		if ts, ok := logline.ParseStamp(string(line[:min(len(line), len(logline.Stamp))])); ok {
+			return ts, true, nil
+		}
+	}
+	return time.Time{}, false, nil
+}
+
+// logWindow appends to out the lines of one log file stamped within
+// [from, to], skipping noise.
+func logWindow(path string, from, to time.Time, out []string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return out, err
 	}
 	defer f.Close()
 	if st, err := f.Stat(); err == nil && st.Size() > contextScan {
 		if _, err := f.Seek(st.Size()-contextScan, io.SeekStart); err != nil {
-			return nil, err
+			return out, err
 		}
 	}
-	from, to := t.Add(-before), t.Add(after)
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), 4<<20)
-	out := []string{}
 	for sc.Scan() {
 		line := sc.Bytes()
 		// Either layout: the rotated files still hold lines from before
@@ -124,6 +191,16 @@ func logAround(path string, t time.Time, before, after time.Duration) ([]string,
 		}
 	}
 	return out, sc.Err()
+}
+
+// redactLog is redactLine for a piece of the log, a line at a time: the
+// pattern must not reach from the end of one line into the next.
+func redactLog(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	for _, line := range bytes.SplitAfter(b, []byte("\n")) {
+		out = append(out, secretInLog.ReplaceAll(line, []byte("${1}REDACTED"))...)
+	}
+	return out
 }
 
 func logNoise(line []byte) bool {

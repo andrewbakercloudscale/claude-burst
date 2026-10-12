@@ -40,10 +40,18 @@ const (
 	// inspectMaxBody: a request this large is passed through untouched,
 	// neither read for the inspector nor edited.
 	inspectMaxBody = 64 << 20
+	// inspectMaxBytes is what the kept requests may hold between them. The
+	// count alone was no bound on memory: forty sessions each sending a
+	// request near inspectMaxBody came to 2.5GB.
+	inspectMaxBytes = 256 << 20
 )
 
-// inspectLimit is inspectMaxBody; a variable so a test need not send 64MB.
-var inspectLimit int64 = inspectMaxBody
+// inspectLimit is inspectMaxBody and inspectBudget is inspectMaxBytes;
+// variables so a test need not send 64MB.
+var (
+	inspectLimit  int64 = inspectMaxBody
+	inspectBudget int64 = inspectMaxBytes
+)
 
 // RemovalKey is the store key of a Codex session.
 func RemovalKey(sid string) string { return "codex:" + sid }
@@ -67,7 +75,7 @@ func (g *Gateway) prepareTurn(r *http.Request) {
 			if enc != "" {
 				why = "it is compressed (" + enc + ")"
 			}
-			g.logger.Printf("codex: automask could not read a turn of session %s, %s: it goes to ChatGPT as Codex wrote it", sid, why)
+			g.logger.Printf("codex: automask could not read a turn of session %s, %s: it goes to ChatGPT as Codex wrote it", logID(sid), why)
 			unmaskedNotice("a Codex turn, " + why)
 		}
 		return
@@ -143,6 +151,29 @@ func (g *Gateway) capture(sid string, body []byte) {
 			delete(st.reqs, oldest)
 		}
 	}
+	// Then by size, oldest first. The request just kept stays whatever its
+	// size: it is the one the inspector is most likely to be asked for.
+	for st.held() > inspectBudget {
+		var oldest string
+		for k, c := range st.reqs {
+			if k != sid && (oldest == "" || c.at.Before(st.reqs[oldest].at)) {
+				oldest = k
+			}
+		}
+		if oldest == "" {
+			break
+		}
+		delete(st.reqs, oldest)
+	}
+}
+
+// held is how many bytes the kept requests hold; called with mu held.
+func (st *inspectStore) held() int64 {
+	var n int64
+	for _, c := range st.reqs {
+		n += int64(len(c.body))
+	}
+	return n
 }
 
 // InspectSession is one Codex session the inspector can show.

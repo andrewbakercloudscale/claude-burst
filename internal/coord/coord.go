@@ -206,10 +206,11 @@ func (c *Coordinator) prewarm() map[string]fileState {
 // with runs fn on the state under an exclusive lock and saves it if fn
 // returns nil. It gives up after lockWait rather than stall a session.
 func (c *Coordinator) with(fn func(t *tx) error) error {
-	if err := os.MkdirAll(c.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(c.Dir, 0o700); err != nil {
 		return err
 	}
-	lf, err := os.OpenFile(filepath.Join(c.Dir, "state.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	c.tighten()
+	lf, err := os.OpenFile(filepath.Join(c.Dir, "state.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -265,10 +266,36 @@ func (c *Coordinator) with(fn func(t *tx) error) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	// A state.json.tmp left by a write that was cut short keeps the mode it
+	// had: WriteFile sets one only on a file it creates.
+	_ = os.Remove(tmp)
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// tighten takes group and other access off the state directory and what is
+// in it. Inboxes hold what one session wrote to another and the log names
+// the files each is working on; until 12 Oct 2026 all of it was created
+// 0755 and 0644, readable by every account on the Mac. Everything that
+// reads it runs as the account that owns it (the gateway, the hooks, the
+// claude-burst coord commands), so nothing loses access. Done on every use
+// and not only at creation, so an install from before then is put right
+// the first time a session touches it.
+func (c *Coordinator) tighten() {
+	private(c.Dir, 0o700)
+	for _, name := range []string{"state.lock", "state.json", "state.json.corrupt", "coord.log", "coord.log.1"} {
+		private(filepath.Join(c.Dir, name), 0o600)
+	}
+}
+
+// private gives path the mode when it grants more than that. A link is
+// left alone: its target is not ours to change.
+func private(path string, mode os.FileMode) {
+	if st, err := os.Lstat(path); err == nil && st.Mode()&os.ModeSymlink == 0 && st.Mode().Perm()&^mode != 0 {
+		_ = os.Chmod(path, mode)
+	}
 }
 
 // coordLogMax is where coord.log is moved to coord.log.1 and started again.
@@ -278,7 +305,7 @@ const coordLogMax = 2 << 20
 func (c *Coordinator) Log(format string, a ...any) {
 	// Kept to a size: it grew for ever, a line for every hand-over.
 	_ = rotate.RotateIfOversized(filepath.Join(c.Dir, "coord.log"), coordLogMax, 1)
-	f, err := os.OpenFile(filepath.Join(c.Dir, "coord.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(filepath.Join(c.Dir, "coord.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}

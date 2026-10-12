@@ -18,7 +18,7 @@ A local data-loss-prevention layer can reduce what leaves the machine, but it do
 
 The gateway has no login: any local process can send it a request. It cannot force an overflow window open (only genuine subscription-limit or sustained-failure signals do that), but it can ride an already-open one, and it can drive ordinary traffic through your credential, as any local process could by reading that credential itself.
 
-What stops a web page from doing the same through your browser is an Origin and Host guard: the gateway refuses a request that carries a browser `Origin` header, or whose `Host` names anything but the gateway's own loopback address or the intercepted host. Before that guard, a page could send `POST /v1/messages` with a simple content type, which needs no CORS preflight. Don't bind `listen` to anything but `127.0.0.1`: the gateway still starts on another address, and says so at every start with a `WARNING` in the log and a notice on screen.
+What stops a web page from doing the same through your browser is an Origin and Host guard: the gateway refuses a request that carries a browser `Origin` header, or whose `Host` names anything but the gateway's own loopback address or the intercepted host. Before that guard, a page could send `POST /v1/messages` with a simple content type, which needs no CORS preflight. The Codex port has the same guard, and also refuses a `Sec-Fetch-Site` of `cross-site` or `same-site`. Don't bind `listen` to anything but `127.0.0.1`: the gateway still starts on another address, and says so at every start with a `WARNING` in the log and a notice on screen.
 
 ## 5. Upstream error text (including the request path/query) is logged and metered failure detail is not size-bounded
 

@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 // localRequest is httptest.NewRequest as the dashboard's own page sends it:
@@ -76,7 +78,8 @@ func TestTheGuardRefusesAnotherSitesPage(t *testing.T) {
 
 // Showing the stored key needs Touch ID. Pointing the secondary at another
 // host with the key field left blank would send that same key there, so it
-// needs Touch ID too; the same host, or a key typed in again, does not.
+// needs Touch ID too, and so does a key typed in over the stored one; the
+// same host with the field blank does not.
 func TestMovingAStoredKeyToANewHostNeedsTouchID(t *testing.T) {
 	s, home, stored := newSecondaryTestServer(t)
 	writeConfig(t, home)
@@ -101,8 +104,54 @@ func TestMovingAStoredKeyToANewHostNeedsTouchID(t *testing.T) {
 	if got := loadSavedConfig(t, home).Secondary.BaseURL; got != "https://api.z.ai/v5" {
 		t.Fatalf("a refused change was saved: %q", got)
 	}
-	if code := post("https://other.example/v4", "sk-second"); code != http.StatusOK || asked != "" {
-		t.Fatalf("a new host with its own key typed in: status %d, asked %q", code, asked)
+	// A key typed in goes nowhere the stored one was not going, but it
+	// overwrites the stored one for good.
+	if code := post("https://other.example/v4", "sk-second"); code != http.StatusForbidden || !strings.Contains(asked, "replace") {
+		t.Fatalf("a key typed in over the stored one: status %d, asked %q", code, asked)
+	}
+	if stored["claude-burst-zai"] != "sk-first" {
+		t.Fatalf("a refused save replaced the stored key: %q", stored["claude-burst-zai"])
+	}
+}
+
+// Saving "none" empties the base URL on record and leaves the key in the
+// Keychain, so the save after it has no host to compare with: until
+// 12 Oct 2026 that passed for a first setup and sent the stored key to the
+// new host unasked. So did a save naming another provider's Keychain entry.
+func TestRemovingTheSecondaryFirstDoesNotSkipTouchID(t *testing.T) {
+	s, home, stored := newSecondaryTestServer(t)
+	writeConfig(t, home)
+	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4","model":"glm-4.7","keychain_service":"claude-burst-zai","api_key":"sk-first"}`); rr.Code != http.StatusOK {
+		t.Fatalf("setup save: %s", rr.Body.String())
+	}
+	stored["claude-burst-other"] = "sk-other"
+	asked := ""
+	s.authenticate = func(reason string) error { asked = reason; return errors.New("User canceled authentication") }
+
+	if rr := postSecondary(t, s, `{"provider":"none"}`); rr.Code != http.StatusOK || asked != "" {
+		t.Fatalf("removing the secondary touches no key: status %d, asked %q", rr.Code, asked)
+	}
+	if stored["claude-burst-zai"] != "sk-first" {
+		t.Fatal("the key is expected to stay in the Keychain, which is what this test is about")
+	}
+	rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://evil.example/v4","model":"glm-4.7","keychain_service":"claude-burst-zai"}`)
+	if rr.Code != http.StatusForbidden || !strings.Contains(asked, "evil.example") {
+		t.Fatalf("the stored key after a save of none: status %d, asked %q", rr.Code, asked)
+	}
+	if got := loadSavedConfig(t, home).Secondary.Provider; got != config.ProviderNone {
+		t.Fatalf("a refused change was saved: provider %q", got)
+	}
+
+	// Back on its own host, then the same host under another entry's name.
+	s.authenticate = func(reason string) error { asked = reason; return nil }
+	if rr := postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4","model":"glm-4.7","keychain_service":"claude-burst-zai"}`); rr.Code != http.StatusOK || !strings.Contains(asked, "api.z.ai") {
+		t.Fatalf("back on its own host: status %d, asked %q", rr.Code, asked)
+	}
+	s.authenticate = func(reason string) error { asked = reason; return errors.New("User canceled authentication") }
+	asked = ""
+	rr = postSecondary(t, s, `{"provider":"openai-compatible","base_url":"https://api.z.ai/v4","model":"glm-4.7","keychain_service":"claude-burst-other"}`)
+	if rr.Code != http.StatusForbidden || asked == "" {
+		t.Fatalf("another stored key on the same host: status %d, asked %q", rr.Code, asked)
 	}
 }
 

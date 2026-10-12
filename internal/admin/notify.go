@@ -98,6 +98,50 @@ type notifier struct {
 	selfEvents  int
 	intercept   interceptCheck
 	alerts      alertRounds
+	config      configWatch
+}
+
+// alertConfigKind is the notice kind for a config.json that will not load,
+// so "loads again" resolves the error it follows.
+const alertConfigKind = "config"
+
+// configWatch is config.Load for a loop that lives as long as the gateway:
+// the alert rounds and the compaction learner. Until 12 Oct 2026 a
+// config.json that would not load ended each round with nothing said, so a
+// mistyped brace turned off every alert and the learner, and the first
+// sign was whatever they would have reported. The loop goes on and reads
+// the file again next round; that it is paused is said once, not every
+// round, and so is its coming back.
+type configWatch struct {
+	what   string // what is paused, for the log
+	broken bool
+}
+
+// loadConfig returns config.json, or false for a round to skip. onScreen
+// puts the pause on screen as well as in the log: one loop does, so two
+// loops reading the same file raise one alert.
+func (s *Server) loadConfig(w *configWatch, onScreen bool) (config.Config, bool) {
+	cfg, err := config.Load()
+	if err != nil {
+		if !w.broken {
+			w.broken = true
+			s.gateway.Logf("warn stage=config %s paused: config.json could not be loaded (%q); it is read again every round, and this is said once", w.what, err.Error())
+			if onScreen {
+				notice.Publish(alertConfigKind, notice.Error, "config.json cannot be read",
+					"Alerts and the compaction learner are paused until it loads: "+err.Error()+
+						". The gateway goes on with the settings it started with. Fix the file, or put back the last one that loaded with Restore last good config on the support console, or claude-burst restore-config.")
+			}
+		}
+		return cfg, false
+	}
+	if w.broken {
+		w.broken = false
+		s.gateway.Logf("%s resumed: config.json loads again", w.what)
+		if onScreen {
+			notice.Publish(alertConfigKind, notice.OK, "config.json loads again", "Alerts and the compaction learner are running again.")
+		}
+	}
+	return cfg, true
 }
 
 // StartNotifier runs until ctx ends.
@@ -119,8 +163,9 @@ func (s *Server) StartNotifier(ctx context.Context) {
 // a baseline: starting the gateway must not announce everything that is
 // already true.
 func (s *Server) notifyRound(n *notifier, now time.Time) {
-	cfg, err := config.Load()
-	if err != nil {
+	n.config.what = "alerts"
+	cfg, ok := s.loadConfig(&n.config, true)
+	if !ok {
 		return
 	}
 

@@ -428,7 +428,14 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 			logTailBytes/1024, path, st.Size())
 	}
 	fmt.Fprintln(w)
-	_, _ = io.Copy(w, f)
+	// Through the same backstop as the audit view and the console's log
+	// tail (redactLine): the log should hold no credential, and the three
+	// places that show it must not differ on what happens if it ever does.
+	b, err := io.ReadAll(io.LimitReader(f, logTailBytes))
+	if err != nil {
+		return
+	}
+	_, _ = w.Write(redactLog(b))
 }
 
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {

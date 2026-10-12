@@ -2,9 +2,13 @@ package rotate
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
 func TestRotateIfOversizedNoopWhenMissing(t *testing.T) {
@@ -164,5 +168,73 @@ func assertContent(t *testing.T, path, want string) {
 	}
 	if string(b) != want {
 		t.Fatalf("%s content = %q, want %q", path, b, want)
+	}
+}
+
+// A log that cannot be written says so once, however many lines are lost,
+// and once more when it can be written again.
+func TestAnUnwritableLogIsReportedOnce(t *testing.T) {
+	var said []error
+	old := report
+	report = func(path string, err error) { said = append(said, err) }
+	t.Cleanup(func() { report = old })
+
+	dir := filepath.Join(t.TempDir(), "gone")
+	w := NewWriter(filepath.Join(dir, "app.log"), 1000, 2)
+	defer w.Close()
+	for i := 0; i < 3; i++ {
+		if _, err := w.Write([]byte("line\n")); err == nil {
+			t.Fatal("a write into a folder that does not exist succeeded")
+		}
+	}
+	if len(said) != 1 || said[0] == nil {
+		t.Fatalf("reported %d times (%v), want once with the error", len(said), said)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := w.Write([]byte("line\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(said) != 2 || said[1] != nil {
+		t.Fatalf("reported %v, want the failure and then one recovery", said)
+	}
+}
+
+// The notice is published through a publisher that logs to the very logger
+// whose write failed. That must neither deadlock on the logger it is
+// called under nor report again for the line the publisher then loses.
+func TestReportingAnUnwritableLogDoesNotComeBackThroughIt(t *testing.T) {
+	dir := t.TempDir()
+	w := NewWriter(filepath.Join(dir, "gone", "app.log"), 1000, 2)
+	defer w.Close()
+	logger := log.New(w, "", 0)
+	notices := filepath.Join(dir, "notices.json")
+	notice.SetDefault(notice.New(notices, logger))
+	t.Cleanup(func() { notice.SetDefault(nil) })
+
+	done := make(chan struct{})
+	go func() {
+		logger.Printf("a line nobody will read")
+		logger.Printf("and another")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("logging to an unwritable file never returned")
+	}
+	var evs []notice.Event
+	for end := time.Now().Add(3 * time.Second); len(evs) == 0 && time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		notice.Flush(time.Second)
+		evs, _ = notice.Read(notices)
+	}
+	time.Sleep(50 * time.Millisecond)
+	notice.Flush(time.Second)
+	evs, _ = notice.Read(notices)
+	if len(evs) != 1 || evs[0].Severity != notice.Error || evs[0].Kind != noticeKind {
+		t.Fatalf("notices: %+v, want the one error", evs)
 	}
 }

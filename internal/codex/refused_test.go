@@ -220,7 +220,7 @@ func TestWhatIsPassedOnIsNotRefused(t *testing.T) {
 	if rf := g.Refused(); rf.Count != 0 {
 		t.Errorf("refused %+v\n%s", rf, out.String())
 	}
-	if l := out.String(); !strings.Contains(l, `level=info codex: request GET /two status=200 ms=`) {
+	if l := out.String(); !strings.Contains(l, `level=info codex: request GET "/two" status=200 ms=`) {
 		t.Errorf("every request that is not a turn has a log line: %s", l)
 	}
 	mu.Lock()

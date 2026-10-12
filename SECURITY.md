@@ -26,7 +26,8 @@ designed to protect, and what it is not:
 
 - **Other websites must not be able to use the gateway or the dashboard.** Both listen on
   loopback only. The gateway refuses requests carrying a browser `Origin` header or a `Host`
-  that is not its own loopback name or the intercepted host. The dashboard checks `Host`
+  that is not its own loopback name or the intercepted host, and so does the Codex port
+  (`Origin`, `Sec-Fetch-Site` and `Host`). The dashboard checks `Host`
   (against DNS rebinding) and requires a custom header on every change, which a cross-origin
   page cannot send without a CORS preflight the server never answers; no CORS headers are ever
   returned, so responses cannot be read cross-origin.
@@ -52,6 +53,9 @@ designed to protect, and what it is not:
   header of the most recent request is held in memory, for the requests the gateway sends on
   the session's behalf (summaries, and the test message when you press it), and is never
   logged, served by the dashboard, or sent with certificate checks off. Secondary API keys live in the macOS login Keychain.
+  The dashboard asks for Touch ID (or the login password) before it shows a stored key, before a
+  save that would send a stored key to a host it does not go to now, and before a key typed in
+  replaces a stored one.
 
 **Out of scope**
 

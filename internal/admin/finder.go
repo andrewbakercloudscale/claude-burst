@@ -535,7 +535,7 @@ func setFinderBypass(key string, on bool) (string, error) {
 
 func installFinderShortcuts(panelInstalled bool, keys ...string) ([]string, error) {
 	if !ghosttyInstalled() {
-		return nil, fmt.Errorf("Ghostty is not installed (looked in /Applications and ~/Applications); get it from https://ghostty.org")
+		return nil, fmt.Errorf("no Ghostty on this Mac (looked in /Applications and ~/Applications); get it from https://ghostty.org")
 	}
 	var done []string
 	changed := false

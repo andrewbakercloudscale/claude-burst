@@ -68,6 +68,9 @@ func NewWith(projectsDir string, temp []string) *Resolver {
 // Resolve names the repository session runs in and its root, or Unknown
 // and "" when its transcript cannot say. Temp sessions have no root.
 func (r *Resolver) Resolve(session string) (name, root string) {
+	if !plainID(session) {
+		return Unknown, ""
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if v, ok := r.hit[session]; ok {
@@ -92,6 +95,25 @@ func (r *Resolver) Resolve(session string) (name, root string) {
 	name, root = r.repoOf(cwd)
 	r.hit[session] = [2]string{name, root}
 	return name, root
+}
+
+// plainID reports whether a session id can be a transcript's file name. The
+// id is a request header, so it is whatever the sender chose, and Resolve
+// puts it in a glob: "../../x" walked out of the projects directory and
+// "*" matched every session's transcript. Claude Code's ids are UUIDs;
+// letters, digits, "-" and "_" cover them and nothing a path or a pattern
+// is made of.
+func plainID(s string) bool {
+	if s == "" || len(s) > 128 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '-' && c != '_' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 // transcriptCwd returns the first "cwd" recorded in a transcript. It sits on

@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -244,5 +246,41 @@ func TestKeepAwakePowerMode(t *testing.T) {
 		if got := wantSleepDisabled(c.mode, c.onAC); got != c.want {
 			t.Errorf("wantSleepDisabled(%s, onAC=%v) = %v, want %v", c.mode, c.onAC, got, c.want)
 		}
+	}
+}
+
+// A script is looked for beside the binary, in the working directory, and
+// where the installer recorded the checkout or copied the script: never in
+// one particular folder under the home directory, which until 12 Oct 2026
+// was the author's own checkout path.
+func TestScriptPathLooksOnlyWhereAnInstallPutThings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	guess := filepath.Join(home, "Desktop", "github", "claude-burst", "scripts")
+	if err := os.MkdirAll(guess, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(guess, "only-there.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := scriptPath("only-there.sh"); strings.HasPrefix(got, home) {
+		t.Fatalf("found by guessing at a folder: %s", got)
+	}
+
+	share := filepath.Join(home, ".local", "share", "claude-burst")
+	if err := os.MkdirAll(share, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(share, "copied.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := scriptPath("copied.sh"), filepath.Join(share, "copied.sh"); got != want {
+		t.Errorf("a script the installer copied: %s, want %s", got, want)
+	}
+	if err := os.WriteFile(filepath.Join(share, "repo"), []byte("/somewhere/else/claude-burst\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := scriptPath("only-there.sh"), "/somewhere/else/claude-burst/scripts/only-there.sh"; got != want {
+		t.Errorf("the checkout the installer recorded: %s, want %s", got, want)
 	}
 }

@@ -74,7 +74,7 @@ func readCodexLogin() (codexLogin, error) {
 	}
 	if a.Tokens.AccessToken == "" {
 		if a.AuthMode != "" && a.AuthMode != "chatgpt" {
-			return codexLogin{}, fmt.Errorf("Codex signs in with %q, not ChatGPT", a.AuthMode)
+			return codexLogin{}, fmt.Errorf("auth.json signs Codex in with %q, not ChatGPT", a.AuthMode)
 		}
 		return codexLogin{}, fmt.Errorf("no ChatGPT sign-in in auth.json")
 	}
