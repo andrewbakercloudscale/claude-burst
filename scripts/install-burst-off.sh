@@ -29,4 +29,17 @@ mkdir -p "$OFF_DIR" "$INSTALL_DIR" &&
     'exec /bin/zsh "$HOME/.local/share/claude-burst/rollback.sh" "$@"' > "$INSTALL_DIR/burst-off" &&
   chmod 755 "$INSTALL_DIR/burst-off" ||
   echo "WARNING: could not install burst-off; scripts/rollback.sh does the same from this checkout" >&2
+
+# burst-repair: scripts/repair.sh, which finds the checkout from the path
+# recorded above, or clones one. The watchdog's alerts, diagnose.sh and the
+# docs told people to run it from the day repair.sh was written, and until
+# 12 Oct 2026 nothing put it on the PATH. Apart from the chain above, so
+# that a problem here cannot cost anyone burst-off.
+cp -f "$ROOT/scripts/repair.sh" "$OFF_DIR/" &&
+  chmod 755 "$OFF_DIR/repair.sh" &&
+  printf '%s\n' '#!/bin/zsh' \
+    '# Fix the common ways Claude Burst stops working. Installed by claude-burst.' \
+    'exec /bin/bash "$HOME/.local/share/claude-burst/repair.sh" "$@"' > "$INSTALL_DIR/burst-repair" &&
+  chmod 755 "$INSTALL_DIR/burst-repair" ||
+  echo "WARNING: could not install burst-repair; scripts/repair.sh does the same from this checkout" >&2
 exit 0

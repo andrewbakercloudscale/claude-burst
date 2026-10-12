@@ -156,6 +156,7 @@ No Claude Code session open, or the commands are not there? In any terminal:
 ```sh
 burst-off            # the same thing; on your PATH from v0.11. Undo: claude-burst enable
 burst-reinstall      # fetch the newest Burst and install it again; from v0.19
+burst-repair         # the Repair one-liner above, from the copy the installer keeps
 ```
 
 `scripts/rollback.sh` does the same from a checkout, and **Turn Burst off** on the [support console](#support-console) does it from a browser.
@@ -314,7 +315,7 @@ Claude Burst is a man-in-the-middle for your Claude traffic by design. This is w
 
 **The redirect is machine-wide.** In transparent mode `/etc/hosts` and a pf rule send every process's `api.anthropic.com` traffic to the gateway, so if the gateway is down, nothing on the Mac reaches Anthropic. Two guards watch for that, and the pf guard removes the redirect rather than leave the Mac cut off. `sudo scripts/transparent-root.sh remove` undoes it; `scripts/rollback.sh` undoes everything even when the gateway is dead ([Emergency recovery](ROLLBACK.md#emergency-recovery-without-this-machines-help)).
 
-**The gateway has no login.** It listens on loopback only (`127.0.0.1:7777`, dashboard on `127.0.0.1:7788`). Any process of your own account can talk to it, as it could talk to Anthropic with your credential. The dashboard and support console API answer only the account Burst runs as: another account on the same Mac is refused. The gateway port itself (`7777`) does not make that check. What keeps web pages out is an Origin and Host guard on the gateway, and on the dashboard a `Host` check plus a custom header on every change, which a cross-origin page cannot send without a preflight the server never answers. Anything needing root opens in Terminal for you to read and approve; the dashboard never escalates by itself. Details in [The dashboard](docs/dashboard.md#the-local-admin-ui) and [Known limitations](docs/limitations.md).
+**The gateway has no login.** It listens on loopback only (`127.0.0.1:7777`, dashboard on `127.0.0.1:7788`). Any process of your own account can talk to it, as it could talk to Anthropic with your credential. The dashboard and support console API answer only the account Burst runs as: another account on the same Mac is refused. The gateway port itself (`7777`) does not make that check. What keeps web pages out is an Origin and Host guard on the gateway and on the Codex port, and on the dashboard a `Host` check plus a custom header on every change, which a cross-origin page cannot send without a preflight the server never answers. Anything needing root opens in Terminal for you to read and approve; the dashboard never escalates by itself. Details in [The dashboard](docs/dashboard.md#the-local-admin-ui) and [Known limitations](docs/limitations.md).
 
 **Where your requests go.** Subscription requests go to Anthropic unchanged, with Claude Code's own login. Overflow requests go to the secondary you configured, with the whole (pruned) conversation, under that provider's terms. Pauseless compaction and the handover writer send requests Claude Code did not send itself: summaries, on your subscription, with your session's login, which count against your limits like any other request.
 

@@ -27,7 +27,7 @@ func newReinstallRig(t *testing.T) *reinstallRig {
 	must(t, os.MkdirAll(r.home, 0o755))
 	must(t, os.MkdirAll(filepath.Join(r.origin, "scripts"), 0o755))
 	r.git(r.origin, "init", "-q", "-b", "main")
-	for _, f := range []string{"install-burst-off.sh", "reinstall.sh", "rollback.sh", "transparent-root.sh", "untrust-ca-systemwide.sh", "codex-unroute.sh", "audit-add.sh"} {
+	for _, f := range []string{"install-burst-off.sh", "reinstall.sh", "rollback.sh", "repair.sh", "transparent-root.sh", "untrust-ca-systemwide.sh", "codex-unroute.sh", "audit-add.sh"} {
 		b, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", f))
 		must(t, err)
 		must(t, os.WriteFile(filepath.Join(r.origin, "scripts", f), b, 0o755))
@@ -103,5 +103,33 @@ func TestBurstReinstallClonesWhenTheCheckoutIsGone(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(share, "reinstall.sh"), []byte(strings.Replace(string(b), "https://github.com/andrewbakercloudscale/claude-burst.git", r.origin, 1)), 0o755))
 	if out := r.reinstall(); !strings.Contains(out, "installed v2 from") || !strings.Contains(out, "claude-burst/src") {
 		t.Fatalf("want a fresh clone installed:\n%s", out)
+	}
+}
+
+// The alerts, diagnose.sh and the docs tell people to run burst-repair,
+// burst-off and burst-reinstall. Each is put on the PATH by the installer,
+// and each runs a copy kept outside the checkout: until 12 Oct 2026
+// burst-repair was a command nothing installed.
+func TestEveryCommandTheAlertsNameIsInstalled(t *testing.T) {
+	r := newReinstallRig(t)
+	for name, script := range map[string]string{"burst-off": "rollback.sh", "burst-reinstall": "reinstall.sh", "burst-repair": "repair.sh"} {
+		st, err := os.Stat(filepath.Join(r.home, ".local", "bin", name))
+		if err != nil || st.Mode().Perm()&0o111 == 0 {
+			t.Errorf("%s is not an installed command: %v", name, err)
+			continue
+		}
+		if !strings.Contains(readFile(filepath.Join(r.home, ".local", "bin", name)), "/.local/share/claude-burst/"+script) {
+			t.Errorf("%s does not run the copy of %s kept outside the checkout", name, script)
+		}
+		if st, err := os.Stat(filepath.Join(r.home, ".local", "share", "claude-burst", script)); err != nil || st.Mode().Perm()&0o111 == 0 {
+			t.Errorf("%s was not copied out of the checkout: %v", script, err)
+		}
+	}
+	// And the uninstall takes all three away again.
+	uninstall := readFile(filepath.Join(repoRoot(t), "install.sh"))
+	for _, name := range []string{"burst-off", "burst-reinstall", "burst-repair"} {
+		if !strings.Contains(uninstall, `"$INSTALL_DIR/`+name+`"`) {
+			t.Errorf("install.sh uninstall leaves %s behind", name)
+		}
 	}
 }
