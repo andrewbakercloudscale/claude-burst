@@ -85,14 +85,29 @@ const (
 var opencodeContinueLauncher = bytes.Replace(opencodeLauncher,
 	[]byte(`"${AWAKE[@]}" "$OPENCODE"`), []byte(`"${AWAKE[@]}" "$OPENCODE" --continue`), 1)
 
+// claudeContinueLauncher starts a new session in a folder with no
+// conversation, where claude --continue alone says "No conversation found to
+// continue" and exits, taking the window with it (0.20.25 and before).
+var claudeContinueLauncher = bytes.Replace(plainLauncher("claude-continue", "claude", "Claude Code", "--continue", claudeBypass),
+	[]byte("ARGS=(--continue)\n"), []byte(`ARGS=(--continue)
+# A folder with no conversation gets a new session. Claude Code keeps a
+# folder's conversations under its path, each character that is not a letter
+# or a digit made a dash; a name too long for that is shortened its own way,
+# and is left to --continue.
+PROJECT="$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
+if [ "${#PROJECT}" -le 200 ] && ! ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$PROJECT"/*.jsonl >/dev/null 2>&1; then
+  ARGS=()
+fi
+`), 1)
+
 // The Claude launcher has no bypass tick: the usage panel patches that file
 // and gives it the dashboard's "Start with bypass permissions" option.
 var finderShortcuts = []finderShortcut{
 	{Key: "claude", Name: "Launch Claude Code in Ghostty", Group: "Launch Claude Code", Option: "New session", Tool: "claude", launcher: "ghostty-claude-launcher", script: claudeLauncher},
-	{Key: "claude-continue", Name: "Continue last Claude Code session in Ghostty", Group: "Launch Claude Code", Option: "Continue last", Tool: "claude", Note: "claude --continue: the folder's most recent conversation",
+	{Key: "claude-continue", Name: "Continue last Claude Code session in Ghostty", Group: "Launch Claude Code", Option: "Continue last", Tool: "claude", Note: "claude --continue: the folder's most recent conversation, or a new session when it has none",
 		BypassFlag: claudeBypass, launcher: "ghostty-claude-continue-launcher",
-		script: plainLauncher("claude-continue", "claude", "Claude Code", "--continue", claudeBypass),
-		was:    [][]byte{plainLauncherV1("claude", "Claude Code", "--continue"), plainLauncherV2("claude-continue", "claude", "Claude Code", "--continue", claudeBypass)}},
+		script: claudeContinueLauncher,
+		was:    [][]byte{plainLauncherV1("claude", "Claude Code", "--continue"), plainLauncherV2("claude-continue", "claude", "Claude Code", "--continue", claudeBypass), plainLauncher("claude-continue", "claude", "Claude Code", "--continue", claudeBypass)}},
 	{Key: "claude-resume", Name: "Resume a Claude Code session in Ghostty", Group: "Launch Claude Code", Option: "Pick a session", Tool: "claude", Note: "claude --resume: pick from the folder's conversations",
 		BypassFlag: claudeBypass, launcher: "ghostty-claude-resume-launcher",
 		script: plainLauncher("claude-resume", "claude", "Claude Code", "--resume", claudeBypass),

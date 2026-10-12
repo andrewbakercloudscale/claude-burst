@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -398,6 +399,66 @@ func (r *finderRig) runLauncher(t *testing.T, launcher, tool, folder string) str
 	return strings.TrimSpace(string(b))
 }
 
+// conversationIn gives folder a conversation, where Claude Code keeps one.
+func (r *finderRig) conversationIn(t *testing.T, folder string) {
+	t.Helper()
+	name := regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(folder, "-")
+	dir := filepath.Join(r.home, ".claude", "projects", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "0a1b.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// "Continue last" in a folder with no conversation starts a new session:
+// claude --continue there says there is none and exits, and the window with
+// it. The bypass tick still applies, and a folder with one is continued.
+func TestFinderContinueStartsANewSessionWhereThereIsNoConversation(t *testing.T) {
+	r := newFinderRig(t, true)
+	if _, err := installFinderShortcuts(false, "claude-continue"); err != nil {
+		t.Fatal(err)
+	}
+	folder, _ := filepath.EvalSymlinks(t.TempDir())
+	tool := filepath.Join(r.home, ".local", "bin")
+	if got, want := r.runLauncher(t, "ghostty-claude-continue-launcher", "claude", folder), folder+"|"+tool+"/claude"; got != want {
+		t.Fatalf("no conversation: ran %q, want %q", got, want)
+	}
+	if _, err := setFinderBypass("claude-continue", true); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.runLauncher(t, "ghostty-claude-continue-launcher", "claude", folder), folder+"|"+tool+"/claude --dangerously-skip-permissions"; got != want {
+		t.Fatalf("no conversation, ticked: ran %q, want %q", got, want)
+	}
+	// A folder Claude Code has seen and holds no conversation of (its
+	// memory only) is still a new session.
+	os.MkdirAll(filepath.Join(r.home, ".claude", "projects", regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(folder, "-"), "memory"), 0o755)
+	if got := r.runLauncher(t, "ghostty-claude-continue-launcher", "claude", folder); !strings.HasSuffix(got, "/claude --dangerously-skip-permissions") {
+		t.Fatalf("memory only: ran %q", got)
+	}
+	r.conversationIn(t, folder)
+	if got, want := r.runLauncher(t, "ghostty-claude-continue-launcher", "claude", folder), folder+"|"+tool+"/claude --continue --dangerously-skip-permissions"; got != want {
+		t.Fatalf("with a conversation: ran %q, want %q", got, want)
+	}
+}
+
+// A launcher 0.20.25 wrote, which always continued, is brought up to date.
+func TestFinderContinueLauncherOfAnEarlierVersionIsReplaced(t *testing.T) {
+	r := newFinderRig(t, true)
+	old := plainLauncher("claude-continue", "claude", "Claude Code", "--continue", claudeBypass)
+	os.MkdirAll(filepath.Dir(r.launcher("ghostty-claude-continue-launcher")), 0o755)
+	if err := os.WriteFile(r.launcher("ghostty-claude-continue-launcher"), old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installFinderShortcuts(false, "claude-continue"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(r.launcher("ghostty-claude-continue-launcher")); !bytes.Equal(b, claudeContinueLauncher) {
+		t.Fatalf("the launcher was not brought up to date:\n%s", b)
+	}
+}
+
 // The bypass tick is read by the launcher when it runs: on adds the tool's
 // own flag, off takes it away, with no reinstall, and one row's tick is not
 // another's.
@@ -407,6 +468,7 @@ func TestFinderBypassTickChangesWhatTheLauncherRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	folder, _ := filepath.EvalSymlinks(t.TempDir())
+	r.conversationIn(t, folder)
 	tool := filepath.Join(r.home, ".local", "bin")
 	if got, want := r.runLauncher(t, "ghostty-claude-continue-launcher", "claude", folder), folder+"|"+tool+"/claude --continue"; got != want {
 		t.Fatalf("no tick: ran %q, want %q", got, want)
