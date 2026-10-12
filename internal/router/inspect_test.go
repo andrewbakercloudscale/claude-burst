@@ -8,8 +8,10 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/ctxview"
@@ -151,5 +153,38 @@ func TestAnOlderOutputOfACommandRunAgainIsFlagged(t *testing.T) {
 		if f := strings.Join(items[i].Flags, "; "); strings.Contains(f, "run again") {
 			t.Errorf("item %d flags %q", i, f)
 		}
+	}
+}
+
+// What the inspector keeps is bounded by size as well as by count: the
+// oldest conversations go first, and the request just sent stays whatever
+// its size.
+func TestTheInspectorKeepsAByteBudget(t *testing.T) {
+	old := inspectBudget
+	inspectBudget = 2500
+	t.Cleanup(func() { inspectBudget = old })
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	one := func(n int) []json.RawMessage {
+		return []json.RawMessage{json.RawMessage(`{"role":"user","content":"` + strings.Repeat("x", n) + `"}`)}
+	}
+	kept := func() string {
+		var ids []string
+		for _, x := range s.InspectSessions() {
+			ids = append(ids, x.Session)
+		}
+		sort.Strings(ids)
+		return strings.Join(ids, " ")
+	}
+	for _, sid := range []string{"A1", "B2", "C3"} {
+		send(t, s, sid, one(1000))
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := kept(); got != "B2 C3" {
+		t.Fatalf("after three of about 1KB against 2.5KB: kept %q, want the newest two", got)
+	}
+	send(t, s, "D4", one(5000))
+	if got := kept(); got != "D4" {
+		t.Fatalf("after one larger than the budget: kept %q, want it alone", got)
 	}
 }

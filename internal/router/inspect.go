@@ -48,7 +48,15 @@ type captured struct {
 const (
 	inspectKeep    = 24 * time.Hour
 	inspectMaxReqs = 40
+	// inspectMaxBytes is what the kept requests may hold between them. The
+	// count alone was no bound on memory: a request can be tens of MB
+	// (images, a 1M-token history), and forty of those is over a GB held
+	// for a day.
+	inspectMaxBytes = 256 << 20
 )
+
+// inspectBudget is inspectMaxBytes; a variable so a test need not hold 256MB.
+var inspectBudget int64 = inspectMaxBytes
 
 func newInspectStore() *inspectStore {
 	return &inspectStore{reqs: map[string]*captured{}, want: map[string]string{}}
@@ -120,6 +128,29 @@ func (s *Server) captureForInspect(r *http.Request, body []byte) {
 			delete(st.reqs, oldest)
 		}
 	}
+	// Then by size, oldest first. The request just kept stays whatever its
+	// size: it is the one the inspector is most likely to be asked for.
+	for st.held() > inspectBudget {
+		var oldest string
+		for k, c := range st.reqs {
+			if k != key && len(c.body) > 0 && (oldest == "" || c.at.Before(st.reqs[oldest].at)) {
+				oldest = k
+			}
+		}
+		if oldest == "" {
+			break
+		}
+		delete(st.reqs, oldest)
+	}
+}
+
+// held is how many bytes the kept requests hold; called with mu held.
+func (st *inspectStore) held() int64 {
+	var n int64
+	for _, c := range st.reqs {
+		n += int64(len(c.body))
+	}
+	return n
 }
 
 // WantHistory has session sid's whole conversation asked for with its next
