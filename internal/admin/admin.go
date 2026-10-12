@@ -607,11 +607,8 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 // is reported to the caller rather than silently leaving no admin server.
 func (s *Server) ListenAndServe(addr string) error {
 	refreshLaunchers()
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := NewHTTPServer(s.Handler())
+	srv.Addr = addr
 	return srv.ListenAndServe()
 }
 

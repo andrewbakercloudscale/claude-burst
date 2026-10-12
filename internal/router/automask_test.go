@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -244,7 +245,7 @@ func TestAutomaskOnlyForTheProvidersNamed(t *testing.T) {
 	if !strings.Contains(f.last(), "deploy Bluebird") {
 		t.Errorf("Anthropic is not named: %s", f.last())
 	}
-	if got := s.applyAutomaskAtSecondary(req, body); string(got) != string(body) {
+	if got, _ := s.applyAutomaskAtSecondary(req, body); string(got) != string(body) {
 		t.Errorf("the secondary is not named: %s", got)
 	}
 	if got := s.MaskCodex("cx", "", codex); !strings.Contains(string(got), `"instructions":"[WORD-1]"`) {
@@ -257,7 +258,7 @@ func TestAutomaskOnlyForTheProvidersNamed(t *testing.T) {
 	if !strings.Contains(f.last(), "deploy Bluebird") {
 		t.Errorf("Anthropic is not named: %s", f.last())
 	}
-	if got := s.applyAutomaskAtSecondary(req, body); !strings.Contains(string(got), "deploy [WORD-1]") {
+	if got, _ := s.applyAutomaskAtSecondary(req, body); !strings.Contains(string(got), "deploy [WORD-1]") {
 		t.Errorf("the secondary is named: %s", got)
 	}
 	if got := s.MaskCodex("cx", "", codex); string(got) != string(codex) {
@@ -271,7 +272,102 @@ func TestAutomaskOnlyForTheProvidersNamed(t *testing.T) {
 	if !strings.Contains(f.last(), "deploy [WORD-1]") {
 		t.Errorf("Anthropic is named: %s", f.last())
 	}
-	if got := s.applyAutomaskAtSecondary(req, body); string(got) != string(body) {
+	if got, _ := s.applyAutomaskAtSecondary(req, body); string(got) != string(body) {
 		t.Errorf("the step at the secondary must stand aside: %s", got)
 	}
+}
+
+// Requests of one session overlap: subagents share the parent's id, and
+// count_tokens runs beside a turn. Each notes tool calls that name a .env
+// file and looks others up, in one map. Run under -race: before the map had
+// a lock this was a data race, and outside the detector a fatal "concurrent
+// map read and map write" that ends the gateway.
+func TestAutomaskOverlappingRequestsOfOneSession(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 40; i++ {
+				id := fmt.Sprintf("t%d-%d", g, i)
+				b, _ := json.Marshal(map[string]any{"model": "claude-opus-5-5", "messages": []json.RawMessage{
+					json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Read","input":{"file_path":"/app/.env"}}]}`),
+					json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"KEY=0a1b2c3d4e5f60718293a4b5c6d7e8f9"}]}`),
+				}})
+				req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages/count_tokens", bytes.NewReader(b))
+				req.Header.Set("x-claude-code-session-id", "S1")
+				req.Header.Set("authorization", "Bearer oauth")
+				s.ServeHTTP(httptest.NewRecorder(), req)
+			}
+		}(g)
+	}
+	wg.Wait()
+	if got := f.last(); strings.Contains(got, "0a1b2c3d4e5f60718293a4b5c6d7e8f9") {
+		t.Fatalf("a .env value went out unmasked: %s", got)
+	}
+}
+
+// A request Automask cannot read is refused, never sent on unread: the
+// promise is that nothing personal leaves, and a silent pass-through
+// breaks it without a word.
+func TestAutomaskRefusesWhatItCannotRead(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	post := func(path, body, encoding string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+path, strings.NewReader(body))
+		req.Header.Set("x-claude-code-session-id", "S1")
+		req.Header.Set("authorization", "Bearer oauth")
+		if encoding != "" {
+			req.Header.Set("Content-Encoding", encoding)
+		}
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, req)
+		return w
+	}
+	const readable = `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"hello"}]}`
+	unreadable := []struct{ name, path, body, encoding string }{
+		{"not JSON", "/v1/messages", "my card is 4111 1111 1111 1111", ""},
+		{"compressed", "/v1/messages", readable, "gzip"},
+		{"no messages", "/v1/messages/batches", `{"requests":[{"params":{"messages":[]}}]}`, ""},
+		{"count_tokens, not JSON", "/v1/messages/count_tokens", "4111 1111 1111 1111", ""},
+	}
+
+	// Off: Burst passes on what it is given, as it always has.
+	sent := sentTo(f)
+	for _, c := range unreadable {
+		if w := post(c.path, c.body, c.encoding); w.Code == http.StatusBadRequest && strings.Contains(w.Body.String(), "Automask") {
+			t.Errorf("%s: refused while Automask is off: %s", c.name, w.Body)
+		}
+	}
+	if sentTo(f) == sent {
+		t.Fatal("nothing reached the provider while Automask is off, so the next check would prove nothing")
+	}
+
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	sent = sentTo(f)
+	for _, c := range unreadable {
+		w := post(c.path, c.body, c.encoding)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Automask") {
+			t.Errorf("%s: got %d %q, want a refusal that names Automask", c.name, w.Code, w.Body)
+		}
+	}
+	if sentTo(f) != sent {
+		t.Errorf("%d unreadable request(s) reached the provider with Automask on", sentTo(f)-sent)
+	}
+	if w := post("/v1/messages", readable, ""); w.Code == http.StatusBadRequest {
+		t.Errorf("a readable request was refused: %s", w.Body)
+	}
+	if sentTo(f) != sent+1 {
+		t.Errorf("a readable request did not reach the provider")
+	}
+}
+
+// sentTo counts the requests a fake provider has received.
+func sentTo(f *fakeAnthropic) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.bodies)
 }

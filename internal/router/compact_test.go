@@ -2212,3 +2212,28 @@ func TestDeadThreadsAreForgottenAtStart(t *testing.T) {
 		t.Fatalf("kept %v, want %s", got, want)
 	}
 }
+
+// A panic while the compaction lock is held must not leave it held: the
+// request handler recovers the panic and answers 500, and every later turn
+// takes the same lock at its first line.
+func TestCompactionLockIsReleasedByAPanic(t *testing.T) {
+	c := &compactor{}
+	func() {
+		defer func() { _ = recover() }()
+		release := c.hold()
+		defer release()
+		panic("a message shape nobody expected")
+	}()
+	got := make(chan struct{})
+	go func() {
+		release := c.hold()
+		release()
+		release() // letting go twice is letting go once
+		close(got)
+	}()
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the compaction lock was still held after a recovered panic")
+	}
+}

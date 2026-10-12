@@ -215,6 +215,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.logger.Printf("codex: websocket %s (passed through; its turns are not counted)", r.URL.Path)
 		if g.masks() != nil {
 			g.logger.Printf("codex: automask could not read the turns of websocket %s: they go to ChatGPT as Codex wrote them", r.URL.Path)
+			unmaskedNotice("the turns of a Codex WebSocket")
 		}
 	}
 	r = r.WithContext(context.WithValue(r.Context(), startKey{}, time.Now()))

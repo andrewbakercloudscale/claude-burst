@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -17,7 +16,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
@@ -33,6 +31,8 @@ type traceRig struct {
 	cfg      config.Config
 	upHits   atomic.Int64
 	upAuth   atomic.Value
+	upKey    atomic.Value
+	upBody   atomic.Value
 	listener string
 }
 
@@ -51,6 +51,9 @@ func newTraceRig(t *testing.T, o rigOpts) *traceRig {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rig.upHits.Add(1)
 		rig.upAuth.Store(r.Header.Get("Authorization"))
+		rig.upKey.Store(r.Header.Get("X-Api-Key"))
+		b, _ := io.ReadAll(r.Body)
+		rig.upBody.Store(string(b))
 		if r.Header.Get(router.TraceHeader) != "" {
 			t.Errorf("the trace header reached the provider")
 		}
@@ -127,10 +130,14 @@ func newTraceRig(t *testing.T, o rigOpts) *traceRig {
 			}
 			return runCommand(ctx, env, name, args...)
 		},
-		keychainLogin: func() (string, error) {
-			return fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"kc-token","expiresAt":%d}}`, time.Now().Add(time.Hour).UnixMilli()), nil
+		// A metered key in the gateway's environment: the one credential
+		// the test message has before Claude Code has sent a request.
+		getenv: func(k string) string {
+			if k == "ANTHROPIC_API_KEY" {
+				return "env-key"
+			}
+			return ""
 		},
-		getenv: func(string) string { return "" },
 	}
 	rig.s, rig.cfg = s, cfg
 	return rig
@@ -185,12 +192,17 @@ func TestTraceEndToEnd(t *testing.T) {
 	if h := hopByKey(t, r, "failover"); h.State != hopSkip || !strings.Contains(h.Summary, "primary answered") {
 		t.Errorf("failover: %+v", h)
 	}
-	if got, _ := rig.upAuth.Load().(string); got != "Bearer kc-token" {
-		t.Errorf("the upstream must get Claude Code's credential, got %q", got)
+	if got, _ := rig.upKey.Load().(string); got != "env-key" {
+		t.Errorf("the upstream must get the environment's key, got %q", got)
+	}
+	// The message is Burst's own: it does not present itself as Claude Code.
+	body, _ := rig.upBody.Load().(string)
+	if strings.Contains(body, `"system"`) || strings.Contains(body, "Claude Code") {
+		t.Errorf("the test message must carry no system prompt and never name Claude Code: %s", body)
 	}
 }
 
-// Claude Code's own most recent credential wins over the Keychain login.
+// Claude Code's own most recent credential wins over the environment's key.
 func TestTracePrefersClaudeCodesLiveCredential(t *testing.T) {
 	rig := newTraceRig(t, rigOpts{})
 	req := localRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(`{"model":"claude-haiku-4-5","messages":[]}`))
@@ -220,8 +232,15 @@ func TestTraceNamesARotatedCA(t *testing.T) {
 		t.Fatalf("the verdict must name TLS: %q", r.Verdict)
 	}
 	// The rest of the path is still tested, and says it went without checks.
-	if up := hopByKey(t, r, "upstream"); up.State != hopOK || !strings.Contains(up.Detail, "certificate checks off") {
+	if up := hopByKey(t, r, "upstream"); up.State != hopOK || !strings.Contains(up.Detail, "certificate checks off and without the credential") {
 		t.Fatalf("upstream after a TLS failure: %+v", up)
+	}
+	// Whoever answers with checks off is not known to be the gateway.
+	if a, _ := rig.upAuth.Load().(string); a != "" {
+		t.Fatalf("a credential went out with certificate checks off: Authorization %q", a)
+	}
+	if k, _ := rig.upKey.Load().(string); k != "" {
+		t.Fatalf("a credential went out with certificate checks off: X-Api-Key %q", k)
 	}
 
 	node := findBinary("node", "/opt/homebrew/bin/node", "/usr/local/bin/node")
@@ -247,7 +266,13 @@ func TestTraceNamesARotatedCA(t *testing.T) {
 
 func TestTraceWithoutACredentialSaysSoAndSendsNothing(t *testing.T) {
 	rig := newTraceRig(t, rigOpts{})
-	rig.s.trace.keychainLogin = func() (string, error) { return "", errors.New("not found") }
+	rig.s.trace.getenv = func(string) string { return "" }
+	// Claude Code's stored login is in the Keychain and must not be read:
+	// a read of any Keychain item fails the test.
+	rig.s.loadKey = func(service, account string) (string, error) {
+		t.Errorf("the trace read the Keychain item %q", service)
+		return "", errors.New("not read")
+	}
 	r := rig.s.runTrace(context.Background(), rig.cfg)
 	if h := hopByKey(t, r, "credential"); h.State != hopBad || !strings.Contains(h.Detail, "Use Claude Code once") {
 		t.Fatalf("credential: %+v", h)
@@ -412,4 +437,31 @@ func TestTraceEndpointIsGuarded(t *testing.T) {
 func dumpHops(r traceResult) string {
 	b, _ := json.MarshalIndent(r.Hops, "", "  ")
 	return string(b)
+}
+
+// Anthropic declining Burst's own message on a subscription login is an
+// answer by way of the whole path, and is said as that; the same status to a
+// metered key, a 401, or anything with checks off stays a failure.
+func TestTraceRefusalOfASubscriptionLoginIsNotAPathFault(t *testing.T) {
+	bearer := http.Header{"Authorization": {"Bearer t"}}
+	key := http.Header{"X-Api-Key": {"k"}}
+	for _, c := range []struct {
+		status    int
+		anthropic bool
+		cred      http.Header
+		insecure  bool
+		want      bool
+	}{
+		{400, true, bearer, false, true},
+		{403, true, bearer, false, true},
+		{401, true, bearer, false, false},
+		{400, false, bearer, false, false},
+		{400, true, key, false, false},
+		{400, true, bearer, true, false},
+		{529, true, bearer, false, false},
+	} {
+		if got := refusedAsNotClaudeCode(c.status, c.anthropic, c.cred, c.insecure); got != c.want {
+			t.Errorf("%+v: got %v", c, got)
+		}
+	}
 }

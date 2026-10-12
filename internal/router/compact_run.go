@@ -443,13 +443,14 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	window := time.Duration(cfg.WindowMinutes) * time.Minute
 	rid := requestIDFrom(in.Context())
 
-	s.compaction.mu.Lock()
+	release := s.compaction.hold()
+	defer release()
 	asSent := key
 	key = s.compaction.resolve(key, msgs)
 	if d := s.compaction.sessions[key]; d != nil && d.besideSummary(msgs) {
 		s.logger.Printf("req=%s compaction kept session=%s: %d messages, the history the summary of %d was made from as far as it goes and a last message of its own (%s), so a request beside the conversation and not the conversation cleared or rewound; sent as it came, and nothing noted from it",
 			rid, key, len(msgs), d.p0, lastMessageShape(msgs))
-		s.compaction.mu.Unlock()
+		release()
 		return body, in
 	}
 	ci.key = key
@@ -752,7 +753,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		if dirty {
 			s.compaction.save()
 		}
-		s.compaction.mu.Unlock()
+		release()
 		ci.parts = contextBytes(top, msgs)
 		ci.rawBytes, ci.sentBytes = int64(len(body)), int64(len(body))
 		return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
@@ -765,7 +766,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	if dirty {
 		s.compaction.save()
 	}
-	s.compaction.mu.Unlock()
+	release()
 
 	nb, err := json.Marshal(out)
 	if err != nil {

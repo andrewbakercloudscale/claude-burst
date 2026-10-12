@@ -110,7 +110,8 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 	primary := !s.forcedOverflow(now) && !s.modelInOverflow(requestModel(body), now)
 	sid := in.Header.Get("x-claude-code-session-id")
 	wanted := s.inspect.wanted(sid)
-	s.compaction.mu.Lock()
+	release := s.compaction.hold()
+	defer release()
 	from := s.compaction.threads[prev]
 	key := from.key
 	if key == "" || !strings.HasPrefix(key, prefix) {
@@ -173,7 +174,7 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 			s.compaction.asks[prefix].context, st.lastContext = 0, 0
 		}
 	}
-	s.compaction.mu.Unlock()
+	release()
 	return body, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 }
 
@@ -233,7 +234,8 @@ func isSideRequest(msgs []json.RawMessage) bool {
 // no context noted (its compactInfo has no key), because the conversation
 // did not move.
 func (s *Server) applySideRequest(in *http.Request, top map[string]json.RawMessage, body []byte, msgs []json.RawMessage, key string) ([]byte, *http.Request) {
-	s.compaction.mu.Lock()
+	release := s.compaction.hold()
+	defer release()
 	st := s.compaction.sessions[key]
 	if st == nil || st.summary == "" {
 		// Read only: a side request is never what a conversation is known by.
@@ -250,7 +252,7 @@ func (s *Server) applySideRequest(in *http.Request, top map[string]json.RawMessa
 	if st != nil && st.summary != "" && st.swapAt > 0 && len(msgs) > st.p0 && st.hashOf(msgs, st.p0) == st.hash {
 		summary, p0, swapAt = st.summary, st.p0, st.swapAt
 	}
-	s.compaction.mu.Unlock()
+	release()
 	if summary == "" {
 		return body, in
 	}

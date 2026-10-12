@@ -77,7 +77,7 @@ There to switch on (noisy in code, so off):
 
 ## How it behaves
 
-- **It never refuses a request.** A refused request breaks the turn; a masked one does not.
+- **It never refuses a request it can read.** A refused request breaks the turn; a masked one does not. The one exception is a Claude Code request Burst cannot read at all (compressed, or not the JSON Claude Code sends): that is answered with an error naming Automask, because passing it on unread would break the promise without a word. Claude Code does not send such requests.
 - **Only the secret part goes.** A connection string keeps its host, port and database; a signed link keeps its path; a `.env` file keeps its names, ports, links and paths.
 - **The same value gets the same mask for the whole session**, across gateway restarts too. Claude can tell two keys apart (`[APIKEY-1]`, `[APIKEY-2]`), and Anthropic's prompt cache and Burst's compaction keep working.
 - **You are told once per value.** A line under the prompt, a pop-up, and a line in the gateway log with the session, the rule and the mask. The value itself is never written anywhere: to keep a session's masks across a restart, `automask-state.json` files each mask under a hash of its value, made with a key in `automask.key` beside it (both readable by you only, a session's entries dropped after a day idle). Someone who can read both files could test a guess against a hash, and could as easily read the value in Claude Code's own transcript on the same Mac.
@@ -113,7 +113,7 @@ set -a; . ./.env; set +a; ./deploy.sh
 - **Names, addresses and other free text** are not masked, unless they are on your own word list.
 - **Tool calls are not masked.** If Claude itself types a secret into a command, that text is sent as written.
 - **Requests only.** Claude's answers are not changed on the way back.
-- **Codex turns Burst cannot read are not masked.** A turn Codex sends compressed, or over a WebSocket, goes to ChatGPT as Codex wrote it, and the gateway log says so (`codex: automask could not read ...`). Codex's sign-in, plugins and cloud tasks do not pass through Burst at all.
+- **Codex turns Burst cannot read are not masked.** A turn Codex sends compressed, or over a WebSocket, goes to ChatGPT as Codex wrote it, and the gateway log (`codex: automask could not read ...`) and a pop-up say so. Refusing it would stop Codex working, so it is passed on and reported. A Claude Code request Burst cannot read is refused instead. Codex's sign-in, plugins and cloud tasks do not pass through Burst at all.
 - **Switching a rule on rewrites history once.** A session that already holds a matching value pays one cache rewrite the first time it is masked.
 - **The local transcript is not changed.** Claude Code's own files under `~/.claude` still hold what you typed and what tools returned.
 

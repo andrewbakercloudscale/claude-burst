@@ -334,6 +334,23 @@ type saveMutex struct {
 	written uint64 // guarded by writeMu
 }
 
+// hold takes the compaction lock and returns its release, which lets go once
+// however often it is called. The request path releases by hand, before the
+// work it does unlocked, and defers the same release: a panic in between is
+// recovered by the request handler, and a lock left held there would stop
+// every later turn of every session at its first line while /healthz went on
+// answering.
+func (c *compactor) hold() (release func()) {
+	c.mu.Lock()
+	held := true
+	return func() {
+		if held {
+			held = false
+			c.mu.Unlock()
+		}
+	}
+}
+
 // queue replaces any save not yet written: each is the whole state.
 func (m *saveMutex) queue(c *compactor, w *diskWrite) {
 	m.seq++

@@ -50,6 +50,11 @@ func guard(extraHost string, next http.Handler) http.Handler {
 			http.Error(w, "admin API only answers its own page", http.StatusForbidden)
 			return
 		}
+		// Nor another account on this Mac: see peer.go.
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != peerOpenPath && foreignPeer(r) {
+			http.Error(w, "admin API only answers the account Claude Burst runs as", http.StatusForbidden)
+			return
+		}
 		// Never emit CORS headers: without them a cross-origin page cannot
 		// read a response even if it manages to send the request.
 		w.Header().Set("X-Content-Type-Options", "nosniff")

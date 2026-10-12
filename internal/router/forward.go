@@ -47,7 +47,11 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	rid := requestIDFrom(in.Context())
 	start := time.Now()
 	if slot == "secondary" {
-		body = s.applyAutomaskAtSecondary(in, body)
+		var unread string
+		if body, unread = s.applyAutomaskAtSecondary(in, body); unread != "" {
+			s.refuseUnmasked(w, in, unread)
+			return
+		}
 	}
 
 	req, model, err := p.Prepare(in.Context(), in, body)

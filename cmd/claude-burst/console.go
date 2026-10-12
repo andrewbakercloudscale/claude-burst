@@ -64,7 +64,7 @@ func consoleCmd(args []string) {
 		fatal(err)
 	}
 	logger.Printf("support console on http://%s/", addr)
-	srv := &http.Server{Handler: admin.NewConsole(version, rootHelperPath()).Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := admin.NewHTTPServer(admin.NewConsole(version, rootHelperPath()).Handler())
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fatal(err)
 	}

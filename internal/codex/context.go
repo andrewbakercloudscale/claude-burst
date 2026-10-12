@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/ctxview"
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
 // Codex's side of the context inspector: the latest request of each Codex
@@ -67,6 +68,7 @@ func (g *Gateway) prepareTurn(r *http.Request) {
 				why = "it is compressed (" + enc + ")"
 			}
 			g.logger.Printf("codex: automask could not read a turn of session %s, %s: it goes to ChatGPT as Codex wrote it", sid, why)
+			unmaskedNotice("a Codex turn, " + why)
 		}
 		return
 	}
@@ -553,4 +555,15 @@ func applyRemovals(body []byte, removed map[string]ctxview.Removal) ([]byte, boo
 		return body, false
 	}
 	return nb, true
+}
+
+// unmaskedNotice says on screen, as well as in the log, that something
+// went to ChatGPT unread while Automask is on. Codex is passed through and
+// not refused, since a refusal here stops Codex working; the promise that
+// nothing personal leaves is then not kept for that turn, and the user is
+// told rather than left to find it in a log. Repeats are held back by the
+// publisher.
+func unmaskedNotice(what string) {
+	notice.Publish("automask", notice.Warn, "Automask could not read what Codex sent",
+		"Automask is on and could not read "+what+", so it went to ChatGPT as Codex wrote it, unmasked.")
 }

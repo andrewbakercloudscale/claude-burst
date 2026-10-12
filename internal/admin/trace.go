@@ -50,18 +50,20 @@ const (
 	traceModel     = "claude-haiku-4-5-20251001"
 	traceMaxTokens = 16
 	tracePrompt    = "Reply with exactly one word: pong"
-	// traceSystem is Claude Code's own system prompt opening. A subscription
-	// (OAuth) credential is accepted for Claude Code's requests; sending the
-	// same opening keeps the test message one of those.
-	traceSystem = "You are Claude Code, Anthropic's official CLI for Claude."
 )
 
-// claudeCodeKeychainService is where Claude Code keeps its login on macOS.
-const claudeCodeKeychainService = "Claude Code-credentials"
+// The test message is Burst's own and says so: its User-Agent is
+// claude-burst-trace and it carries no system prompt. It never presents
+// itself as Claude Code, and it never reads Claude Code's stored login: the
+// only subscription credential it can carry is one Claude Code itself sent
+// through the gateway (router.ClientCredential, held in memory). Anthropic
+// may refuse a subscription login on a request that is not Claude Code's;
+// that refusal is reported as what it is, an answer from Anthropic by way of
+// the whole path, and not worked around.
 
 // liveCredentialFresh is how recent Claude Code's last credential must be
-// to be preferred over its Keychain login: OAuth access tokens are short
-// lived, and an hour-old one may already have been refreshed away.
+// to be used without a warning: OAuth access tokens are short lived, and an
+// hour-old one may already have been refreshed away.
 const liveCredentialFresh = 30 * time.Minute
 
 // Hop states. skip is grey: not applicable, or optional and not set up.
@@ -105,7 +107,7 @@ type traceResult struct {
 }
 
 // traceDeps is everything the trace touches outside this process, as fields
-// so tests run it without the network, node, mtr or the Keychain.
+// so tests run it without the network, node or mtr.
 type traceDeps struct {
 	lookupHost func(ctx context.Context, host string) ([]string, error)
 	dial       func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -113,9 +115,7 @@ type traceDeps struct {
 	findMtr    func() string
 	findCodex  func() string
 	run        func(ctx context.Context, env []string, name string, args ...string) (stdout, stderr []byte, err error)
-	// keychainLogin returns Claude Code's stored login (JSON).
-	keychainLogin func() (string, error)
-	getenv        func(string) string
+	getenv     func(string) string
 	// settingsBaseURL is ANTHROPIC_BASE_URL from Claude Code's settings.
 	settingsBaseURL func() string
 }
@@ -143,10 +143,6 @@ func (s *Server) traceDeps() traceDeps {
 	}
 	if d.run == nil {
 		d.run = runCommand
-	}
-	if d.keychainLogin == nil {
-		load := s.loadKey
-		d.keychainLogin = func() (string, error) { return load(claudeCodeKeychainService, "") }
 	}
 	if d.getenv == nil {
 		d.getenv = os.Getenv
@@ -589,8 +585,9 @@ func verifyLikeOpenSSL(certs []*x509.Certificate, roots *x509.CertPool, host str
 	return err
 }
 
-// traceCredential picks the auth the test message carries, preferring
-// exactly what Claude Code itself sent.
+// traceCredential picks the auth the test message carries: what Claude Code
+// itself last sent through the gateway, else a metered key in the gateway's
+// environment. Claude Code's stored login is never read.
 func (s *Server) traceCredential(d traceDeps) (http.Header, traceHop) {
 	hop := traceHop{Key: "credential", Name: "Credential"}
 	live, at := s.gateway.ClientCredential()
@@ -598,25 +595,6 @@ func (s *Server) traceCredential(d traceDeps) (http.Header, traceHop) {
 	if live != nil && time.Since(at) < liveCredentialFresh {
 		hop.State, hop.Summary = hopOK, fmt.Sprintf("the credential Claude Code itself sent %s ago, forwarded the same way", ageText(age))
 		return live, hop
-	}
-	if raw, err := d.keychainLogin(); err == nil {
-		var login struct {
-			OAuth struct {
-				AccessToken string `json:"accessToken"`
-				ExpiresAt   int64  `json:"expiresAt"`
-			} `json:"claudeAiOauth"`
-		}
-		if json.Unmarshal([]byte(raw), &login) == nil && login.OAuth.AccessToken != "" {
-			exp := time.UnixMilli(login.OAuth.ExpiresAt)
-			if login.OAuth.ExpiresAt == 0 || time.Now().Before(exp) {
-				h := http.Header{}
-				h.Set("Authorization", "Bearer "+login.OAuth.AccessToken)
-				h.Set("Anthropic-Beta", "oauth-2025-04-20")
-				hop.State, hop.Summary = hopOK, "Claude Code's saved login, from the Keychain (Claude Code has not sent a request recently)"
-				return h, hop
-			}
-			hop.Detail = fmt.Sprintf("Claude Code's saved login in the Keychain expired at %s; Claude Code refreshes it on its next request.", exp.Local().Format("15:04"))
-		}
 	}
 	if live != nil {
 		hop.State, hop.Summary = hopWarn, fmt.Sprintf("the credential Claude Code sent %s ago; it may have expired since", ageText(age))
@@ -630,7 +608,7 @@ func (s *Server) traceCredential(d traceDeps) (http.Header, traceHop) {
 	}
 	hop.State = hopBad
 	hop.Summary = "no credential available, so no test message was sent"
-	hop.Detail = strings.TrimSpace(hop.Detail + " Claude Code has not sent a request since the gateway started, no usable Claude Code login was found in the Keychain, and ANTHROPIC_API_KEY is unset. Use Claude Code once, then press Send test message again.")
+	hop.Detail = strings.TrimSpace(hop.Detail + " Claude Code has not sent a request since the gateway started and ANTHROPIC_API_KEY is unset; Burst does not read Claude Code's stored login. Use Claude Code once, then press Send test message again.")
 	return nil, hop
 }
 
@@ -663,7 +641,7 @@ func (s *Server) sendTraced(ctx context.Context, d traceDeps, cfg config.Config,
 	route, up, fo *traceHop) {
 
 	body, _ := json.Marshal(map[string]any{
-		"model": traceModel, "max_tokens": traceMaxTokens, "system": traceSystem,
+		"model": traceModel, "max_tokens": traceMaxTokens,
 		"messages": []map[string]string{{"role": "user", "content": tracePrompt}},
 	})
 	tok := s.gateway.BeginTrace()
@@ -693,8 +671,12 @@ func (s *Server) sendTraced(ctx context.Context, d traceDeps, cfg config.Config,
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Anthropic-Version", "2023-06-01")
 		req.Header.Set("User-Agent", "claude-burst-trace")
-		for k, v := range cred {
-			req.Header[k] = append([]string(nil), v...)
+		// Never with certificate checks off: whoever answers then is not
+		// known to be the gateway, and gets no credential.
+		if !insecure {
+			for k, v := range cred {
+				req.Header[k] = append([]string(nil), v...)
+			}
 		}
 		// No Origin, ever: the gateway refuses browser-originated requests.
 		req.Header.Set(router.TraceHeader, tok)
@@ -714,7 +696,7 @@ func (s *Server) sendTraced(ctx context.Context, d traceDeps, cfg config.Config,
 	insecureNote := ""
 	var certErr *tls.CertificateVerificationError
 	if err != nil && target.Scheme == "https" && errors.As(err, &certErr) {
-		insecureNote = " Sent with certificate checks off, because the TLS hop above failed: this tests the rest of the path, which Claude Code cannot reach until that is fixed."
+		insecureNote = " Sent with certificate checks off and without the credential, because the TLS hop above failed: this tests whether anything answers past it, which Claude Code cannot reach until that is fixed. An authentication error here is expected."
 		resp, took, err = send(true)
 	}
 
@@ -746,6 +728,10 @@ func (s *Server) sendTraced(ctx context.Context, d traceDeps, cfg config.Config,
 				msg = rep.Error.Type + ": " + rep.Error.Message
 			}
 			up.Summary = fmt.Sprintf("HTTP %d in %d ms, request id %s: %s", resp.StatusCode, up.DurationMS, orDash(rid), msg)
+			if refusedAsNotClaudeCode(resp.StatusCode, rep.Error != nil, cred, insecureNote != "") {
+				up.State = hopWarn
+				insecureNote = " Anthropic answered, so the path to it works. It refused the message itself: the credential is Claude Code's subscription login, which Anthropic may accept only on Claude Code's own requests, and Burst's test message does not present itself as one." + insecureNote
+			}
 		}
 		up.Detail = strings.TrimSpace(insecureNote)
 	}
@@ -777,6 +763,19 @@ func (s *Server) sendTraced(ctx context.Context, d traceDeps, cfg config.Config,
 
 	// f. failover
 	*fo = failoverHop(tr, s.gateway.HasSecondary())
+}
+
+// refusedAsNotClaudeCode reports an answer that is Anthropic declining the
+// test message, not a fault on the path: a 400 or 403 with Anthropic's own
+// error body, to a request carrying a subscription (bearer) login with
+// certificate checks on. A 401 is not one: that is an expired or wrong
+// credential. A metered key (X-Api-Key) is accepted for any request, so its
+// refusal is a real failure.
+func refusedAsNotClaudeCode(status int, anthropicError bool, cred http.Header, insecure bool) bool {
+	if insecure || !anthropicError || cred.Get("Authorization") == "" {
+		return false
+	}
+	return status == http.StatusBadRequest || status == http.StatusForbidden
 }
 
 // failoverHop reads the gateway's hops for what happened after the first.

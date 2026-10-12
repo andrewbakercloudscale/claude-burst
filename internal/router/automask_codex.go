@@ -67,7 +67,9 @@ func (s *Server) MaskCodex(sid, repo string, body []byte) []byte {
 		m.mu.Unlock()
 		if !ok {
 			var h []automask.Hit
+			ms.scan.Lock()
 			out, h = maskCodexItem(ms.masks, raw, on, ms.env)
+			ms.scan.Unlock()
 			hits = append(hits, h...)
 			m.mu.Lock()
 			ms.cache[k] = out

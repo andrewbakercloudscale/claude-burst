@@ -30,6 +30,12 @@ designed to protect, and what it is not:
   (against DNS rebinding) and requires a custom header on every change, which a cross-origin
   page cannot send without a CORS preflight the server never answers; no CORS headers are ever
   returned, so responses cannot be read cross-origin.
+- **Another account on the same Mac must not be able to use the dashboard.** Loopback is
+  shared between accounts, so the dashboard and support console API ask whose process is
+  calling and answer only the account Burst runs as. One route is open to all, the alert
+  the root pf guard posts, which can only raise a notice. A process of your own account is
+  not kept out: it could read the same files directly. The gateway port does not make this
+  check.
 - **The local CA must not be usable against any other site.** In transparent mode the CA is
   generated on your Mac, its key is mode 0600 in `~/.config/claude-burst/ca/`, and it is
   name-constrained to the intercepted host (`api.anthropic.com`), so even trusted in the System
@@ -42,7 +48,10 @@ designed to protect, and what it is not:
   `~/.config/claude-burst/compaction-state.json` at mode 0600, removed once a session has gone
   48 hours without a request.
 - **Credentials stay where they were.** The gateway forwards Claude Code's own auth header and
-  never stores an Anthropic credential. Secondary API keys live in the macOS login Keychain.
+  never writes an Anthropic credential to disk or reads Claude Code's stored login. The auth
+  header of the most recent request is held in memory, for the requests the gateway sends on
+  the session's behalf (summaries, and the test message when you press it), and is never
+  logged, served by the dashboard, or sent with certificate checks off. Secondary API keys live in the macOS login Keychain.
 
 **Out of scope**
 

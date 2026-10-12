@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -206,8 +207,13 @@ func (s *Server) AutomaskRecent() []AutomaskHit {
 type maskSession struct {
 	masks *automask.Session
 	cache map[[20]byte][]byte // raw message -> what to send (itself when clean)
-	env   map[string]bool     // tool calls that name a .env file, by id
-	used  time.Time
+	// scan guards env. Requests of one session overlap (subagents share
+	// the parent's id, count_tokens runs beside a turn), and a map read
+	// beside a map write is a fatal error no recover catches: it would end
+	// the gateway, and every session with it.
+	scan sync.Mutex
+	env  map[string]bool // tool calls that name a .env file, by id
+	used time.Time
 }
 
 // maskCacheMax bounds one session's cache; past it the cache starts again
@@ -299,7 +305,7 @@ func (s *Server) AutomaskCovers(provider string) bool {
 // when what is sent to Anthropic is to be masked. The summary, the
 // compaction hash and a secondary that takes over all then see the masked
 // history, whether or not the secondary is named itself.
-func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
+func (s *Server) applyAutomask(in *http.Request, body []byte) ([]byte, string) {
 	return s.applyAutomaskFor(in, body, MaskAnthropic)
 }
 
@@ -307,34 +313,40 @@ func (s *Server) applyAutomask(in *http.Request, body []byte) []byte {
 // when Automask covers the secondary and not Anthropic: the history was
 // left as written for Anthropic, so it is masked here, for this request
 // only, and nothing kept about the conversation changes.
-func (s *Server) applyAutomaskAtSecondary(in *http.Request, body []byte) []byte {
+func (s *Server) applyAutomaskAtSecondary(in *http.Request, body []byte) ([]byte, string) {
 	if body == nil || !isInference(in.URL.Path) || s.AutomaskCovers(MaskAnthropic) {
-		return body
+		return body, ""
 	}
 	return s.applyAutomaskFor(in, body, MaskSecondary)
 }
 
 // applyAutomaskFor returns body with personal data masked, or body itself
-// when automask does not cover provider or nothing matched. It never
-// refuses a request.
-func (s *Server) applyAutomaskFor(in *http.Request, body []byte, provider string) []byte {
+// when automask does not cover provider or nothing matched. A body it
+// cannot read comes back with the reason, and the caller refuses the
+// request: Automask promises nothing personal leaves, and a conversation
+// sent on unread would break that promise without a word. Claude Code
+// never sends such a body, so the refusal costs normal use nothing.
+func (s *Server) applyAutomaskFor(in *http.Request, body []byte, provider string) ([]byte, string) {
 	m := s.automask
 	m.mu.Lock()
 	cfg := m.cfg
 	m.mu.Unlock()
-	if !Covers(cfg, provider) {
-		return body
+	if !Covers(cfg, provider) || len(body) == 0 {
+		return body, ""
+	}
+	if enc := in.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
+		return body, fmt.Sprintf("it is compressed, Content-Encoding %q", enc)
 	}
 	on := func(r *automask.Rule) bool { return RuleOn(cfg, r) }
 	sid := in.Header.Get("x-claude-code-session-id")
 
 	var top map[string]json.RawMessage
 	if json.Unmarshal(body, &top) != nil {
-		return body
+		return body, "it is not JSON"
 	}
 	var msgs []json.RawMessage
 	if json.Unmarshal(top["messages"], &msgs) != nil {
-		return body
+		return body, "it has no list of messages"
 	}
 
 	m.mu.Lock()
@@ -362,8 +374,10 @@ func (s *Server) applyAutomaskFor(in *http.Request, body []byte, provider string
 			var h []automask.Hit
 			// Messages are scanned in order, so a tool call is noted
 			// before the message that carries its output.
+			ms.scan.Lock()
 			noteEnvCalls(ms.env, raw)
 			out, h = maskMessage(ms.masks, raw, on, ms.env)
+			ms.scan.Unlock()
 			hits = append(hits, h...)
 			m.mu.Lock()
 			ms.cache[key] = out
@@ -382,21 +396,21 @@ func (s *Server) applyAutomaskFor(in *http.Request, body []byte, provider string
 		}
 	}
 	if !changed {
-		return body
+		return body, ""
 	}
 	nm, err := json.Marshal(msgs)
 	if err != nil {
-		return body
+		return body, ""
 	}
 	top["messages"] = nm
 	nb, err := json.Marshal(top)
 	if err != nil {
-		return body
+		return body, ""
 	}
 	if len(hits) > 0 {
 		s.noteMasked(sid, "", "", hits)
 	}
-	return nb
+	return nb, ""
 }
 
 // noteMasked logs each new mask (the mask only, never the value) and says
@@ -570,4 +584,13 @@ func maskContent(ms *automask.Session, c json.RawMessage, where string, on func(
 		return c, nil, false
 	}
 	return nb, hits, true
+}
+
+// refuseUnmasked answers a request Automask could not read, instead of
+// sending it on unread, and says so in the log and on screen.
+func (s *Server) refuseUnmasked(w http.ResponseWriter, in *http.Request, why string) {
+	s.logger.Printf("req=%s error stage=automask reason=unreadable path=%q: %s, so it was refused rather than sent unmasked", requestIDFrom(in.Context()), in.URL.Path, why)
+	notice.PublishFor(in.Header.Get("x-claude-code-session-id"), "automask", notice.Warn, "Request refused: Automask could not read it",
+		"Automask is on and could not read a request ("+why+"), so Burst refused it rather than send it unmasked. Turn Automask off to send requests of this kind.")
+	http.Error(w, "claude-burst: request refused: Automask is on and could not read this request ("+why+"), so it was not sent. Turn Automask off in the Burst dashboard to send requests of this kind.", http.StatusBadRequest)
 }

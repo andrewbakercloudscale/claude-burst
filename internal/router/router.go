@@ -307,7 +307,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/v1/messages/count_tokens" {
 		// Masked like the turn it measures: /context sends the whole
 		// conversation, and automask promises nothing personal leaves.
-		body = s.applyAutomask(r, body)
+		body, unread := s.applyAutomask(r, body)
+		if unread != "" {
+			s.refuseUnmasked(w, r, unread)
+			return
+		}
 		body = s.applyRemovals(r.Header.Get("x-claude-code-session-id"), body)
 		s.forward(w, r, body, "primary", s.primary, nil, false, "", nil)
 		return
@@ -329,7 +333,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// goes. count_tokens returned above, uncompacted: it must count what
 	// Claude Code sent. Masked first: a summary, the compaction hash and the secondary all
 	// see only the masked history.
-	body = s.applyAutomask(r, body)
+	body, unread := s.applyAutomask(r, body)
+	if unread != "" {
+		s.refuseUnmasked(w, r, unread)
+		return
+	}
 	body, r = s.applyCompaction(r, body)
 	// A thread with a compaction to make is asked for its history.
 	if compactInfoFrom(r.Context()).replay != "" {
