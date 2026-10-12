@@ -70,6 +70,24 @@ set -uo pipefail
 SELF="$0"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# As root: a fixed PATH, no seam that names a program to run or a file to
+# write, and the repair helper is the copy beside this script whatever the
+# environment says. launchd already gives the daemon this PATH, and its plist
+# names the helper beside the installed copy, so none of this changes what the
+# daemon does. It is for `sudo pf-heal.sh` by hand: the stock macOS sudoers
+# keeps the caller's PATH, and a CLAUDE_BURST_ROOT_HELPER inherited from a
+# shell would have had root run whatever file it named. Not as root nothing
+# is dropped, which is what --self-test and the tests rely on. The tuning
+# seams (probe budget, failure limit, settle window) are kept: they name
+# nothing to run.
+if [[ $EUID -eq 0 ]]; then
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin
+  export PATH
+  unset CLAUDE_BURST_HOSTS_FILE CLAUDE_BURST_ROOT_STATE_DIR CLAUDE_BURST_CURL \
+        CLAUDE_BURST_LSOF CLAUDE_BURST_PFCTL CLAUDE_BURST_PF_HEAL_LOG \
+        CLAUDE_BURST_NETWORK_MARKER CLAUDE_BURST_NOTICE_BIN CLAUDE_BURST_ROOT_HELPER
+fi
+
 HOSTS_FILE="${CLAUDE_BURST_HOSTS_FILE:-/etc/hosts}"
 STATE_DIR="${CLAUDE_BURST_ROOT_STATE_DIR:-/etc/claude-burst}"
 STATE_FILE="$STATE_DIR/transparent.state"
@@ -380,7 +398,14 @@ fi
 # 2026-09-08. It dry-runs the whole ruleset first and restores the previous
 # anchor if the result is worse, so running it when pf was already correct
 # costs a second and changes nothing.
-log "repairing: reloading the pf anchor and main ruleset -- $ROOT_HELPER reload-anchor"
+#
+# Since 2026-10-12 reload-anchor loads the anchor alone when
+# the running main ruleset still references it, and reloads /etc/pf.conf only
+# when the reference is gone or the anchor-only load did not bring the real
+# path back: the full reload drops what other software added to the running
+# ruleset. Which of the two ran, and why, is in its output, copied into this
+# log below.
+log "repairing: reloading the pf anchor (and the main ruleset only if that is not enough): $ROOT_HELPER reload-anchor"
 reload_out="$("$ROOT_HELPER" reload-anchor 2>&1)"
 printf '%s\n' "$reload_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
 
@@ -412,6 +437,18 @@ log "GIVING UP after $n failed repairs -- removing the redirect so this Mac can 
 remove_out="$("$ROOT_HELPER" remove 2>&1)"
 remove_rc=$?
 printf '%s\n' "$remove_out" | sed 's/^/    /' >> "$LOG" 2>/dev/null || true
+
+# The outcome, not the exit status: the bail-out is only real once the hosts
+# block is gone, because that block is what sends every app on this Mac here.
+# A remove that exits 0 with the block still in place used to be announced as
+# "Claude works again" and the failure count cleared, which left the Mac cut
+# off with the guard saying it had stepped aside. The count is kept instead,
+# so the next cycle tries the remove again.
+if (( remove_rc == 0 )) && hosts_redirect_present; then
+  log "FATAL: the helper's remove exited 0 but $HOSTS_FILE still redirects $INTERCEPT_HOST here. This Mac may still be unable to reach it. Run by hand: sudo $ROOT_HELPER remove"
+  notify error "Burst redirect broken and could not be removed" "Claude Code cannot reach Anthropic. Run: sudo $ROOT_HELPER remove"
+  return 1
+fi
 
 if (( remove_rc == 0 )); then
   log "BAILED OUT: transparent mode removed. Claude Code now talks to Anthropic directly. Reinstall with: sudo $ROOT_HELPER install"
@@ -547,7 +584,9 @@ case "$1" in
   reload-anchor)
     [[ -f "$d/anchor-wont-load" ]] && { echo "pf rejected the ruleset" >&2; exit 1; }
     touch "$d/rdr" "$d/ref"; echo "reloaded"; exit 0 ;;
-  remove) rm -f "$d/hosts" "$d/rdr" "$d/ref"; echo "removed"; exit 0 ;;
+  remove)
+    [[ -f "$d/remove-lies" ]] && { echo "removed"; exit 0; }
+    rm -f "$d/hosts" "$d/rdr" "$d/ref"; echo "removed"; exit 0 ;;
 esac
 exit 2
 STUB
@@ -615,6 +654,17 @@ STUB
   run; want "BAILED OUT" && ok "second failure -> bailed out" || bad "did not bail out at the limit" show
   grep -qF "$HOSTS_MARKER" "$HOSTS_FILE" 2>/dev/null \
     && bad "bail-out left the hosts redirect in place" || ok "bail-out removed the hosts redirect"
+
+  # 6b. A remove that exits 0 with the hosts block still there is not a
+  #     bail-out: the Mac is still cut off. It must not be announced as one,
+  #     and the count must survive so the next cycle tries again.
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; echo 1 > "$FAIL_COUNT_FILE"; touch "$tmp/remove-lies"
+  run
+  want "BAILED OUT" && bad "announced a bail-out with the hosts redirect still in place" show || ok "remove that changed nothing is not called a bail-out"
+  want "FATAL" && (( rc != 0 )) && ok "and is reported as fatal" || bad "a remove that changed nothing was not reported" show
+  [[ "$(cat "$FAIL_COUNT_FILE" 2>/dev/null)" == 2 ]] && ok "failure count kept for the next cycle" || bad "failure count was cleared after a remove that changed nothing"
+  rm -f "$tmp/remove-lies"
+  run; want "BAILED OUT" && ok "next cycle bails out once remove works" || bad "did not retry the bail-out" show
 
   # 7. Recovery after failures is announced, so the log shows the whole arc.
   rm -f "$tmp/anchor-wont-load" "$tmp/gw-wont-start"

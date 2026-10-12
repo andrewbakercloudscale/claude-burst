@@ -8,6 +8,13 @@ package integration
 // before the hosts switch), that a rejected or failed pfctl stops the script
 // whatever it printed, and that remove gives back the exact hosts file and
 // releases the pf token it took.
+//
+// And which ruleset is loaded. `pfctl -f /etc/pf.conf` replaces the whole
+// running main ruleset, dropping what other software added to it, so it may
+// only run when the running ruleset has no reference to the anchor, or when
+// loading the anchor alone did not produce a working path. These tests can
+// say which pfctl commands the script issues. They cannot say what the real
+// pfctl does with them: nothing here has been run against real pf.
 
 import (
 	"os"
@@ -21,18 +28,41 @@ import (
 
 // pfctlStub logs its argv and answers from flag files in $STUB_DIR:
 //
-//	reject_dry   the dry run (-n -f) fails, with a syntax error
-//	fail_load    the load (-f) exits 1 while printing nothing alarming
-//	pf_disabled  -s info reports pf disabled
+//	reject_dry         the dry run (-n -f) fails, with a syntax error
+//	fail_load          the load (-f) exits 1 while printing nothing alarming
+//	pf_disabled        -s info reports pf disabled
+//	ref_live           the running main ruleset references the anchor (-s nat)
+//	reject_anchor_dry  the anchor-only dry run fails
+//	fail_anchor_load   the anchor-only load exits 1
+//	flush_ineffective  the anchor still lists its rule after -F all
+//	anchor_unreadable  -a claude-burst -s nat exits 1
+//
+// A load of the main ruleset leaves full_loaded behind, which is what the
+// curl stub's needs_full waits for.
 const pfctlStub = `#!/bin/sh
 d="$STUB_DIR"
 echo "pfctl $*" >> "$d/calls"
 case "$*" in
+  "-a claude-burst -n -f "*)
+    if [ -f "$d/reject_anchor_dry" ]; then echo "claude-burst:2: syntax error"; exit 1; fi
+    exit 0 ;;
+  "-a claude-burst -f "*)
+    if [ -f "$d/fail_anchor_load" ]; then exit 1; fi
+    exit 0 ;;
+  "-a claude-burst -s nat")
+    if [ -f "$d/anchor_unreadable" ]; then exit 1; fi
+    if [ -f "$d/flush_ineffective" ]; then echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 7777"; fi
+    exit 0 ;;
+  "-s nat")
+    echo 'rdr-anchor "com.apple/*" all'
+    if [ -f "$d/ref_live" ]; then echo 'rdr-anchor "claude-burst" all'; fi
+    exit 0 ;;
   "-n -f "*)
     if [ -f "$d/reject_dry" ]; then echo "/etc/pf.conf:9: syntax error"; exit 1; fi
     exit 0 ;;
   "-f "*)
     if [ -f "$d/fail_load" ]; then echo "pfctl: rules loaded"; exit 1; fi
+    : > "$d/full_loaded"
     exit 0 ;;
   "-s info")
     if [ -f "$d/pf_disabled" ]; then echo "Status: Disabled for 0 days"; else echo "Status: Enabled for 0 days"; fi
@@ -43,10 +73,22 @@ exit 0
 `
 
 // curlStub answers every health check: the gateway is up, and the real
-// path's body names the overflow field the script looks for.
+// path's body names the overflow field the script looks for. With needs_full
+// the two checks that travel through the redirect (the intercepted host, and
+// 127.0.0.1:443) fail until the main ruleset has been loaded: the case where
+// loading the anchor alone is not enough. With redirect_dead 127.0.0.1:443
+// never answers, whatever is loaded.
 const curlStub = `#!/bin/sh
 for a; do last="$a"; done
 echo "curl $last" >> "$STUB_DIR/calls"
+if [ -f "$STUB_DIR/redirect_dead" ]; then
+  case "$last" in *://127.0.0.1:443/*) exit 7 ;; esac
+fi
+if [ -f "$STUB_DIR/needs_full" ] && [ ! -f "$STUB_DIR/full_loaded" ]; then
+  case "$last" in
+    https://api.anthropic.com/*|*://127.0.0.1:443/*) exit 7 ;;
+  esac
+fi
 echo '{"status":"ok","overflow":false}'
 `
 
@@ -297,6 +339,7 @@ func TestRootInstallCallOrderAndHostsLast(t *testing.T) {
 	want := []string{
 		"curl https://127.0.0.1:7777/healthz",
 		"dscacheutil -q host -a name api.anthropic.com",
+		"pfctl -s nat", // no reference to the anchor yet: the full load is needed
 		"pfctl -f <tmp>/etc/pf.conf",
 		"pfctl -s info",
 		"curl https://127.0.0.1:443/healthz",
@@ -343,12 +386,17 @@ func TestRootRemoveRestoresHostsAndReleasesTheToken(t *testing.T) {
 	if _, err := os.Stat(e.anchor); !os.IsNotExist(err) {
 		t.Fatal("anchor file left behind")
 	}
+	// The anchor is flushed and checked empty; the main ruleset is not
+	// reloaded, so nothing other software added to it is dropped.
 	sameCalls(t, "remove pfctl calls", only(r.calls, "pfctl "), []string{
 		"pfctl -a claude-burst -F all",
-		"pfctl -f <tmp>/etc/pf.conf",
+		"pfctl -a claude-burst -s nat",
 		"pfctl -X 4242",
 		"pfctl -s info",
 	}, r.out)
+	if !strings.Contains(r.out, "the running main ruleset was left as it is") {
+		t.Fatalf("remove did not say the main ruleset was left alone:\n%s", r.out)
+	}
 
 	// Idempotent: a second remove on a clean machine still unloads the
 	// anchor (a half install can leave a live rule) and changes nothing.
@@ -372,11 +420,16 @@ func TestRootReloadAnchorCallOrder(t *testing.T) {
 		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
 	}
 	sameCalls(t, "reload-anchor pfctl calls", only(r.calls, "pfctl "), []string{
+		"pfctl -s nat",
 		"pfctl -n -f <tmp>/etc/pf.conf",
 		"pfctl -f <tmp>/etc/pf.conf",
 		"pfctl -s info",
 		"pfctl -a claude-burst -F states",
 	}, r.out)
+	// The full reload is the costly one, so the output says it ran and why.
+	if !strings.Contains(r.out, "reloading the MAIN ruleset") || !strings.Contains(r.out, `has no rdr-anchor "claude-burst" reference`) {
+		t.Fatalf("the full reload was not announced with its reason:\n%s", r.out)
+	}
 }
 
 // The dry run is rejected: non-zero exit, nothing loaded, and the previous
@@ -393,7 +446,7 @@ func TestRootReloadAnchorRejectedDryRunNeverLoads(t *testing.T) {
 	if r.code == 0 {
 		t.Fatalf("a rejected dry run must fail the script:\n%s", r.out)
 	}
-	sameCalls(t, "pfctl calls", only(r.calls, "pfctl "), []string{"pfctl -n -f <tmp>/etc/pf.conf"}, r.out)
+	sameCalls(t, "pfctl calls", only(r.calls, "pfctl "), []string{"pfctl -s nat", "pfctl -n -f <tmp>/etc/pf.conf"}, r.out)
 	if got := read(t, e.anchor); got != "# the anchor that was working\n" {
 		t.Fatalf("previous anchor not restored:\n%s", got)
 	}
@@ -418,6 +471,7 @@ func TestRootReloadAnchorFailedLoadFailsWhateverItPrints(t *testing.T) {
 		t.Fatalf("pfctl -f exited 1: the script must too:\n%s", r.out)
 	}
 	sameCalls(t, "pfctl calls", only(r.calls, "pfctl "), []string{
+		"pfctl -s nat",
 		"pfctl -n -f <tmp>/etc/pf.conf",
 		"pfctl -f <tmp>/etc/pf.conf",
 		"pfctl -f <tmp>/etc/pf.conf", // reloading the restored anchor
@@ -427,5 +481,280 @@ func TestRootReloadAnchorFailedLoadFailsWhateverItPrints(t *testing.T) {
 	}
 	if hasPrefix(r.calls, "pfctl -a claude-burst -F states") {
 		t.Fatal("went on to flush states after a failed load")
+	}
+}
+
+func (e *rootEnv) flag(t *testing.T, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(e.stub, n), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// loadsMainRuleset reports whether any call loaded (or dry-ran) /etc/pf.conf.
+func loadsMainRuleset(calls []string) bool {
+	for _, c := range calls {
+		if strings.HasPrefix(c, "pfctl -f ") || strings.HasPrefix(c, "pfctl -n -f ") {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	anchorDry  = "pfctl -a claude-burst -n -f <tmp>/etc/pf.anchors/claude-burst"
+	anchorLoad = "pfctl -a claude-burst -f <tmp>/etc/pf.anchors/claude-burst"
+)
+
+// The running main ruleset already references the anchor: the anchor alone is
+// dry-run and loaded, and /etc/pf.conf is never loaded, so whatever other
+// software added to the running ruleset stays.
+func TestRootReloadAnchorLoadsOnlyTheAnchorWhenReferenced(t *testing.T) {
+	t.Parallel()
+	e := newRootEnv(t)
+	e.install(t)
+	e.flag(t, "ref_live")
+	r := e.run(t, "reload-anchor")
+	if r.code != 0 {
+		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
+	}
+	sameCalls(t, "reload-anchor pfctl calls", only(r.calls, "pfctl "), []string{
+		"pfctl -s nat",
+		anchorDry,
+		anchorLoad,
+		"pfctl -s info",
+		"pfctl -a claude-burst -F states",
+	}, r.out)
+	if loadsMainRuleset(r.calls) {
+		t.Fatalf("the main ruleset was reloaded with the reference already live: %q", r.calls)
+	}
+	if !strings.Contains(r.out, "the main ruleset was not reloaded") {
+		t.Fatalf("output does not say the main ruleset was left alone:\n%s", r.out)
+	}
+}
+
+// The anchor-only reload goes in but the real path still does not answer:
+// the full reload is tried before giving up, so the narrow path can never do
+// worse than the reload it replaced.
+func TestRootReloadAnchorFallsBackToTheMainRulesetWhenThePathStaysBroken(t *testing.T) {
+	t.Parallel()
+	e := newRootEnv(t)
+	e.install(t)
+	os.Remove(filepath.Join(e.stub, "full_loaded")) // left by install's own load
+	e.flag(t, "ref_live", "needs_full")
+	r := e.run(t, "reload-anchor")
+	if r.code != 0 {
+		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
+	}
+	sameCalls(t, "reload-anchor pfctl calls", only(r.calls, "pfctl "), []string{
+		"pfctl -s nat",
+		anchorDry,
+		anchorLoad,
+		"pfctl -s info",
+		"pfctl -a claude-burst -F states",
+		"pfctl -n -f <tmp>/etc/pf.conf",
+		"pfctl -f <tmp>/etc/pf.conf",
+		"pfctl -s info",
+		"pfctl -a claude-burst -F states",
+	}, r.out)
+	if !strings.Contains(r.out, "the anchor-only reload did not bring the real path back") {
+		t.Fatalf("the fallback did not say why it ran:\n%s", r.out)
+	}
+}
+
+// The anchor-only step itself fails, at the dry run or at the load: the full
+// reload runs, as it would have before the anchor-only step existed.
+func TestRootReloadAnchorFallsBackWhenTheAnchorOnlyLoadFails(t *testing.T) {
+	t.Parallel()
+	for flag, want := range map[string][]string{
+		"reject_anchor_dry": {"pfctl -s nat", anchorDry, "pfctl -n -f <tmp>/etc/pf.conf", "pfctl -f <tmp>/etc/pf.conf", "pfctl -s info", "pfctl -a claude-burst -F states"},
+		"fail_anchor_load":  {"pfctl -s nat", anchorDry, anchorLoad, "pfctl -n -f <tmp>/etc/pf.conf", "pfctl -f <tmp>/etc/pf.conf", "pfctl -s info", "pfctl -a claude-burst -F states"},
+	} {
+		e := newRootEnv(t)
+		e.install(t)
+		e.flag(t, "ref_live", flag)
+		r := e.run(t, "reload-anchor")
+		if r.code != 0 {
+			t.Fatalf("%s: reload-anchor exit %d:\n%s", flag, r.code, r.out)
+		}
+		sameCalls(t, flag+": pfctl calls", only(r.calls, "pfctl "), want, r.out)
+	}
+}
+
+// A reinstall over a ruleset that already references the anchor loads the
+// anchor alone, and falls back to the main ruleset only when 127.0.0.1:443
+// does not reach the gateway afterwards.
+func TestRootInstallOverALiveReferenceLoadsOnlyTheAnchor(t *testing.T) {
+	t.Parallel()
+	e := newRootEnv(t, "ref_live")
+	r := e.install(t)
+	sameCalls(t, "install pfctl calls", only(r.calls, "pfctl "), []string{
+		"pfctl -s nat", anchorDry, anchorLoad, "pfctl -s info",
+	}, r.out)
+
+	e = newRootEnv(t, "ref_live", "needs_full")
+	r = e.install(t)
+	sameCalls(t, "install pfctl calls when the anchor alone is not enough", only(r.calls, "pfctl "), []string{
+		"pfctl -s nat", anchorDry, anchorLoad, "pfctl -s info", "pfctl -f <tmp>/etc/pf.conf",
+	}, r.out)
+	if !strings.Contains(read(t, e.hosts), "127.0.0.1 api.anthropic.com") {
+		t.Fatalf("install did not finish after the fallback:\n%s", r.out)
+	}
+
+	// Neither load produces a working redirect: the fallback's own result is
+	// checked too, and the install is undone with /etc/hosts never switched.
+	e = newRootEnv(t, "ref_live", "redirect_dead")
+	r = e.run(t, "install")
+	if r.code == 0 || !strings.Contains(r.out, "redirect verification FAILED") {
+		t.Fatalf("install must fail when 127.0.0.1:443 never reaches the gateway: exit %d\n%s", r.code, r.out)
+	}
+	if !hasPrefix(r.calls, "pfctl -f <tmp>/etc/pf.conf") {
+		t.Fatalf("the full reload was never tried before giving up: %q", r.calls)
+	}
+	if read(t, e.hosts) != hostsOrig {
+		t.Fatalf("hosts changed by an install that failed:\n%s", read(t, e.hosts))
+	}
+}
+
+// remove checks the outcome of its flush. A rule still listed, or an anchor
+// it cannot read, sends it to the full reload it used to run every time.
+func TestRootRemoveReloadsTheMainRulesetWhenTheFlushDidNotEmptyTheAnchor(t *testing.T) {
+	t.Parallel()
+	for _, flag := range []string{"flush_ineffective", "anchor_unreadable"} {
+		e := newRootEnv(t)
+		e.install(t)
+		e.flag(t, flag)
+		r := e.run(t, "remove")
+		if r.code != 0 {
+			t.Fatalf("%s: remove exit %d:\n%s", flag, r.code, r.out)
+		}
+		sameCalls(t, flag+": remove pfctl calls", only(r.calls, "pfctl "), []string{
+			"pfctl -a claude-burst -F all",
+			"pfctl -a claude-burst -s nat",
+			"pfctl -f <tmp>/etc/pf.conf",
+			"pfctl -s info",
+		}, r.out)
+		if read(t, e.hosts) != hostsOrig {
+			t.Fatalf("%s: hosts not restored", flag)
+		}
+	}
+}
+
+// What remove leaves behind. The anchor's .bak goes with the anchor. The
+// copies of /etc/hosts and /etc/pf.conf taken at install stay after a plain
+// remove (a rollback runs the same command) and are named; purge, which an
+// uninstall should use, deletes them and the state directory once empty.
+func TestRootRemoveNamesWhatItKeepsAndPurgeDeletesIt(t *testing.T) {
+	t.Parallel()
+	e := newRootEnv(t)
+	e.install(t)
+	if r := e.run(t, "reload-anchor"); r.code != 0 {
+		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
+	}
+	bak := e.anchor + ".bak"
+	if _, err := os.Stat(bak); err != nil {
+		t.Fatalf("precondition: reload-anchor should leave %s: %v", bak, err)
+	}
+	hostsBak := filepath.Join(e.stateDir, "hosts.pre-install.bak")
+	pfBak := filepath.Join(e.stateDir, "pf.conf.pre-install.bak")
+
+	r := e.run(t, "remove")
+	if r.code != 0 {
+		t.Fatalf("remove exit %d:\n%s", r.code, r.out)
+	}
+	if _, err := os.Stat(bak); !os.IsNotExist(err) {
+		t.Fatalf("%s left behind by remove", bak)
+	}
+	for _, f := range []string{hostsBak, pfBak} {
+		if _, err := os.Stat(f); err != nil {
+			t.Fatalf("a plain remove must keep %s: %v", f, err)
+		}
+		if !strings.Contains(r.out, f) {
+			t.Fatalf("remove kept %s without naming it:\n%s", f, r.out)
+		}
+	}
+
+	r = e.run(t, "purge")
+	if r.code != 0 {
+		t.Fatalf("purge exit %d:\n%s", r.code, r.out)
+	}
+	if _, err := os.Stat(e.stateDir); !os.IsNotExist(err) {
+		entries, _ := os.ReadDir(e.stateDir)
+		t.Fatalf("purge left %s behind (%d entries):\n%s", e.stateDir, len(entries), r.out)
+	}
+
+	// Another daemon's file in the state directory survives a purge.
+	e = newRootEnv(t)
+	e.install(t)
+	other := filepath.Join(e.stateDir, "lid-awake.state")
+	write(t, other, "mode=ac\n")
+	if r := e.run(t, "purge"); r.code != 0 {
+		t.Fatalf("purge exit %d:\n%s", r.code, r.out)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("purge deleted a file that is not transparent mode's: %v", err)
+	}
+}
+
+// As root python3 is /usr/bin/python3, which runs nothing without the Command
+// Line Tools. The script says so before it opens a file, and says how to take
+// the redirect out by hand.
+func TestRootRemoveSaysWhatToDoWhenPythonDoesNotRun(t *testing.T) {
+	t.Parallel()
+	e := newRootEnv(t)
+	e.install(t)
+	withBlock := read(t, e.hosts)
+	py := filepath.Join(e.dir, "bin", "python3")
+	os.Remove(py)
+	if err := os.WriteFile(py, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("zsh", "-f", e.script, "remove")
+	cmd.Env = e.env
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("remove succeeded without a working python3:\n%s", out)
+	}
+	for _, want := range []string{"python3 does not run", "xcode-select --install", "# BEGIN claude-burst hosts"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if read(t, e.hosts) != withBlock {
+		t.Fatal("the hosts file changed although nothing could be edited")
+	}
+}
+
+// Every script root runs fixes its PATH and drops its seams when it really is
+// root, before it does anything else. This reads the scripts: no test here
+// runs as root, so the branch itself is never executed by the suite.
+func TestRootScriptsFixThePathWhenRoot(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"transparent-root.sh", "pf-heal.sh", "install-pf-heal.sh"} {
+		src := readFile(filepath.Join(repoRoot(t), "scripts", name))
+		guard := "if [[ $EUID -eq 0 ]]; then\n  PATH=/usr/bin:/bin:/usr/sbin:/sbin\n  export PATH\n  unset CLAUDE_BURST_"
+		i := strings.Index(src, guard)
+		if i < 0 {
+			t.Errorf("%s: no fixed PATH for a root run", name)
+			continue
+		}
+		// Nothing but comments, blank lines, `set` and plain assignments
+		// may come before it: a command run earlier is run on the caller's PATH.
+		for _, line := range strings.Split(src[:i], "\n") {
+			l := strings.TrimSpace(line)
+			if l == "" || strings.HasPrefix(l, "#") || strings.HasPrefix(l, "set ") ||
+				regexp.MustCompile(`^[A-Z_]+="\$0"$`).MatchString(l) || l == `DIR="$(cd "$(dirname "$0")" && pwd)"` {
+				continue
+			}
+			t.Errorf("%s: %q runs before the PATH is fixed", name, l)
+		}
+	}
+	// rollback.sh is refused as root outright, before its audit trap is set.
+	src := readFile(filepath.Join(repoRoot(t), "scripts", "rollback.sh"))
+	refuse, trap := strings.Index(src, "if [[ $EUID -eq 0 ]]; then\n  echo \"run this without sudo"), strings.Index(src, "\ntrap ")
+	if refuse < 0 || trap < 0 || refuse > trap {
+		t.Errorf("rollback.sh must refuse a root run before it sets its trap (refusal at %d, trap at %d)", refuse, trap)
 	}
 }

@@ -27,7 +27,10 @@ Transport-error and non-failover-error log lines include the upstream `error.Err
 ## 6. Transparent intercept mode is machine-wide, and TLS interception is assumed benign
 
 The `/etc/hosts` entry transparent mode installs affects every process on the Mac, not just
-Claude Code, see [the trade-off table](transparent-mode.md#what-it-costs). Separately, the design assumes that TLS
+Claude Code, see [the trade-off table](transparent-mode.md#what-it-costs). The pf redirect is just as wide: it sends every
+connection any program on the Mac makes to `127.0.0.1` port 443 to the gateway, not only Claude
+Code's, so a local HTTPS server on that address and port cannot be reached while transparent
+mode is installed. Separately, the design assumes that TLS
 interception does not itself break Remote Control. That is well supported (Claude Code is
 widely run behind corporate inspecting proxies, and documents `NODE_EXTRA_CA_CERTS` for
 exactly that) but is not something this project can prove. `scripts/check-interception.sh`

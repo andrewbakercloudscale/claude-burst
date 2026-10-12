@@ -20,6 +20,25 @@ ROLLED_BACK_MARKER="${CLAUDE_BURST_ROLLED_BACK_MARKER:-$HOME/.config/claude-burs
 # one that refuses to run.
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Not as root. This script asks for root itself, for the two steps that need
+# it, and does everything else as you. Run whole under sudo it executed, as
+# root, files a non-root user can rewrite: the claude-burst binary (the
+# pass-through below), audit-add.sh and codex-unroute.sh beside it, and
+# whatever python3 came first on a PATH that the stock macOS sudoers passes
+# through unchanged. It also left root-owned backups in your home that the
+# next rollback, run as you, could not replace. Refused before the audit
+# trap is set, so not even that runs as root.
+if [[ $EUID -eq 0 ]]; then
+  echo "run this without sudo: it asks for your password itself, for the two steps that need root." >&2
+  echo "  $0" >&2
+  exit 1
+fi
+
+# Read-only here, and overridable only so a test never depends on whether the
+# developer's own Mac has the redirect installed.
+HOSTS_FILE="${CLAUDE_BURST_HOSTS_FILE:-/etc/hosts}"
+LIBEXEC="${CLAUDE_BURST_PFHEAL_LIBEXEC:-/usr/local/libexec/claude-burst}"
+
 # How this ended goes in the audit trail (the Audit tab), whoever ran it: a
 # person, the dashboard's button, the mod, or watchdog.sh with nobody there.
 trap 'rc=$?; if [ $rc -eq 0 ]; then "$DIR/audit-add.sh" script warn "Script: rollback.sh (burst-off)" "done: Burst is out of the path" >/dev/null 2>&1; else "$DIR/audit-add.sh" script error "Script: rollback.sh (burst-off)" "ended with exit $rc: check that Claude Code reaches Anthropic" >/dev/null 2>&1; fi' EXIT
@@ -34,9 +53,7 @@ trap 'rc=$?; if [ $rc -eq 0 ]; then "$DIR/audit-add.sh" script warn "Script: rol
 # and continue" here is what made this script silently no-op the /etc/hosts
 # and CA-trust cleanup on a machine with no NOPASSWD rule configured.
 HAVE_ROOT=0
-if [[ $EUID -eq 0 ]]; then
-  HAVE_ROOT=1
-elif sudo -n true 2>/dev/null; then
+if sudo -n true 2>/dev/null; then
   HAVE_ROOT=1
 elif [[ -t 0 ]]; then
   echo "claude-burst rollback needs sudo to remove /etc/hosts, pf, and CA trust state." >&2
@@ -72,19 +89,49 @@ fi
 # it, EVERY process on this Mac that talks to Anthropic fails -- not just this
 # session. That is the widest-blast-radius state the tool can create, so it is
 # the first thing undone, before any step that could itself fail.
+#
+# Which copy of the helper root runs. The one beside this script lives in the
+# checkout or in ~/.local/share/claude-burst, both writable by you and so by
+# anything running as you, and `sudo -n` below asks nobody: whatever that
+# file holds at that moment runs as root. install-pf-heal.sh puts a
+# root-owned copy in /usr/local/libexec/claude-burst for its daemon, so that
+# one is used whenever it is there and nobody but root can change it. When it
+# is not (the pf guard is optional), the copy beside this script still runs,
+# and the line below says so: refusing would leave /etc/hosts redirecting
+# with no way to undo it from here, which is the one thing a rollback must
+# never do.
+root_owned() {
+  # A regular file owned by root, in a directory owned by root, neither
+  # writable by group or other. The directory counts: a root-owned file in a
+  # directory you can write is yours to replace.
+  local f="$1" d m
+  [[ -f "$f" && ! -L "$f" ]] || return 1
+  d="$(dirname "$f")"
+  [[ "$(stat -f %u "$f" 2>/dev/null)" == 0 && "$(stat -f %u "$d" 2>/dev/null)" == 0 ]] || return 1
+  for m in "$(stat -f %Lp "$f" 2>/dev/null)" "$(stat -f %Lp "$d" 2>/dev/null)"; do
+    case "$m" in ''|*[!0-7]*) return 1 ;; esac
+    (( (8#$m & 8#022) == 0 )) || return 1
+  done
+}
 ROOT_HELPER="$DIR/transparent-root.sh"
-# burst-off runs a copy of this script; prefer the installed root helper if
-# the copy beside it is missing.
-[[ -x "$ROOT_HELPER" ]] || ROOT_HELPER="/usr/local/libexec/claude-burst/transparent-root.sh"
+HELPER_NOTE=""
+if root_owned "$LIBEXEC/transparent-root.sh"; then
+  ROOT_HELPER="$LIBEXEC/transparent-root.sh"
+elif [[ -x "$ROOT_HELPER" ]]; then
+  HELPER_NOTE="note: root is running $ROOT_HELPER, which is not a root-owned copy (there is none in $LIBEXEC; sudo scripts/install-pf-heal.sh installs one)"
+else
+  # burst-off runs a copy of this script; fall back to the installed helper
+  # if the copy beside it is missing.
+  ROOT_HELPER="$LIBEXEC/transparent-root.sh"
+fi
 if [[ -x "$ROOT_HELPER" ]]; then
-  if [[ $EUID -eq 0 ]]; then
-    "$ROOT_HELPER" remove
-  elif [[ "$HAVE_ROOT" -eq 1 ]]; then
+  if [[ "$HAVE_ROOT" -eq 1 ]]; then
+    [[ -n "$HELPER_NOTE" ]] && echo "$HELPER_NOTE" >&2
     sudo -n "$ROOT_HELPER" remove
   else
     # Only nag if something is actually installed; the common case is a
     # base-url-mode user who never had any of this.
-    if grep -q '^# BEGIN claude-burst hosts$' /etc/hosts 2>/dev/null; then
+    if grep -q '^# BEGIN claude-burst hosts$' "$HOSTS_FILE" 2>/dev/null; then
       echo "WARNING: /etc/hosts still contains a claude-burst redirect and this" >&2
       echo "         rollback cannot remove it without root. Run NOW:" >&2
       echo "           sudo $ROOT_HELPER remove" >&2
@@ -99,7 +146,7 @@ fi
 # it would cut every app on the Mac off from Anthropic, so it is left
 # running, and the step that stops it below is skipped.
 REDIRECT_LEFT=0
-grep -q '^# BEGIN claude-burst hosts$' /etc/hosts 2>/dev/null && REDIRECT_LEFT=1
+grep -q '^# BEGIN claude-burst hosts$' "$HOSTS_FILE" 2>/dev/null && REDIRECT_LEFT=1
 
 # STEP 1b: undo the System keychain CA trust added by
 # trust-ca-systemwide.sh (see docs/history/investigation-tls-storm.md for why that
@@ -109,9 +156,7 @@ grep -q '^# BEGIN claude-burst hosts$' /etc/hosts 2>/dev/null && REDIRECT_LEFT=1
 # if the cert is actually present.
 UNTRUST_HELPER="$DIR/untrust-ca-systemwide.sh"
 if [[ -x "$UNTRUST_HELPER" ]]; then
-  if [[ $EUID -eq 0 ]]; then
-    "$UNTRUST_HELPER"
-  elif [[ "$HAVE_ROOT" -eq 1 ]]; then
+  if [[ "$HAVE_ROOT" -eq 1 ]]; then
     sudo -n "$UNTRUST_HELPER"
   elif security find-certificate -c "claude-burst local CA" /Library/Keychains/System.keychain >/dev/null 2>&1; then
     echo "WARNING: the System keychain still trusts claude-burst's local CA and this" >&2
@@ -206,11 +251,25 @@ echo "stopped claude-burst gateway (if it was running)"
 # session sent there (2026-10-04: test leftovers held 17777 for 20 minutes).
 # The pass-through from STEP 0 is the one thing kept: it is what keeps open
 # sessions working, and it is waiting for exactly this port.
+#
+# Only Burst's own processes. These are ordinary port numbers, and until
+# 2026-10-12 whatever listened on one was killed, a developer's own server on
+# 7777 included. A process counts as Burst's when the program it runs is
+# named claude-burst, wherever that file is: the installed binary, a build in
+# a checkout, the copy a test run left behind. `ps -o comm=` prints the
+# program's path on macOS (observed: /Users/.../.local/bin/claude-burst for
+# both `serve` and `console`). Anything else is left running and named, so
+# a port still held is explained rather than silently skipped.
 KEEP="$(cat "$HOME/.config/claude-burst/passthrough.pid" 2>/dev/null)"
 for port in ${(u)PORTS}; do
   for pid in $(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null); do
     [[ "$pid" == "$KEEP" ]] && continue
-    echo "port $port: stopping pid $pid ($(ps -o comm= -p "$pid" 2>/dev/null))"
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null)"
+    if [[ "${comm:t}" != claude-burst ]]; then
+      echo "port $port: left pid $pid (${comm:-unknown program}) running: it is not Claude Burst. If Burst needs this port, stop it yourself."
+      continue
+    fi
+    echo "port $port: stopping pid $pid ($comm)"
     kill "$pid" 2>/dev/null
     for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
@@ -225,10 +284,33 @@ fi
 # added after a stale, out-of-repo copy of this script skipped straight to
 # "rollback complete" without ever checking whether traffic could actually
 # reach Anthropic again.
+#
+# What counts as Burst's, here and in the two blocks after it: a value that
+# names this Mac AND one of Burst's own ports (PORTS above: the defaults, plus
+# what config.json said before it was restored). Until 2026-10-12 the port
+# was not looked at, so any local value went: a developer's own proxy on
+# 127.0.0.1:8080 (mitmproxy, Charles), or a local model gateway they had
+# pointed ANTHROPIC_BASE_URL at themselves. Burst only ever writes
+# ANTHROPIC_BASE_URL, and always with its port; the proxy variables and the
+# macOS proxy are checked because a value pointing at a Burst port is dead
+# once the gateway stops, whoever set it.
+is_burst_value() {
+  local v="${1:l}" hp
+  v="${v#http://}"; v="${v#https://}"
+  hp="${v%%/*}"
+  case "$hp" in
+    127.0.0.1:*|localhost:*|\[::1\]:*) ;;
+    *) return 1 ;;
+  esac
+  (( ${PORTS[(Ie)${hp##*:}]} ))
+}
 if [[ -f "$SETTINGS" ]]; then
-  python3 - "$SETTINGS" "$CONFIG" <<'PY'
+  python3 - "$SETTINGS" "$CONFIG" ${(u)PORTS} <<'PY'
 import json, sys
 from pathlib import Path
+from urllib.parse import urlsplit
+
+PORTS = set(sys.argv[3:])
 
 p = Path(sys.argv[1])
 try:
@@ -238,15 +320,19 @@ except Exception as e:
     raise SystemExit(0)
 
 env = data.get("env")
-# Only values that point at this Mac are Burst's. A Portkey or corporate
-# gateway URL, or a real corporate proxy, is the user's and stays.
+# Only values that point at this Mac, on one of Burst's ports, are Burst's.
+# A Portkey or corporate gateway URL, a real corporate proxy, or the user's
+# own proxy on another local port is the user's and stays.
 def ours(v):
-    v = str(v).lower()
-    for pre in ("http://", "https://", ""):
-        for host in ("127.0.0.1", "localhost", "[::1]"):
-            if v.startswith(pre + host):
-                return True
-    return False
+    v = str(v).strip().lower()
+    if "://" not in v:
+        v = "http://" + v
+    try:
+        u = urlsplit(v)
+        host, port = u.hostname, u.port
+    except ValueError:
+        return False
+    return host in ("127.0.0.1", "localhost", "::1") and str(port) in PORTS
 keys = {
     "ANTHROPIC_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "all_proxy",
@@ -277,29 +363,43 @@ if removed:
 PY
 fi
 
-# Same rule for launchd's environment: only values pointing at this Mac.
+# Same rule for launchd's environment: this Mac, on one of Burst's ports.
 for VAR in ANTHROPIC_BASE_URL HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
   VAL="$(launchctl getenv "$VAR" 2>/dev/null || true)"
-  case "$VAL" in
-    http://127.0.0.1*|https://127.0.0.1*|http://localhost*|https://localhost*|127.0.0.1*|localhost*)
-      launchctl unsetenv "$VAR" >/dev/null 2>&1 || true
-      echo "removed launchd $VAR=$VAL" ;;
-  esac
+  [[ -n "$VAL" ]] || continue
+  if is_burst_value "$VAL"; then
+    launchctl unsetenv "$VAR" >/dev/null 2>&1 || true
+    echo "removed launchd $VAR=$VAL"
+  else
+    case "${VAL:l}" in
+      *127.0.0.1*|*localhost*|*\[::1\]*) echo "left launchd $VAR=$VAL as it is (not one of Burst's ports)" ;;
+    esac
+  fi
 done
 
 # A macOS-level HTTP(S) proxy pointed at this Mac is the other way traffic
 # can stay stuck even after a clean hosts/pf rollback. Only ever touches a
-# proxy explicitly set to 127.0.0.1/localhost.
+# proxy set to 127.0.0.1/localhost on one of Burst's ports.
+#
+# The fields are matched from the start of the line. `networksetup
+# -getwebproxy` also prints "Authenticated Proxy Enabled: 0", so the old
+# /Enabled:/ picked up two lines, never equalled "Yes", and this block had
+# never once switched a proxy off. Anchoring it is what makes it act at all,
+# which is why the port is checked in the same change.
 networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | while IFS= read -r SERVICE; do
   SERVICE="${SERVICE#\*}"
   [[ -z "$SERVICE" ]] && continue
   for TYPE in web secureweb; do
     INFO="$(networksetup -get${TYPE}proxy "$SERVICE" 2>/dev/null || true)"
-    SERVER="$(echo "$INFO" | awk '/Server:/ {print $2}')"
-    ENABLED="$(echo "$INFO" | awk '/Enabled:/ {print $2}')"
-    if [[ "$ENABLED" == "Yes" && ( "$SERVER" == "127.0.0.1" || "$SERVER" == "localhost" ) ]]; then
-      echo "disabling localhost $TYPE proxy on: $SERVICE"
+    SERVER="$(echo "$INFO" | awk '/^Server:/ {print $2}')"
+    PPORT="$(echo "$INFO" | awk '/^Port:/ {print $2}')"
+    ENABLED="$(echo "$INFO" | awk '/^Enabled:/ {print $2}')"
+    [[ "$ENABLED" == "Yes" && ( "$SERVER" == "127.0.0.1" || "$SERVER" == "localhost" ) ]] || continue
+    if is_burst_value "$SERVER:$PPORT"; then
+      echo "disabling localhost $TYPE proxy on: $SERVICE (port $PPORT is Burst's)"
       networksetup -set${TYPE}proxystate "$SERVICE" off
+    else
+      echo "left the $TYPE proxy on $SERVICE as it is: $SERVER:$PPORT is not one of Burst's ports"
     fi
   done
 done
@@ -316,7 +416,11 @@ REMOTE="${RESULT#*|}"
 # The network is half of it. Claude Code in base-url mode is sent to the
 # gateway by settings.json, and a rollback that left that line behind points
 # every new session at a port nothing listens on, with this check green.
-LEFT="$(grep -nE '"ANTHROPIC_BASE_URL" *: *"https?://(127\.0\.0\.1|localhost)' "$HOME/.claude/settings.json" 2>/dev/null || true)"
+# Burst's ports only, the same rule as the removal above: a base URL on
+# another local port is the user's own gateway, was left alone on purpose,
+# and must not fail the rollback here.
+PORT_ALT=${(j:|:)${(u)PORTS}}
+LEFT="$(grep -nE "\"ANTHROPIC_BASE_URL\" *: *\"https?://(127\\.0\\.0\\.1|localhost):($PORT_ALT)([/\"]|\$)" "$HOME/.claude/settings.json" 2>/dev/null || true)"
 if [[ -n "$LEFT" ]] && ! pgrep -f 'claude-burst passthrough' >/dev/null 2>&1; then
   echo "WARNING: ~/.claude/settings.json still sends Claude Code to this Mac, and nothing stands in for the gateway:" >&2
   echo "  $LEFT" >&2

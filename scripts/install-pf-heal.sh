@@ -26,9 +26,24 @@
 #
 # Usage:
 #   sudo ./scripts/install-pf-heal.sh              install/reinstall
-#   sudo ./scripts/install-pf-heal.sh uninstall    remove it
+#   sudo ./scripts/install-pf-heal.sh uninstall    remove it (keeps its logs, and says so)
+#   sudo ./scripts/install-pf-heal.sh uninstall --purge    remove it and its logs
 #   ./scripts/install-pf-heal.sh status            is it loaded? (no root)
 set -euo pipefail
+
+# As root: a fixed PATH and no seam from the caller's environment. The stock
+# macOS sudoers keeps the invoking user's PATH, so `sudo install-pf-heal.sh`
+# resolved launchctl, diff, stat and the rest through it, Homebrew's
+# user-writable directories included. Not as root both are left alone, which
+# is what --self-test relies on. (This script is itself run from the
+# checkout: that is the one moment the checkout is trusted, and the reason
+# what it installs is a root-owned copy.)
+if [[ $EUID -eq 0 ]]; then
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin
+  export PATH
+  unset CLAUDE_BURST_PFHEAL_PLIST CLAUDE_BURST_PFHEAL_LIBEXEC CLAUDE_BURST_PF_HEAL_LOG \
+        CLAUDE_BURST_PFHEAL_HEARTBEAT CLAUDE_BURST_LAUNCHCTL
+fi
 
 LABEL="ninja.andrewbaker.claude-burst-pfheal"
 PLIST="${CLAUDE_BURST_PFHEAL_PLIST:-/Library/LaunchDaemons/$LABEL.plist}"
@@ -36,6 +51,8 @@ LIBEXEC="${CLAUDE_BURST_PFHEAL_LIBEXEC:-/usr/local/libexec/claude-burst}"
 SCRIPT="$LIBEXEC/pf-heal.sh"
 LOG="${CLAUDE_BURST_PF_HEAL_LOG:-/var/log/claude-burst-pf.log}"
 HEARTBEAT="${CLAUDE_BURST_PFHEAL_HEARTBEAT:-/etc/claude-burst/pf-heal.heartbeat}"
+# launchd's own capture of the daemon's stderr, named in the plist below.
+ERRLOG="/var/log/claude-burst-pf-launchd.err.log"
 # Absolute path, never the bare word. `install` is also the name of a function
 # in this file, and zsh resolves a function before a command: `install -d ...`
 # inside install() called ITSELF, forever, and the whole script died with
@@ -107,6 +124,8 @@ do_status() {
 
 do_uninstall() {
   need_root uninstall
+  local purge=0
+  [[ "${1:-}" == "--purge" ]] && purge=1
   "$LAUNCHCTL" bootout "system/$LABEL" >/dev/null 2>&1 || true
   rm -f "$PLIST"
   # Only its own files: the directory is shared with the lid-awake daemon,
@@ -116,9 +135,25 @@ do_uninstall() {
   rmdir "$LIBEXEC" 2>/dev/null || true
   # Without this, status() reads a heartbeat from a daemon that no longer
   # exists and reports RUNNING for the next ten minutes.
-  rm -f "$HEARTBEAT" "$(dirname "$HEARTBEAT")/pf-heal.failures"
+  # network-seen as well: it was left behind in /etc/claude-burst by every
+  # uninstall, and it is the daemon's own bookkeeping, of no use without it.
+  local state; state="$(dirname "$HEARTBEAT")"
+  rm -f "$HEARTBEAT" "$state/pf-heal.failures" "$state/pf-heal.network-seen"
+  # Only when empty: transparent mode and the lid-awake daemon keep files here.
+  rmdir "$state" 2>/dev/null || true
   echo "Removed the pf self-heal LaunchDaemon ($LABEL) and its scripts in $LIBEXEC."
-  echo "Kept $LOG so the history of what it caught survives the uninstall."
+  local f
+  local -a logs
+  for f in "$LOG" "$LOG.1" "$ERRLOG"; do
+    if [[ -e "$f" ]]; then logs+=("$f"); fi
+  done
+  if (( purge )); then
+    for f in "${logs[@]}"; do rm -f "$f" && echo "Removed $f"; done
+  elif (( ${#logs} )); then
+    echo "Kept, so the history of what it caught survives the uninstall:"
+    for f in "${logs[@]}"; do echo "  $f"; done
+    echo "Remove them too with: sudo $0 uninstall --purge"
+  fi
 }
 
 do_install() {
@@ -167,7 +202,7 @@ do_install() {
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>/dev/null</string>
-  <key>StandardErrorPath</key><string>/var/log/claude-burst-pf-launchd.err.log</string>
+  <key>StandardErrorPath</key><string>$ERRLOG</string>
 </dict>
 </plist>
 PLIST
@@ -188,7 +223,7 @@ Runs as root every 30s AND on every network change. Each cycle:
   - pf rdr rule loaded               -> does nothing, silently
   - rule missing                     -> logs it, runs 'transparent-root.sh reload-anchor',
                                         notifies you, and logs the outcome
-  - four failed repairs in a row     -> removes the redirect entirely, so this Mac
+  - three failed repairs in a row    -> removes the redirect entirely, so this Mac
                                         reaches Anthropic directly instead of staying
                                         black-holed
 
@@ -217,6 +252,7 @@ self_test() {
   LIBEXEC="$tmp/libexec"
   SCRIPT="$LIBEXEC/pf-heal.sh"
   LOG="$tmp/var/claude-burst-pf.log"
+  ERRLOG="$tmp/var/claude-burst-pf-launchd.err.log"
   HEARTBEAT="$tmp/etc/pf-heal.heartbeat"
   OWNER_ARGS=()
   LAUNCHCTL="$tmp/launchctl"
@@ -261,6 +297,7 @@ self_test() {
   # A stale heartbeat must not survive an uninstall, or status lies for
   # ten minutes about a daemon that is gone.
   mkdir -p "$(dirname "$HEARTBEAT")"; date +%s > "$HEARTBEAT"
+  : > "$tmp/etc/pf-heal.network-seen"; : > "$tmp/etc/lid-awake.state"; : > "$LOG.1"; : > "$ERRLOG"
   run do_status
   printf '%s' "$out" | grep -q "RUNNING" && ok "status reads the heartbeat" || { bad "status did not report RUNNING"; printf '%s\n' "$out" | sed 's/^/      /'; }
 
@@ -273,6 +310,17 @@ self_test() {
   [[ -e "$LIBEXEC/lid-awake-root.sh" ]] && ok "uninstall kept the lid-awake script" || bad "uninstall deleted the lid-awake daemon's script"
   rm -f "$LIBEXEC/lid-awake-root.sh"
   [[ -e "$HEARTBEAT" ]] && bad "uninstall left the heartbeat behind" || ok "uninstall cleared the heartbeat"
+  [[ -e "$tmp/etc/pf-heal.network-seen" ]] && bad "uninstall left pf-heal.network-seen behind" || ok "uninstall cleared the daemon's network marker"
+  [[ -e "$tmp/etc/lid-awake.state" ]] && ok "uninstall kept the state directory another daemon still uses" || bad "uninstall deleted the lid-awake daemon's state"
+  # Logs are kept on purpose, and every one of them is named: a file left
+  # behind without a word is what the review of 2026-10-12 found.
+  [[ -e "$LOG" && -e "$ERRLOG" ]] && ok "uninstall kept the logs" || bad "uninstall deleted the logs without --purge"
+  printf '%s' "$out" | grep -qF "$ERRLOG" && printf '%s' "$out" | grep -qF "$LOG.1" \
+    && ok "uninstall names every log it kept" || { bad "uninstall kept a log it did not name"; printf '%s\n' "$out" | sed 's/^/      /'; }
+  rm -f "$tmp/etc/lid-awake.state"
+  run "do_uninstall --purge"
+  [[ -e "$LOG" || -e "$LOG.1" || -e "$ERRLOG" ]] && bad "uninstall --purge left a log behind" || ok "uninstall --purge removed the logs"
+  [[ -d "$tmp/etc" ]] && bad "uninstall left its empty state directory behind" || ok "uninstall removed the state directory once empty"
 
   run do_status
   printf '%s' "$out" | grep -q "not installed" && ok "status reports not installed afterwards" || bad "status still claims an install"
@@ -285,8 +333,8 @@ self_test() {
 
 case "${1:-install}" in
   install) do_install ;;
-  uninstall) do_uninstall ;;
+  uninstall) shift; do_uninstall "$@" ;;
   status) do_status ;;
   --self-test) self_test ;;
-  *) echo "Usage: sudo $0 [install|uninstall|status]   |   $0 --self-test" >&2; exit 2 ;;
+  *) echo "Usage: sudo $0 [install|uninstall [--purge]|status]   |   $0 --self-test" >&2; exit 2 ;;
 esac

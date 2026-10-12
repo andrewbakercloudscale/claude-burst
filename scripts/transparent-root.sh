@@ -22,9 +22,28 @@
 # Usage:
 #   sudo transparent-root.sh install [--host H] [--port P] [--gateway-port G]
 #   sudo transparent-root.sh remove
+#   sudo transparent-root.sh purge       # remove, and delete the pre-install copies too
 #   sudo transparent-root.sh status
 #        transparent-root.sh --self-test     # no root; exercises the text edits
 set -uo pipefail
+
+# A root run never resolves a command through the caller's PATH, and never
+# reads a test seam from the caller's environment. The stock macOS sudoers has
+# no secure_path, so `sudo transparent-root.sh remove` kept the invoking
+# user's PATH and ran whichever python3, curl and grep came first on it, and
+# Homebrew's directories are writable by that user: a root run of a file a
+# non-root user can replace. As root the PATH is fixed and the seams below
+# are dropped. Not as root both are left alone: nothing here can write a real
+# system file then, and the integration tests depend on exactly that to put
+# their stubs in front (internal/integration/transparent_root_test.go). The
+# real uid decides, never CLAUDE_BURST_TEST_EUID, so claiming to be root in a
+# test cannot be turned into a way of keeping a PATH under real root.
+if [[ $EUID -eq 0 ]]; then
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin
+  export PATH
+  unset CLAUDE_BURST_HOSTS_FILE CLAUDE_BURST_PF_CONF CLAUDE_BURST_PF_ANCHOR \
+        CLAUDE_BURST_ROOT_STATE_DIR CLAUDE_BURST_PFCTL CLAUDE_BURST_TEST_EUID
+fi
 
 # zsh expands $0 inside a function to the FUNCTION's name, not the script's,
 # so every "undo with: sudo $SELF remove" hint printed from inside do_install /
@@ -80,6 +99,13 @@ cleanup_helper() { [[ -n "$PY_HELPER" ]] && rm -f "$PY_HELPER"; }
 trap cleanup_helper EXIT INT TERM
 
 setup_helper() {
+  # Asked before any file is opened for editing. As root python3 is now always
+  # /usr/bin/python3 (see the PATH note at the top), which is Apple's shim and
+  # runs nothing until the Command Line Tools are installed. Without this the
+  # same failure surfaced as "failed editing /etc/hosts", with no way forward
+  # for someone whose Mac cannot reach Anthropic until the block is out.
+  python3 -c 'pass' >/dev/null 2>&1 || die "python3 does not run, and every edit here needs it. As root it is /usr/bin/python3, which needs the Command Line Tools (xcode-select --install). Nothing was changed.
+       To take the redirect out by hand: sudo nano $HOSTS_FILE, and delete the lines from '$BEGIN $TAG_HOSTS' to '$END $TAG_HOSTS'."
   PY_HELPER="$(mktemp -t claude-burst-edit)" || die "mktemp failed"
   cat > "$PY_HELPER" <<'PY'
 import sys
@@ -199,6 +225,13 @@ edit_file() {
 # what the redirect does. If direct probes still fail after this loads, the
 # hypothesis is wrong and the rule is inert -- see `diagnose-port`, and note
 # that deploy.sh/watchdog.sh no longer depend on the direct probe either way.
+#
+# The rdr rule matches on destination only (`from any`), so it captures EVERY
+# connection this Mac makes to 127.0.0.1 port 443, whichever program opens it,
+# not only Claude Code's. The rule cannot name the connecting program, so this
+# is inherent to the design: a local HTTPS server on 127.0.0.1:443 cannot be
+# reached while the redirect is installed, and whatever connects there gets
+# the gateway instead. docs/limitations.md section 6 says so.
 write_anchor() {
   local port="$1" gport="$2"
   mkdir -p "$(dirname "$PF_ANCHOR_FILE")"
@@ -210,6 +243,64 @@ rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port $port -> 127.0.0.1 por
 EOF
   chmod 644 "$PF_ANCHOR_FILE"
   echo "  wrote $PF_ANCHOR_FILE"
+}
+
+# Does the RUNNING main ruleset send translation into our anchor? The loaded
+# ruleset, not /etc/pf.conf: the file kept its reference through every outage
+# in which the loaded ruleset had lost it. `rdr-anchor` is the only reference
+# pf_conf_add writes (the anchor holds translation rules only, so there is no
+# filter `anchor` line to look for). Under pipefail a pfctl that fails makes
+# this false, which sends the caller to the full reload, today's behaviour.
+anchor_referenced_live() {
+  pfctl -s nat 2>/dev/null | grep -q "rdr-anchor \"$ANCHOR_NAME\""
+}
+
+# Loads OUR anchor file into OUR anchor and nothing else, after a dry run of
+# the same. `pfctl -f /etc/pf.conf` replaces the whole main ruleset from the
+# file, so every rule and anchor reference other software added to the
+# running ruleset without writing it to that file is dropped by it. This Mac
+# runs Zscaler and CrowdStrike, and has an /etc/pf.anchors/com.crowdstrike
+# that /etc/pf.conf does not mention. When the main ruleset already
+# references our anchor there is nothing in it to change, so it is left alone.
+# Returns 0 loaded, 1 rejected by the dry run (nothing loaded), 2 the load
+# itself failed. Exit statuses are captured, not piped: see the pipefail note
+# in do_reload_anchor.
+load_anchor_only() {
+  local out rc
+  out="$(pfctl -a "$ANCHOR_NAME" -n -f "$PF_ANCHOR_FILE" 2>&1)"; rc=$?
+  printf '%s\n' "$out" | quiet_pf
+  (( rc == 0 )) || return 1
+  out="$(pfctl -a "$ANCHOR_NAME" -f "$PF_ANCHOR_FILE" 2>&1)"; rc=$?
+  printf '%s\n' "$out" | quiet_pf
+  (( rc == 0 )) || return 2
+  return 0
+}
+
+# A loaded rule does nothing while pf itself is off. On 2026-09-30 21:08,
+# joining the phone hotspot left pf DISABLED with our rule still loaded:
+# every repair reloaded the rule, verified, failed, and Claude Code got
+# ECONNREFUSED on 127.0.0.1:443 until the redirect was rolled back by hand.
+# Take a token as install does, so remove releases exactly what we took.
+ensure_pf_enabled() {
+  if ! pfctl -s info 2>/dev/null | head -1 | grep -q Enabled; then
+    echo "== enabling pf (it was disabled; the redirect is inert without it) =="
+    local token
+    token=$(pfctl -E 2>&1 | awk '/Token/ {print $3}')
+    state_set pf_was_enabled 0
+    state_set pf_token "$token"
+    echo "  pf enabled (token $token; released on remove)"
+  fi
+}
+
+direct_verdict() {
+  if [[ "$1" == "OK" ]]; then
+    echo
+    echo "direct connections to the gateway port work again."
+  else
+    echo
+    echo "direct connections still fail, so the exemption was not the cause."
+    echo "The rule is inert and harmless; run 'sudo $SELF diagnose-port' for evidence."
+  fi
 }
 
 # Rewrite the anchor from recorded state and reload it, validating the whole
@@ -226,6 +317,44 @@ do_reload_anchor() {
   [[ -f "$PF_ANCHOR_FILE" ]] && cp -p "$PF_ANCHOR_FILE" "$PF_ANCHOR_FILE.bak"
   echo "== rewriting anchor (port $port -> $gport) =="
   write_anchor "$port" "$gport"
+
+  # Anchor only, whenever the running main ruleset already references it. It
+  # is unobserved whether that is enough for every break: on 2026-09-28 the
+  # rule was loaded and referenced and the path still needed a reload, and
+  # every reload so far has been the full one. So the outcome decides, as
+  # everywhere else here: if the real path does not answer after the narrow
+  # load, or the narrow load itself fails, the full reload below runs exactly
+  # as it always did, and the output says which one happened and why.
+  local why=""
+  if anchor_referenced_live; then
+    echo "== reloading this anchor only (the running main ruleset references it and is not touched) =="
+    local arc=0
+    load_anchor_only || arc=$?
+    if (( arc == 0 )); then
+      ensure_pf_enabled
+      echo "== flushing this anchor's states =="
+      pfctl -a "$ANCHOR_NAME" -F states 2>&1 | quiet_pf
+      echo "== verifying =="
+      if real_path_retry 10; then
+        local ndirect
+        probe_direct_retry "$gport" 20 && ndirect=OK || ndirect=FAIL
+        echo "  direct 127.0.0.1:$gport : $ndirect"
+        echo "  real path (port $port)  : OK"
+        echo "  the anchor-only reload was enough; the main ruleset was not reloaded"
+        direct_verdict "$ndirect"
+        return 0
+      fi
+      why="the anchor-only reload did not bring the real path back"
+    elif (( arc == 1 )); then
+      why="pf rejected the anchor-only dry run"
+    else
+      why="the anchor-only load failed"
+    fi
+  else
+    why="the running main ruleset has no rdr-anchor \"$ANCHOR_NAME\" reference"
+  fi
+  echo "== reloading the MAIN ruleset from $PF_CONF: $why =="
+  echo "  this replaces the whole running ruleset: rules other software added to it that are not in $PF_CONF are dropped"
 
   echo "== validating ruleset (dry run) =="
   # NOT `pfctl -n -f ... | quiet_pf`: under `pipefail` a pipeline reports the
@@ -258,19 +387,7 @@ do_reload_anchor() {
     die "pfctl -f failed (exit $lrc) after a clean dry run"
   fi
 
-  # A loaded rule does nothing while pf itself is off. On 2026-09-30 21:08,
-  # joining the phone hotspot left pf DISABLED with our rule still loaded:
-  # every repair reloaded the rule, verified, failed, and Claude Code got
-  # ECONNREFUSED on 127.0.0.1:443 until the redirect was rolled back by hand.
-  # Take a token as install does, so remove releases exactly what we took.
-  if ! pfctl -s info 2>/dev/null | head -1 | grep -q Enabled; then
-    echo "== enabling pf (it was disabled; the redirect is inert without it) =="
-    local token
-    token=$(pfctl -E 2>&1 | awk '/Token/ {print $3}')
-    state_set pf_was_enabled 0
-    state_set pf_token "$token"
-    echo "  pf enabled (token $token; released on remove)"
-  fi
+  ensure_pf_enabled
 
   # Stale states are the leading suspect (see probe_direct_retry), and a
   # ruleset reload leaves them in place. Flush only OUR anchor's -- machine-
@@ -293,14 +410,7 @@ do_reload_anchor() {
     fi
     die "reload made things worse; previous anchor is back"
   fi
-  if [[ "$direct" == "OK" ]]; then
-    echo
-    echo "direct connections to the gateway port work again."
-  else
-    echo
-    echo "direct connections still fail, so the exemption was not the cause."
-    echo "The rule is inert and harmless; run 'sudo $SELF diagnose-port' for evidence."
-  fi
+  direct_verdict "$direct"
 }
 
 # A SINGLE probe cannot verify anything on this port. Measured 2026-09-03,
@@ -576,7 +686,25 @@ do_install() {
   echo "== /etc/pf.conf =="
   edit_file "$PF_CONF" pf_conf_add
   echo "  referenced anchor \"$ANCHOR_NAME\""
-  pfctl -f "$PF_CONF" 2>&1 | quiet_pf
+  # A first install has to reload the main ruleset: the reference was only
+  # just written to the file, and nothing but a load of the file puts it in
+  # the running ruleset. A reinstall over a ruleset that already references
+  # the anchor loads the anchor alone (see load_anchor_only for what the full
+  # reload costs other software), and the verification below falls back to
+  # the full reload if that did not produce a working redirect.
+  local narrow=0
+  if anchor_referenced_live; then
+    echo "  the running main ruleset already references the anchor: loading the anchor only"
+    if load_anchor_only; then
+      narrow=1
+    else
+      echo "  the anchor-only load failed: reloading the main ruleset from $PF_CONF"
+      pfctl -f "$PF_CONF" 2>&1 | quiet_pf
+    fi
+  else
+    echo "  reloading the main ruleset from $PF_CONF: the running one does not reference the anchor yet"
+    pfctl -f "$PF_CONF" 2>&1 | quiet_pf
+  fi
 
   if pfctl -s info 2>/dev/null | head -1 | grep -q Enabled; then
     state_set pf_was_enabled 1
@@ -591,7 +719,12 @@ do_install() {
 
   # Verify the redirect works BEFORE pointing DNS at it. If this fails there is
   # still nothing redirecting, so the machine is untouched in any way that matters.
-  if ! probe_gateway "$port" >/dev/null; then
+  if (( narrow )) && ! probe_gateway "$port" >/dev/null; then
+    echo "  127.0.0.1:$port does not reach the gateway after the anchor-only load: reloading the main ruleset from $PF_CONF"
+    pfctl -f "$PF_CONF" 2>&1 | quiet_pf
+    narrow=0
+  fi
+  if (( ! narrow )) && ! probe_gateway "$port" >/dev/null; then
     echo "  redirect verification FAILED -- rolling back before touching /etc/hosts" >&2
     do_remove
     die "pf redirect did not take effect; nothing was changed in /etc/hosts"
@@ -612,7 +745,8 @@ do_install() {
 do_remove() {
   need_root remove
   setup_helper
-  local removed_any=0
+  local removed_any=0 purge=0
+  [[ "${1:-}" == "--purge" ]] && purge=1
 
   # /etc/hosts first: while it points at a port with nothing behind it, every
   # process on this Mac that talks to the host fails. Undo the machine-wide
@@ -639,10 +773,36 @@ do_remove() {
     removed_any=1
   fi
 
+  # A copy reload-anchor keeps of the anchor it replaced. With the anchor and
+  # its reference gone it restores nothing.
+  if [[ -f "$PF_ANCHOR_FILE.bak" ]]; then
+    rm -f "$PF_ANCHOR_FILE.bak" && echo "removed $PF_ANCHOR_FILE.bak"
+  fi
+
   # Flush our anchor even if pf.conf was already clean, so a half-finished
   # install cannot leave a live redirect behind.
   pfctl -a "$ANCHOR_NAME" -F all >/dev/null 2>&1 && echo "flushed anchor rules"
-  [[ -f "$PF_CONF" ]] && pfctl -f "$PF_CONF" 2>&1 | quiet_pf
+  # The main ruleset is NOT reloaded from the file any more. That reload was
+  # only there to drop the `rdr-anchor "claude-burst"` line from the running
+  # ruleset, and it dropped everything other software had added to it as well
+  # (see load_anchor_only). Left behind, the line points at an anchor with no
+  # rules, which translates nothing, the same as the com.apple/* references
+  # every Mac carries; it goes at the next load of /etc/pf.conf by anyone, or
+  # at a reboot. What matters is that no rule of ours is still loaded, so
+  # that is what is checked: if the anchor cannot be read, or still lists a
+  # rule after the flush, the full reload runs as it always did.
+  local left lrc
+  left="$(pfctl -a "$ANCHOR_NAME" -s nat 2>/dev/null)"; lrc=$?
+  if (( lrc != 0 )) || print -r -- "$left" | grep -q 'rdr'; then
+    if (( lrc != 0 )); then
+      echo "could not read the anchor after the flush (pfctl exit $lrc): reloading the main ruleset from $PF_CONF"
+    else
+      echo "the anchor still lists a rule after the flush: reloading the main ruleset from $PF_CONF"
+    fi
+    [[ -f "$PF_CONF" ]] && pfctl -f "$PF_CONF" 2>&1 | quiet_pf
+  else
+    echo "anchor is empty; the running main ruleset was left as it is"
+  fi
 
   # Restore pf's enabled/disabled state only if we changed it.
   if [[ "$(state_get pf_was_enabled)" == "0" ]]; then
@@ -655,6 +815,29 @@ do_remove() {
   fi
 
   [[ -f "$STATE_FILE" ]] && rm -f "$STATE_FILE" && echo "cleared $STATE_FILE"
+
+  # The copies install took of /etc/hosts and /etc/pf.conf. A plain remove is
+  # also what a rollback and the pf guard's bail-out run, and after either of
+  # those the copies are the only record of the files as they were found, so
+  # they stay and are named. An uninstall asks for them to go (purge).
+  local b
+  local -a kept
+  for b in "$STATE_DIR/hosts.pre-install.bak" "$STATE_DIR/pf.conf.pre-install.bak"; do
+    [[ -f "$b" ]] || continue
+    if (( purge )); then
+      rm -f "$b" && echo "removed $b"
+    else
+      kept+=("$b")
+    fi
+  done
+  if (( purge )); then
+    # Only when empty: the pf guard and the lid-awake daemon keep files here.
+    rmdir "$STATE_DIR" 2>/dev/null && echo "removed $STATE_DIR"
+  elif (( ${#kept} )); then
+    echo "kept (your files as they were before install; remove with: sudo $SELF purge):"
+    for b in "${kept[@]}"; do echo "  $b"; done
+  fi
+
   [[ "$removed_any" == "0" ]] && echo "nothing was installed; machine already clean"
   echo "pf now: $(pfctl -s info 2>/dev/null | head -1)"
   return 0
@@ -843,7 +1026,8 @@ case "${1:-}" in
   install)     shift; do_install "$@" ;;
   admin-host)  shift; do_admin_host "$@" ;;
   admin-host-remove) do_admin_host_remove ;;
-  remove)      do_remove ;;
+  remove)      shift; do_remove "$@" ;;
+  purge)       do_remove --purge ;;
   status)      do_status ;;
   reload-anchor) do_reload_anchor ;;
   flush-port-states) do_flush_port_states ;;
@@ -853,8 +1037,9 @@ case "${1:-}" in
     cat <<EOF
 usage: sudo $SELF install [--host H] [--port P] [--gateway-port G]
        sudo $SELF remove
+       sudo $SELF purge                 # remove, and delete the pre-install copies of /etc/hosts and /etc/pf.conf
        sudo $SELF status
-       sudo $SELF admin-host <name>     # friendly URL for the admin UI
+       sudo $SELF admin-host <name>    # friendly URL for the admin UI
        sudo $SELF admin-host-remove
        sudo $SELF reload-anchor         # rewrite + reload the pf anchor (dry-run first)
        sudo $SELF diagnose-port         # read-only: why direct gateway-port connects fail
