@@ -36,6 +36,9 @@ func startCodexGateway(cfg config.Config, logger *log.Logger) *codex.Gateway {
 	if err == nil {
 		var g *codex.Gateway
 		if g, err = codex.New(cfg.CodexUpstream(), mp, logger); err == nil {
+			// The Host Codex sends is this address (codex.Block), which the
+			// port's guard has to be told when it is a hostname.
+			g.AcceptHost(addr)
 			go serveCodex(g, addr, cfg.CodexUpstream(), logger)
 			return g
 		}
