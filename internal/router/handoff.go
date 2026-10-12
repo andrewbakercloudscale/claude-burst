@@ -292,7 +292,7 @@ func (s *Server) TookIn(sid, of string) bool {
 			continue
 		}
 		found = true
-		s.logger.Printf("compaction taken in session=%s: Claude Code compacted with Burst's summary, and holds %dk where it held %dk", key, st.lastContext/1000, st.rawContext/1000)
+		s.logger.Printf("compaction taken in session=%q: Claude Code compacted with Burst's summary, and holds %dk where it held %dk", key, st.lastContext/1000, st.rawContext/1000)
 		st.rawContext = st.lastContext
 	}
 	if found {

@@ -13,7 +13,7 @@ Everything lives in `~/.config/claude-burst/config.json`. You rarely need to edi
 | `admin_hostname` | empty | An optional friendly name for the dashboard, see [A friendlier admin URL](dashboard.md#a-friendlier-admin-url). | `configure --admin-hostname` |
 | `reset_grace_seconds` | `10` | Extra seconds after Anthropic's reset time before trying the subscription again. | Dashboard, Advanced |
 | `unknown_reset_seconds` | `300` | How long an overflow window lasts when Anthropic gives no reset time. | Dashboard, Advanced |
-| `response_header_timeout_seconds` | `60` | How long to wait for a response to *start* before treating the upstream as failed. | Dashboard, Advanced |
+| `response_header_timeout_seconds` | `60` | How long to wait for a streamed response to *start* before treating the upstream as failed. | Dashboard, Advanced |
 | `max_request_mb` | `128` | Largest request body the gateway accepts. | Dashboard, Advanced |
 | `primary` | `oauth-passthrough` to `api.anthropic.com` | The primary route, see below. | `configure --primary`, `--failover-strategy`; Dashboard, Routing |
 | `adopted_base_url` | unset | The `ANTHROPIC_BASE_URL` Claude Code had before `enable` (an enterprise gateway such as Portkey). It became `primary.base_url`; `disable`, the dashboard Revert and `rollback.sh` put it back. Written by `enable`. | Not edited by hand |
@@ -87,7 +87,8 @@ An Amazon Bedrock secondary instead has `"provider": "bedrock"`, the `bedrock-ru
 - `keep_awake_lid_closed` (default `false`) / `keep_awake_lid_closed_power` (`ac` default, or `always`): keep the Mac, and so Claude Code in Ghostty and Remote Control, running with the lid shut, plugged in only, or on battery too. Changing the file alone does nothing to the machine: apply with `configure --keep-awake-lid-closed` or `./install.sh`, and `claude-burst status` reports any drift. See [Keeping Claude Code working with the lid shut](lid-and-hotspot.md).
 - `notify.failover` / `notify.compaction` / `notify.guards`: retired, ignored. Burst's notifications are the usage panel's on-screen alerts, see [Notifications](lid-and-hotspot.md#notifications).
 - `hotspot.ssid` (empty: off) / `hotspot.when` (`lid-closed` default, or `always`): join that network when this Mac is offline, see [Join a hotspot when offline](lid-and-hotspot.md#join-a-hotspot-when-offline). Read live.
-- `response_header_timeout_seconds`: bounds how long the gateway waits for a response to *start* before treating the upstream as failed (doesn't affect how long an already-started stream can run).
+- `response_header_timeout_seconds`: bounds how long the gateway waits for a response to *start* before treating the upstream as failed (doesn't affect how long an already-started stream can run). A `/v1/messages` request that does not ask for a stream starts answering only when its whole reply is ready, so it gets 10 minutes, or this value if it is larger.
+- A setting the gateway cannot use does not stop it starting unless requests need it. A secondary that cannot be built (a `base_url` with no scheme, no `model`), an unknown `failover_strategy` or a keep-awake value out of range is left out: the gateway runs on the primary with the default in its place, logs a `WARNING: started without a setting it could not use` line and shows a notice, and the dashboard stays up to correct it. A `config.json` that does not parse, an unknown `intercept.mode` or a primary that cannot be built still stop it.
 
 `./install.sh` re-applies `keep_awake_lid_closed` from `config.json` on every run. When it is `false` (the default) the installer touches no power settings and asks for no password; when `true` it asks for sudo once to apply the chosen power mode.
 

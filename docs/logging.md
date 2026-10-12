@@ -58,6 +58,7 @@ In addition, every failure path logs which stage it failed at and why:
 - reading or size-limiting the request body
 - building the outbound request to Anthropic or the secondary
 - the upstream HTTP call itself (network errors)
+- a reply that started and broke before it finished (`stage=upstream_stream`, or `stage=translate_response` on a translated secondary)
 - loading the secondary's key from the environment/Keychain
 - mapping a model name for the secondary (Bedrock `model_map`, or the openai-compatible target)
 - reading or writing the local overflow-state file
@@ -68,7 +69,7 @@ A metrics-write failure (disk full, permissions, etc.) is logged but never fails
 
 ## A crash
 
-A Go process that dies of a panic or a runtime fault writes its stack to stderr, which launchd appends to `launchd.err.log`. Each start of the gateway writes a dated line there (`=== claude-burst 0.20.11 started 2026-10-07 11:11:15 +02:00 pid 51299 ===`), so the stack above it can be dated. If the run before ended in a crash, the new one says so in `claude-burst.log` (`error stage=startup the previous run ended in a crash: ...`) and in the audit, which the support console shows.
+A Go process that dies of a panic or a runtime fault writes its stack to stderr, which launchd appends to `launchd.err.log`. Each start of the gateway writes a dated line there (`2026-10-07T11:11:15.123+02:00 level=info === claude-burst 0.20.11 started pid 51299 ===`), so the stack above it can be dated. The lines the gateway writes there itself (that one, TLS handshake errors) start the way `claude-burst.log` lines do; a crash's stack is the Go runtime's and has no date. If the run before ended in a crash, the new one says so in `claude-burst.log` (`error stage=startup the previous run ended in a crash: ...`) and in the audit, which the support console shows.
 
 ## Every file and its limit
 
@@ -80,7 +81,7 @@ All under `~/.config/claude-burst/` unless a path is given.
 | `metrics.jsonl` | One record a request | 6 files of 10MB |
 | `codex-metrics.jsonl` | One record a Codex turn | 6 files of 10MB |
 | `audit.jsonl` | Alerts shown and actions taken | 2MB and one older file |
-| `launchd.err.log`, `launchd.out.log` | The gateway's stderr and stdout: TLS handshake errors, a crash's stack | Cut back to the last 1MB at a start once over 4MB |
+| `launchd.err.log`, `launchd.out.log` | The gateway's stderr and stdout: TLS handshake errors, a crash's stack | Cut back to the last 1MB at a start once over 4MB; `launchd.err.log` also while the gateway runs |
 | `console.err.log`, `console.out.log` | The support console's | The same |
 | `coord/coord.log` | Session coordination: file paths and session ids | 2MB and one older file |
 | `passthrough.log` | The pass-through that stands in while Burst is off | 2MB and one older file |

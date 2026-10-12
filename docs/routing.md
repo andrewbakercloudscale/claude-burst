@@ -34,12 +34,21 @@ traffic behind a secondary that could not answer for five minutes):
 
 - **A dead pooled connection is retried once, on a fresh one, with or without a secondary.** A
   `write: broken pipe` means the kept-alive connection died and the server never saw the
-  request. An HTTP/2 connection that never sends headers back (`timeout awaiting response
-  headers`) or a local address that vanished (`can't assign requested address`) is the same
-  network switch seen from the other side; the request may have run, so it is resent once and
-  never more (at worst one turn twice on the subscription, against a paid failover). Read-side
-  resets are *not* retried. With no secondary configured this one resend is all Burst does
-  before handing the error to Claude Code, whose own retries show on screen.
+  request; a local address that vanished (`can't assign requested address`) is the same
+  network switch seen from the other side. Read-side resets are *not* retried. With no
+  secondary configured this one resend is all Burst does before handing the error to Claude
+  Code, whose own retries show on screen.
+- **A request that was sent and got no answer is never sent again.** `timeout awaiting response
+  headers` means the whole request went out, so the model may be running it, and a second
+  copy would run (and be billed) twice. It used to get one resend. Now the error counts
+  towards failover as any other and goes back to Claude Code. A request that does not ask for
+  a stream gets 10 minutes for its headers and not `response_header_timeout_seconds`: its
+  headers only come once the whole reply has been generated.
+- **A reply that breaks half way is not passed off as a whole one.** If the upstream's
+  connection dies part way through a model reply, Burst closes Claude Code's connection without ending the
+  response, as it would have closed without Burst, logs `error stage=upstream_stream` and
+  records the request as a 502 with the tokens it used. A secondary's translated stream ends
+  with an `error` event.
 - **Anthropic gets about 30 seconds before anything fails over.** Errors that prove nothing was
   sent (a connect or TLS handshake timeout, a failed lookup) are retried at 2, 4, 8 and 16
   seconds; then the request goes down the model's `fallback_chain` on the subscription; only

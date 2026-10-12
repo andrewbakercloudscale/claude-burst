@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -26,16 +28,29 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	if err != nil {
 		return nil, fmt.Errorf("primary provider: %w", err)
 	}
+	// Everything above is what the primary path cannot work without, and is
+	// the only thing New refuses to start over. What follows decides when and
+	// where to leave the primary: a mistake there is started without and
+	// reported (StartupProblems).
+	var problems []StartupProblem
+	problem := func(title, detail string) {
+		problems = append(problems, StartupProblem{Title: title, Detail: detail})
+		logger.Printf("WARNING: started without a setting it could not use. %s: %s", title, detail)
+	}
 	primaryDetector, err := buildDetector(cfg.Primary.FailoverStrategy, cfg.MeteredFailover, logger.Printf)
 	if err != nil {
-		return nil, fmt.Errorf("primary failover strategy: %w", err)
+		problem("A failover setting was ignored", fmt.Sprintf(
+			"primary failover_strategy: %v. Running with the default, subscription-limit, until config.json is corrected and the gateway restarted.", err))
+		primaryDetector = subscriptionLimitDetector{}
 	}
 
 	var secondary Provider
 	if cfg.Secondary.Provider != "" && cfg.Secondary.Provider != config.ProviderNone {
 		secondary, err = buildProvider(cfg.Secondary, cfg.KeychainService, cfg.ModelMap, logger)
 		if err != nil {
-			return nil, fmt.Errorf("secondary provider: %w", err)
+			problem("The secondary provider is not in use", fmt.Sprintf(
+				"secondary provider: %v. Running on the primary alone, so nothing fails over, until it is corrected (dashboard, Setup) and the gateway restarted.", err))
+			secondary = nil
 		}
 		// Set here rather than in buildProvider: pruning belongs to the
 		// secondary SLOT, and an openai-compatible primary must never be
@@ -55,6 +70,9 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 			cfg.Intercept.Host, cfg.Intercept.ResolverDoH, cfg.Intercept.UpstreamAddr,
 		).withFallbacks(resolverCachePath(statePath))
 	}
+	// Read once for every transport: each call reads the bundle and, when it
+	// does not parse, logs the same warning.
+	roots := upstreamRoots(cfg.Intercept.CABundle, logger)
 	newTransport := func(responseHeaderTimeout time.Duration) *http.Transport {
 		// Cloned from the default, not a bare Transport: a bare one ignores
 		// HTTPS_PROXY, and on a corporate network the egress proxy is often
@@ -64,7 +82,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.Proxy = upstreamProxy
 		t.ResponseHeaderTimeout = responseHeaderTimeout
-		t.TLSClientConfig = &tls.Config{RootCAs: upstreamRoots(cfg.Intercept.CABundle, logger)}
+		t.TLSClientConfig = &tls.Config{RootCAs: roots}
 		if resolver != nil {
 			// /etc/hosts now points the upstream hostname at this process, so
 			// the standard resolver would make the gateway call itself. See
@@ -73,8 +91,13 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		}
 		return t
 	}
+	var inference http.RoundTripper = newTransport(timeout)
+	if timeout > 0 && timeout < slowHeaderWait {
+		inference = &headerWaitTransport{quick: newTransport(timeout), slow: newTransport(slowHeaderWait)}
+	}
 
 	s := &Server{
+		startupProblems: problems,
 		compaction:      newCompactor(cfg.PrimaryCompaction, compactionStatePath(statePath), logger),
 		automask:        newMasker(cfg.Automask, automaskStatePath(statePath), logger),
 		inspect:         newInspectStore(),
@@ -84,7 +107,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		primary:         primary,
 		primaryDetector: primaryDetector,
 		secondary:       secondary,
-		client:          &http.Client{Timeout: 0, Transport: newTransport(timeout), CheckRedirect: neverFollow},
+		client:          &http.Client{Timeout: 0, Transport: inference, CheckRedirect: neverFollow},
 		probe:           probeNetwork,
 		// Control-plane traffic (notably Claude Code's Remote Control, which
 		// registers and then long-polls for work) can legitimately hold a
@@ -102,6 +125,62 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 	}
 	s.loadState()
 	return s, nil
+}
+
+// StartupProblem is a setting the gateway could not use and started without.
+type StartupProblem struct {
+	// Title is short, for an on-screen notice; Detail says what was wrong
+	// and what the gateway is doing in its place.
+	Title, Detail string
+}
+
+// StartupProblems are the settings New could not use. None of them is
+// something the primary path needs, so none of them stops the gateway: it
+// carries every Claude Code session on the Mac, and until 12 Oct 2026 a
+// mistyped base_url in the optional secondary kept it from starting at all,
+// which took down the dashboard the mistake is corrected in. New has logged
+// each; serve puts them on screen.
+func (s *Server) StartupProblems() []StartupProblem { return s.startupProblems }
+
+// slowHeaderWait is how long a Messages request that did not ask for a stream
+// may take to start answering.
+//
+// response_header_timeout_seconds (60 by default) is sized for a stream,
+// whose headers arrive as soon as the model starts. A reply that is not
+// streamed sends its headers only once the whole of it has been generated,
+// which for a long one takes minutes: at 60 seconds such a request could
+// never succeed through the gateway however healthy Anthropic was, and each
+// one that timed out counted as a failure of the primary. Ten minutes is the
+// default request timeout of Anthropic's own client libraries, which ask for
+// streaming on anything expected to run longer, so nothing they would have
+// waited for is cut here. A longer configured timeout is left as it is.
+const slowHeaderWait = 10 * time.Minute
+
+type slowHeadersKey struct{}
+
+// withSlowHeaders marks a request for the slowHeaderWait transport.
+func withSlowHeaders(ctx context.Context) context.Context {
+	return context.WithValue(ctx, slowHeadersKey{}, true)
+}
+
+// headerWaitTransport is the inference transport: two that differ only in
+// how long they wait for response headers, since net/http sets that for a
+// whole Transport and not for one request. They keep separate connections.
+type headerWaitTransport struct {
+	quick, slow *http.Transport
+}
+
+func (t *headerWaitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if slow, _ := r.Context().Value(slowHeadersKey{}).(bool); slow {
+		return t.slow.RoundTrip(r)
+	}
+	return t.quick.RoundTrip(r)
+}
+
+// CloseIdleConnections is what http.Client.CloseIdleConnections looks for.
+func (t *headerWaitTransport) CloseIdleConnections() {
+	t.quick.CloseIdleConnections()
+	t.slow.CloseIdleConnections()
 }
 
 // buildProvider constructs the Provider for one configured route slot.
@@ -276,6 +355,33 @@ func (s *Server) secondaryReady() bool {
 	s.readyChecking = true
 	s.readyMu.Unlock()
 
+	if first {
+		// Nothing to answer from yet, so this one request waits: once in
+		// the life of the process.
+		return s.checkSecondaryCredential(c, first, wasOK)
+	}
+	// Every later check runs beside the request that noticed it was due,
+	// which answers from the last result like the others. Until 12 Oct 2026
+	// that request waited for the Keychain itself, once a minute.
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				// A check that died must not leave readyChecking set, or no
+				// request would ever start another.
+				s.readyMu.Lock()
+				s.readyAt, s.readyChecking = time.Now(), false
+				s.readyMu.Unlock()
+				s.logger.Printf("secondary credential check PANIC err=%v (the last answer stands)\n%s", rec, debug.Stack())
+			}
+		}()
+		s.checkSecondaryCredential(c, first, wasOK)
+	}()
+	return wasOK
+}
+
+// checkSecondaryCredential asks the secondary whether its key can be read,
+// which reads it again, and records the answer for secondaryReady.
+func (s *Server) checkSecondaryCredential(c credentialChecker, first, wasOK bool) bool {
 	err := c.CredentialReady()
 
 	s.readyMu.Lock()
@@ -286,6 +392,23 @@ func (s *Server) secondaryReady() bool {
 	}
 	s.alertSecondaryKey(err)
 	return err == nil
+}
+
+// credentialRecheckGap is the least time between two readings of the key
+// that a refused credential can cause.
+const credentialRecheckGap = 10 * time.Second
+
+// secondaryRefusedCredential is called when the secondary answered 401 or
+// 403: the key held in memory may have been replaced in the Keychain. The
+// next request's readiness check reads it again, beside that request; at
+// most every credentialRecheckGap, so a key that is simply wrong does not
+// have every request run the Keychain's command.
+func (s *Server) secondaryRefusedCredential() {
+	s.readyMu.Lock()
+	if !s.readyAt.IsZero() && time.Since(s.readyAt) >= credentialRecheckGap {
+		s.readyAt = time.Now().Add(-secondaryReadyTTL)
+	}
+	s.readyMu.Unlock()
 }
 
 // upstreamProxy is http.ProxyFromEnvironment, except that a proxy on this

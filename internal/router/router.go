@@ -50,6 +50,9 @@ type Server struct {
 	primary         Provider
 	primaryDetector FailoverDetector
 	secondary       Provider // nil if no secondary is configured
+	// startupProblems are settings New could not use and started without:
+	// see StartupProblems.
+	startupProblems []StartupProblem
 
 	// inflight counts inference requests (/v1/messages) being served right
 	// now. A graceful restart waits for it to reach zero; see InFlight.
@@ -162,7 +165,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// is slow is still logged, with its request id.
 	quiet, panicked := !isInference(r.URL.Path), false
 	defer func() {
-		if rec := recover(); rec != nil {
+		rec := recover()
+		// forward's way of cutting the client's connection when the
+		// upstream's reply broke half way: not a fault of the handler. It is
+		// logged as the request it was and handed on to net/http, which
+		// closes the connection without ending the response.
+		aborted := rec == http.ErrAbortHandler
+		if aborted {
+			defer panic(http.ErrAbortHandler)
+		} else if rec != nil {
 			panicked = true
 			s.logger.Printf("req=%s PANIC method=%q path=%q err=%v\n%s", rid, r.Method, r.URL.Path, rec, debug.Stack())
 			if !sw.wroteHeader {
@@ -175,6 +186,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// exists for -- an unquoted newline would let a caller forge what
 		// looks like a second, distinct log line.
 		dur := time.Since(start)
+		if aborted {
+			s.logger.Printf("req=%s done method=%q path=%q status=%d dur_ms=%d aborted=%q",
+				rid, r.Method, r.URL.Path, sw.status, dur.Milliseconds(), "the upstream's reply broke mid-stream")
+			return
+		}
 		if quiet && !panicked && sw.status < 400 && dur < quietSlow {
 			s.quiet.add(s.logger, time.Now())
 			return

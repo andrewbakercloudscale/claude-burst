@@ -2,9 +2,11 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -323,7 +325,10 @@ func TestSinglePlanTransportErrorFailsFastAndIsVisible(t *testing.T) {
 	eachSinglePlan(t, func(t *testing.T, none bool) {
 		up := newSinglePlanUpstream(t)
 		s, _ := singlePlanServer(t, up.srv.URL, none, "subscription-limit+metered-failures", nil)
-		ft := &flakyTransport{neverRecover: true, err: timeoutErr{}, next: s.client.Transport}
+		// A write onto a dead pooled connection: the one failure that is
+		// resent, since the request cannot have arrived. (A timeout waiting
+		// for headers is not: TestHeaderTimeoutIsNeverResent.)
+		ft := &flakyTransport{neverRecover: true, err: writeEPIPE(), next: s.client.Transport}
 		s.client.Transport = ft
 
 		start := time.Now()
@@ -415,8 +420,62 @@ func TestSecondaryKeyAddedLaterIsPickedUp(t *testing.T) {
 	s.readyMu.Lock()
 	s.readyAt = time.Now().Add(-secondaryReadyTTL - time.Second)
 	s.readyMu.Unlock()
-	if !s.HasSecondary() {
-		t.Fatal("after the TTL the new key must be seen")
+	// The request that finds the answer stale does not wait for the new
+	// one: the check runs beside it, and the requests after it see the key.
+	if s.HasSecondary() {
+		t.Fatal("the request that starts the check answers from the last result, it does not wait for the Keychain")
+	}
+	waitFor(t, s.HasSecondary)
+}
+
+// A request sent to the secondary reads the key from the Keychain (here, the
+// environment) once and then holds it: Prepare used to run the lookup for
+// every request. The readiness check is what reads it again.
+func TestSecondaryKeyIsReadOnceNotPerRequest(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "first-key")
+	base, _ := url.Parse("http://127.0.0.1:1")
+	p := NewBedrockProvider(base, map[string]string{"claude-sonnet-5": "global.anthropic.claude-sonnet-5"}, "claude-burst-test-no-such-service")
+	auth := func() string {
+		t.Helper()
+		req, _, err := p.Prepare(context.Background(), messagesRequest("claude-sonnet-5"), []byte(`{"model":"claude-sonnet-5","messages":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req.Header.Get("Authorization")
+	}
+	if got := auth(); got != "Bearer first-key" {
+		t.Fatalf("first request: %q", got)
+	}
+	// The source changes. A request must not notice, because noticing means
+	// it asked again.
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "second-key")
+	if got := auth(); got != "Bearer first-key" {
+		t.Fatalf("the second request read the key again: %q", got)
+	}
+	// The readiness check does ask, and requests after it carry what it found.
+	if err := p.CredentialReady(); err != nil {
+		t.Fatal(err)
+	}
+	if got := auth(); got != "Bearer second-key" {
+		t.Fatalf("after the readiness check: %q", got)
+	}
+}
+
+// A 401 or 403 from the secondary may mean the key held in memory was
+// replaced: the readiness answer is made stale so the key is read again, but
+// not for every refused request.
+func TestRefusedSecondaryCredentialIsReadAgain(t *testing.T) {
+	s := &Server{}
+	now := time.Now()
+	s.readyAt = now.Add(-time.Second)
+	s.secondaryRefusedCredential()
+	if !s.readyAt.Equal(now.Add(-time.Second)) {
+		t.Fatal("a refusal a second after the last reading must not cause another")
+	}
+	s.readyAt = now.Add(-credentialRecheckGap - time.Second)
+	s.secondaryRefusedCredential()
+	if time.Since(s.readyAt) < secondaryReadyTTL {
+		t.Fatal("a refusal must make the readiness answer stale, so the next request has the key read again")
 	}
 }
 
@@ -450,6 +509,16 @@ func TestRequestsDoNotWaitForAnotherRequestsKeychainLookup(t *testing.T) {
 	first := make(chan bool, 1)
 	go func() { first <- s.HasSecondary() }()
 	<-slow.entered // the lookup is running
+	// Nor does the request that started it wait: it has the last answer too.
+	select {
+	case ok := <-first:
+		if !ok {
+			t.Fatal("the request that started the lookup answers from the last result (ready)")
+		}
+		first <- ok
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request that started the Keychain lookup waited for it")
+	}
 
 	done := make(chan bool, 1)
 	go func() { done <- s.HasSecondary() }()

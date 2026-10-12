@@ -47,7 +47,12 @@ type tokenUsage struct {
 	msgID string
 }
 
-func (s *Server) relay(rid string, w http.ResponseWriter, resp *http.Response, model string) tokenUsage {
+// relay copies an upstream response to the client as it arrives and reads
+// the token usage out of it on the way past. The error it returns means one
+// thing: the upstream's body broke before it ended, so what the client has
+// is part of a reply. A client that went away is not that, and is only
+// logged, as is a clean end of the body.
+func (s *Server) relay(rid string, w http.ResponseWriter, resp *http.Response, model string) (tokenUsage, error) {
 	defer resp.Body.Close()
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -59,43 +64,97 @@ func (s *Server) relay(rid string, w http.ResponseWriter, resp *http.Response, m
 		// body. Tee a bounded copy while relaying, so the client still gets
 		// bytes as they arrive and a billed request is not recorded as $0.
 		capture := &cappedBuffer{max: maxUsageCaptureBytes}
-		if _, err := io.Copy(w, io.TeeReader(resp.Body, capture)); err != nil {
-			// Almost always means the client (Claude Code) disconnected
-			// mid-response. Not a proxy bug, but worth having in the log
-			// when someone is debugging a truncated response.
-			s.logger.Printf("req=%s relay copy error (client likely disconnected): %v", rid, err)
+		// io.Copy does not say which side failed, and they mean opposite
+		// things, so the upstream side keeps its own error.
+		up := &readErrKeeper{r: resp.Body}
+		if _, err := io.Copy(w, io.TeeReader(up, capture)); err != nil && up.err == nil {
+			// The client (Claude Code) disconnected mid-response. Not a
+			// proxy bug, but worth having in the log when someone is
+			// debugging a truncated response.
+			s.logger.Printf("req=%s relay copy error (client likely disconnected): %q", rid, err)
 		}
 		if fl != nil {
 			fl.Flush()
 		}
-		if capture.overflow || !strings.Contains(ct, "json") {
-			return tokenUsage{}
+		if up.err != nil {
+			// Content-Length is not passed on (copyResponseHeaders), so
+			// without this the client could not tell half a JSON body from
+			// a whole one.
+			return tokenUsage{}, up.err
 		}
-		return usageFromMessageJSON(capture.buf.Bytes())
+		if capture.overflow || !strings.Contains(ct, "json") {
+			return tokenUsage{}, nil
+		}
+		return usageFromMessageJSON(capture.buf.Bytes()), nil
 	}
 
-	br := bufio.NewReader(resp.Body)
+	// Read in pieces of at most sseReadBytes, never a line at a time into
+	// one string: a line had no bound, so an upstream that never sent a line
+	// break had the gateway hold everything it sent. Each piece goes to the
+	// client as it is read, so nothing is held back or cut whatever the
+	// line's length; only the copy kept for reading usage out of is bounded.
+	br := bufio.NewReaderSize(resp.Body, sseReadBytes)
 	var tok tokenUsage
+	var line []byte
+	tooLong := false
 	for {
-		line, err := br.ReadString('\n')
-		if len(line) > 0 {
-			if _, werr := io.WriteString(w, line); werr != nil {
-				s.logger.Printf("req=%s relay SSE write error (client likely disconnected): %v", rid, werr)
-				break
+		piece, err := br.ReadSlice('\n')
+		if len(piece) > 0 {
+			if _, werr := w.Write(piece); werr != nil {
+				s.logger.Printf("req=%s relay SSE write error (client likely disconnected): %q", rid, werr)
+				return tok, nil
 			}
 			if fl != nil {
 				fl.Flush()
 			}
-			parseSSEUsage(line, &tok)
+			switch {
+			case tooLong:
+			case len(line)+len(piece) > maxSSELineBytes:
+				tooLong, line = true, line[:0]
+				s.logger.Printf("req=%s warn stage=relay an event-stream line passed %d bytes: relayed in full, but not read for token usage", rid, maxSSELineBytes)
+			default:
+				line = append(line, piece...)
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue // the same line goes on
+		}
+		if len(line) > 0 {
+			parseSSEUsage(string(line), &tok)
+		}
+		line, tooLong = line[:0], false
+		if err == io.EOF {
+			return tok, nil
 		}
 		if err != nil {
-			if err != io.EOF {
-				s.logger.Printf("req=%s relay SSE read error: %v", rid, err)
-			}
-			break
+			return tok, err
 		}
 	}
-	return tok
+}
+
+// sseReadBytes is the most the relay reads of an event stream before passing
+// it on. Events are a few hundred bytes; this is room for a large one in one
+// piece.
+const sseReadBytes = 64 * 1024
+
+// maxSSELineBytes bounds the copy of one event-stream line kept for reading
+// its usage. The lines that carry usage (message_start, message_delta) are
+// under a kilobyte, and the translator's scanner allows a line the same.
+const maxSSELineBytes = 4 * 1024 * 1024
+
+// readErrKeeper remembers the error that ended a read, when it was not a
+// plain end of the body.
+type readErrKeeper struct {
+	r   io.Reader
+	err error
+}
+
+func (k *readErrKeeper) Read(p []byte) (int, error) {
+	n, err := k.r.Read(p)
+	if err != nil && err != io.EOF {
+		k.err = err
+	}
+	return n, err
 }
 
 // maxUsageCaptureBytes bounds how much of a non-streaming body relay keeps

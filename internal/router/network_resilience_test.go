@@ -481,9 +481,11 @@ func TestNetworkNotPassingTrafficDoesNotFailOver(t *testing.T) {
 	}
 }
 
-// A dead HTTP/2 connection (headers never come) gets exactly one resend on a
-// fresh connection, with or without a secondary, and that resend can work.
-func TestHeaderTimeoutGetsOneFreshRetry(t *testing.T) {
+// A request that was sent whole and then timed out waiting for its headers
+// may be running: the primary is never sent it a second time, not on a fresh
+// connection and not by the ladder, though the very next attempt would work.
+// It used to get one resend, and a reply that was only slow ran twice.
+func TestHeaderTimeoutIsNeverResent(t *testing.T) {
 	up := newRecordingUpstream(t)
 	s, _ := newChainServerWithSecondary(t, up.srv.URL, nil)
 	s.probe = func() netProbe { return netProbe{dnsOK: true} }
@@ -491,15 +493,11 @@ func TestHeaderTimeoutGetsOneFreshRetry(t *testing.T) {
 	s.client.Transport = ft
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, messagesRequest("claude-sonnet-5"))
-	if rec.Code != http.StatusOK || ft.primaryAttempts("127.0.0.1:1") != 2 {
-		t.Fatalf("status %d after %d attempts, want 200 after 2", rec.Code, ft.primaryAttempts("127.0.0.1:1"))
+	if n := ft.primaryAttempts("127.0.0.1:1"); n != 1 {
+		t.Fatalf("a header timeout was sent to the primary %d times, want 1", n)
 	}
-	// Never laddered: the request may have run, so one resend is the limit.
-	ft = &flakyTransport{neverRecover: true, err: timeoutErr{}, next: ft.next}
-	s.client.Transport = ft
-	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-sonnet-5"))
-	if n := ft.primaryAttempts("127.0.0.1:1"); n != 2 {
-		t.Fatalf("a header timeout was sent %d times, want 2", n)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d, want the timeout handed back as a 502", rec.Code)
 	}
 }
 

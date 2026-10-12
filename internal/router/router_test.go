@@ -530,12 +530,49 @@ func TestUnknownProviderNameRejected(t *testing.T) {
 	}
 }
 
-func TestUnknownFailoverStrategyRejected(t *testing.T) {
+// A failover strategy the gateway does not know, or a secondary it cannot
+// build, is not something the primary path needs: the gateway starts on the
+// primary alone and says what it left out. Both used to stop it starting,
+// and it carries every Claude Code session.
+func TestUnusableOptionalSettingsDoNotStopTheGateway(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	t.Cleanup(primary.Close)
 	cfg := config.Default()
-	cfg.Primary = config.RouteConfig{Provider: "anthropic-api-key", BaseURL: cfg.AnthropicBaseURL, FailoverStrategy: "bogus-strategy"}
+	cfg.Primary = config.RouteConfig{Provider: "anthropic-api-key", BaseURL: primary.URL, FailoverStrategy: "bogus-strategy"}
+	cfg.Secondary = config.RouteConfig{Provider: "openai-compatible", BaseURL: "api.together.xyz/v1"} // no scheme, no model
+	dir := t.TempDir()
+	var logBuf bytes.Buffer
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(&logBuf, "", 0))
+	if err != nil {
+		t.Fatalf("the gateway must start on the primary alone, got: %v", err)
+	}
+	probs := s.StartupProblems()
+	if len(probs) != 2 || !strings.Contains(probs[0].Detail, "bogus-strategy") || !strings.Contains(probs[1].Detail, "base_url") {
+		t.Fatalf("want the strategy and the secondary reported, got %+v", probs)
+	}
+	if n := strings.Count(logBuf.String(), "WARNING: started without a setting"); n != 2 {
+		t.Fatalf("each problem is logged once, loudly; got %d lines:\n%s", n, logBuf.String())
+	}
+	if s.HasSecondary() {
+		t.Fatal("a secondary that could not be built is no secondary")
+	}
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, messagesRequest("claude-sonnet-5"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("the primary must serve, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// What the primary path cannot work without still stops the start.
+func TestUnusablePrimaryStillStopsTheGateway(t *testing.T) {
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "anthropic-api-key", BaseURL: "api.anthropic.com"}
 	dir := t.TempDir()
 	if _, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0)); err == nil {
-		t.Fatal("expected an error for an unknown failover strategy, got nil")
+		t.Fatal("a primary with no usable base_url cannot serve anything: expected an error")
 	}
 }
 
@@ -926,7 +963,10 @@ func TestResponseHeaderTimeoutBoundsFullyHungConnection(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[]}`))
+	// A streamed request: its headers come when the model starts, which is
+	// what the timeout is sized for. One that is not streamed waits longer,
+	// see TestUnstreamedReplyIsNotCutAtTheStreamTimeout.
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","stream":true,"messages":[]}`))
 
 	done := make(chan struct{})
 	go func() {

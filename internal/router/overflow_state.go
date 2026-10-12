@@ -255,7 +255,7 @@ func (s *Server) ForceOverflow(d time.Duration, reason string) time.Time {
 		DowngradeDisabled: s.state.DowngradeDisabled}
 	s.saveStateLocked()
 	s.mu.Unlock()
-	s.logger.Printf("FORCED to secondary until %s reason=%s", until.Format(time.RFC3339), reason)
+	s.logger.Printf("FORCED to secondary until %s reason=%q", until.Format(time.RFC3339), reason)
 	return until
 }
 
@@ -284,7 +284,7 @@ func (s *Server) ForceModelOverflow(model string, d time.Duration, reason string
 	s.state.ModelClaim[model] = "forced"
 	s.saveStateLocked()
 	s.mu.Unlock()
-	s.logger.Printf("FORCED model=%q to secondary until %s reason=%s", model, until.Format(time.RFC3339), reason)
+	s.logger.Printf("FORCED model=%q to secondary until %s reason=%q", model, until.Format(time.RFC3339), reason)
 	return until
 }
 
@@ -335,5 +335,5 @@ func (s *Server) activateOverflow(model string, resetAt int64, claim, reason str
 	}
 	s.addFailoverNotice(fmt.Sprintf("\u26a1 Claude Burst: %s now go to the secondary until %s, because %s", what, time.Unix(resetAt, 0).Format("15:04"), plainReason(claim, reason)))
 	s.alertFailedOver(what, time.Unix(resetAt, 0), plainReason(claim, reason))
-	s.logger.Printf("model=%q rejected until %s claim=%s reason=%s", model, time.Unix(resetAt, 0).Format(time.RFC3339), claim, reason)
+	s.logger.Printf("model=%q rejected until %s claim=%q reason=%q", model, time.Unix(resetAt, 0).Format(time.RFC3339), claim, reason)
 }

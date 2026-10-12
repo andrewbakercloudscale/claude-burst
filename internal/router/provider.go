@@ -3,6 +3,9 @@ package router
 import (
 	"context"
 	"net/http"
+	"sync"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 )
 
 // Provider builds the outbound *http.Request for one backend's wire format.
@@ -15,6 +18,50 @@ import (
 // into a 503. See Server.secondaryReady.
 type credentialChecker interface {
 	CredentialReady() error
+}
+
+// credential is one provider's API key, held in memory once it has been read.
+//
+// Until 12 Oct 2026 Prepare asked for it on every request sent to the
+// secondary. Unless the key came from the environment, that ran
+// /usr/bin/security each time, tens of milliseconds when the Keychain answers
+// and up to its ten second timeout when it does not, with the client's turn
+// waiting behind it. Now a request asks only when no key is held: the first
+// one after a start. The once a minute readiness check (Server.secondaryReady)
+// reads it again off the request path, which is how a key changed with
+// keychain-set or in the dashboard, or removed, is noticed without a restart.
+//
+// The zero value is ready. The service and variable are passed in, not kept,
+// so a provider built as a bare struct in a test still works.
+type credential struct {
+	mu  sync.Mutex
+	key string
+}
+
+// get returns the key held, reading it only when there is none.
+func (c *credential) get(service, envVar string) (string, error) {
+	c.mu.Lock()
+	key := c.key
+	c.mu.Unlock()
+	if key != "" {
+		return key, nil
+	}
+	return c.refresh(service, envVar)
+}
+
+// refresh reads the key again and keeps the answer; a key that can no longer
+// be read is dropped, so a removed key stops being sent. The lock is not held
+// while the Keychain is asked: a request with a key in hand must not wait
+// for another's lookup.
+func (c *credential) refresh(service, envVar string) (string, error) {
+	key, err := keychain.Load(service, envVar)
+	if err != nil {
+		key = ""
+	}
+	c.mu.Lock()
+	c.key = key
+	c.mu.Unlock()
+	return key, err
 }
 
 type Provider interface {

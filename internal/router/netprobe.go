@@ -171,20 +171,29 @@ func safeToResend(err error) bool {
 	if errors.As(err, &op) && op.Op == "dial" {
 		return true
 	}
+	// net/http has no exported error for this one (its type is the
+	// unexported tlsHandshakeTimeoutError), so the text is all there is to
+	// match. TestRealTLSHandshakeTimeoutIsSafeToResend provokes the real
+	// error, so a Go release that rewords it fails a test instead of quietly
+	// ending these retries.
 	return strings.Contains(err.Error(), "TLS handshake timeout")
 }
 
-// deadConnection reports a primary error that most likely means the pooled
-// connection died under the request (a network switch: the local address is
-// gone, or HTTP/2 never answers on it). The request may have reached
-// Anthropic, so it is resent once on a fresh connection and never laddered:
-// one resend can at worst run a turn twice on the subscription, which costs
-// plan usage, while giving up costs a failover to a paid provider.
+// deadConnection reports a primary error that means the pooled connection
+// died under the request before it could be sent (a network switch: the
+// local address the connection was bound to is gone). It is resent once on
+// a fresh connection and never laddered.
+//
+// A timeout waiting for the response headers was here too until 12 Oct 2026,
+// as the sign of an HTTP/2 connection that never answers. It cannot be told
+// from a reply that is only slow: the whole request went out, the model may
+// be running it, and the resend ran it a second time, on the plan or on the
+// bill. A request that timed out that way is now never sent again by the
+// gateway; its error goes to the failover detector and then to Claude Code,
+// whose own retry shows on screen. TestRealHeaderTimeoutIsNeverResent holds
+// the real net/http error to that.
 func deadConnection(err error) bool {
-	if errors.Is(err, syscall.EADDRNOTAVAIL) {
-		return true
-	}
-	return strings.Contains(err.Error(), "timeout awaiting response headers")
+	return errors.Is(err, syscall.EADDRNOTAVAIL)
 }
 
 // isStaleWriteFailure reports whether err is a WRITE onto a connection that

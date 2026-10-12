@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-
-	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 )
 
 // BedrockProvider forwards a request to Amazon Bedrock's Anthropic-compatible
@@ -20,7 +18,13 @@ type BedrockProvider struct {
 	base            *url.URL
 	modelMap        map[string]string
 	keychainService string
+	// cred is the key once read: see credential.
+	cred credential
 }
+
+// bedrockKeyEnvVar is the environment variable that stands in for the
+// Keychain entry.
+const bedrockKeyEnvVar = "AWS_BEARER_TOKEN_BEDROCK"
 
 func NewBedrockProvider(base *url.URL, modelMap map[string]string, keychainService string) *BedrockProvider {
 	return &BedrockProvider{base: base, modelMap: modelMap, keychainService: keychainService}
@@ -28,16 +32,17 @@ func NewBedrockProvider(base *url.URL, modelMap map[string]string, keychainServi
 
 func (p *BedrockProvider) Name() string { return "bedrock" }
 
-// CredentialReady reports whether the Bedrock key can be loaded.
+// CredentialReady reports whether the Bedrock key can be loaded, reading it
+// again: this is the check that notices a key added, changed or removed.
 func (p *BedrockProvider) CredentialReady() error {
-	_, err := keychain.Load(p.keychainService, "AWS_BEARER_TOKEN_BEDROCK")
+	_, err := p.cred.refresh(p.keychainService, bedrockKeyEnvVar)
 	return err
 }
 
 func (p *BedrockProvider) Prepare(ctx context.Context, in *http.Request, body []byte) (*http.Request, string, error) {
 	requestedModel := requestModel(body)
 
-	key, err := keychain.Load(p.keychainService, "AWS_BEARER_TOKEN_BEDROCK")
+	key, err := p.cred.get(p.keychainService, bedrockKeyEnvVar)
 	if err != nil {
 		return nil, "", &ProviderError{
 			Status: http.StatusServiceUnavailable, Stage: "keychain_load", Model: requestedModel,

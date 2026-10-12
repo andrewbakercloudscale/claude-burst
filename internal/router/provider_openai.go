@@ -13,8 +13,6 @@ import (
 	"net/url"
 	"strings"
 	"sync/atomic"
-
-	"github.com/andrewbakercloudscale/claude-burst/internal/keychain"
 )
 
 // OpenAICompatibleProvider forwards requests to an OpenAI-compatible
@@ -38,7 +36,9 @@ type OpenAICompatibleProvider struct {
 	modelMap        map[string]string
 	keychainService string
 	apiKeyEnvVar    string
-	logger          *log.Logger
+	// cred is the key once read: see credential.
+	cred   credential
+	logger *log.Logger
 	// prune is nil when pruning is off. Only ever set on the secondary
 	// slot (router.New); see prune.go.
 	prune atomic.Pointer[prunePolicy]
@@ -50,16 +50,17 @@ func NewOpenAICompatibleProvider(name string, base *url.URL, model string, model
 
 func (p *OpenAICompatibleProvider) Name() string { return p.name }
 
-// CredentialReady reports whether the endpoint's key can be loaded.
+// CredentialReady reports whether the endpoint's key can be loaded, reading
+// it again: this is the check that notices a key added, changed or removed.
 func (p *OpenAICompatibleProvider) CredentialReady() error {
-	_, err := keychain.Load(p.keychainService, p.apiKeyEnvVar)
+	_, err := p.cred.refresh(p.keychainService, p.apiKeyEnvVar)
 	return err
 }
 
 func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request, body []byte) (*http.Request, string, error) {
 	requestedModel := requestModel(body)
 
-	key, err := keychain.Load(p.keychainService, p.apiKeyEnvVar)
+	key, err := p.cred.get(p.keychainService, p.apiKeyEnvVar)
 	if err != nil {
 		return nil, "", &ProviderError{
 			Status: http.StatusServiceUnavailable, Stage: "keychain_load", Model: requestedModel,
@@ -83,7 +84,8 @@ func (p *OpenAICompatibleProvider) Prepare(ctx context.Context, in *http.Request
 		return nil, "", &ProviderError{Status: http.StatusBadGateway, Stage: "request_translation", Model: requestedModel, Err: err}
 	}
 	if len(droppedTools) > 0 && p.logger != nil {
-		p.logger.Printf("route=%s model=%q dropped server-only tools (no input_schema, unsupported by an OpenAI-compatible endpoint): %s",
+		// %q: a tool's name is whatever the request said it was.
+		p.logger.Printf("route=%s model=%q dropped server-only tools (no input_schema, unsupported by an OpenAI-compatible endpoint): %q",
 			p.name, requestedModel, strings.Join(droppedTools, ","))
 	}
 
@@ -438,10 +440,21 @@ type openaiToolCall struct {
 	} `json:"function"`
 }
 
+// maxUnstreamedReplyBytes bounds a secondary's reply that is not streamed.
+// The largest output a model gives is a few hundred thousand tokens, a
+// megabyte or two of JSON; nothing legitimate is near this.
+const maxUnstreamedReplyBytes = 32 * 1024 * 1024
+
 func translateOpenAINonStream(w http.ResponseWriter, body io.Reader, model string) (tokenUsage, error) {
-	raw, err := io.ReadAll(body)
+	// The whole reply is held to be translated, so it has a bound: one byte
+	// past it is read to tell a reply at the limit from one over it. The
+	// error is logged by forward and answered as a 502.
+	raw, err := io.ReadAll(io.LimitReader(body, maxUnstreamedReplyBytes+1))
 	if err != nil {
 		return tokenUsage{}, err
+	}
+	if len(raw) > maxUnstreamedReplyBytes {
+		return tokenUsage{}, fmt.Errorf("upstream response is over the %dMB limit for a reply that is not streamed", maxUnstreamedReplyBytes>>20)
 	}
 	var resp struct {
 		Choices []struct {

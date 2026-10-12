@@ -43,6 +43,24 @@ func (s *Server) clientFor(path string) *http.Client {
 	return s.client
 }
 
+// send makes one upstream call for the inbound request in. A Messages request
+// that did not ask for a stream is marked for the longer wait for response
+// headers (see slowHeaderWait); everything else goes as it always did.
+func (s *Server) send(in *http.Request, body []byte, req *http.Request) (*http.Response, error) {
+	if in.URL.Path == "/v1/messages" && !wantsStream(body) {
+		req = req.WithContext(withSlowHeaders(req.Context()))
+	}
+	return s.clientFor(in.URL.Path).Do(req)
+}
+
+// wantsStream reports whether a Messages request asked for a streamed reply.
+func wantsStream(body []byte) bool {
+	var v struct {
+		Stream bool `json:"stream"`
+	}
+	return json.Unmarshal(body, &v) == nil && v.Stream
+}
+
 func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, slot string, p Provider, fd FailoverDetector, allowFailover bool, note string, ladder []string) {
 	rid := requestIDFrom(in.Context())
 	start := time.Now()
@@ -61,7 +79,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		if errors.As(err, &perr) {
 			status, stage, reqModel = perr.Status, perr.Stage, perr.Model
 		}
-		s.logger.Printf("req=%s error stage=%s route=%s requested_model=%q err=%v", rid, stage, p.Name(), reqModel, err)
+		s.logger.Printf("req=%s error stage=%s route=%s requested_model=%q err=%q", rid, stage, p.Name(), reqModel, err)
 		http.Error(w, err.Error(), status)
 		s.writeMetric(in, slot, p.Name(), reqModel, reqModel, status, start, tokenUsage{}, "", 0, stage+" failed: "+err.Error(), "")
 		return
@@ -89,7 +107,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		serveModel = sm.ServeModel(model)
 	}
 
-	resp, err := s.clientFor(in.URL.Path).Do(req)
+	resp, err := s.send(in, body, req)
 	// A dead connection on the FIRST attempt gets one immediate retry on a
 	// fresh connection (below), then the timed ladder; the ladder does not
 	// repeat that first retry. This runs with or without a secondary: it is
@@ -107,7 +125,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		if retry, _, perr := p.Prepare(in.Context(), in, body); perr == nil {
 			s.logger.Printf("req=%s retry route=%s reason=%q -> one more attempt on a fresh connection", rid, p.Name(), err)
 			req = retry
-			resp, err = s.clientFor(in.URL.Path).Do(req)
+			resp, err = s.send(in, body, req)
 			freshRetried = true
 			// Not counted here. If the retry also failed, the single
 			// fd.OnError after the ladder below counts this request, once.
@@ -153,7 +171,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		// here is concrete: replaying to the secondary would spend money on a
 		// paid provider generating a response that nobody is left to read.
 		if in.Context().Err() != nil {
-			s.logger.Printf("req=%s client_gone route=%s err=%v (no failover, not replayed)", rid, p.Name(), err)
+			s.logger.Printf("req=%s client_gone route=%s err=%q (no failover, not replayed)", rid, p.Name(), err)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, metrics.StatusClientClosed, start, pruned, "", 0, "client cancelled: "+err.Error(), destination)
 			return
 		}
@@ -246,7 +264,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 				break
 			}
 			req = retry
-			resp, err = s.clientFor(in.URL.Path).Do(req)
+			resp, err = s.send(in, body, req)
 			if err == nil {
 				s.logger.Printf("req=%s retry route=%s attempt=%d worked; no failover", rid, p.Name(), i+2)
 			}
@@ -266,7 +284,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			// turn after a while). Failing over now would arm a window and
 			// raise an alert for a request nobody is waiting for, as it did
 			// on 2026-10-04 at 17:16 (req=5dfd9304c61e335b).
-			s.logger.Printf("req=%s client_gone route=%s err=%v (left during retries; no failover, not replayed)", rid, p.Name(), err)
+			s.logger.Printf("req=%s client_gone route=%s err=%q (left during retries; no failover, not replayed)", rid, p.Name(), err)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, metrics.StatusClientClosed, start, pruned, "", 0, "client cancelled during retries: "+err.Error(), destination)
 			return
 		} else {
@@ -275,11 +293,11 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 				if d := fd.OnError(err); d.Failover {
 					s.activateOverflow(model, d.ResetAt, d.Claim, d.Reason)
 					s.replayElsewhere(w, in, body, slot, p, model, serveModel, destination, start, 0, d, ladder,
-						fmt.Sprintf("transport error: %v", err))
+						fmt.Sprintf("transport error: %q", err))
 					return
 				}
 			}
-			s.logger.Printf("req=%s error stage=upstream_call route=%s err=%v", rid, p.Name(), err)
+			s.logger.Printf("req=%s error stage=upstream_call route=%s err=%q", rid, p.Name(), err)
 			http.Error(w, p.Name()+" upstream error: "+err.Error(), http.StatusBadGateway)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "upstream call failed: "+err.Error(), destination)
 			return
@@ -293,21 +311,74 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			fd.OnSuccess()
 		}
 		var tok tokenUsage
+		// broke: the reply started and did not finish. cut: the client has
+		// been told nothing of that yet, so its connection must say it.
+		var broke error
+		stage, cut := "upstream_stream", false
 		if t, ok := p.(Translator); ok {
-			tok, err = t.TranslateResponse(w, resp, model)
-			if err != nil {
-				// The response has likely already started writing to the
-				// client by this point (translation is itself streaming);
-				// there's nothing safe left to do but log it.
-				s.logger.Printf("req=%s error stage=translate_response route=%s model=%q err=%v", rid, p.Name(), model, err)
-			}
+			// The translator tells the client itself: an error event in a
+			// stream, a 502 when nothing had been written.
+			stage = "translate_response"
+			tok, broke = t.TranslateResponse(w, resp, model)
 		} else {
-			tok = s.relay(rid, w, resp, model)
+			tok, broke = s.relay(rid, w, resp, model)
+			cut = broke != nil
+		}
+		if broke != nil {
+			// Two endings that are not a model's reply breaking, and are
+			// counted and ended as they always were.
+			why := ""
+			switch {
+			case in.Context().Err() != nil:
+				// Esc in Claude Code, or a held stream the gateway ended
+				// itself (DropHeldStreams): the read failed because the
+				// request was over, and there is nobody to tell.
+				why = "the request had ended: the client left, or the gateway ended a held stream"
+			case !isInference(in.URL.Path):
+				// A control-plane stream (Remote Control's events) is held
+				// open for hours and its connection is ended from the far
+				// side as a matter of course; Claude Code opens it again
+				// when it ends. Not a failed reply, and not worth an alert.
+				why = "a control-plane stream, which Claude Code opens again"
+			}
+			if why != "" {
+				s.logger.Printf("req=%s reply ended early route=%s err=%q (%s)", rid, p.Name(), broke, why)
+				broke, cut = nil, false
+			}
 		}
 		tok.prunedBytes, tok.prunedResults, tok.truncatedResults = pruned.prunedBytes, pruned.prunedResults, pruned.truncatedResults
 		tok.repeatedCalls, tok.rerunsAfterStub = pruned.repeatedCalls, pruned.rerunsAfterStub
 		if slot == "primary" {
 			s.noteSessionContext(in, tok)
+		}
+		if broke != nil {
+			// Not an ok line and not a 200 in the metrics: until 12 Oct 2026
+			// a reply cut off half way was logged and counted as a success,
+			// so a day of them read as a clean day. The tokens are kept, they
+			// were used. 502 is what the gateway answers when the upstream
+			// fails; the headers this client got said 200, sent before the
+			// break.
+			s.logger.Printf("req=%s error stage=%s route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d err=%q (no whole reply reached the client)",
+				rid, stage, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, broke)
+			brokeNote := "upstream reply broke mid-stream: " + broke.Error()
+			if stage == "translate_response" {
+				brokeNote = "secondary reply broke or could not be translated: " + broke.Error()
+			}
+			if note != "" {
+				brokeNote = note + "; " + brokeNote
+			}
+			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, tok, "", 0, brokeNote, destination)
+			if cut {
+				// Returning would end the response cleanly, and a clean end
+				// is how a finished reply looks: Claude Code would be handed
+				// half an answer as a whole one. Aborting closes its
+				// connection the way the upstream's closed (HTTP/2: resets
+				// the stream), which it reports and retries as it would
+				// without Burst. ServeHTTP logs the request and lets this
+				// through to net/http.
+				panic(http.ErrAbortHandler)
+			}
+			return
 		}
 		// A call that is not a model request, answered quickly with nothing
 		// to note (a heartbeat, an event upload), is in the minute's quiet
@@ -348,13 +419,17 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		}
 	}
 
+	if slot == "secondary" && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		s.secondaryRefusedCredential()
+	}
 	reason := errorExcerpt(errBody)
 	s.logger.Printf("req=%s upstream_error route=%s model=%q status=%d note=%q reason=%q", rid, p.Name(), model, resp.StatusCode, note, reason)
 	if resp.StatusCode == http.StatusBadRequest && slot == "secondary" {
 		// A 400 from a translated request is usually a structure the
 		// translation got wrong; the shape (never the content) is what
 		// fixing it needs.
-		s.logger.Printf("req=%s rejected_request_shape %s", rid, messageSkeleton(body))
+		// %q: the tool ids in it are whatever the request said they were.
+		s.logger.Printf("req=%s rejected_request_shape %q", rid, messageSkeleton(body))
 	}
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -474,7 +549,7 @@ func (s *Server) replayElsewhere(w http.ResponseWriter, in *http.Request, body [
 		}
 		s.writeMetric(in, slot, p.Name(), serveModel, model, status, start, tokenUsage{}, d.Claim, d.ResetAt,
 			d.Reason+"; request replayed to "+rung, destination)
-		s.logger.Printf("req=%s failover route=%s model=%q claim=%s reason=%q (%s) -> replaying on the subscription as %q",
+		s.logger.Printf("req=%s failover route=%s model=%q claim=%q reason=%q (%s) -> replaying on the subscription as %q",
 			rid, p.Name(), model, d.Claim, d.Reason, trigger, rung)
 		// The rung can be refused too; when it is, this same path carries on
 		// to the next rung or the secondary. With neither left, its refusal
@@ -484,7 +559,7 @@ func (s *Server) replayElsewhere(w http.ResponseWriter, in *http.Request, body [
 	}
 
 	if !s.secondaryReady() {
-		s.logger.Printf("req=%s no_failover_target route=%s model=%q claim=%s reason=%q (%s): fallback chain exhausted and no secondary configured",
+		s.logger.Printf("req=%s no_failover_target route=%s model=%q claim=%q reason=%q (%s): fallback chain exhausted and no secondary configured",
 			rid, p.Name(), model, d.Claim, d.Reason, trigger)
 		http.Error(w, p.Name()+" refused this model ("+d.Reason+") and there is no fallback chain rung or secondary provider left to try", http.StatusServiceUnavailable)
 		s.writeMetric(in, slot, p.Name(), serveModel, model, status, start, tokenUsage{}, d.Claim, d.ResetAt,
@@ -494,7 +569,7 @@ func (s *Server) replayElsewhere(w http.ResponseWriter, in *http.Request, body [
 
 	s.writeMetric(in, slot, p.Name(), serveModel, model, status, start, tokenUsage{}, d.Claim, d.ResetAt,
 		d.Reason+"; request replayed to secondary", destination)
-	s.logger.Printf("req=%s failover route=%s model=%q claim=%s reason=%q (%s) -> replaying to secondary",
+	s.logger.Printf("req=%s failover route=%s model=%q claim=%q reason=%q (%s) -> replaying to secondary",
 		rid, p.Name(), model, d.Claim, d.Reason, trigger)
 	s.forward(w, in, body, "secondary", s.secondary, nil, false, d.Reason, nil)
 }
