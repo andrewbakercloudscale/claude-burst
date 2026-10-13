@@ -190,7 +190,7 @@ func TestATurnOverAWebSocketIsMaskedAndCounted(t *testing.T) {
 	wire = append(wire, clientFrame(opText, key, []byte(socketTurn[:20]))...)
 	wire = append(wire, clientFrame(0, key, []byte(socketTurn[20:60]))...)
 	wire = append(wire, clientFrame(0x80|9, key, []byte("hi"))...)
-	wire = append(wire, clientFrame(0x80|0, key, []byte(socketTurn[60:]))...)
+	wire = append(wire, clientFrame(0x80, key, []byte(socketTurn[60:]))...)
 	for i := range wire {
 		conn.Write(wire[i : i+1])
 	}
@@ -262,7 +262,7 @@ func TestAWebSocketMessageThatIsNotChangedGoesAsItCame(t *testing.T) {
 	key := [4]byte{9, 8, 7, 6}
 	var wire []byte
 	wire = append(wire, clientFrame(opText, key, []byte(socketTurn[:33]))...)
-	wire = append(wire, clientFrame(0x80|0, key, []byte(socketTurn[33:]))...)
+	wire = append(wire, clientFrame(0x80, key, []byte(socketTurn[33:]))...)
 	conn.Write(wire)
 	if got := up.waitGot(t, len(wire)); !bytes.Equal(got, wire) {
 		t.Fatalf("with Automask off the turn changed on its way:\n%q\n%q", got, wire)
@@ -302,7 +302,7 @@ func TestAWebSocketMessageBurstCannotReadIsPassedOnAndSaid(t *testing.T) {
 	wire = append(wire, clientFrame(0x80|2, key, []byte("bluebird in binary"))...)
 	wire = append(wire, clientFrame(0x80|0x40|opText, key, []byte("bluebird deflated"))...)
 	wire = append(wire, clientFrame(opText, key, []byte(big[:3<<10]))...)
-	wire = append(wire, clientFrame(0x80|0, key, []byte(big[3<<10:]))...)
+	wire = append(wire, clientFrame(0x80, key, []byte(big[3<<10:]))...)
 	conn.Write(wire)
 	if got := up.waitGot(t, len(wire)); !bytes.Equal(got, wire) {
 		t.Fatalf("what Burst could not read changed on its way: %d bytes of %d", len(got), len(wire))
