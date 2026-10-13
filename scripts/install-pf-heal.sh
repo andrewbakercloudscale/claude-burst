@@ -77,7 +77,7 @@ fi
 
 need_root() {
   (( SELFTEST )) && return 0
-  [[ $EUID -eq 0 ]] || { echo "must run as root: sudo $0 ${1:-install}" >&2; exit 1; }
+  [[ $EUID -eq 0 ]] || { echo "must run as root: sudo $ZSH_ARGZERO ${1:-install}" >&2; exit 1; }
 }
 
 do_status() {
@@ -97,10 +97,10 @@ do_status() {
     echo "  daemon        : RUNNING (last check ${age}s ago)"
   elif [[ -f "$PLIST" ]]; then
     echo "  daemon        : INSTALLED BUT NOT RUNNING${age:+ (last check ${age}s ago)}"
-    echo "                  reload with: sudo $0"
+    echo "                  reload with: sudo $ZSH_ARGZERO"
   else
     echo "  daemon        : not installed"
-    echo "                  install with: sudo $0"
+    echo "                  install with: sudo $ZSH_ARGZERO"
   fi
   if [[ $EUID -eq 0 ]]; then
     "$LAUNCHCTL" print "system/$LABEL" >/dev/null 2>&1 \
@@ -110,7 +110,7 @@ do_status() {
   [[ -x "$SCRIPT" ]] && echo "  script        : $SCRIPT" || echo "  script        : absent"
   if [[ -f "$SCRIPT" ]] && ! diff -q "$ROOT/scripts/pf-heal.sh" "$SCRIPT" >/dev/null 2>&1; then
     echo "  STALE         : the installed copy differs from $ROOT/scripts/pf-heal.sh"
-    echo "                  re-run: sudo $0"
+    echo "                  re-run: sudo $ZSH_ARGZERO"
   fi
   if [[ -f "$LOG" ]]; then
     echo "  log           : $LOG ($(wc -l < "$LOG" | tr -d ' ') lines)"
@@ -152,7 +152,7 @@ do_uninstall() {
   elif (( ${#logs} )); then
     echo "Kept, so the history of what it caught survives the uninstall:"
     for f in "${logs[@]}"; do echo "  $f"; done
-    echo "Remove them too with: sudo $0 uninstall --purge"
+    echo "Remove them too with: sudo $ZSH_ARGZERO uninstall --purge"
   fi
 }
 
@@ -228,8 +228,8 @@ Runs as root every 30s AND on every network change. Each cycle:
                                         black-holed
 
 Log:    $LOG   (world-readable: tail it without sudo)
-Status: $0 status
-Remove: sudo $0 uninstall
+Status: $ZSH_ARGZERO status
+Remove: sudo $ZSH_ARGZERO uninstall
 OUT
 }
 
