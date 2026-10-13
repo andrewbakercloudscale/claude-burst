@@ -1179,6 +1179,7 @@ func TestReadSSETextNeedsACompletedStream(t *testing.T) {
 // stopped, nothing is kept or announced, and the window is open again.
 func TestClearSessionStopsASummaryInFlight(t *testing.T) {
 	started := make(chan struct{})
+	flushed := make(chan struct{})
 	gone := make(chan struct{})
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -1190,7 +1191,7 @@ func TestClearSessionStopsASummaryInFlight(t *testing.T) {
 			return
 		}
 		w.(http.Flusher).Flush()
-		close(started)
+		close(flushed)
 		// The summary is still being written until the gateway hangs up.
 		select {
 		case <-r.Context().Done():
@@ -1208,6 +1209,22 @@ func TestClearSessionStopsASummaryInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The summary has started once the gateway has read the usage its reply
+	// opens with, which is later than the upstream sending it: a /clear in
+	// between stops a call that reports no usage, and failed the build of
+	// 0.20.30.
+	inner := s.client.Transport
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		resp, err := inner.RoundTrip(r)
+		select {
+		case <-flushed:
+			if err == nil {
+				resp.Body = &firstRead{ReadCloser: resp.Body, done: func() { close(started) }}
+			}
+		default:
+		}
+		return resp, err
+	})
 	all := msgs(t, session)
 	send(t, s, "S", all[:5])
 	send(t, s, "S", all[:7])
@@ -1249,6 +1266,21 @@ func TestClearSessionStopsASummaryInFlight(t *testing.T) {
 	if !found {
 		t.Fatalf("the stopped call's cost is not recorded against session S:\n%s", b)
 	}
+}
+
+// firstRead calls done once, after the first read that returned data.
+type firstRead struct {
+	io.ReadCloser
+	once sync.Once
+	done func()
+}
+
+func (f *firstRead) Read(p []byte) (int, error) {
+	n, err := f.ReadCloser.Read(p)
+	if n > 0 {
+		f.once.Do(f.done)
+	}
+	return n, err
 }
 
 // A learned Compact at reaches the running gateway, survives the settings
