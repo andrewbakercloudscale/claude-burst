@@ -27,6 +27,14 @@ jobs:
           npm install --no-audit --no-fund playwright@1
           npx playwright install chromium
           echo "CLAUDE_BURST_PLAYWRIGHT=$RUNNER_TEMP/pw" >> "$GITHUB_ENV"
+      # HANDOFF.md is a session's private notes (.gitignore says so). It was
+      # committed 29 times before anyone noticed, and that history is public.
+      - name: private notes are not committed
+        run: |
+          if git ls-files | grep -qx 'HANDOFF.md'; then
+            echo "HANDOFF.md is tracked; it must never be committed" >&2
+            exit 1
+          fi
       - run: go vet ./...
       # Both fail the build. Neither is a dependency of the repo: go run
       # fetches each, the newest because an older staticcheck cannot read a newer Go.
