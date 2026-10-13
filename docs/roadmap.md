@@ -116,7 +116,8 @@ Last updated 13 October 2026, at v0.20.30.
 - A Codex turn's instructions, messages and tool output are masked with the same rules, word list and counts. Tool calls the model wrote and encrypted reasoning are left alone.
 - The section is in the General tab, under Privacy, and the Last 50 masks list says which of Claude Code and Codex each came from.
 - A choice of where it applies: everywhere (the default), or only the providers ticked, from Anthropic, the secondary and ChatGPT. There is one tick for the secondary, not one for each: one is active at a time.
-- Two limits, stated on the page and in the guide: a turn Codex sends compressed or over a WebSocket goes as Codex wrote it, with a log line, and with Anthropic ticked and the secondary not, the secondary still gets masks.
+- Two limits, stated on the page and in the guide: a turn Codex sends compressed goes as Codex wrote it, with a log line, and with Anthropic ticked and the secondary not, the secondary still gets masks.
+- Since 13 October a turn Codex sends over a WebSocket is masked and counted like any other (it was passed through unread, and with Automask on each one raised a warning).
 
 **Done when.** A made-up word typed into Codex reaches ChatGPT as its mask, the Last 50 masks list shows it as Codex's, and with only one provider ticked the same word reaches the others unmasked.
 

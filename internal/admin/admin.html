@@ -1735,7 +1735,7 @@
         <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:3px 0"><input type="radio" name="amScope" id="amEverywhere" value="all" style="width:auto;margin:0"> Everywhere: whatever Claude Code and Codex send, to any provider</label>
         <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:3px 0"><input type="radio" name="amScope" id="amOnly" value="only" style="width:auto;margin:0"> Only what goes to the providers ticked</label>
         <div id="amProviders" style="margin:4px 0 0 26px"></div>
-        <div class="hint" style="margin-top:6px">A provider that is not ticked gets the request as it was written. For Codex, Burst masks the turns it can read: one that Codex sends compressed, or over a WebSocket, goes to ChatGPT as Codex wrote it, with a line in the gateway log saying so.</div>
+        <div class="hint" style="margin-top:6px">A provider that is not ticked gets the request as it was written. For Codex, Burst masks the turns it can read, sent as a request or over a WebSocket: one that Codex sends compressed goes to ChatGPT as Codex wrote it, with a line in the gateway log saying so.</div>
       </div>
       <table class="stbl" id="amRules"></table>
       <div style="margin-top:14px">

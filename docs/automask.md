@@ -113,7 +113,7 @@ set -a; . ./.env; set +a; ./deploy.sh
 - **Names, addresses and other free text** are not masked, unless they are on your own word list.
 - **Tool calls are not masked.** If Claude itself types a secret into a command, that text is sent as written.
 - **Requests only.** Claude's answers are not changed on the way back.
-- **Codex turns Burst cannot read are not masked.** A turn Codex sends compressed, or over a WebSocket, goes to ChatGPT as Codex wrote it, and the gateway log (`codex: automask could not read ...`) and a pop-up say so. Refusing it would stop Codex working, so it is passed on and reported. A Claude Code request Burst cannot read is refused instead. Codex's sign-in, plugins and cloud tasks do not pass through Burst at all.
+- **Codex turns Burst cannot read are not masked.** A turn Codex sends compressed, or larger than 64MB, goes to ChatGPT as Codex wrote it, and the gateway log (`codex: automask could not read ...`) and a pop-up say so. A turn sent over a WebSocket, which is how Codex sends them by default, is read and masked like one sent as a request: Burst does not pass on Codex's offer to compress the socket, so its messages can be read. Refusing it would stop Codex working, so it is passed on and reported. A Claude Code request Burst cannot read is refused instead. Codex's sign-in, plugins and cloud tasks do not pass through Burst at all.
 - **Switching a rule on rewrites history once.** A session that already holds a matching value pays one cache rewrite the first time it is masked.
 - **The local transcript is not changed.** Claude Code's own files under `~/.claude` still hold what you typed and what tools returned.
 

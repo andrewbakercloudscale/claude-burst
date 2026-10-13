@@ -14,8 +14,10 @@
 // other route, chatgpt_base_url, is refused unless it is https and also
 // carries plugins, MCP and account calls, so it was not taken.
 //
-// Nothing here changes a request. No failover, compaction or masking yet:
-// those are Claude Code features built on Anthropic's wire format.
+// A turn is changed only by Automask and by the context inspector's
+// removals (context.go), whether it is POSTed or sent over a WebSocket
+// (socket.go). No failover or compaction: those are Claude Code features
+// built on Anthropic's wire format.
 package codex
 
 import (
@@ -162,6 +164,12 @@ func New(upstream, metricsPath string, logger *log.Logger) (*Gateway, error) {
 			if isTurn(pr.In) {
 				pr.Out.Header.Del("Accept-Encoding")
 			}
+			// And a turn sent over a WebSocket must go uncompressed to be
+			// read at all: the offer of permessage-deflate is not passed
+			// on, so ChatGPT does not turn it on.
+			if isTurnSocket(pr.In) {
+				pr.Out.Header.Del("Sec-WebSocket-Extensions")
+			}
 		},
 		// Codex streams its replies as server-sent events: every chunk goes
 		// on the moment it arrives.
@@ -216,13 +224,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.last = time.Now()
 	g.mu.Unlock()
-	// A WebSocket is passed through but its turns are not read: logged, so
-	// diagnose shows when Codex uses one and the counts would be short.
-	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		g.logger.Printf("codex: websocket %q (passed through; its turns are not counted)", r.URL.Path)
+	// A WebSocket that carries turns is read as it passes (socket.go). Any
+	// other is passed through unread, and logged.
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") && !isTurnSocket(r) {
+		g.logger.Printf("codex: websocket %q (passed through unread)", r.URL.Path)
 		if g.masks() != nil {
-			g.logger.Printf("codex: automask could not read the turns of websocket %q: they go to ChatGPT as Codex wrote them", r.URL.Path)
-			unmaskedNotice("the turns of a Codex WebSocket")
+			g.logger.Printf("codex: automask could not read websocket %q: what Codex sends on it goes to ChatGPT as Codex wrote it", r.URL.Path)
+			unmaskedNotice("a Codex WebSocket that is not the one its turns use")
 		}
 	}
 	r = r.WithContext(context.WithValue(r.Context(), startKey{}, time.Now()))
@@ -270,6 +278,9 @@ func isTurn(r *http.Request) bool {
 // observe reads a reply on its way back to Codex without holding it up.
 func (g *Gateway) observe(resp *http.Response) error {
 	r := resp.Request
+	if resp.StatusCode == http.StatusSwitchingProtocols && isTurnSocket(r) {
+		g.relay(resp)
+	}
 	if !isTurn(r) {
 		// One line for every request that is not a turn, as a turn has its
 		// own: the log then holds everything Codex sent, and which of its
@@ -519,6 +530,12 @@ func (g *Gateway) record(r *http.Request, status int, u usage, note string) {
 		return
 	}
 	start, _ := r.Context().Value(startKey{}).(time.Time)
+	g.recordTurn(r, start, status, u, note)
+}
+
+// recordTurn writes one turn of r, which is the turn's own request or the
+// WebSocket it came over (socket.go).
+func (g *Gateway) recordTurn(r *http.Request, start time.Time, status int, u usage, note string) {
 	if start.IsZero() {
 		start = time.Now()
 	}
@@ -570,6 +587,9 @@ type sseTap struct {
 	// held whole: its start (with the model) is kept in line, its last
 	// tailMax bytes in tail, and usage is decoded from whichever holds it.
 	tail []byte
+	// bare: each line is an event's JSON alone, as a WebSocket message is,
+	// with no "data: " before it.
+	bare bool
 }
 
 const (
@@ -664,7 +684,10 @@ func (t *sseTap) endLine() {
 	}
 	line := t.line
 	t.line = t.line[:0]
-	data, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data: "))
+	data, ok := line, true
+	if !t.bare {
+		data, ok = bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data: "))
+	}
 	if !ok || !bytes.Contains(data, []byte(`"response.completed"`)) {
 		return
 	}

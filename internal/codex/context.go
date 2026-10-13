@@ -99,6 +99,16 @@ func (g *Gateway) prepareTurn(r *http.Request) {
 		return
 	}
 	_ = orig.Close()
+	body = g.prepareBody(sid, mask, body, true)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+}
+
+// prepareBody is what happens to a turn Burst has read, however it came:
+// masked when mask is not nil, the session's removals applied, and kept for
+// the inspector when keep is set. Returns body itself when nothing changed.
+func (g *Gateway) prepareBody(sid string, mask Masker, body []byte, keep bool) []byte {
 	// Masked first, so the inspector lists, and a removal names, the items
 	// as they are sent.
 	if mask != nil {
@@ -108,13 +118,11 @@ func (g *Gateway) prepareTurn(r *http.Request) {
 		if out, ok := applyRemovals(body, g.removals.For(RemovalKey(sid))); ok {
 			body = out
 		}
+		if keep {
+			g.capture(sid, body)
+		}
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
-	if sid != "" {
-		g.capture(sid, body)
-	}
+	return body
 }
 
 type errReader struct{ err error }
