@@ -64,6 +64,9 @@ type Gateway struct {
 	logger   *log.Logger
 
 	inFlight atomic.Int64
+	// sockets is the turn WebSockets still open, each done once its close
+	// has been recorded.
+	sockets sync.WaitGroup
 
 	mu      sync.Mutex
 	limits  Limits

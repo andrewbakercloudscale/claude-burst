@@ -29,6 +29,9 @@ func newTestGateway(t *testing.T, upstream http.Handler) (*Gateway, string, *htt
 		t.Fatal(err)
 	}
 	gw := httptest.NewServer(g)
+	// A socket records the turn it was closed on after the test has let go
+	// of it, into the directory the test is about to remove.
+	t.Cleanup(g.sockets.Wait)
 	t.Cleanup(gw.Close)
 	return g, mp, gw
 }

@@ -52,6 +52,7 @@ func (g *Gateway) relay(resp *http.Response) {
 		s.unread("the turns of a Codex WebSocket, because ChatGPT turned on " + ext)
 	}
 	s.out.s, s.in.s = s, s
+	g.sockets.Add(1)
 	g.logger.Printf("codex: websocket %q opened session=%s client=%q", r.URL.Path, logID(r.Header.Get("Session-Id")), r.Header.Get("Originator"))
 	resp.Body = s
 }
@@ -107,6 +108,7 @@ func (s *socket) Read(p []byte) (int, error) {
 // finish, and is recorded as that, never dropped.
 func (s *socket) Close() error {
 	s.once.Do(func() {
+		defer s.g.sockets.Done()
 		s.mu.Lock()
 		left, sent, got, turns, how, upEnded := s.pending, s.sent, s.got, s.turns, s.close, s.upEnded
 		s.pending = nil
