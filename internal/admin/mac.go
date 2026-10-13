@@ -503,6 +503,19 @@ var runPanelCommand = func(ctx context.Context, dir, script string, args ...stri
 	return cmd.CombinedOutput()
 }
 
+// fetchPanel fetches the panel's newest signed release to dir with
+// scripts/fetch-panel.sh, which refuses one the release key did not sign.
+// Until 13 Oct 2026 this cloned the panel's main and ran its installer. A
+// variable for tests.
+var fetchPanel = func(ctx context.Context, scripts, dir string) ([]byte, error) {
+	if scripts == "" {
+		return nil, fmt.Errorf("no checkout of the claude-burst repo found, so the panel's release cannot be verified")
+	}
+	cmd := exec.CommandContext(ctx, "/bin/bash", filepath.Join(scripts, "fetch-panel.sh"), dir)
+	cmd.Env = append(os.Environ(), "CLAUDE_BURST_PANEL_REPO="+panelRepoURL)
+	return cmd.CombinedOutput()
+}
+
 func (s *Server) handlePanelInstall(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action string `json:"action"`
@@ -522,6 +535,7 @@ func (s *Server) handlePanelInstall(w http.ResponseWriter, r *http.Request) {
 	panelMu.Unlock()
 
 	dir := s.panelRepoDir()
+	scripts, _ := s.scriptsDir()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -535,9 +549,8 @@ func (s *Server) handlePanelInstall(w http.ResponseWriter, r *http.Request) {
 		default:
 			if dir == "" {
 				dir = filepath.Join(homeDir(), ".local", "share", "claude-burst", "claudecode-cost-usage-panel")
-				_ = os.MkdirAll(filepath.Dir(dir), 0o755)
 				var o []byte
-				o, err = exec.CommandContext(ctx, "git", "clone", "--quiet", panelRepoURL, dir).CombinedOutput()
+				o, err = fetchPanel(ctx, scripts, dir)
 				out = append(out, o...)
 			}
 			if err == nil {

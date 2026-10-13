@@ -46,6 +46,7 @@ func (p *BedrockProvider) Prepare(ctx context.Context, in *http.Request, body []
 	if err != nil {
 		return nil, "", &ProviderError{
 			Status: http.StatusServiceUnavailable, Stage: "keychain_load", Model: requestedModel,
+			//lint:ignore ST1005 shown to the user as it is, and Bedrock is a name
 			Err: fmt.Errorf("Bedrock overflow unavailable: %w. Run: claude-burst keychain-set", err),
 		}
 	}
@@ -54,6 +55,7 @@ func (p *BedrockProvider) Prepare(ctx context.Context, in *http.Request, body []
 	if err != nil {
 		return nil, "", &ProviderError{
 			Status: http.StatusBadGateway, Stage: "model_mapping", Model: requestedModel,
+			//lint:ignore ST1005 shown to the user as it is, and Bedrock is a name
 			Err: fmt.Errorf("Bedrock model mapping: %w", err),
 		}
 	}

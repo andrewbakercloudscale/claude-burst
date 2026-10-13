@@ -44,10 +44,27 @@ if [ -z "$REPO" ]; then
     if [ -f "$d/install.sh" ] && [ -d "$d/.git" ]; then REPO=$d; break; fi
   done
 fi
+# newest_release prints "<tag> <commit>" for the newest signed release in
+# checkout $1 (scripts/verify-release.sh). The verifier is the copy the
+# installer keeps outside the checkout, or else the checkout's own as it is
+# BEFORE anything is merged into it: never the one in code just fetched.
+# Exit 4: there is no verifier here at all, which is a Burst from before
+# releases were signed.
+newest_release() {
+  local v
+  for v in "$HOME/.local/share/claude-burst/verify-release.sh" "$1/scripts/verify-release.sh"; do
+    [ -x "$v" ] && [ -s "$(dirname "$v")/release-signers" ] || continue
+    "$v" "$1"
+    return
+  done
+  return 4
+}
+
 if [ -z "$REPO" ]; then
   echo "none found, cloning to ~/claude-burst"
   git clone -q "$GH" ~/claude-burst || exit 1
   REPO=~/claude-burst
+  FRESH=1
 fi
 echo "$REPO"
 cd "$REPO" || exit 1
@@ -59,10 +76,36 @@ else
   # Best effort: this script is for a Mac where things are broken, and the
   # network (or Burst in front of it) may be what is broken. Until
   # 7 Oct 2026 a failed fetch ended the repair before it had fixed anything.
-  if git fetch -q --tags origin && git checkout -q main && git merge -q --ff-only origin/main; then
-    echo "up to date with GitHub"
-  else
+  # Only a signed release is merged in. Not verified means not merged, and
+  # the repair carries on from the checkout as it is, like a failed fetch.
+  if ! git fetch -q --tags origin || ! git checkout -q main; then
     echo "WARNING: could not sync with GitHub (no network, or main has moved apart). Repairing from this checkout as it is."
+  else
+    rel="$(newest_release "$REPO")"; rc=$?
+    if [ -n "${FRESH:-}" ]; then
+      # A clone made a moment ago is GitHub's main, which may be ahead of
+      # the newest release: put it on the release, or install nothing.
+      if [ $rc -ne 0 ] || ! git checkout -q -B main "${rel#* }"; then
+        echo "The newest release on GitHub could not be verified (see above), so nothing was installed."
+        exit 1
+      fi
+      echo "on release ${rel%% *}, signed by the release key"
+    elif [ $rc -eq 0 ] && git merge -q --ff-only "${rel#* }"; then
+      echo "on release ${rel%% *}, signed by the release key"
+    elif [ $rc -eq 0 ]; then
+      echo "WARNING: this checkout cannot fast-forward to release ${rel%% *}. Repairing from it as it is."
+    elif [ $rc -eq 4 ]; then
+      # A checkout from before releases were signed has nothing to check
+      # with. It is brought up to date this once, as it always was, and has
+      # the verifier from then on.
+      if git merge -q --ff-only origin/main; then
+        echo "up to date with GitHub (this copy is from before releases were signed, so this one sync was not verified)"
+      else
+        echo "WARNING: could not sync with GitHub (main has moved apart). Repairing from this checkout as it is."
+      fi
+    else
+      echo "WARNING: the newest release on GitHub could not be verified (see above), so it was not merged. Repairing from this checkout as it is."
+    fi
   fi
 fi
 git log --oneline -1
@@ -72,7 +115,14 @@ GW=$(launchctl print "gui/$UID/$LABEL" 2>/dev/null | awk '/^\tpid = /{print $3}'
 for port in 7777 17777 7788 7779; do
   for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true); do
     [ "$pid" = "$GW" ] && continue
-    echo "port $port held by pid $pid ($(ps -o comm= -p "$pid" 2>/dev/null)), stopping it"
+    # Only Burst's own: these are ordinary port numbers, and a developer's
+    # own server on one of them is not this script's to stop.
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null)"
+    if [ "$(basename "${comm:-x}")" != claude-burst ]; then
+      echo "port $port held by pid $pid (${comm:-unknown program}): not Claude Burst, left running. If Burst needs this port, stop it yourself."
+      continue
+    fi
+    echo "port $port held by pid $pid ($comm), stopping it"
     kill "$pid" 2>/dev/null || sudo kill "$pid"
   done
 done

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -27,6 +28,37 @@ type upgradeRig struct {
 	running  string // the commit the "running binary" was built from
 	launched []string
 	fetches  atomic.Int32
+	key      string // the release key these "releases" are signed with
+	patch    int    // the next release without a version of its own is v0.2.<patch>
+}
+
+// newReleaseKey makes an ed25519 signing key in a temp dir and returns its
+// path and the release-signers line that trusts it.
+func newReleaseKey(t *testing.T) (key, signers string) {
+	t.Helper()
+	key = filepath.Join(t.TempDir(), "release_key")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+		t.Skipf("ssh-keygen: %v\n%s", err, out)
+	}
+	pub, err := os.ReadFile(key + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := strings.Fields(string(pub))
+	return key, "release@test namespaces=\"git\" " + f[0] + " " + f[1] + "\n"
+}
+
+// signTag makes tag a release of dir's HEAD, signed with key.
+func signTag(t *testing.T, dir, key, tag string) {
+	t.Helper()
+	git(t, dir, "-c", "gpg.format=ssh", "-c", "user.signingkey="+key+".pub", "tag", "-s", "-m", tag, tag)
+}
+
+// release signs the work clone's HEAD as version v and pushes it.
+func (r *upgradeRig) release(v string) {
+	r.t.Helper()
+	signTag(r.t, r.work, r.key, "v"+v)
+	git(r.t, r.work, "push", "-q", "origin", "main", "v"+v)
 }
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -64,9 +96,18 @@ func newUpgradeRig(t *testing.T) *upgradeRig {
 	git(t, r.work, "checkout", "-q", "-b", "main")
 	commitFile(t, r.work, "cmd/claude-burst/main.go", mainGo("0.2.0"), "first")
 	commitFile(t, r.work, "scripts/transparent-root.sh", "#!/bin/zsh\n", "scripts")
+	// The real verifier, trusting this test's key and no other.
+	var signers string
+	r.key, signers = newReleaseKey(t)
+	verifier, err := os.ReadFile(filepath.Join("..", "..", "scripts", "verify-release.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, r.work, "scripts/verify-release.sh", string(verifier), "verifier")
+	commitFile(t, r.work, "scripts/release-signers", signers, "signers")
 	// deploy.sh stub: records that it ran, from which commit.
 	commitFile(t, r.work, "scripts/deploy.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/..\" && git rev-parse --short HEAD > \"$DEPLOY_MARKER\"; echo \"$CLAUDE_BURST_REPO\" > \"$DEPLOY_MARKER.repo\"\n", "deploy")
-	git(t, r.work, "push", "-q", "origin", "main")
+	r.release("0.2.0")
 	git(t, root, "clone", "-q", r.origin, r.checkout)
 
 	r.s = newTestServer(t)
@@ -95,8 +136,20 @@ func newUpgradeRig(t *testing.T) *upgradeRig {
 	return r
 }
 
-// publish pushes a new commit to "GitHub".
+// publish pushes a new commit to "GitHub" and releases it: as the version
+// main.go declares when that is the file, as the next patch otherwise.
 func (r *upgradeRig) publish(file, body, msg string) {
+	commitFile(r.t, r.work, file, body, msg)
+	if _, v, ok := strings.Cut(body, `const version = "`); ok {
+		r.release(strings.TrimSuffix(strings.TrimSpace(v), `"`))
+		return
+	}
+	r.patch++
+	r.release("0.2." + strconv.Itoa(r.patch))
+}
+
+// push pushes a new commit to GitHub's main without releasing it.
+func (r *upgradeRig) push(file, body, msg string) {
 	commitFile(r.t, r.work, file, body, msg)
 	git(r.t, r.work, "push", "-q", "origin", "main")
 }
@@ -206,7 +259,7 @@ func TestUpgradeRefusesLocalCommits(t *testing.T) {
 	r.publish("README.md", "docs\n", "newer")
 	commitFile(t, r.checkout, "local.txt", "mine\n", "local work")
 	st := r.status(true)
-	if st.CanUpgrade || !strings.Contains(st.Reason, "local commits") {
+	if st.CanUpgrade || !strings.Contains(st.Reason, "commits that are not in release") {
 		t.Fatalf("status = %+v", st)
 	}
 }
@@ -500,4 +553,84 @@ func sameDir(a, b string) bool {
 	x, _ := filepath.EvalSymlinks(a)
 	y, _ := filepath.EvalSymlinks(b)
 	return x != "" && x == y
+}
+
+// Only a signed release is offered. Commits pushed to GitHub's main that
+// nobody signed as a release are not an upgrade, whatever they contain:
+// until 13 Oct 2026 the button installed them.
+func TestUpgradeIgnoresWhatWasPushedButNotReleased(t *testing.T) {
+	r := newUpgradeRig(t)
+	r.push("scripts/deploy.sh", "#!/bin/bash\necho owned\n", "not a release")
+	st := r.status(true)
+	if st.Error != "" || !st.UpToDate || st.CanUpgrade || st.Behind != 0 || st.LatestVersion != "0.2.0" {
+		t.Fatalf("an unreleased push was offered: %+v", st)
+	}
+	if rr := r.upgrade(); rr.Code != http.StatusConflict || len(r.launched) != 0 {
+		t.Fatalf("upgrade to an unreleased push: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A newer version tag that the release key did not sign stops the upgrade
+// and says why. Three ways to not be signed: no signature at all, a plain
+// tag, and a good signature from a key that is not the release key.
+func TestUpgradeRefusesAReleaseTheKeyDidNotSign(t *testing.T) {
+	otherKey, _ := newReleaseKey(t)
+	for name, tag := range map[string]func(r *upgradeRig){
+		"annotated but unsigned": func(r *upgradeRig) { git(t, r.work, "tag", "-a", "-m", "v0.3.0", "v0.3.0") },
+		"plain tag":              func(r *upgradeRig) { git(t, r.work, "tag", "v0.3.0") },
+		"signed by another key":  func(r *upgradeRig) { signTag(t, r.work, otherKey, "v0.3.0") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newUpgradeRig(t)
+			commitFile(t, r.work, "scripts/deploy.sh", "#!/bin/bash\necho owned\n", "Version 0.3.0")
+			tag(r)
+			git(t, r.work, "push", "-q", "origin", "main", "v0.3.0")
+			st := r.status(true)
+			if st.CanUpgrade || st.UpToDate || !strings.Contains(st.Error, "v0.3.0") || !strings.Contains(st.Error, "not signed by the Claude Burst release key") {
+				t.Fatalf("an unsigned release must be refused by name: %+v", st)
+			}
+			if rr := r.upgrade(); rr.Code != http.StatusBadGateway || len(r.launched) != 0 {
+				t.Fatalf("upgrade to an unsigned release: %d %s", rr.Code, rr.Body.String())
+			}
+			// Install GitHub version goes through the same check.
+			req := localRequest(http.MethodPost, "http://x/api/upgrade", strings.NewReader(`{"mode":"github"}`))
+			req.Host = "127.0.0.1:7788"
+			req.Header.Set("X-Claude-Burst-Admin", "1")
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			r.s.Handler().ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadGateway || len(r.launched) != 0 {
+				t.Fatalf("install of an unsigned release: %d %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// The script the button writes verifies again by itself and merges the
+// commit that printed. Here the release is replaced, between the click and
+// the window running, by an unsigned one: the script changes nothing.
+func TestUpgradeScriptVerifiesAgainBeforeItMerges(t *testing.T) {
+	r := newUpgradeRig(t)
+	r.publish("README.md", "docs\n", "newer")
+	if rr := r.upgrade(); rr.Code != http.StatusOK || len(r.launched) != 1 {
+		t.Fatalf("upgrade: %d %s", rr.Code, rr.Body.String())
+	}
+	commitFile(t, r.work, "scripts/deploy.sh", "#!/bin/bash\necho owned > \"$DEPLOY_MARKER\"\n", "Version 0.9.0")
+	git(t, r.work, "tag", "v0.9.0")
+	git(t, r.work, "push", "-q", "origin", "main", "v0.9.0")
+
+	before := git(t, r.checkout, "rev-parse", "HEAD")
+	marker := filepath.Join(t.TempDir(), "deployed")
+	cmd := exec.Command("/bin/zsh", r.launched[0])
+	cmd.Env = append(os.Environ(), "DEPLOY_MARKER="+marker)
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "could not be verified") {
+		t.Fatalf("the script must stop at the unsigned release: err %v\n%s", err, out)
+	}
+	if after := git(t, r.checkout, "rev-parse", "HEAD"); after != before {
+		t.Fatalf("the checkout moved from %s to %s", before, after)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("deploy.sh ran")
+	}
 }

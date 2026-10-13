@@ -231,6 +231,10 @@ Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already 
 git clone --branch v0.20.29 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
+#    Optional, from v0.20.30 on: check that the release key signed what you cloned. It prints
+#    the tag and commit, or says why not. See SECURITY.md, "Releases are signed".
+scripts/verify-release.sh .
+
 # 2. Build, install and start the gateway. It asks once for transparent mode (recommended:
 #    Remote Control keeps working; needs your password) or base-url (no password, RC off).
 #    CLAUDE_BURST_MODE=transparent|base-url ./install.sh skips the question.
@@ -311,7 +315,7 @@ Every setting is listed in [Configuration](docs/configuration.md). What is plann
 
 Claude Burst is a man-in-the-middle for your Claude traffic by design. This is what that means, and how to take each part away.
 
-**The local CA (transparent mode only).** Burst generates its own certificate authority on your Mac. The CA and its private key live in `~/.config/claude-burst/ca/` (the key is mode 0600 in a 0700 directory) and never leave the machine. The CA is name-constrained to the intercepted host, `api.anthropic.com`, so it cannot vouch for any other site even where it is trusted. The dashboard's transparent install trusts it in two places: Claude Code's `NODE_EXTRA_CA_CERTS` bundle, and system-wide in the **System keychain**, so other apps that reach `api.anthropic.com` (such as Claude Desktop's updater) do not fail their handshakes. Installs made before the name constraint regenerate the CA and re-trust it once. Remove the system-wide trust with `sudo scripts/untrust-ca-systemwide.sh`, the bundle entry with `claude-burst disable`, and the CA itself by deleting `~/.config/claude-burst/ca/`.
+**The local CA (transparent mode only).** Burst generates its own certificate authority on your Mac. The CA and its private key live in `~/.config/claude-burst/ca/` (the key is mode 0600 in a 0700 directory) and never leave the machine. The CA is name-constrained to the intercepted host, `api.anthropic.com`, so it cannot vouch for any other site even where it is trusted. The dashboard's transparent install trusts it in two places: Claude Code's `NODE_EXTRA_CA_CERTS` bundle, and system-wide in the **System keychain**, so other apps that reach `api.anthropic.com` (such as Claude Desktop's updater) do not fail their handshakes. A CA made before the name constraint (2 October 2026) is kept, because every running session trusts it; the gateway warns about it at each start and names the command that replaces it, `claude-burst ca-rotate`. Remove the system-wide trust with `sudo scripts/untrust-ca-systemwide.sh`, the bundle entry with `claude-burst disable`, and the CA itself by deleting `~/.config/claude-burst/ca/`.
 
 **The redirect is machine-wide.** In transparent mode `/etc/hosts` and a pf rule send every process's `api.anthropic.com` traffic to the gateway, so if the gateway is down, nothing on the Mac reaches Anthropic. Two guards watch for that, and the pf guard removes the redirect rather than leave the Mac cut off. `sudo scripts/transparent-root.sh remove` undoes it; `scripts/rollback.sh` undoes everything even when the gateway is dead ([Emergency recovery](ROLLBACK.md#emergency-recovery-without-this-machines-help)).
 

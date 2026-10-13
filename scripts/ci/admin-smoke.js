@@ -20,7 +20,13 @@ const { chromium } = require("playwright");
   const report = { errors, console: [] };
   // Console errors are reported, not failed on: the page logs a fetch it
   // retries. They usually name the cause when a wait below times out.
-  page.on("console", m => { if (m.type() === "error") report.console.push(m.text()); });
+  page.on("console", m => {
+    if (m.type() !== "error") return;
+    report.console.push(m.text());
+    // The page's own policy refusing the page is a failure: a script or a
+    // request added without it would otherwise just silently not happen.
+    if (m.text().includes("Content Security Policy")) errors.push("csp: " + m.text().split("\n")[0]);
+  });
   try {
     await page.goto(url, { waitUntil: "load" });
     // The page polls for ever, so wait for what the canned state should

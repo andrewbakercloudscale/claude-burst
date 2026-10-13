@@ -15,7 +15,36 @@ disclose publicly, and I will agree a date with you.
 ## Supported versions
 
 Only the latest release is supported. Fixes are made on `main` and shipped in the next release;
-older releases are not patched. To update, check out the newest release tag and rerun `./install.sh`.
+older releases are not patched. To update, press **Upgrade** on the dashboard, or check out the
+newest release tag and rerun `./install.sh`.
+
+## Releases are signed
+
+Every release tag from v0.20.30 on is signed with an ed25519 key that is not held by GitHub.
+Its public half is `scripts/release-signers`, with the fingerprint
+`SHA256:o9VHa+3GhZRnNz34XijTOGenHGb9VYIc4gGvpoJpw9U`.
+
+An installed Claude Burst only ever moves to the newest release that key signed. The
+dashboard's Upgrade and Install GitHub version buttons, `burst-reinstall`, `burst-repair` and
+the usage panel's installer (whose releases the same key signs) all go through
+`scripts/verify-release.sh`, using the copy already on the Mac, never the one in the code just
+fetched. Code pushed to `main` that is not a signed release is not installed by any of them,
+and a newer tag that is not signed stops the update and says so. Before this, each of them ran
+whatever GitHub's `main` held, two of them going on to ask for your password.
+
+What this does not cover, plainly:
+
+- **The first install.** Nothing on the Mac can check it yet, so a first `git clone`, and the
+  one-line `curl ... | bash` commands in the README, trust GitHub and TLS. Check a clone
+  yourself before you run its installer: `scripts/verify-release.sh .` prints the release tag
+  and commit and exits 0 only for a signed release. Compare the fingerprint above with one
+  from somewhere other than the clone, such as this page on github.com.
+- **An install from before v0.20.30.** It has no verifier, so its next update is taken on
+  trust as before, and is verified from then on.
+- **A stolen release key.** Whoever holds it can sign a release. It is kept off GitHub for
+  that reason.
+- **The binary is built on your Mac** from the verified source, with the Go toolchain you
+  have. There are no downloaded binaries to sign, and the build is not notarised by Apple.
 
 ## Threat model, in brief
 

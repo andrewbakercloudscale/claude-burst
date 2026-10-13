@@ -16,22 +16,26 @@
 package admin
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/andrewbakercloudscale/claude-burst/internal/codex"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/codex"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/autocompact"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
@@ -225,9 +229,32 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Always fetch the page fresh: a tab kept from before a deploy ran the old
 	// script, and buttons added since did nothing.
 	w.Header().Set("Cache-Control", "no-store")
-	// No inline-script CSP exemption needed: the page's script is inline but
-	// this server is the only origin that can reach it.
+	w.Header().Set("Content-Security-Policy", indexCSP)
 	_, _ = w.Write(indexHTML)
+}
+
+// indexCSP lets the page run its own scripts and nothing else. The page
+// escapes everything the gateway hands it, and this is what stands behind
+// that: a log line or a session name that did reach the page as markup
+// could not run as script, load one, or send anything anywhere but back
+// here. Styles stay inline (the page carries hundreds of style attributes),
+// which a policy cannot hash.
+var indexCSP = "default-src 'none'; script-src 'self'" + inlineScriptHashes(indexHTML) +
+	"; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" +
+	"; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+var inlineScript = regexp.MustCompile(`(?s)<script>(.*?)</script>`)
+
+// inlineScriptHashes is the script-src source for each inline script in
+// page, computed from the embedded file so an edit to the page cannot leave
+// a stale hash behind.
+func inlineScriptHashes(page []byte) string {
+	var b strings.Builder
+	for _, m := range inlineScript.FindAllSubmatch(page, -1) {
+		sum := sha256.Sum256(m[1])
+		b.WriteString(" 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'")
+	}
+	return b.String()
 }
 
 func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {

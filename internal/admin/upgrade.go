@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -15,12 +14,16 @@ import (
 	"time"
 )
 
-// Upgrade: the header's button that installs the latest version from
+// Upgrade: the header's button that installs the newest release from
 // GitHub. It checks the version first: the running binary's own commit
-// (Go stamps it into every build made in the repo) against origin/main
-// after a fetch, and the version number origin/main declares. Only when
-// the running build is behind, and the checkout can fast-forward cleanly,
-// does it offer the upgrade.
+// (Go stamps it into every build made in the repo) against the newest
+// release after a fetch. Only when the running build is behind, and the
+// checkout can fast-forward cleanly, does it offer the upgrade.
+//
+// A release is a version tag signed by the release key, and nothing else
+// is offered or installed (scripts/verify-release.sh says why). Until
+// 13 Oct 2026 this installed whatever GitHub's main was, so a push to main
+// from a stolen login reached every Mac at its next Upgrade click.
 //
 // The upgrade itself runs in a Terminal window, like Install: deploy.sh
 // restarts this very process, so it cannot run as a child of it.
@@ -53,6 +56,29 @@ var runGit = func(ctx context.Context, dir string, args ...string) (string, erro
 	return strings.TrimSpace(string(out)), nil
 }
 
+// verifyRelease returns the tag and commit of the newest release in the
+// checkout at dir, verified by the checkout's own scripts/verify-release.sh:
+// the copy already here, which the fetch does not touch. A variable for
+// tests.
+var verifyRelease = func(ctx context.Context, dir string) (tag, commit string, err error) {
+	cmd := exec.CommandContext(ctx, "/bin/bash", filepath.Join(dir, "scripts", "verify-release.sh"), dir)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		why := strings.TrimSpace(strings.ReplaceAll(stderr.String(), "verify-release: ", ""))
+		if why == "" {
+			why = err.Error()
+		}
+		return "", "", fmt.Errorf("%s", strings.ReplaceAll(why, "\n", " "))
+	}
+	tag, commit, ok := strings.Cut(strings.TrimSpace(string(out)), " ")
+	if !ok || tag == "" || commit == "" {
+		return "", "", fmt.Errorf("scripts/verify-release.sh printed %q, not a tag and a commit", strings.TrimSpace(string(out)))
+	}
+	return tag, commit, nil
+}
+
 const upgradeCheckEvery = 10 * time.Minute
 
 // localGitWait bounds the local git command that runs before the fetch. A
@@ -66,8 +92,8 @@ type upgradeStatus struct {
 	RunningDirty   bool      `json:"running_dirty,omitempty"` // built from uncommitted changes
 	LatestVersion  string    `json:"latest_version,omitempty"`
 	LatestCommit   string    `json:"latest_commit,omitempty"`
-	Behind         int       `json:"behind"`                // commits on GitHub the running build lacks
-	Ahead          int       `json:"ahead"`                 // commits in the running build GitHub lacks (not pushed yet)
+	Behind         int       `json:"behind"`                // commits in the newest release the running build lacks
+	Ahead          int       `json:"ahead"`                 // commits in the running build the newest release lacks (not released yet)
 	NewCommits     []string  `json:"new_commits,omitempty"` // their subjects, newest first
 	UpToDate       bool      `json:"up_to_date"`
 	CanUpgrade     bool      `json:"can_upgrade"`
@@ -79,8 +105,6 @@ var (
 	upgradeMu   sync.Mutex
 	upgradeLast *upgradeStatus
 )
-
-var versionConst = regexp.MustCompile(`(?m)^const version = "([^"]+)"`)
 
 func short(c string) string {
 	if len(c) > 7 {
@@ -141,19 +165,15 @@ func (s *Server) computeUpgrade(ctx context.Context) upgradeStatus {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if _, err := runGit(ctx, dir, "fetch", "--quiet", "origin", "main"); err != nil {
+	if _, err := runGit(ctx, dir, "fetch", "--quiet", "--tags", "origin", "main"); err != nil {
 		return fail("could not reach GitHub: %v", err)
 	}
-	latest, err := runGit(ctx, dir, "rev-parse", "origin/main")
+	tag, latest, err := verifyRelease(ctx, dir)
 	if err != nil {
-		return fail("%v", err)
+		return fail("nothing on GitHub can be installed: %v", err)
 	}
 	st.LatestCommit = short(latest)
-	if src, err := runGit(ctx, dir, "show", "origin/main:cmd/claude-burst/main.go"); err == nil {
-		if m := versionConst.FindStringSubmatch(src); m != nil {
-			st.LatestVersion = m[1]
-		}
-	}
+	st.LatestVersion = strings.TrimPrefix(tag, "v")
 
 	// Compare what is RUNNING, not what is checked out: a checkout pulled
 	// but never deployed is still an old gateway.
@@ -163,16 +183,16 @@ func (s *Server) computeUpgrade(ctx context.Context) upgradeStatus {
 			return fail("%v", err)
 		}
 	}
-	if n, err := runGit(ctx, dir, "rev-list", "--count", base+"..origin/main"); err == nil {
+	if n, err := runGit(ctx, dir, "rev-list", "--count", base+".."+latest); err == nil {
 		st.Behind, _ = strconv.Atoi(n)
 	} else {
 		return fail("the running build's commit %s is not in this checkout: %v", short(base), err)
 	}
-	if n, err := runGit(ctx, dir, "rev-list", "--count", "origin/main.."+base); err == nil {
+	if n, err := runGit(ctx, dir, "rev-list", "--count", latest+".."+base); err == nil {
 		st.Ahead, _ = strconv.Atoi(n)
 	}
 	if st.Behind > 0 {
-		if log, err := runGit(ctx, dir, "log", "--format=%s", "-n", "10", base+"..origin/main"); err == nil && log != "" {
+		if log, err := runGit(ctx, dir, "log", "--format=%s", "-n", "10", base+".."+latest); err == nil && log != "" {
 			st.NewCommits = strings.Split(log, "\n")
 		}
 	}
@@ -182,7 +202,7 @@ func (s *Server) computeUpgrade(ctx context.Context) upgradeStatus {
 	// tree, so uncommitted changes would ship alongside the upgrade.
 	switch {
 	case st.UpToDate && st.Ahead > 0:
-		st.Reason = "running a newer build than GitHub has"
+		st.Reason = "running a newer build than the newest release"
 	case st.UpToDate:
 		st.Reason = "already running the latest version"
 	default:
@@ -190,8 +210,8 @@ func (s *Server) computeUpgrade(ctx context.Context) upgradeStatus {
 			st.Reason = "the checkout is not on main (it is on " + b + ")"
 		} else if p, err := runGit(ctx, dir, "status", "--porcelain"); err != nil || p != "" {
 			st.Reason = "the checkout has uncommitted changes, which the deploy would ship too; commit or stash them first"
-		} else if a, err := runGit(ctx, dir, "rev-list", "--count", "origin/main..HEAD"); err != nil || a != "0" {
-			st.Reason = "the checkout has local commits GitHub does not, so it cannot fast-forward"
+		} else if a, err := runGit(ctx, dir, "rev-list", "--count", latest+"..HEAD"); err != nil || a != "0" {
+			st.Reason = "the checkout has commits that are not in release " + tag + ", which the deploy would ship too"
 		} else {
 			st.CanUpgrade = true
 		}
@@ -206,10 +226,10 @@ func (s *Server) handleUpgradeStatus(w http.ResponseWriter, r *http.Request) {
 // handleUpgrade checks the version again, fresh, then starts the upgrade
 // in a Terminal window only if there is one to install.
 //
-// With {"mode":"github"} it instead installs exactly what GitHub's main is,
+// With {"mode":"github"} it instead installs exactly the newest release,
 // whatever is running: a reinstall, or a rollback from a local build (one
-// with commits not pushed yet). That builds a temporary worktree of
-// origin/main, so the checkout, its branch, its local commits and any
+// with commits not released yet). That builds a temporary worktree of the
+// release, so the checkout, its branch, its local commits and any
 // uncommitted changes are left exactly as they are.
 func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -230,7 +250,7 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if st.UpToDate {
-		http.Error(w, fmt.Sprintf("already up to date: running %s (%s), the latest on GitHub", st.RunningVersion, st.RunningCommit), http.StatusConflict)
+		http.Error(w, fmt.Sprintf("already up to date: running %s (%s), the newest release on GitHub", st.RunningVersion, st.RunningCommit), http.StatusConflict)
 		return
 	}
 	if !st.CanUpgrade {
@@ -243,8 +263,8 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	detail := fmt.Sprintf("Upgrading from %s (%s) to %s (%s), %d new commit(s). A Terminal window is running it: "+
-		"it fast-forwards the checkout and runs scripts/deploy.sh, which tests, builds and restarts the gateway, "+
+	detail := fmt.Sprintf("Upgrading from %s (%s) to release %s (%s), %d new commit(s). A Terminal window is running it: "+
+		"it checks the release's signature again, fast-forwards the checkout to it and runs scripts/deploy.sh, which tests, builds and restarts the gateway, "+
 		"rolling back by itself if the new one is not healthy.",
 		st.RunningVersion, st.RunningCommit, orDash(st.LatestVersion), st.LatestCommit, st.Behind)
 	if err := launchTerminal(path); err != nil {
@@ -263,12 +283,12 @@ func (s *Server) installGitHubVersion(w http.ResponseWriter, st upgradeStatus) {
 	what := "Reinstalling"
 	switch {
 	case st.Ahead > 0:
-		what = fmt.Sprintf("Rolling back %d commit(s) not pushed yet:", st.Ahead)
+		what = fmt.Sprintf("Rolling back %d commit(s) not released yet:", st.Ahead)
 	case st.Behind > 0:
 		what = "Installing"
 	}
-	detail := fmt.Sprintf("%s GitHub's version %s (%s) in place of %s (%s). A Terminal window is running it from a temporary copy "+
-		"of GitHub's main, so your checkout is not touched; scripts/deploy.sh tests, builds and restarts the gateway, "+
+	detail := fmt.Sprintf("%s release %s (%s) from GitHub in place of %s (%s). A Terminal window is running it from a temporary copy "+
+		"of that release, so your checkout is not touched; scripts/deploy.sh tests, builds and restarts the gateway, "+
 		"rolling back by itself if the new one is not healthy.",
 		what, orDash(st.LatestVersion), st.LatestCommit, st.RunningVersion, st.RunningCommit)
 	if err := launchTerminal(path); err != nil {
@@ -277,7 +297,9 @@ func (s *Server) installGitHubVersion(w http.ResponseWriter, st upgradeStatus) {
 	writeJSON(w, map[string]any{"detail": detail, "script": path, "status": st})
 }
 
-// githubInstallScript deploys origin/main from a throwaway worktree.
+// githubInstallScript deploys the newest release from a throwaway worktree.
+// It verifies the release itself, with the checkout's own verifier, and
+// builds the commit that printed, so what the dashboard saw is not trusted.
 // deploy.sh builds the tree it lives in, so running the worktree's copy
 // builds GitHub's code; it installs only the binary, so nothing refers to
 // the worktree once it is removed.
@@ -310,11 +332,13 @@ finish() {
   exit "$1"
 }
 
-git fetch origin main || { echo "could not fetch from GitHub, nothing changed" >&2; finish 1; }
-echo "installing: $(git log -1 --format='%h %s' origin/main)"
+git fetch --tags origin main || { echo "could not fetch from GitHub, nothing changed" >&2; finish 1; }
+rel="$(/bin/bash scripts/verify-release.sh "$PWD")" || { echo "the newest release could not be verified (see above), nothing changed" >&2; finish 1; }
+tag="${rel%% *}"; commit="${rel#* }"
+echo "installing release $tag, signed by the release key: $(git log -1 --format='%h %s' "$commit")"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/claude-burst-github.XXXXXX")" || finish 1
 rmdir "$tmp"
-git worktree add --quiet --detach "$tmp" origin/main || { echo "could not check out GitHub's main, nothing changed" >&2; finish 1; }
+git worktree add --quiet --detach "$tmp" "$commit" || { echo "could not check out release $tag, nothing changed" >&2; finish 1; }
 echo "(built from a temporary copy at $tmp; your checkout is not touched)"
 echo
 # The usage panel is looked for beside the real checkout, not beside $tmp.
@@ -324,7 +348,7 @@ git worktree remove --force "$tmp" >/dev/null 2>&1 || rm -rf "$tmp"
 git worktree prune >/dev/null 2>&1
 echo
 if (( rc == 0 )); then
-  echo "Done: now running GitHub's $(git rev-parse --short origin/main). Refresh the dashboard."
+  echo "Done: now running release $tag ($(git rev-parse --short "$commit")). Refresh the dashboard."
 else
   echo "deploy.sh failed (exit $rc); see above. The gateway is on whatever deploy.sh left running." >&2
 fi
@@ -372,13 +396,18 @@ finish() {
 
 [[ "$(git rev-parse --abbrev-ref HEAD)" == main ]] || { echo "not on main, nothing changed" >&2; finish 1; }
 [[ -z "$(git status --porcelain)" ]] || { echo "uncommitted changes in $(pwd), nothing changed" >&2; finish 1; }
-git fetch origin main || { echo "could not fetch from GitHub, nothing changed" >&2; finish 1; }
+git fetch --tags origin main || { echo "could not fetch from GitHub, nothing changed" >&2; finish 1; }
+# Verified here, by this checkout's own copy and before anything is merged,
+# and the commit it prints is what is merged: a tag can be moved, a commit
+# cannot.
+rel="$(/bin/bash scripts/verify-release.sh "$PWD")" || { echo "the newest release could not be verified (see above), nothing changed" >&2; finish 1; }
+tag="${rel%% *}"; commit="${rel#* }"
 
-echo "new on GitHub:"
-git log --oneline HEAD..origin/main
+echo "new in release $tag, signed by the release key:"
+git log --oneline HEAD.."$commit"
 echo
 
-git merge --ff-only origin/main || { echo "cannot fast-forward, nothing changed" >&2; finish 1; }
+git merge --ff-only "$commit" || { echo "cannot fast-forward to release $tag, nothing changed" >&2; finish 1; }
 echo
 bash scripts/deploy.sh
 rc=$?

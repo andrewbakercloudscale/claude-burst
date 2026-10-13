@@ -73,7 +73,15 @@ func serve(args []string) {
 	if *listen != "" {
 		cfg.Listen = *listen
 	}
-	if !loopbackListen(cfg.Listen) {
+	// A misspelt key is ignored and its default applies, which until now
+	// nothing said.
+	if keys, _ := config.UnknownKeys(); len(keys) > 0 {
+		problems = append(problems, router.StartupProblem{
+			Title:  "config.json has settings Burst does not read",
+			Detail: config.UnknownKeysMessage(keys),
+		})
+	}
+	if !config.LoopbackListen(cfg.Listen) {
 		// Warned about, not refused. Listening on every interface is a
 		// setup the request guard has rules for (router/guard.go), so a
 		// gateway already run that way would stop carrying its sessions the
@@ -146,6 +154,10 @@ func serve(args []string) {
 		}
 		scheme = "https"
 		checkCABundle(cfg.Intercept.CABundle, caPEM, logger, errOut)
+		if w := tlsca.Unconstrained(cfg.Intercept.CADir, cfg.Intercept.Host); w != nil {
+			logger.Printf("WARNING: %s. %s", w.Title, w.Detail)
+			problems = append(problems, router.StartupProblem{Title: w.Title, Detail: w.Detail})
+		}
 	}
 
 	// net.Listen is split out from Serve (below) rather than calling the
@@ -342,19 +354,6 @@ func startableConfig(cfg config.Config, loadErr error) (config.Config, []router.
 	return cfg, found, len(found) > 0
 }
 
-// loopbackListen reports whether addr can only be reached from this Mac.
-func loopbackListen(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
 // checkCABundle says so, plainly, when the local CA is not in the trust
 // bundle Claude Code reads, and puts a renewed CA into a bundle that holds
 // the old one.
@@ -491,7 +490,6 @@ type stderrLog struct {
 	w         io.Writer
 	path      string // launchd.err.log when w is that file, else ""
 	max, keep int64
-	logger    *log.Logger
 
 	mu      sync.Mutex
 	written int64

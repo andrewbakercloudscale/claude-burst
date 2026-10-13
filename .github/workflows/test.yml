@@ -28,6 +28,12 @@ jobs:
           npx playwright install chromium
           echo "CLAUDE_BURST_PLAYWRIGHT=$RUNNER_TEMP/pw" >> "$GITHUB_ENV"
       - run: go vet ./...
+      # Both fail the build. Neither is a dependency of the repo: go run
+      # fetches each, the newest because an older staticcheck cannot read a newer Go.
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       - name: go test (race, coverage)
         run: go test ./... -race -coverprofile=coverage.out
       - name: coverage summary

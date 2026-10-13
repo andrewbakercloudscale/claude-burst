@@ -214,7 +214,13 @@ uninstall() {
     root_step install-pf-heal.sh uninstall "the pf self-heal LaunchDaemon (ninja.andrewbaker.claude-burst-pfheal)"
   fi
   if transparent_detected; then
-    root_step transparent-root.sh remove "transparent mode's api.anthropic.com redirect in /etc/hosts, and its pf rule and anchor"
+    # --purge also deletes the copies of /etc/hosts and pf.conf kept from
+    # before the install, which a plain remove keeps and names.
+    if (( purge )); then
+      root_step transparent-root.sh purge "transparent mode's api.anthropic.com redirect in /etc/hosts, its pf rule and anchor, and the copies of /etc/hosts and pf.conf from before the install"
+    else
+      root_step transparent-root.sh remove "transparent mode's api.anthropic.com redirect in /etc/hosts, and its pf rule and anchor"
+    fi
   fi
   if hosts_block admin-host; then
     root_step transparent-root.sh admin-host-remove "the admin hostname entry in /etc/hosts"
@@ -342,6 +348,14 @@ $(grep -n claude-burst "$SETTINGS" | sed 's/^/      /')
   else
     echo "Kept $CONFIG_DIR (config, state, metrics, backups) for a reinstall."
     echo "To remove it too: $ROOT/install.sh uninstall --purge"
+  fi
+  # Named, not removed: other tools in ~/.local/bin (Claude Code's own
+  # launcher among them) may be found through the same line.
+  if grep -Fq '# claude-burst' "$HOME/.zprofile" 2>/dev/null; then
+    echo "Kept the PATH line marked '# claude-burst' in ~/.zprofile: other tools in ~/.local/bin may rely on it. Delete that line by hand if nothing does."
+  fi
+  if security find-certificate -c "Claude Burst Local Signing" >/dev/null 2>&1; then
+    echo "Kept the \"Claude Burst Local Signing\" certificate. To delete it: Keychain Access, login, My Certificates."
   fi
   echo "Kept the macOS Keychain secret. To delete whichever secondary key you stored:"
   echo "    security delete-generic-password -s claude-burst-together     # Together AI"
@@ -656,11 +670,12 @@ offer_panel() {
   [[ -f "$dir/claude-panel-setup.sh" ]] || dir="${ROOT:h}/claudecode-cost-usage-panel"
   if [[ ! -f "$dir/claude-panel-setup.sh" ]]; then
     dir="$HOME/.local/share/claude-burst/claudecode-cost-usage-panel"
-    if [[ -d "$dir/.git" ]]; then
-      git -C "$dir" pull --ff-only --quiet || echo "WARNING: could not update $dir; installing the copy already there"
-    else
-      mkdir -p "${dir:h}"
-      git clone --quiet "$PANEL_REPO" "$dir" || { echo "WARNING: could not fetch the usage panel; install it later from $PANEL_REPO"; return 0; }
+    # Only the panel's newest signed release (scripts/fetch-panel.sh). A copy
+    # already here that cannot be brought up to date is installed as it is.
+    local had=0; [[ -d "$dir/.git" ]] && had=1
+    if ! bash "$ROOT/scripts/fetch-panel.sh" "$dir"; then
+      (( had )) || { echo "WARNING: could not fetch a verified copy of the usage panel; install it later from $PANEL_REPO"; return 0; }
+      echo "WARNING: could not update $dir; installing the copy already there"
     fi
   fi
   echo "Installing the usage panel from $dir"

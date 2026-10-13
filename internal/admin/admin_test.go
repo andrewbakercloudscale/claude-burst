@@ -1058,7 +1058,7 @@ func TestDashboardRefusesToBeFramed(t *testing.T) {
 	if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Errorf("X-Frame-Options = %q, want DENY", got)
 	}
-	if got := rr.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+	if got := rr.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
 		t.Errorf("Content-Security-Policy = %q", got)
 	}
 }

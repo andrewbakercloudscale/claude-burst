@@ -9,6 +9,10 @@
 # Burst and installs it again, and the path of this checkout for it to use.
 # The mod's /claude-burst-revert and /claude-burst-reinstall run the two.
 #
+# verify-release.sh and release-signers are copied too: the copy outside the
+# checkout is what reinstall and repair check a fetched release against, so
+# what they trust is what was installed, not what was just downloaded.
+#
 # Called by install.sh and by both endings of deploy.sh, so the copy never
 # lags the rollback.sh it came from. Never fails its caller.
 ROOT="${0:A:h:h}"
@@ -16,7 +20,7 @@ INSTALL_DIR="${CLAUDE_BURST_INSTALL_DIR:-$HOME/.local/bin}"
 OFF_DIR="$HOME/.local/share/claude-burst"
 
 mkdir -p "$OFF_DIR" "$INSTALL_DIR" &&
-  cp -f "$ROOT/scripts/rollback.sh" "$ROOT/scripts/transparent-root.sh" "$ROOT/scripts/untrust-ca-systemwide.sh" "$ROOT/scripts/codex-unroute.sh" "$ROOT/scripts/reinstall.sh" "$ROOT/scripts/audit-add.sh" "$OFF_DIR/" &&
+  cp -f "$ROOT/scripts/rollback.sh" "$ROOT/scripts/transparent-root.sh" "$ROOT/scripts/untrust-ca-systemwide.sh" "$ROOT/scripts/codex-unroute.sh" "$ROOT/scripts/reinstall.sh" "$ROOT/scripts/audit-add.sh" "$ROOT/scripts/verify-release.sh" "$ROOT/scripts/release-signers" "$OFF_DIR/" &&
   printf '%s\n' "${CLAUDE_BURST_REPO:-$ROOT}" > "$OFF_DIR/repo" &&
   printf '%s\n' '#!/bin/zsh' \
     '# Fetch the newest Claude Burst and install it again. Installed by claude-burst.' \

@@ -98,25 +98,6 @@ func TestAConfigThatCannotBeUsedStillStopsTheGateway(t *testing.T) {
 	}
 }
 
-func TestLoopbackListen(t *testing.T) {
-	for addr, want := range map[string]bool{
-		"127.0.0.1:7777":   true,
-		"127.0.0.2:443":    true,
-		"localhost:7777":   true,
-		"[::1]:7777":       true,
-		":7777":            false,
-		"0.0.0.0:7777":     false,
-		"[::]:7777":        false,
-		"192.168.1.5:7777": false,
-		"example.com:7777": false,
-		"127.0.0.1":        false, // no port: not an address net.Listen takes
-	} {
-		if got := loopbackListen(addr); got != want {
-			t.Errorf("loopbackListen(%q) = %v, want %v", addr, got, want)
-		}
-	}
-}
-
 // A panic in a background loop is logged with its stack and the loop is run
 // again after the pause; one that returns is finished.
 func TestBackgroundRestartsALoopThatPanicked(t *testing.T) {
@@ -130,8 +111,8 @@ func TestBackgroundRestartsALoopThatPanicked(t *testing.T) {
 	background(log.New(&buf, "", 0), "network watcher", time.Minute, func() {
 		runs++
 		if runs < 3 {
-			var m map[string]int
-			m["boom"] = runs // a real runtime panic, not one made with panic()
+			var none []int
+			_ = none[runs] // a real runtime panic, not one made with panic()
 		}
 	})
 	if runs != 3 {
@@ -141,7 +122,7 @@ func TestBackgroundRestartsALoopThatPanicked(t *testing.T) {
 		t.Fatalf("paused %v, want a minute after each panic", paused)
 	}
 	logged := buf.String()
-	if strings.Count(logged, "network watcher PANIC") != 2 || !strings.Contains(logged, "assignment to entry in nil map") {
+	if strings.Count(logged, "network watcher PANIC") != 2 || !strings.Contains(logged, "index out of range") {
 		t.Fatalf("each panic must be logged with what it was:\n%s", logged)
 	}
 	if !strings.Contains(logged, "goroutine ") || !strings.Contains(logged, "serve_test.go") {

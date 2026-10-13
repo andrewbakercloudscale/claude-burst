@@ -1,19 +1,12 @@
 package router
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 )
-
-func httptestReq(path, body string) *http.Request {
-	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	return r.WithContext(context.Background())
-}
 
 // The admin page and metrics must show the model that actually served a
 // request, not the one Claude Code asked for. This was a real defect: GLM

@@ -16,6 +16,7 @@ type panelRig struct {
 	t                   *testing.T
 	home, burst, beside string
 	origin              string
+	key                 releaseKey
 }
 
 func newPanelRig(t *testing.T) *panelRig {
@@ -32,6 +33,8 @@ func newPanelRig(t *testing.T) *panelRig {
 	script, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "update-panel.sh"))
 	must(t, err)
 	must(t, os.WriteFile(filepath.Join(r.burst, "scripts", "update-panel.sh"), script, 0o755))
+	r.key = newReleaseKey(t)
+	r.key.installVerifier(t, filepath.Join(r.burst, "scripts"))
 
 	origin := filepath.Join(base, "origin")
 	r.origin = origin
@@ -52,6 +55,15 @@ func (r *panelRig) git(dir string, args ...string) {
 }
 
 func (r *panelRig) release(dir, version string) {
+	r.t.Helper()
+	must(r.t, os.WriteFile(filepath.Join(dir, "claude-panel-setup.sh"), []byte("#!/bin/bash\necho installed "+version+"\n"), 0o755))
+	r.git(dir, "add", "claude-panel-setup.sh")
+	r.git(dir, "commit", "-q", "-m", version)
+	r.key.sign(r.t, dir, version)
+}
+
+// push puts a new installer on GitHub's main without releasing it.
+func (r *panelRig) push(dir, version string) {
 	r.t.Helper()
 	must(r.t, os.WriteFile(filepath.Join(dir, "claude-panel-setup.sh"), []byte("#!/bin/bash\necho installed "+version+"\n"), 0o755))
 	r.git(dir, "add", "claude-panel-setup.sh")
@@ -103,6 +115,7 @@ func TestUpdatePanelFindsThePanelFromATemporaryCopy(t *testing.T) {
 	script, err := os.ReadFile(r.script())
 	must(t, err)
 	must(t, os.WriteFile(filepath.Join(tmp, "update-panel.sh"), script, 0o755))
+	r.key.installVerifier(t, tmp)
 	out := r.run(filepath.Join(tmp, "update-panel.sh"), "CLAUDE_BURST_REPO="+r.burst)
 	if !strings.Contains(out, "updating from "+r.beside) || !strings.Contains(out, "installed v2") {
 		t.Fatalf("the panel beside the real checkout is the one updated:\n%s", out)
@@ -125,4 +138,52 @@ func TestUpdatePanelFetchesACopyWhenNoneIsFound(t *testing.T) {
 	if out := r.run(r.script()); !strings.Contains(out, "installed v3") {
 		t.Fatalf("the kept copy is pulled next time:\n%s", out)
 	}
+}
+
+// Only a signed release of the panel is fetched in. An installer pushed to
+// its main, or tagged by anyone but the release key, is not run: until
+// 13 Oct 2026 every update ran whatever main was.
+func TestUpdatePanelRunsOnlyASignedRelease(t *testing.T) {
+	t.Run("pushed but not released, checkout beside the repo", func(t *testing.T) {
+		r := newPanelRig(t)
+		r.push(r.origin, "owned")
+		if out := r.run(r.script()); strings.Contains(out, "installed owned") || !strings.Contains(out, "installed v2") {
+			t.Fatalf("want the signed v2, never the unreleased push:\n%s", out)
+		}
+	})
+	t.Run("newest tag unsigned, checkout beside the repo", func(t *testing.T) {
+		r := newPanelRig(t)
+		r.push(r.origin, "owned")
+		r.git(r.origin, "tag", "v3")
+		out := r.run(r.script())
+		if strings.Contains(out, "installed owned") || !strings.Contains(out, "installed v1") || !strings.Contains(out, "could not be verified") {
+			t.Fatalf("want the copy already there (v1) and the reason:\n%s", out)
+		}
+	})
+	t.Run("newest tag unsigned, no copy here", func(t *testing.T) {
+		r := newPanelRig(t)
+		must(t, os.RemoveAll(r.beside))
+		r.push(r.origin, "owned")
+		r.git(r.origin, "tag", "v3")
+		out := r.run(r.script())
+		if strings.Contains(out, "installed owned") || strings.Contains(out, "installed v") || !strings.Contains(out, "could not be verified") {
+			t.Fatalf("nothing may be installed from an unverified fetch:\n%s", out)
+		}
+		if _, err := os.Stat(filepath.Join(r.home, ".local", "share", "claude-burst", "claudecode-cost-usage-panel")); err == nil {
+			t.Fatal("the unverified copy was kept, where the next run would take it for a verified one")
+		}
+	})
+	t.Run("newest tag unsigned, kept copy", func(t *testing.T) {
+		r := newPanelRig(t)
+		must(t, os.RemoveAll(r.beside))
+		if out := r.run(r.script()); !strings.Contains(out, "installed v2") {
+			t.Fatalf("setup: %s", out)
+		}
+		r.push(r.origin, "owned")
+		r.git(r.origin, "tag", "v3")
+		out := r.run(r.script())
+		if strings.Contains(out, "installed owned") || !strings.Contains(out, "installed v2") || !strings.Contains(out, "could not be verified") {
+			t.Fatalf("want the kept copy (v2) reinstalled and the reason:\n%s", out)
+		}
+	})
 }

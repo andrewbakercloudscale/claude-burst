@@ -8,7 +8,7 @@ Everything lives in `~/.config/claude-burst/config.json`. You rarely need to edi
 
 | Key | Default | What it does | Set by |
 |---|---|---|---|
-| `listen` | `127.0.0.1:7777` | The gateway's address. Keep it on loopback. | `configure --listen`, then reinstall |
+| `listen` | `127.0.0.1:7777` | The gateway's address. Keep it on loopback: `configure` refuses any other address unless `--allow-non-loopback-listen` is given, and the gateway warns at every start while it is set. | `configure --listen`, then reinstall |
 | `admin_listen` | `127.0.0.1:7788` | The dashboard's address; `off` (empty) disables it. A separate listener from `listen`, so admin routes are never reachable on the intercepted hostname. | `configure --admin-listen` |
 | `admin_hostname` | empty | An optional friendly name for the dashboard, see [A friendlier admin URL](dashboard.md#a-friendlier-admin-url). | `configure --admin-hostname` |
 | `reset_grace_seconds` | `10` | Extra seconds after Anthropic's reset time before trying the subscription again. | Dashboard, Advanced |

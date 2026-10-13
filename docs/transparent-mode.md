@@ -68,7 +68,9 @@ the intercepted hostname over DNS-over-HTTPS instead (`intercept.resolver_doh`),
 consults `/etc/hosts`, and dials the returned address while leaving TLS `ServerName` as the
 real hostname so certificate verification is unchanged. Only the intercepted hostname is
 treated this way. A DoH answer pointing at loopback is rejected outright, that is the
-loop's exact shape. Set `intercept.upstream_addr` to pin an IP where DoH is blocked.
+loop's exact shape. When DoH and the public resolvers on port 53 are all blocked, it asks the DNS servers
+this network handed out, directly, so `/etc/hosts` is still not consulted, and refuses
+an answer that is this Mac. Set `intercept.upstream_addr` to pin an IP where even that fails.
 
 ## Checking whether it is working
 
@@ -153,7 +155,11 @@ tail -f /var/log/claude-burst-pf.log     # world-readable, no sudo needed
 
 Each cycle it does nothing at all unless the hosts block is present *and* the rdr rule
 is gone. Then it logs the outage, runs `transparent-root.sh reload-anchor`, and
-notifies you. If four consecutive repairs fail it **removes the redirect** and says so:
+notifies you. The reload loads Burst's own anchor and leaves the rest of the ruleset
+alone when the running ruleset still refers to the anchor; only when that reference is
+gone, or the anchor alone does not bring the path back, is `/etc/pf.conf` reloaded,
+which drops any rule other software added to pf while running. The log says which of
+the two it did, and why. If four consecutive repairs fail it **removes the redirect** and says so:
 with it gone, everything reaches Anthropic directly and burst is merely out of the path,
 which beats a Mac that cannot reach Anthropic at all.
 

@@ -4,11 +4,16 @@
 # deploy.sh, so updating Burst updates the panel too; until 2026-10-02 only a
 # missing panel was ever installed and an existing one never changed.
 #
-# - A checkout beside this repo is pulled (fast-forward only) when it is on
-#   main with nothing uncommitted: that is a plain clone. Anything else is
-#   someone's work in progress, and its installer runs on it as it is.
-# - Otherwise the clone install.sh keeps under ~/.local/share is pulled
-#   (fast-forward only) first, and fetched when there is none.
+# - A checkout beside this repo is fast-forwarded to the panel's newest
+#   release when it is on main with nothing uncommitted: that is a plain
+#   clone. Anything else is someone's work in progress, and its installer
+#   runs on it as it is.
+# - Otherwise the clone install.sh keeps under ~/.local/share is moved to
+#   the newest release first, and fetched when there is none.
+#
+# Only a release signed by the release key is fetched in (verify-release.sh,
+# fetch-panel.sh). When the newest one does not verify, the copy already
+# here is reinstalled and the reason printed; with no copy here, nothing is.
 #
 # CLAUDE_BURST_REPO names the real checkout when this script runs from a
 # temporary copy of it (the dashboard's "Install GitHub version"), where
@@ -38,23 +43,25 @@ if [[ -f "$dir/claude-panel-setup.sh" ]]; then
     echo "usage panel: $dir is not on main, installing it as it is"
   elif [[ -n "$(git -C "$dir" status --porcelain)" ]]; then
     echo "usage panel: $dir has uncommitted changes, installing it as it is"
-  else
-    git -C "$dir" pull --ff-only --quiet || echo "WARNING: could not update $dir; reinstalling the copy already there" >&2
+  elif ! git -C "$dir" fetch --quiet --tags origin main; then
+    echo "WARNING: could not update $dir; reinstalling the copy already there" >&2
+  elif ! rel="$(bash "$ROOT/scripts/verify-release.sh" "$dir")"; then
+    echo "WARNING: the usage panel's newest release could not be verified (see above); reinstalling the copy already there" >&2
+  elif ! git -C "$dir" merge --ff-only --quiet "${rel#* }"; then
+    echo "WARNING: $dir cannot fast-forward to release ${rel%% *}; reinstalling the copy already there" >&2
   fi
 else
   dir="$HOME/.local/share/claude-burst/claudecode-cost-usage-panel"
-  if [[ ! -d "$dir/.git" ]]; then
-    # Installed some other way (its own repo, since moved or deleted): fetch
-    # a copy, or this panel would never be updated again.
-    echo "usage panel: no copy of its repo was found, fetching one to $dir"
-    rm -rf "$dir"
-    mkdir -p "${dir:h}"
-    if ! git clone --quiet "$PANEL_REPO" "$dir"; then
-      echo "WARNING: could not fetch the usage panel from $PANEL_REPO, so it was not updated" >&2
+  had=0; [[ -d "$dir/.git" ]] && had=1
+  # No copy means it was installed some other way (its own repo, since moved
+  # or deleted): one is fetched, or this panel would never be updated again.
+  (( had )) || echo "usage panel: no copy of its repo was found, fetching one to $dir"
+  if ! bash "$ROOT/scripts/fetch-panel.sh" "$dir"; then
+    if (( ! had )); then
+      echo "WARNING: could not fetch a verified copy of the usage panel, so it was not updated" >&2
       exit 0
     fi
-  else
-    git -C "$dir" pull --ff-only --quiet || echo "WARNING: could not update $dir; reinstalling the copy already there" >&2
+    echo "WARNING: could not update $dir; reinstalling the copy already there" >&2
   fi
 fi
 
