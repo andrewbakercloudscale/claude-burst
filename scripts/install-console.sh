@@ -57,10 +57,13 @@ PLIST
   done
   # Loaded is not answering: a console that exits at once (a port in use, a
   # binary that will not start) used to be reported as installed, and it is
-  # the page everything else points to when the gateway is down.
+  # the page everything else points to when the gateway is down. The page
+  # itself is asked, not /api/console: that runs every check, the dashboard's
+  # among them, and took 4 seconds on a busy Mac, so a 2 second probe of it
+  # reported a console that was up as not answering.
   local i
   for i in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -s -o /dev/null -m 2 "http://127.0.0.1:7789/api/console"; then
+    if curl -s -o /dev/null -m 2 "http://127.0.0.1:7789/"; then
       echo "Support console: http://127.0.0.1:7789/"
       return 0
     fi
