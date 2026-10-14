@@ -845,7 +845,7 @@
      renderNav() from the same state the panels are drawn from, so a guard
      that has stopped reporting is visible from the bottom of the requests
      table rather than only from the panel you would have to scroll back to. -->
-<aside class="side">
+<aside class="side" role="navigation" aria-label="Dashboard sections">
   <div class="brand">
     <span class="mark">&#9889;</span>
     <span><span class="name">Claude Burst</span><span class="ver" id="ver"></span></span>
@@ -1471,7 +1471,7 @@
         <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>30 days</th><th></th></tr></thead>
         <tbody id="prBody"></tbody>
       </table></div>
-      <div class="row" style="margin-top:8px"><input id="prNew" placeholder="add a model id" style="min-width:240px"><button id="prAdd">+ Add</button><button class="primary" id="prSave">&#x2713; Save prices</button><button id="prUnused" hidden></button></div>
+      <div class="row" style="margin-top:8px"><input id="prNew" placeholder="add a model id" aria-label="Model id to add a price for" style="min-width:240px"><button id="prAdd">+ Add</button><button class="primary" id="prSave">&#x2713; Save prices</button><button id="prUnused" hidden></button></div>
       <div class="hint">Leave a cache price empty to derive it: for Claude models reads are 0.1x and writes 1.25x the input price; for others, the input price.</div>
       <div id="prNote"></div>
     </div>
@@ -6206,27 +6206,42 @@ async function loadUpgrade(refresh) {
   if (next.error && upgradeState && !upgradeState.error) next = {...upgradeState, check_error: next.error};
   else if (next.error && upgradeState && upgradeState.check_error) next = {...upgradeState, check_error: next.error};
   upgradeState = next;
-  const el = $("upgradeTop"), newer = !!(upgradeState && !upgradeState.error && !upgradeState.up_to_date);
+  const el = $("upgradeTop"), newer = !!(upgradeState && ((!upgradeState.error && !upgradeState.up_to_date) || upgradeState.panel?.behind));
   el.textContent = newer ? "\u27F3 Check version \u00b7 update available" : "\u27F3 Check version";
   el.classList.toggle("success", newer);
   return true;
 }
 // versionMessage is what the dialog says for a status: its tone, mark,
 // title, subtitle and an optional note. Pure, for page_script_test.go.
+// The usage panel is part of it: Upgrade brings whichever of the two is
+// behind up to date, or both.
 function versionMessage(u) {
-  if (u.error) return {tone: "bad", mark: "!", title: "Could not check the version",
-    sub: "GitHub did not answer", note: {cls: "bad", text: "The check failed: " + u.error}, canUpgrade: false};
+  const p = u.panel || {}, panelNew = !!p.behind, panelV = p.latest ? `usage panel ${p.latest}` : "the usage panel's newest release";
+  const panelOnly = {tone: "new", mark: "\u2191", canUpgrade: true,
+    note: {cls: "", text: "Upgrade opens a Terminal window that installs " + panelV + ". Claude Burst is not restarted; run /reload-plugins --force in open Claude Code sessions afterwards."}};
+  if (u.error) {
+    if (panelNew) return {...panelOnly, tone: "warn", mark: "!", title: `Usage panel update available${p.latest ? ": " + p.latest : ""}`,
+      sub: "Claude Burst's own version could not be checked", note: {cls: "warn", text: `Claude Burst's check failed (${u.error}). Upgrade updates the usage panel only.`}};
+    return {tone: "bad", mark: "!", title: "Could not check the version",
+      sub: "GitHub did not answer", note: {cls: "bad", text: "The check failed: " + u.error}, canUpgrade: false};
+  }
+  if (u.up_to_date && panelNew) return {...panelOnly, title: `Usage panel update available${p.latest ? ": " + p.latest : ""}`,
+    sub: `Claude Burst is current; the usage panel here is ${p.version || "of unknown version"}.`};
   if (u.up_to_date && u.ahead > 0) return {tone: "ok", mark: "\u2713", title: "Up to date",
     sub: `Ahead of GitHub by ${u.ahead} commit${u.ahead === 1 ? "" : "s"} not pushed yet. Nothing newer to install.`, canUpgrade: false};
   if (u.up_to_date) return {tone: "ok", mark: "\u2713", title: "Up to date",
     sub: "You are running the latest version on GitHub.", canUpgrade: false};
-  const n = u.behind;
+  const n = u.behind, also = panelNew ? `, and ${panelV}` : "";
+  if (!u.can_upgrade && panelNew) return {...panelOnly, tone: "warn", mark: "!",
+    title: `Upgrade available: ${u.latest_version || u.latest_commit}${also}`, sub: `${n} new commit${n === 1 ? "" : "s"} on GitHub`,
+    note: {cls: "warn", text: `Claude Burst cannot upgrade from here: ${u.reason}. Upgrade updates the usage panel only.`}};
   return {
     tone: u.can_upgrade ? "new" : "warn", mark: u.can_upgrade ? "\u2191" : "!",
-    title: `Upgrade available: ${u.latest_version || u.latest_commit}`,
+    title: `Upgrade available: ${u.latest_version || u.latest_commit}${also}`,
     sub: `${n} new commit${n === 1 ? "" : "s"} on GitHub`,
     note: u.can_upgrade
-      ? {cls: "", text: "Upgrade opens a Terminal window that updates the checkout and redeploys: tests, build, restart (replies in flight finish first), and a rollback by itself if the new gateway is not healthy."}
+      ? {cls: "", text: "Upgrade opens a Terminal window that updates the checkout and redeploys: tests, build, restart (replies in flight finish first), and a rollback by itself if the new gateway is not healthy." +
+          (p.installed ? " The usage panel is brought up to date too." : "")}
       : {cls: "warn", text: `It cannot upgrade from here: ${u.reason}.`},
     canUpgrade: !!u.can_upgrade,
   };
@@ -6251,6 +6266,8 @@ function setVerTone(tone, mark, title, sub) {
 }
 function showVersion() {
   const u = upgradeState || {error: "no answer"}, m = versionMessage(u);
+  // With Burst current, Upgrade is the usage panel's alone.
+  $("verUpgrade").textContent = !u.error && !u.up_to_date && u.can_upgrade ? "\u2913 Upgrade now" : "\u2913 Update usage panel";
   setVerTone(m.tone, m.mark, m.title, m.sub);
   let html = "";
   if (!u.error) {
@@ -6265,6 +6282,9 @@ function showVersion() {
         (u.behind > commits.length ? `<li class="hint">and ${u.behind - commits.length} more</li>` : "") + `</ol>`;
     }
   }
+  const p = u.panel;
+  if (p && p.installed) html += `<div class="ver-note${p.behind ? "" : " hint"}">Usage panel: ${esc(p.version || "version unknown")} here` +
+    (p.latest ? `, ${esc(p.latest)} released${p.behind ? "" : " (current)"}` : "") + (p.note ? `. ${esc(p.note)}` : "") + `</div>`;
   if (m.note) html += `<div class="ver-note ${m.note.cls}">${esc(m.note.text)}</div>`;
   if (u.check_error) html += `<div class="ver-note warn">Could not check again just now (${esc(u.check_error)}). This is the last answer.</div>`;
   $("verBody").innerHTML = html;
@@ -6686,6 +6706,7 @@ function renderSettings() {
     const rows = prShowUnused ? all : all.filter(p => !(p.price && !p.requests));
     $("prUnused").hidden = !unused.length;
     $("prUnused").textContent = prShowUnused ? `Hide ${unused.length} unused` : `Show ${unused.length} priced but unused`;
+    const prLabel = {input_per_mtok: "input price", output_per_mtok: "output price", cache_read_per_mtok: "cache read price", cache_write_per_mtok: "cache write price"};
     $("prBody").innerHTML = rows.map(p => {
       const pr = p.price || {};
       // An empty cache price is derived from the input price (Claude: reads
@@ -6693,7 +6714,7 @@ function renderSettings() {
       const claude = p.model.includes("claude"), inp = pr.input_per_mtok || 0;
       const auto = {cache_read_per_mtok: claude ? inp * 0.1 : inp, cache_write_per_mtok: claude ? inp * 1.25 : inp};
       const ph = k => !p.price ? "?" : (k in auto) ? `auto ${+auto[k].toFixed(3)}` : "";
-      const cell = k => `<td><input type="number" min="0" step="0.01" data-pm="${esc(p.model)}" data-pk="${k}" value="${pr[k] || (k in auto ? "" : pr[k] ?? "")}" placeholder="${ph(k)}"></td>`;
+      const cell = k => `<td><input type="number" min="0" step="0.01" data-pm="${esc(p.model)}" data-pk="${k}" value="${pr[k] || (k in auto ? "" : pr[k] ?? "")}" placeholder="${ph(k)}" aria-label="${esc(p.model)} ${prLabel[k]}, US dollars per million tokens"></td>`;
       const use = p.requests ? `${p.requests.toLocaleString()} req${p.price ? `, $${p.usd.toFixed(2)}` : ""}` : "not used";
       return `<tr class="${!p.price && p.unpriced ? "unpriced" : ""}"><td><code>${esc(p.model)}</code>${!p.price && p.unpriced ? " (no price)" : ""}</td>${cell("input_per_mtok")}${cell("output_per_mtok")}${cell("cache_read_per_mtok")}${cell("cache_write_per_mtok")}<td class="hint">${use}</td><td>${prAction(p)}</td></tr>`;
     }).join("");

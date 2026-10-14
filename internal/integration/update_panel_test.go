@@ -187,3 +187,42 @@ func TestUpdatePanelRunsOnlyASignedRelease(t *testing.T) {
 		}
 	})
 }
+
+// installOfferPanel runs install.sh's offer_panel on its own, with nobody
+// at the keyboard, for a Mac with no panel installed yet.
+func (r *panelRig) installOfferPanel(env ...string) string {
+	r.t.Helper()
+	must(r.t, os.Remove(filepath.Join(r.home, ".local", "bin", "ccusage-panel.sh")))
+	src := readFile(filepath.Join(repoRoot(r.t), "install.sh"))
+	i := strings.Index(src, "PANEL_REPO=")
+	j := strings.Index(src[i:], "\n}\n")
+	if i < 0 || j < 0 {
+		r.t.Fatal("offer_panel not found in install.sh")
+	}
+	script := filepath.Join(r.t.TempDir(), "offer.zsh")
+	must(r.t, os.WriteFile(script, []byte("ROOT="+r.burst+"\n"+src[i:i+j+3]+"offer_panel\n"), 0o755))
+	cmd := exec.Command("zsh", script)
+	cmd.Env = append(append(os.Environ(), "HOME="+r.home, "CLAUDE_BURST_PANEL_REPO="+r.origin), env...)
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		r.t.Fatalf("offer_panel: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+// Every install includes the usage panel, asked or not; until 14 Oct 2026
+// an install with nobody to answer the question skipped it.
+func TestInstallIncludesTheUsagePanel(t *testing.T) {
+	r := newPanelRig(t)
+	if out := r.installOfferPanel(); !strings.Contains(out, "installed v1") {
+		t.Fatalf("the install must include the usage panel:\n%s", out)
+	}
+}
+
+func TestInstallSkipsTheUsagePanelWhenToldTo(t *testing.T) {
+	r := newPanelRig(t)
+	if out := r.installOfferPanel("CLAUDE_BURST_PANEL=no"); strings.Contains(out, "installed v") || !strings.Contains(out, "skipped") {
+		t.Fatalf("CLAUDE_BURST_PANEL=no must skip the usage panel:\n%s", out)
+	}
+}

@@ -240,6 +240,10 @@ func alertHandovers(a *alertRounds) {
 // alertUpgrade: GitHub has a newer release than the one running. Once per
 // version, also across restarts.
 func alertUpgrade(st upgradeStatus) {
+	if p := st.Panel; p != nil && p.Behind && p.Latest != "" {
+		notice.PublishOnce("panel-update", notice.Info, "Usage panel "+p.Latest+" available",
+			"Installed "+orDash(p.Version)+". Upgrade from the dashboard.")
+	}
 	if st.Error != "" || !versionNewer(st.LatestVersion, st.RunningVersion) {
 		return
 	}

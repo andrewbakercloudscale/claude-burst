@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
@@ -27,6 +28,11 @@ import (
 //
 // The upgrade itself runs in a Terminal window, like Install: deploy.sh
 // restarts this very process, so it cannot run as a child of it.
+//
+// The usage panel (claude-code-cost-sidebar) is checked beside it, against
+// its own newest signed release, and Upgrade brings whichever of the two is
+// behind up to date, or both. Until 14 Oct 2026 a panel release reached a
+// Mac only with a Burst release, so with Burst current it never did.
 
 // buildCommit is the commit this binary was built from, and whether the
 // tree had uncommitted changes. A variable for tests.
@@ -61,7 +67,15 @@ var runGit = func(ctx context.Context, dir string, args ...string) (string, erro
 // the copy already here, which the fetch does not touch. A variable for
 // tests.
 var verifyRelease = func(ctx context.Context, dir string) (tag, commit string, err error) {
-	cmd := exec.CommandContext(ctx, "/bin/bash", filepath.Join(dir, "scripts", "verify-release.sh"), dir)
+	return verifyWith(ctx, filepath.Join(dir, "scripts", "verify-release.sh"), dir)
+}
+
+// verifyPanelRelease is the same for the usage panel's checkout at dir,
+// verified by Burst's verifier, since the panel's repo carries none.
+var verifyPanelRelease = verifyWith
+
+func verifyWith(ctx context.Context, verifier, dir string) (tag, commit string, err error) {
+	cmd := exec.CommandContext(ctx, "/bin/bash", verifier, dir)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -99,6 +113,18 @@ type upgradeStatus struct {
 	CanUpgrade     bool      `json:"can_upgrade"`
 	Reason         string    `json:"reason,omitempty"` // why not, when it cannot
 	Error          string    `json:"error,omitempty"`  // the check itself failed
+	// The usage panel's side, checked even when Burst's check failed.
+	Panel *panelStatus `json:"panel,omitempty"`
+}
+
+// panelStatus compares the usage panel installed here with the newest
+// signed release of its repo.
+type panelStatus struct {
+	Installed bool   `json:"installed"`
+	Version   string `json:"version,omitempty"` // installed here
+	Latest    string `json:"latest,omitempty"`  // its newest signed release
+	Behind    bool   `json:"behind"`
+	Note      string `json:"note,omitempty"` // why they could not be compared
 }
 
 var (
@@ -130,6 +156,7 @@ func (s *Server) checkUpgrade(ctx context.Context, force bool) upgradeStatus {
 		return *upgradeLast
 	}
 	st := s.computeUpgrade(ctx)
+	st.Panel = s.computePanel(ctx)
 	upgradeLast = &st
 	alertUpgrade(st)
 	return st
@@ -219,6 +246,66 @@ func (s *Server) computeUpgrade(ctx context.Context) upgradeStatus {
 	return st
 }
 
+// computePanel checks the usage panel. One that is not installed is left
+// alone: it was declined or removed, and the dashboard installs it.
+func (s *Server) computePanel(ctx context.Context) *panelStatus {
+	p := &panelStatus{}
+	if fi, err := os.Stat(filepath.Join(homeDir(), ".local", "bin", "ccusage-panel.sh")); err != nil || fi.Mode()&0o111 == 0 {
+		return p
+	}
+	p.Installed = true
+	p.Version = installedPanelVersion()
+	repo, ok := s.repoDir()
+	dir := s.panelRepoDir()
+	if !ok || dir == "" {
+		// scripts/update-panel.sh fetches a copy when there is none.
+		p.Note = "no copy of the usage panel's repo is here to compare with; Upgrade fetches its newest release"
+		p.Behind = true
+		return p
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := runGit(ctx, dir, "fetch", "--quiet", "--tags", "origin", "main"); err != nil {
+		p.Note = "could not reach GitHub for the usage panel: " + err.Error()
+		return p
+	}
+	tag, _, err := verifyPanelRelease(ctx, filepath.Join(repo, "scripts", "verify-release.sh"), dir)
+	if err != nil {
+		p.Note = "no usage panel release can be installed: " + err.Error()
+		return p
+	}
+	p.Latest = strings.TrimPrefix(tag, "v")
+	if p.Version == "" {
+		p.Note = "the installed usage panel does not record its version"
+		return p
+	}
+	p.Behind = versionNewer(p.Latest, p.Version)
+	return p
+}
+
+// installedPanelVersion is the usage panel mod's version as Claude Code
+// recorded it when the mod was installed, or "".
+func installedPanelVersion() string {
+	b, err := os.ReadFile(filepath.Join(homeDir(), ".claude", "plugins", "installed_plugins.json"))
+	if err != nil {
+		return ""
+	}
+	var f struct {
+		Plugins map[string][]struct {
+			Version string `json:"version"`
+		} `json:"plugins"`
+	}
+	if json.Unmarshal(b, &f) != nil {
+		return ""
+	}
+	for _, e := range f.Plugins["usage-panel@ccusage-panel"] {
+		if e.Version != "" {
+			return e.Version
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleUpgradeStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.checkUpgrade(r.Context(), r.URL.Query().Get("refresh") == "1"))
 }
@@ -241,7 +328,11 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.checkUpgrade(r.Context(), true)
-	if st.Error != "" {
+	// The usage panel is always brought up to date: by deploy.sh when Burst
+	// upgrades, on its own otherwise, even when Burst's own check failed.
+	_, haveRepo := s.repoDir()
+	panel := st.Panel != nil && st.Panel.Installed && haveRepo
+	if st.Error != "" && (req.Mode == "github" || !panel) {
 		http.Error(w, "version check failed: "+st.Error, http.StatusBadGateway)
 		return
 	}
@@ -249,24 +340,43 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		s.installGitHubVersion(w, st)
 		return
 	}
-	if st.UpToDate {
+	burst := st.Error == "" && !st.UpToDate && st.CanUpgrade
+	switch {
+	case burst || panel:
+	case st.UpToDate:
 		http.Error(w, fmt.Sprintf("already up to date: running %s (%s), the newest release on GitHub", st.RunningVersion, st.RunningCommit), http.StatusConflict)
 		return
-	}
-	if !st.CanUpgrade {
+	default:
 		http.Error(w, "cannot upgrade: "+st.Reason, http.StatusConflict)
 		return
 	}
 	dir, _ := s.repoDir()
-	path, err := writeGeneratedScript("upgrade", upgradeScript(dir, st))
+	script, name := upgradeScript(dir, st), "upgrade"
+	if !burst {
+		script, name = panelUpdateScript(dir), "update-panel"
+	}
+	path, err := writeGeneratedScript(name, script)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	detail := fmt.Sprintf("Upgrading from %s (%s) to release %s (%s), %d new commit(s). A Terminal window is running it: "+
-		"it checks the release's signature again, fast-forwards the checkout to it and runs scripts/deploy.sh, which tests, builds and restarts the gateway, "+
-		"rolling back by itself if the new one is not healthy.",
-		st.RunningVersion, st.RunningCommit, orDash(st.LatestVersion), st.LatestCommit, st.Behind)
+	var detail string
+	switch {
+	case burst:
+		detail = fmt.Sprintf("Upgrading from %s (%s) to release %s (%s), %d new commit(s). A Terminal window is running it: "+
+			"it checks the release's signature again, fast-forwards the checkout to it and runs scripts/deploy.sh, which tests, builds and restarts the gateway, "+
+			"rolling back by itself if the new one is not healthy.",
+			st.RunningVersion, st.RunningCommit, orDash(st.LatestVersion), st.LatestCommit, st.Behind)
+		if panel {
+			detail += " It brings the usage panel up to date as well."
+		}
+	case st.Error != "":
+		detail = "Claude Burst's own version could not be checked (" + st.Error + "), so only the usage panel is updated, to its newest signed release. A Terminal window is running it. Run /reload-plugins --force in open Claude Code sessions afterwards."
+	case st.UpToDate:
+		detail = "Updating the usage panel to its newest signed release. A Terminal window is running it. Claude Burst is already current, so it is not restarted. Run /reload-plugins --force in open Claude Code sessions afterwards."
+	default:
+		detail = "Claude Burst cannot upgrade from here (" + st.Reason + "), so only the usage panel is updated, to its newest signed release. A Terminal window is running it. Run /reload-plugins --force in open Claude Code sessions afterwards."
+	}
 	if err := launchTerminal(path); err != nil {
 		detail = fmt.Sprintf("could not open Terminal (%v). The script is ready, run it yourself:\n%s", err, path)
 	}
@@ -314,24 +424,7 @@ echo "== Claude Burst: install the version on GitHub =="
 echo ` + shellQuote("running: "+st.RunningVersion+" ("+st.RunningCommit+")") + `
 echo
 
-# On success the window closes itself after 10 seconds (a key keeps it
-# open); on failure it waits, so the error can be read. Only in a real
-# terminal: run any other way, it just exits.
-finish() {
-  echo
-  [[ -t 0 ]] || exit "$1"
-  if (( $1 == 0 )); then
-    if read -t 10 -k 1 "?Closing this window in 10 seconds; press any key to keep it open. "; then
-      echo; read -k 1 "?Press any key to close this window..."
-    fi
-    local me; me="$(tty)"
-    ( sleep 1; osascript -e 'on run {t}' -e 'tell application "Terminal" to repeat with w in windows' -e 'if tty of selected tab of w is t then close w' -e 'end repeat' -e 'end run' "$me" >/dev/null 2>&1 ) &!
-    exit 0
-  fi
-  read -k 1 "?Press any key to close this window..."
-  exit "$1"
-}
-
+` + terminalFinish + `
 git fetch --tags origin main || { echo "could not fetch from GitHub, nothing changed" >&2; finish 1; }
 rel="$(/bin/bash scripts/verify-release.sh "$PWD")" || { echo "the newest release could not be verified (see above), nothing changed" >&2; finish 1; }
 tag="${rel%% *}"; commit="${rel#* }"
@@ -376,24 +469,7 @@ echo "== Claude Burst upgrade =="
 echo ` + shellQuote("running: "+st.RunningVersion+" ("+st.RunningCommit+")") + `
 echo
 
-# On success the window closes itself after 10 seconds (a key keeps it
-# open); on failure it waits, so the error can be read. Only in a real
-# terminal: run any other way, it just exits.
-finish() {
-  echo
-  [[ -t 0 ]] || exit "$1"
-  if (( $1 == 0 )); then
-    if read -t 10 -k 1 "?Closing this window in 10 seconds; press any key to keep it open. "; then
-      echo; read -k 1 "?Press any key to close this window..."
-    fi
-    local me; me="$(tty)"
-    ( sleep 1; osascript -e 'on run {t}' -e 'tell application "Terminal" to repeat with w in windows' -e 'if tty of selected tab of w is t then close w' -e 'end repeat' -e 'end run' "$me" >/dev/null 2>&1 ) &!
-    exit 0
-  fi
-  read -k 1 "?Press any key to close this window..."
-  exit "$1"
-}
-
+` + terminalFinish + `
 [[ "$(git rev-parse --abbrev-ref HEAD)" == main ]] || { echo "not on main, nothing changed" >&2; finish 1; }
 [[ -z "$(git status --porcelain)" ]] || { echo "uncommitted changes in $(pwd), nothing changed" >&2; finish 1; }
 git fetch --tags origin main || { echo "could not fetch from GitHub, nothing changed" >&2; finish 1; }
@@ -418,5 +494,52 @@ else
   echo "deploy.sh failed (exit $rc); see above. The checkout is on the new commit, the gateway on whatever deploy.sh left running." >&2
 fi
 finish $rc
+`
+}
+
+// terminalFinish ends every generated script. On success the window closes
+// itself after 10 seconds (a key keeps it open); on failure it waits, so
+// the error can be read. Only in a real terminal: run any other way, it
+// just exits.
+const terminalFinish = `finish() {
+  echo
+  [[ -t 0 ]] || exit "$1"
+  if (( $1 == 0 )); then
+    if read -t 10 -k 1 "?Closing this window in 10 seconds; press any key to keep it open. "; then
+      echo; read -k 1 "?Press any key to close this window..."
+    fi
+    local me; me="$(tty)"
+    ( sleep 1; osascript -e 'on run {t}' -e 'tell application "Terminal" to repeat with w in windows' -e 'if tty of selected tab of w is t then close w' -e 'end repeat' -e 'end run' "$me" >/dev/null 2>&1 ) &!
+    exit 0
+  fi
+  read -k 1 "?Press any key to close this window..."
+  exit "$1"
+}
+`
+
+// panelUpdateScript updates only the usage panel, when Burst has nothing
+// to install. scripts/update-panel.sh verifies the panel's release itself
+// and never fails, so a warning it prints keeps the window open instead.
+func panelUpdateScript(repo string) string {
+	return `#!/bin/zsh
+# Generated by the Claude Burst dashboard's Upgrade button, when only the
+# usage panel has anything to install. Rewritten on every click.
+set -uo pipefail
+cd ` + shellQuote(repo) + ` || exit 1
+
+echo "== Usage panel update =="
+echo
+
+` + terminalFinish + `
+log="$(mktemp "${TMPDIR:-/tmp}/claude-burst-panel.XXXXXX")" || finish 1
+zsh scripts/update-panel.sh 2>&1 | tee "$log"
+if grep -q '^WARNING' "$log"; then
+  rm -f "$log"
+  echo "The usage panel was not fully updated; see the warning above." >&2
+  finish 1
+fi
+rm -f "$log"
+echo "Done. Run /reload-plugins --force in open Claude Code sessions, or start new ones."
+finish 0
 `
 }

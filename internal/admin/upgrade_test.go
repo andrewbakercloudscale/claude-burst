@@ -634,3 +634,173 @@ func TestUpgradeScriptVerifiesAgainBeforeItMerges(t *testing.T) {
 		t.Fatal("deploy.sh ran")
 	}
 }
+
+// installPanel makes the usage panel installed at version v in the test
+// HOME, and a checkout of its repo beside the Burst checkout, released as
+// tag (signed with the rig's key when signed is true).
+func (r *upgradeRig) installPanel(v, tag string, signed bool) string {
+	r.t.Helper()
+	home, _ := os.UserHomeDir()
+	bin := filepath.Join(home, ".local", "bin")
+	os.MkdirAll(bin, 0o755)
+	must := func(err error) {
+		if err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	must(os.WriteFile(filepath.Join(bin, "ccusage-panel.sh"), []byte("#!/bin/sh\n"), 0o755))
+	plugins := filepath.Join(home, ".claude", "plugins")
+	os.MkdirAll(plugins, 0o755)
+	must(os.WriteFile(filepath.Join(plugins, "installed_plugins.json"),
+		[]byte(`{"version":2,"plugins":{"usage-panel@ccusage-panel":[{"scope":"user","version":"`+v+`"}]}}`), 0o644))
+
+	root := filepath.Dir(r.checkout)
+	origin, work, dir := filepath.Join(root, "panel.git"), filepath.Join(root, "panel-work"), filepath.Join(root, "claude-code-cost-sidebar")
+	git(r.t, root, "init", "-q", "--bare", "-b", "main", origin)
+	git(r.t, root, "clone", "-q", origin, work)
+	git(r.t, work, "checkout", "-q", "-b", "main")
+	commitFile(r.t, work, "claude-panel-setup.sh", "#!/bin/bash\n", "panel")
+	if signed {
+		signTag(r.t, work, r.key, tag)
+	} else {
+		git(r.t, work, "tag", tag)
+	}
+	git(r.t, work, "push", "-q", "origin", "main", tag)
+	git(r.t, root, "clone", "-q", origin, dir)
+	return dir
+}
+
+// The case this exists for: Burst is current and the usage panel has a new
+// release. The check says so and Upgrade updates the panel alone.
+func TestUpgradeUpdatesThePanelWhenBurstIsCurrent(t *testing.T) {
+	r := newUpgradeRig(t)
+	r.installPanel("1.0.0", "v1.1.0", true)
+	st := r.status(true)
+	if !st.UpToDate || st.Panel == nil || !st.Panel.Installed || st.Panel.Version != "1.0.0" || st.Panel.Latest != "1.1.0" || !st.Panel.Behind {
+		t.Fatalf("status: %+v panel %+v", st, st.Panel)
+	}
+	rr := r.upgrade()
+	if rr.Code != http.StatusOK || len(r.launched) != 1 {
+		t.Fatalf("upgrade: %d %s launched=%v", rr.Code, rr.Body.String(), r.launched)
+	}
+	script, _ := os.ReadFile(r.launched[0])
+	if !strings.Contains(string(script), "scripts/update-panel.sh") || strings.Contains(string(script), "deploy.sh") {
+		t.Fatalf("the script should update the panel and not redeploy Burst:\n%s", script)
+	}
+	if !strings.Contains(rr.Body.String(), "usage panel") {
+		t.Errorf("the reply should say it updates the usage panel: %s", rr.Body.String())
+	}
+}
+
+// Upgrade always updates the panel, even when the check found it current.
+func TestUpgradeUpdatesACurrentPanelToo(t *testing.T) {
+	r := newUpgradeRig(t)
+	r.installPanel("1.1.0", "v1.1.0", true)
+	if st := r.status(true); st.Panel == nil || st.Panel.Behind || st.Panel.Latest != "1.1.0" {
+		t.Fatalf("panel %+v", st.Panel)
+	}
+	if rr := r.upgrade(); rr.Code != http.StatusOK || len(r.launched) != 1 {
+		t.Fatalf("upgrade: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Both behind: one upgrade, by deploy.sh, which updates the panel too.
+func TestUpgradeOfBothRunsTheDeploy(t *testing.T) {
+	r := newUpgradeRig(t)
+	r.installPanel("1.0.0", "v1.1.0", true)
+	r.publish("cmd/claude-burst/main.go", mainGo("0.3.0"), "Release 0.3.0")
+	rr := r.upgrade()
+	if rr.Code != http.StatusOK || len(r.launched) != 1 {
+		t.Fatalf("upgrade: %d %s", rr.Code, rr.Body.String())
+	}
+	script, _ := os.ReadFile(r.launched[0])
+	if !strings.Contains(string(script), "scripts/deploy.sh") || !strings.Contains(rr.Body.String(), "usage panel up to date as well") {
+		t.Fatalf("reply %s\nscript:\n%s", rr.Body.String(), script)
+	}
+}
+
+// A panel release the key did not sign is never offered.
+func TestUpgradeIgnoresAnUnsignedPanelRelease(t *testing.T) {
+	r := newUpgradeRig(t)
+	r.installPanel("1.0.0", "v1.1.0", false)
+	st := r.status(true)
+	if st.Panel == nil || st.Panel.Behind || st.Panel.Latest != "" || !strings.Contains(st.Panel.Note, "no usage panel release can be installed") {
+		t.Fatalf("panel %+v", st.Panel)
+	}
+}
+
+// A panel that is not installed was declined or removed: it is not
+// offered, and Upgrade with Burst current still has nothing to do.
+func TestUpgradeLeavesAnUninstalledPanelAlone(t *testing.T) {
+	r := newUpgradeRig(t)
+	if st := r.status(true); st.Panel == nil || st.Panel.Installed || st.Panel.Behind {
+		t.Fatalf("panel %+v", st.Panel)
+	}
+	if rr := r.upgrade(); rr.Code != http.StatusConflict || len(r.launched) != 0 {
+		t.Fatalf("upgrade: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// The panel-only script keeps its window open when the update warned,
+// since scripts/update-panel.sh itself never fails.
+func TestPanelUpdateScriptFailsOnAWarning(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	repo := t.TempDir()
+	os.MkdirAll(filepath.Join(repo, "scripts"), 0o755)
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "update-panel.sh"),
+		[]byte("echo \"usage panel: updating\"\n[[ -n \"${WARN:-}\" ]] && echo \"WARNING: could not update\" >&2\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "update-panel.command")
+	os.WriteFile(path, []byte(panelUpdateScript(repo)), 0o755)
+	for _, warn := range []bool{false, true} {
+		cmd := exec.Command("zsh", path)
+		cmd.Env = os.Environ()
+		if warn {
+			cmd.Env = append(cmd.Env, "WARN=1")
+		}
+		cmd.Stdin = strings.NewReader("")
+		out, err := cmd.CombinedOutput()
+		if (err != nil) != warn || !strings.Contains(string(out), "usage panel: updating") {
+			t.Errorf("warn=%v: err %v\n%s", warn, err, out)
+		}
+	}
+}
+
+func TestVersionMessageForThePanel(t *testing.T) {
+	type m struct {
+		Tone       string `json:"tone"`
+		Title      string `json:"title"`
+		Sub        string `json:"sub"`
+		Note       *struct{ Cls, Text string }
+		CanUpgrade bool `json:"canUpgrade"`
+	}
+	var got map[string]m
+	runPageJS(t, []string{"versionMessage"}, `
+const base = {running_version: "0.2.0", running_commit: "98f965b"};
+const p = {installed: true, version: "1.19.1", latest: "1.20.0", behind: true};
+out({
+  panelOnly: versionMessage({...base, up_to_date: true, panel: p}),
+  panelCurrent: versionMessage({...base, up_to_date: true, panel: {...p, version: "1.20.0", behind: false}}),
+  both: versionMessage({...base, behind: 3, can_upgrade: true, latest_version: "0.3.0", latest_commit: "abc1234", panel: p}),
+  blocked: versionMessage({...base, behind: 1, can_upgrade: false, reason: "the checkout has uncommitted changes", latest_commit: "abc1234", panel: p}),
+  failed: versionMessage({...base, error: "could not reach GitHub", panel: p}),
+});`, &got)
+	if c := got["panelOnly"]; !c.CanUpgrade || c.Title != "Usage panel update available: 1.20.0" || !strings.Contains(c.Sub, "1.19.1") {
+		t.Errorf("panelOnly: %+v", c)
+	}
+	if c := got["panelCurrent"]; c.CanUpgrade || c.Title != "Up to date" {
+		t.Errorf("panelCurrent: %+v", c)
+	}
+	if c := got["both"]; !c.CanUpgrade || c.Title != "Upgrade available: 0.3.0, and usage panel 1.20.0" {
+		t.Errorf("both: %+v", c)
+	}
+	if c := got["blocked"]; !c.CanUpgrade || c.Tone != "warn" || c.Note == nil || !strings.Contains(c.Note.Text, "usage panel only") {
+		t.Errorf("blocked: %+v", c)
+	}
+	if c := got["failed"]; !c.CanUpgrade || c.Note == nil || !strings.Contains(c.Note.Text, "usage panel only") {
+		t.Errorf("failed: %+v", c)
+	}
+}

@@ -639,8 +639,10 @@ OUT
 }
 
 # The usage panel (a separate repo) shows each turn's context and cost next
-# to Claude Code, and reads Burst's metrics to mark auto compaction. It is
-# optional in both directions, so a failure here never fails this install.
+# to Claude Code, and reads Burst's metrics to mark auto compaction. Every
+# install includes it, unless CLAUDE_BURST_PANEL=no; until 14 Oct 2026 it was
+# offered with a question, and skipped when nobody was there to answer. A
+# failure here never fails this install.
 PANEL_REPO="https://github.com/andrewbakercloudscale/claude-code-cost-sidebar.git"
 offer_panel() {
   if [[ -x "$HOME/.local/bin/ccusage-panel.sh" ]]; then
@@ -648,21 +650,11 @@ offer_panel() {
     zsh "$ROOT/scripts/update-panel.sh"
     return 0
   fi
-  if [[ "${CLAUDE_BURST_PANEL:-ask}" == "no" ]]; then
+  if [[ "${CLAUDE_BURST_PANEL:-yes}" == "no" ]]; then
+    echo "\nUsage panel: skipped (CLAUDE_BURST_PANEL=no). Install it later from the dashboard or $PANEL_REPO"
     return 0
   fi
-  if [[ "${CLAUDE_BURST_PANEL:-ask}" != "yes" ]]; then
-    if [[ ! -t 0 ]]; then
-      echo "\nOptional usage panel (live context and cost beside Claude Code): rerun with CLAUDE_BURST_PANEL=yes, or see $PANEL_REPO"
-      return 0
-    fi
-    local answer
-    echo
-    echo "The usage panel shows each turn's context and cost in a sidebar beside Claude Code,"
-    echo "including when Burst compacts a long session and what that saved."
-    read -r "answer?Install the usage panel too? [Y/n] "
-    [[ -z "$answer" || "$answer" == [Yy]* ]] || { echo "Skipped. Install it later from $PANEL_REPO"; return 0; }
-  fi
+  echo "\nUsage panel: installing it too (a sidebar beside Claude Code with each turn's context and cost; CLAUDE_BURST_PANEL=no skips it)."
 
   # A checkout beside this one wins; otherwise keep a clone of our own.
   # The repo was claudecode-cost-usage-panel until 2026-10-05; either name is found.
