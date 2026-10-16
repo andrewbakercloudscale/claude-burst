@@ -113,7 +113,29 @@ const (
 	// minMeasuredRequests is how many requests a repository needs in the
 	// window before a size is taken from their replay.
 	minMeasuredRequests = 300
+	// maxReplayError caps how far the replay's measured error widens the
+	// band within which a repository keeps the size it has (replayError).
+	maxReplayError = 0.20
 )
+
+// replayError is how far the replay has been from the bill for this
+// repository: what its requests cost against what the replay predicted for
+// the sizes in force at the time (metrics.StrategyTrack), as a share of the
+// prediction, either way. 0 when there is too little on record to say.
+//
+// The loop that checks the replay: sizes whose replayed costs are closer
+// than this are the same size as far as the replay can tell, so the
+// learner keeps the size a repository has rather than moving on a
+// difference smaller than the replay's own error. From 8 to 16 Oct 2026 the
+// replay ran 10% under the bill over all repositories and 3% to 34% per
+// repository, while the sizes it chose between were often a few per cent
+// apart.
+func replayError(t *metrics.StrategyTrack) float64 {
+	if t == nil || t.Requests < minMeasuredRequests || t.Planned.USD <= 0 {
+		return 0
+	}
+	return math.Abs(t.Actual.USD/t.Planned.USD - 1)
+}
 
 // Outcome kinds the gateway records (router), beside the summary calls
 // that failed, which the metrics log has.
@@ -201,6 +223,13 @@ type Measured struct {
 	LatestUSD   float64 `json:"latest_usd"`
 	ActualUSD   float64 `json:"actual_usd"`
 	FixedUSD    float64 `json:"fixed_usd"`
+	// PlannedUSD and BilledUSD are the replay checked against the bill:
+	// what it predicted the sizes in force would cost since they were on
+	// record, and what those requests did cost. Error is how far apart, a
+	// share of PlannedUSD (replayError). Zero with too little on record.
+	PlannedUSD float64 `json:"planned_usd,omitempty"`
+	BilledUSD  float64 `json:"billed_usd,omitempty"`
+	Error      float64 `json:"error,omitempty"`
 }
 
 // measuredSizes is the cheapest replayed size inside the bounds and the
@@ -230,6 +259,16 @@ func measuredSizes(m metrics.StrategyRepo, b Bounds) (cheapest, latest metrics.S
 		}
 	}
 	return cheapest, latest, true
+}
+
+// sizeOf is the replayed size at, if the sweep has it.
+func sizeOf(sizes []metrics.StrategySize, at int64) (metrics.StrategySize, bool) {
+	for _, z := range sizes {
+		if z.At == at {
+			return z, true
+		}
+	}
+	return metrics.StrategySize{}, false
 }
 
 // State is the learner's file.
@@ -519,6 +558,15 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 			r.Reason = fmt.Sprintf("replayed over the %d requests of the last %d days, which cost $%.2f as Burst ran them: cheapest at %dk ($%.2f)", m.Requests, int(Window.Hours()/24), m.Actual.USD, cheapest.At/1000, cheapest.USD)
 			if latest.At > cheapest.At {
 				r.Reason += fmt.Sprintf(", as late as costs no more than %d%% more: %dk ($%.2f)", int(slackShare*100), latest.At/1000, latest.USD)
+			}
+			if e := replayError(m.Track); e > 0 {
+				r.Measured.PlannedUSD, r.Measured.BilledUSD, r.Measured.Error = m.Track.Planned.USD, m.Track.Actual.USD, e
+				r.Reason += fmt.Sprintf("; the replay predicted $%.2f for the sizes in force and the bill was $%.2f (%.0f%% apart)", m.Track.Planned.USD, m.Track.Actual.USD, e*100)
+				band := math.Min(e, maxReplayError)
+				if cur, ok := sizeOf(m.Sizes, r.Threshold); ok && band > slackShare && r.Threshold != best && r.Threshold >= b.Floor && r.Threshold <= b.Ceiling && cur.USD <= cheapest.USD*(1+band) {
+					best = r.Threshold
+					r.Reason += fmt.Sprintf(", so %dk stays: its $%.2f is within that of the cheapest", cur.At/1000, cur.USD)
+				}
 			}
 		case n < MinCompactions:
 			r.Target = 0

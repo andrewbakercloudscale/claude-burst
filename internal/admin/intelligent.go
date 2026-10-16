@@ -53,9 +53,15 @@ func (s *Server) learnCompaction(cfg config.Config, now time.Time) autocompact.S
 	}
 	// Every size replayed over each repository's own requests, with the
 	// delay a real session has between its compactions: what the learner
-	// takes a size from where there are requests enough.
+	// takes a size from where there are requests enough. With the sizes in
+	// force on record, the replay at those is checked against the bill,
+	// and how far apart they were is how far the learner trusts it.
 	measured := map[string]metrics.StrategyRepo{}
-	if sweep, err := metrics.CompactionStrategiesSince(s.metricsPath, since, config.DefaultCompactionCompactAt, time.Duration(c.WindowMinutes)*time.Minute, s.repos.resolve); err == nil {
+	var sizeAt func(string, time.Time) (int64, bool)
+	if sizes := s.sizesOnRecord(); sizes.Len() > 0 {
+		sizeAt = sizes.At
+	}
+	if sweep, err := metrics.CompactionStrategiesTracked(s.metricsPath, since, config.DefaultCompactionCompactAt, time.Duration(c.WindowMinutes)*time.Minute, s.repos.resolve, sizeAt); err == nil {
 		for _, r := range sweep.Repos {
 			if r.Path != "" {
 				measured[r.Path] = r
@@ -126,6 +132,14 @@ func (s *Server) recordSizes(c config.CompactionConfig, st autocompact.State, no
 func (s *Server) sizesOnRecord() autocompact.Sizes {
 	s.sizesMu.Lock()
 	defer s.sizesMu.Unlock()
+	// Read here too: the learner's first run after a start asks before
+	// recordSizes has.
+	if !s.sizesRead {
+		if p := s.sizesPath(); p != "" {
+			s.sizes = autocompact.ReadSizes(p)
+		}
+		s.sizesRead = true
+	}
 	return s.sizes.Snapshot()
 }
 

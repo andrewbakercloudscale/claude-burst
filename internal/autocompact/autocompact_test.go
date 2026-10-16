@@ -476,3 +476,48 @@ func TestAReplayedSizeIsNotOverruledByThePaybackGuard(t *testing.T) {
 		t.Fatalf("replayed: target %d (%s), want the replay's 175k", r.Target, r.Reason)
 	}
 }
+
+// The replay is checked against the bill, and a size whose replayed cost
+// is closer to the cheapest than the replay's measured error stays: the
+// replay cannot tell them apart. With the replay close to the bill, the
+// same difference moves the size as before.
+func TestASizeStaysWhileTheReplayCannotTellItFromTheCheapest(t *testing.T) {
+	b := Bounds{Floor: 100_000, Ceiling: 500_000, Start: 300_000}
+	in := inputs(metrics.CompactionRun{Session: "a1", Model: "m", At: now.Add(-48 * time.Hour), Last: now.Add(-47 * time.Hour), Start: 50_000, End: 90_000, Turns: 20})
+	// The repository is on 250k, 8% above the cheapest at 150k.
+	prior := State{Repos: map[string]*Repo{"/src/repo-a": {Root: "/src/repo-a", Threshold: 250_000}}}
+	measured := func(planned, billed float64) map[string]metrics.StrategyRepo {
+		m := replay(1000, 140, map[int64]float64{150: 100, 175: 103, 250: 108})
+		m.Track = &metrics.StrategyTrack{Planned: metrics.StrategyCost{USD: planned}}
+		m.Track.Requests, m.Track.Actual.USD = 1000, billed
+		return map[string]metrics.StrategyRepo{"/src/repo-a": m}
+	}
+	// The bill 12% over the replay: 8% is inside its error, 250k stays.
+	in.Measured = measured(100, 112)
+	r := Learn(prior, in, b, true).Repos["/src/repo-a"]
+	if r.Threshold != 250_000 || r.Measured.Error < 0.119 || r.Measured.Error > 0.121 || r.Measured.PlannedUSD != 100 || r.Measured.BilledUSD != 112 {
+		t.Fatalf("threshold %d measured %+v, want 250k kept on a 12%% error", r.Threshold, r.Measured)
+	}
+	if !strings.Contains(r.Reason, "predicted $100.00 for the sizes in force and the bill was $112.00 (12% apart), so 250k stays") {
+		t.Fatalf("reason %q", r.Reason)
+	}
+	// The bill 2% over: the replay is trusted, and the size moves to the
+	// latest within the slack of the cheapest.
+	in.Measured = measured(100, 102)
+	if r = Learn(prior, in, b, true).Repos["/src/repo-a"]; r.Threshold != 175_000 {
+		t.Fatalf("threshold %d, want 175k on a 2%% error", r.Threshold)
+	}
+	// Too little on record to check: as before, it moves.
+	in.Measured = measured(100, 112)
+	in.Measured["/src/repo-a"].Track.Requests = minMeasuredRequests - 1
+	if r = Learn(prior, in, b, true).Repos["/src/repo-a"]; r.Threshold != 175_000 || r.Measured.Error != 0 {
+		t.Fatalf("threshold %d error %v, want 175k with nothing checked", r.Threshold, r.Measured.Error)
+	}
+	// An error past the cap does not hold a size far from the cheapest.
+	m := measured(100, 160)
+	m["/src/repo-a"].Sizes[6].USD = 125 // 250k, 25% above the cheapest
+	in.Measured = m
+	if r = Learn(prior, in, b, true).Repos["/src/repo-a"]; r.Threshold != 175_000 {
+		t.Fatalf("threshold %d, want 175k: a 60%% error is capped at %v", r.Threshold, maxReplayError)
+	}
+}
