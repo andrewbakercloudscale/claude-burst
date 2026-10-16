@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -145,5 +146,83 @@ func TestGuardKeepsHealthzReachable(t *testing.T) {
 	s.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
 		t.Fatalf("healthz: status %d body %s", rr.Code, rr.Body)
+	}
+}
+
+func TestTransparentPassesBrowserRequestsToTheInterceptedHostThrough(t *testing.T) {
+	var gotOrigin, gotCookie string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrigin, gotCookie = r.Header.Get("Origin"), r.Header.Get("Cookie")
+		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(up.Close)
+	s, hits, _ := guardServer(t, func(c *config.Config) {
+		c.Intercept.Mode = config.InterceptTransparent
+		c.Intercept.Host = "api.anthropic.com"
+	})
+	u, err := url.Parse(up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.browserUpstream = u
+	req := httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/api/web/url_hash_check/browser_extension",
+		strings.NewReader(`{"url_hash":"x"}`))
+	req.Header.Set("Origin", "chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn")
+	req.Header.Set("Cookie", "sessionKey=browser")
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || rr.Body.String() != `{"ok":true}` {
+		t.Fatalf("status %d body %q, want the upstream's 200", rr.Code, rr.Body)
+	}
+	if gotOrigin != "chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn" || gotCookie != "sessionKey=browser" {
+		t.Fatalf("upstream saw Origin %q Cookie %q, want the browser's own", gotOrigin, gotCookie)
+	}
+	if rr.Header().Get("Access-Control-Allow-Origin") == "" {
+		t.Fatal("the upstream's CORS headers must reach the browser")
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("a browser request reached the primary %d times", hits.Load())
+	}
+}
+
+func TestBrowserRequestsAreStillRefusedOffTheInterceptedHost(t *testing.T) {
+	for name, mutate := range map[string]func(*config.Config){
+		"transparent, loopback Host": func(c *config.Config) {
+			c.Intercept.Mode = config.InterceptTransparent
+			c.Intercept.Host = "api.anthropic.com"
+		},
+		"base-url mode": func(c *config.Config) { c.Intercept.Host = "api.anthropic.com" },
+	} {
+		s, hits, _ := guardServer(t, mutate)
+		host := "api.anthropic.com"
+		if s.cfg.Intercept.Transparent() {
+			host = "127.0.0.1:7777"
+		}
+		req := claudeCodeShaped(host)
+		req.Header.Set("Origin", "https://evil.example")
+		rr := httptest.NewRecorder()
+		s.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden || hits.Load() != 0 {
+			t.Errorf("%s: status %d, primary hits %d; want 403 and none", name, rr.Code, hits.Load())
+		}
+	}
+}
+
+func TestInterceptUpstreamIsTheRealHost(t *testing.T) {
+	cfg := config.Default()
+	cfg.Intercept.Host = "api.anthropic.com"
+	if u := interceptUpstream(cfg); u != nil {
+		t.Fatalf("base-url mode: %v, want nil", u)
+	}
+	cfg.Intercept.Mode = config.InterceptTransparent
+	for base, want := range map[string]string{
+		"https://api.anthropic.com":        "https://api.anthropic.com",
+		"https://portkey.internal.example": "https://api.anthropic.com",
+	} {
+		cfg.AnthropicBaseURL = base
+		if got := interceptUpstream(cfg).String(); got != want {
+			t.Errorf("anthropic_base_url %s: upstream %s, want %s", base, got, want)
+		}
 	}
 }

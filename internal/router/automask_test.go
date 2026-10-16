@@ -330,7 +330,7 @@ func TestAutomaskRefusesWhatItCannotRead(t *testing.T) {
 	const readable = `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"hello"}]}`
 	unreadable := []struct{ name, path, body, encoding string }{
 		{"not JSON", "/v1/messages", "my card is 4111 1111 1111 1111", ""},
-		{"compressed", "/v1/messages", readable, "gzip"},
+		{"compressed", "/v1/messages", readable, "br"},
 		{"no messages", "/v1/messages/batches", `{"requests":[{"params":{"messages":[]}}]}`, ""},
 		{"count_tokens, not JSON", "/v1/messages/count_tokens", "4111 1111 1111 1111", ""},
 	}
@@ -362,6 +362,12 @@ func TestAutomaskRefusesWhatItCannotRead(t *testing.T) {
 	}
 	if sentTo(f) != sent+1 {
 		t.Errorf("a readable request did not reach the provider")
+	}
+	if w := post("/v1/messages", string(gzipped(t, readable)), "gzip"); w.Code == http.StatusBadRequest {
+		t.Errorf("a gzipped readable request was refused: %s", w.Body)
+	}
+	if sentTo(f) != sent+2 {
+		t.Errorf("a gzipped readable request did not reach the provider")
 	}
 }
 
