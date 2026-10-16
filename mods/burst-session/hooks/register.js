@@ -72,7 +72,7 @@ async function rescue($, c) {
   try {
     const r = await $.process.run(['open', '-a', 'Terminal', path])
     if (r && r.exitCode) throw new Error((r.stderr || 'exit ' + r.exitCode).trim())
-    $.ui.toast(c.started)
+    toast($, c.started)
   } catch (err) {
     toast($, 'Could not run ' + path + ' (' + err + '). Run ./install.sh in the claude-burst checkout', 'error')
   }
@@ -363,7 +363,7 @@ export function register(on) {
     handed = h.of
     tookIn = true
     await taken($, h)
-    $.ui.toast("Async Full Compaction: " + cut + ' messages replaced with the summary Burst already wrote', { timeoutMs: TOAST_MS.info })
+    toast($, "Async Full Compaction: " + cut + ' messages replaced with the summary Burst already wrote')
     return { messages: [{ role: 'user', text: h.lead, toolUses: [] }, ...e.messages.slice(cut).map(asNewIfResult)] }
   })
 
@@ -437,7 +437,7 @@ export function register(on) {
       band = !band
       try { await $.store.set(BAND_KEY, band) } catch (err) { $.ui.log('could not save the band choice: ' + err) }
       $.ui.invalidate('ui.render')
-      $.ui.toast(band ? 'Burst band above the prompt' : 'Burst band off: the sidebar has it')
+      toast($, band ? 'Burst band above the prompt' : 'Burst band off: the sidebar has it')
       return {}
     }
     await $.ui.open({ id: PANE, title: 'Burst', focus: true, closeOnEscape: true })
@@ -661,12 +661,13 @@ async function hasSidebar($) {
 const TOAST_MS = { error: 20000, warn: 12000, info: 8000 }
 
 // A toast is one colour, the engine's: Claude Code takes only its text and
-// strips any colour codes from it. A problem stands out by a coloured mark
-// at its start instead, red for an error and yellow for a warning, the
-// marks the usage panel's limit toasts use.
-const TOAST_MARK = { error: '\u{1F534} ', warn: '\u{1F7E1} ' }
+// strips any colour codes from it. So every toast of Burst's starts with a
+// coloured mark instead, red for an error, yellow for a warning and blue
+// for news, the first two the marks the usage panel's limit toasts use.
+// News went unmarked until 16 Oct 2026 and read as Claude Code's own.
+const TOAST_MARK = { error: '\u{1F534} ', warn: '\u{1F7E1} ', info: '\u{1F535} ' }
 function toast($, text, level = 'info', ms = TOAST_MS[level] || TOAST_MS.info) {
-  $.ui.toast((TOAST_MARK[level] || '') + text, { timeoutMs: ms })
+  $.ui.toast((TOAST_MARK[level] || TOAST_MARK.info) + text, { timeoutMs: ms })
 }
 
 // True when this alert is the mods' to show. The first mod to ask makes the
@@ -717,7 +718,7 @@ async function compactionLines($) {
     })
     if (!r.ok || !r.text) return
     const lines = String(JSON.parse(r.text).systemMessage || '').split('\n')
-    for (const line of lines) if (line.trim() !== '') $.ui.toast(line.replace(/^\u26a1\s*/, ''), { timeoutMs: TOAST_MS.info })
+    for (const line of lines) if (line.trim() !== '') toast($, line.replace(/^\u26a1\s*/, ''))
   } catch (err) {
     // The gateway keeps what it could not hand over; the hook still shows it.
   }
@@ -729,7 +730,7 @@ async function refresh($) {
     if (!r.ok) throw new Error('status ' + r.status)
     burst = JSON.parse(r.text)
     if (burst.session) heldSeen = burst.session.raw || 0
-    if (down) $.ui.toast('Burst gateway back')
+    if (down) toast($, 'Burst gateway back')
     down = false
     for (const a of burst.alerts || []) {
       since = Math.max(since, a.ts)

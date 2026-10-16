@@ -155,9 +155,9 @@ test('alerts become toasts once, each claimed so its pop-up stands aside', async
   ], toasts, urls, false, [], {}, world)
   await start($)
   await clock.advance(5000)
-  // A warning carries a yellow mark, since a toast cannot be coloured;
-  // news carries none.
-  expect(toasts).toEqual(['\u{1F7E1} Burst: Overflow to the secondary', 'Burst: Pauseless compaction started'])
+  // Every toast carries a mark, since a toast cannot be coloured: yellow
+  // for a warning, blue for news.
+  expect(toasts).toEqual(['\u{1F7E1} Burst: Overflow to the secondary', '\u{1F535} Burst: Pauseless compaction started'])
   // One claim each, in the panels' own folder, by the event's id.
   const claims = world.runs.filter((r) => r[r.length - 2].endsWith('/alerts-claimed'))
   expect(claims.length).toBe(2)
@@ -179,7 +179,7 @@ test('an alert a pop-up already showed is not shown again as a toast', async ($,
   ], toasts, [], false, [], {}, { claimed: ['popped'] })
   await start($)
   await clock.advance(5000)
-  expect(toasts).toEqual(['Burst: Network back'])
+  expect(toasts).toEqual(['\u{1F535} Burst: Network back'])
 })
 
 test('compaction lines are taken from the gateway and shown as toasts, once', async ($, on) => {
@@ -187,13 +187,13 @@ test('compaction lines are taken from the gateway and shown as toasts, once', as
   const world: World = { lines: ['\u26a1 Burst compaction: 300k context: summarising 885 messages in the background'], posts: [] }
   const clock = stubs(on, [mod()], toasts, [], false, [], {}, world)
   await start($)
-  expect(toasts).toEqual(['Burst compaction: 300k context: summarising 885 messages in the background'])
+  expect(toasts).toEqual(['\u{1F535} Burst compaction: 300k context: summarising 885 messages in the background'])
   expect(JSON.parse(world.posts[0])).toEqual({ session_id: 'S1', hook_event_name: 'PostToolUse', mod: true })
   world.lines = ['\u26a1 Burst compaction: done, 62% smaller: 300k \u2192 114k (885 messages summarised)', '\u26a1 Burst compaction: test line from the dashboard']
   await clock.advance(5000)
   await clock.advance(5000)
   expect(toasts.length).toBe(3)
-  expect(toasts[2]).toBe('Burst compaction: test line from the dashboard')
+  expect(toasts[2]).toBe('\u{1F535} Burst compaction: test line from the dashboard')
 })
 
 test('a dashboard that stops answering says so once, and again when it is back', async ($, on) => {
@@ -208,7 +208,7 @@ test('a dashboard that stops answering says so once, and again when it is back',
   expect(await ui.find({ type: 'Text', text: '⚡ Burst down' })).toBeDefined()
   await ui.unmount()
   await clock.advance(5000)
-  expect(toasts).toEqual(['\u{1F534} Burst dashboard not answering', 'Burst gateway back'])
+  expect(toasts).toEqual(['\u{1F534} Burst dashboard not answering', '\u{1F535} Burst gateway back'])
 })
 
 test('before the first answer the band is not drawn: unknown is not down', async ($, on) => {
@@ -366,8 +366,8 @@ test('/claude-burst-revert and /claude-burst-reinstall run the installed scripts
     ['open', '-a', 'Terminal', '/Users/me/.local/bin/burst-off'],
     ['open', '-a', 'Terminal', '/Users/me/.local/bin/burst-reinstall'],
   ])
-  expect(toasts).toContain('Turning Burst off in a Terminal window. Undo: /claude-burst-reinstall')
-  expect(toasts).toContain('Reinstalling the newest Burst in a Terminal window')
+  expect(toasts).toContain('\u{1F535} Turning Burst off in a Terminal window. Undo: /claude-burst-reinstall')
+  expect(toasts).toContain('\u{1F535} Reinstalling the newest Burst in a Terminal window')
 })
 
 test('a rescue command whose script is not installed says what to run instead', async ($, on) => {
@@ -428,7 +428,7 @@ test("Claude Code's compaction is answered with Burst's summary: no summary requ
   expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h5', 'h6', undefined, 'h8'])
   expect(r.messages[3]).toEqual({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't2', text: 'output' }] })
   expect(r.messages[0]).toEqual({ role: 'user', text: LEAD, toolUses: [] })
-  expect(toasts).toContain("Async Full Compaction: 5 messages replaced with the summary Burst already wrote")
+  expect(toasts).toContain("\u{1F535} Async Full Compaction: 5 messages replaced with the summary Burst already wrote")
 })
 
 test('/resume and /clear carry on under another session with no session.start: the mod follows it', async ($, on) => {
@@ -791,9 +791,9 @@ test('/burst-prune asks the gateway and toasts what it did; with no word it says
   expect(urls.length).toBe(1)
   await $.command.run({ command: 'burst-prune', args: 'other-repo' })
   expect(urls[1]).toBe('http://127.0.0.1:7788/api/inspect/prune')
-  expect(toasts[1]).toBe('Pruned 2 items for "other-repo"')
+  expect(toasts[1]).toBe('\u{1F535} Pruned 2 items for "other-repo"')
   await $.command.run({ command: 'burst-prune', args: 'undo' })
-  expect(toasts[2]).toBe('Put back 2 items')
+  expect(toasts[2]).toBe('\u{1F535} Put back 2 items')
   await $.command.run({ command: 'burst-prune', args: 'other-repo' })
   expect(toasts[3]).toBe('\u{1F534} Nothing pruned: the Burst dashboard is not answering')
 })
