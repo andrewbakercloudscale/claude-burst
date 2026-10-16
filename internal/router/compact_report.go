@@ -88,6 +88,17 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 		}
 	}
 	if st.swappedFrom > 0 && ci.applied {
+		// A swap that left the session at its limit or over reopens the
+		// window, once a window: what was kept (a long running turn, as a
+		// rule) is summarised at the next request rather than carried for
+		// the rest of the half hour. On 14 Oct 2026 a mid-turn swap left
+		// 270k under a 175k limit and the turn grew to 482k over the 27
+		// minutes the window held it, 39M tokens sent above the limit.
+		window := time.Duration(s.compaction.cfg.WindowMinutes) * time.Minute
+		if ci.limit > 0 && ctxTokens >= ci.limit && time.Since(st.reopenedAt) >= window {
+			st.startedAt, st.reopenedAt = time.Time{}, time.Now()
+			s.logger.Printf("req=%s compaction reopened session=%s: %dk after the summary went in, limit %dk; the next request summarises what was kept", requestIDFrom(in.Context()), ci.key, ctxTokens/1000, ci.limit/1000)
+		}
 		cut := 0
 		if st.swappedFrom > 0 && ctxTokens < st.swappedFrom {
 			cut = int(math.Round(100 * float64(st.swappedFrom-ctxTokens) / float64(st.swappedFrom)))

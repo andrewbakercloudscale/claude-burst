@@ -299,9 +299,12 @@ func TestCompactionEndToEnd(t *testing.T) {
 	if !strings.Contains(f.last(), "first task") {
 		t.Fatal("the triggering turn itself must go unmodified")
 	}
-	// Turn 3 ends in a plain prompt: the swap applies.
+	// Turn 3 ends in a plain prompt: the swap applies, and takes the
+	// session under its limit.
 	waitFor(t, func() bool { return s.compactionReady("S") })
+	f.setContext(90_000)
 	send(t, s, "S", all[:9])
+	f.setContext(450_000)
 	got := f.last()
 	if !strings.Contains(got, "THE GIST OF THE FIRST TASK") || !strings.Contains(got, "never push without asking") {
 		t.Fatalf("turn 3 must carry the summary and the CLAUDE.md reminder:\n%s", got)
@@ -512,6 +515,42 @@ func TestEndsInPromptIgnoresTrailingSystemMessages(t *testing.T) {
  {"role":"system","content":[{"type":"text","text":"reminder"}]}]`)
 	if endsInPrompt(tool) {
 		t.Fatal("a tool round followed by a system message is still mid tool round")
+	}
+}
+
+// setContext is the context the next answers report.
+func (f *fakeAnthropic) setContext(n int64) {
+	f.mu.Lock()
+	f.context = n
+	f.mu.Unlock()
+}
+
+// A swap that leaves the session over its limit (a long running turn kept
+// whole) reopens the window at once: what was kept is summarised at the
+// next request, not carried for the rest of the window. Once a window, so
+// a cut that keeps too much does not summarise on every request.
+func TestASwapThatLeavesTheSessionOverItsLimitCompactsAgainAtOnce(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WindowMinutes: 60})
+	var logged bytes.Buffer
+	s.logger = log.New(io.MultiWriter(&logged, testLogWriter{t}), "", 0)
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9]) // the swap; its answer is still 450k
+	if !strings.Contains(logged.String(), "compaction reopened") {
+		t.Fatalf("a swap that left the session over its limit must reopen the window:\n%s", logged.String())
+	}
+	send(t, s, "S", all[:9])
+	waitFor(t, func() bool { return f.summaryCount() == 2 })
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	// The second swap leaves it over too: inside the same window, no third.
+	send(t, s, "S", all[:9])
+	send(t, s, "S", all[:9])
+	s.compaction.running.Wait()
+	if n := f.summaryCount(); n != 2 {
+		t.Fatalf("one reopening a window, got %d summaries", n)
 	}
 }
 
@@ -1531,7 +1570,9 @@ func TestASummarySurvivesAFirstMessageThatChanges(t *testing.T) {
 	send(t, s, "S", all[:7])
 	waitFor(t, func() bool { return f.summaryCount() == 1 })
 	waitFor(t, func() bool { return s.compactionReady("S") })
+	f.setContext(90_000)
 	send(t, s, "S", all[:9])
+	f.setContext(450_000)
 	if !strings.Contains(f.last(), "THE GIST OF THE FIRST TASK") {
 		t.Fatalf("the session must be compacted:\n%s", f.last())
 	}

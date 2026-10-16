@@ -91,6 +91,11 @@ type compactState struct {
 	// swap has been compared with the limit. Memory only: after a restart
 	// the next answer is judged again, and the mod acts once per summary.
 	judged string
+	// reopenedAt is when a swap that left the session over its limit last
+	// reopened the window (noteSessionContext), so it does once a window
+	// and a cut that keeps too much cannot summarise on every request.
+	// Memory only.
+	reopenedAt time.Time
 }
 
 // hashOf identifies messages [0, n) for this state's summaries: without the
