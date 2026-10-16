@@ -155,7 +155,9 @@ test('alerts become toasts once, each claimed so its pop-up stands aside', async
   ], toasts, urls, false, [], {}, world)
   await start($)
   await clock.advance(5000)
-  expect(toasts).toEqual(['Burst: Overflow to the secondary', 'Burst: Pauseless compaction started'])
+  // A warning carries a yellow mark, since a toast cannot be coloured;
+  // news carries none.
+  expect(toasts).toEqual(['\u{1F7E1} Burst: Overflow to the secondary', 'Burst: Pauseless compaction started'])
   // One claim each, in the panels' own folder, by the event's id.
   const claims = world.runs.filter((r) => r[r.length - 2].endsWith('/alerts-claimed'))
   expect(claims.length).toBe(2)
@@ -200,12 +202,13 @@ test('a dashboard that stops answering says so once, and again when it is back',
   await start($)
   await clock.advance(5000)
   await clock.advance(5000)
-  expect(toasts).toEqual(['Burst dashboard not answering'])
+  // Red, since a toast cannot be coloured: a restart is the problem to notice.
+  expect(toasts).toEqual(['\u{1F534} Burst dashboard not answering'])
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: '⚡ Burst down' })).toBeDefined()
   await ui.unmount()
   await clock.advance(5000)
-  expect(toasts).toEqual(['Burst dashboard not answering', 'Burst gateway back'])
+  expect(toasts).toEqual(['\u{1F534} Burst dashboard not answering', 'Burst gateway back'])
 })
 
 test('before the first answer the band is not drawn: unknown is not down', async ($, on) => {
@@ -372,7 +375,7 @@ test('a rescue command whose script is not installed says what to run instead', 
   stubs(on, [mod()], toasts, [], false, [], {}, { missing: '/Users/me/.local/bin/burst-off' })
   await start($)
   await $.command.run({ command: 'claude-burst-revert', args: '' })
-  expect(toasts.some((t) => t.startsWith('Could not run /Users/me/.local/bin/burst-off') && t.includes('./install.sh'))).toBe(true)
+  expect(toasts.some((t) => t.startsWith('\u{1F534} Could not run /Users/me/.local/bin/burst-off') && t.includes('./install.sh'))).toBe(true)
 })
 
 // Hand-off: Claude Code's transcript as a session.compact hook sees it. The
@@ -792,7 +795,7 @@ test('/burst-prune asks the gateway and toasts what it did; with no word it says
   await $.command.run({ command: 'burst-prune', args: 'undo' })
   expect(toasts[2]).toBe('Put back 2 items')
   await $.command.run({ command: 'burst-prune', args: 'other-repo' })
-  expect(toasts[3]).toBe('Nothing pruned: the Burst dashboard is not answering')
+  expect(toasts[3]).toBe('\u{1F534} Nothing pruned: the Burst dashboard is not answering')
 })
 
 test('/burst-dump of a session on a message thread says how far behind it is and asks for the whole conversation', async ($, on) => {
