@@ -1,8 +1,6 @@
 package metrics
 
 import (
-	"bufio"
-	"os"
 	"strings"
 	"time"
 )
@@ -82,25 +80,14 @@ func ok(e Event) bool { return e.HTTPStatus >= 200 && e.HTTPStatus < 300 }
 
 func EfficiencySince(path string, since time.Time) (Efficiency, error) {
 	var eff Efficiency
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return eff, nil
-	}
-	if err != nil {
-		return eff, err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	for sc.Scan() {
-		var e Event
-		if !decodeEvent(sc.Bytes(), &e) || e.Time.Before(since) || !isInference(e) {
-			continue
+	err := scanEvents(path, func(e Event) {
+		if e.Time.Before(since) || !isInference(e) {
+			return
 		}
 		// Client cancellations are the caller going away, not the provider
 		// failing; counting them would blame pruning for closed terminals.
 		if strings.HasPrefix(e.Note, "client cancelled") {
-			continue
+			return
 		}
 		r := &eff.Primary
 		if e.Slot == "secondary" {
@@ -113,7 +100,7 @@ func EfficiencySince(path string, since time.Time) (Efficiency, error) {
 		r.OutputTokens += e.OutputTokens
 		r.USD += e.APIEquivalentUSD
 		if e.Slot != "secondary" {
-			continue
+			return
 		}
 		eff.RepeatedCalls += e.RepeatedCalls
 		eff.RerunsAfterStub += e.RerunsAfterStub
@@ -137,6 +124,6 @@ func EfficiencySince(path string, since time.Time) (Efficiency, error) {
 				eff.LastPrunedAt = e.Time
 			}
 		}
-	}
-	return eff, sc.Err()
+	})
+	return eff, err
 }

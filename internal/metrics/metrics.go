@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -134,10 +133,10 @@ func SetPricer(p Pricer) {
 
 // decodeEvent unmarshals one metrics line and reprices it if it was recorded
 // unpriced and its model has a price now.
-func decodeEvent(b []byte, e *Event) bool {
-	if json.Unmarshal(b, e) != nil {
-		return false
-	}
+// reprice prices an event written before its model had a price, with the
+// prices known now. It is applied on every read, not kept, so a price
+// added later reaches the history too.
+func reprice(e *Event) {
 	if e.PricingUnknown {
 		pricerMu.RLock()
 		p := pricer
@@ -148,7 +147,6 @@ func decodeEvent(b []byte, e *Event) bool {
 			}
 		}
 	}
-	return true
 }
 
 type Writer struct {
@@ -272,47 +270,22 @@ func (s Summary) String() string {
 }
 
 // Recent returns up to limit of the most recent events, newest first.
-//
-// It reads the whole file rather than seeking from the end: the log is
-// line-delimited JSON of unbounded line length, so a tail-seek would have to
-// guess where a record starts. Growth is bounded in practice (one line per
-// request) and this keeps the reader obviously correct.
 func Recent(path string, limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
+	events, err := heldEvents(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	// Ring buffer: holds at most `limit` events regardless of file size.
-	ring := make([]Event, 0, limit)
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	for sc.Scan() {
-		var e Event
-		if !decodeEvent(sc.Bytes(), &e) {
-			continue
-		}
-		if len(ring) < limit {
-			ring = append(ring, e)
-		} else {
-			copy(ring, ring[1:])
-			ring[limit-1] = e
-		}
+	if len(events) > limit {
+		events = events[len(events)-limit:]
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	// Newest first.
-	out := make([]Event, 0, len(ring))
-	for i := len(ring) - 1; i >= 0; i-- {
-		out = append(out, ring[i])
+	out := make([]Event, 0, len(events))
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		reprice(&e)
+		out = append(out, e)
 	}
 	return out, nil
 }
@@ -646,24 +619,12 @@ func Scan(path string, start time.Time, fn func(Event)) (earliest time.Time, fil
 func Percentile(v []int64, p float64) int64 { return percentile(v, p) }
 
 func scanEvents(path string, fn func(Event)) error {
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	for sc.Scan() {
-		var e Event
-		if !decodeEvent(sc.Bytes(), &e) {
-			continue
-		}
+	events, err := heldEvents(path)
+	for _, e := range events {
+		reprice(&e)
 		fn(e)
 	}
-	return sc.Err()
+	return err
 }
 
 // slotOf resolves an event's slot, including the legacy events written
