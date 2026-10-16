@@ -274,18 +274,14 @@ func Recent(path string, limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	events, err := heldEvents(path)
+	v, err := heldEvents(path)
 	if err != nil {
 		return nil, err
 	}
-	if len(events) > limit {
-		events = events[len(events)-limit:]
-	}
-	out := make([]Event, 0, len(events))
-	for i := len(events) - 1; i >= 0; i-- {
-		e := events[i]
-		reprice(&e)
-		out = append(out, e)
+	n := v.len()
+	out := make([]Event, 0, min(n, limit))
+	for i := n - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, v.at(i))
 	}
 	return out, nil
 }
@@ -619,10 +615,9 @@ func Scan(path string, start time.Time, fn func(Event)) (earliest time.Time, fil
 func Percentile(v []int64, p float64) int64 { return percentile(v, p) }
 
 func scanEvents(path string, fn func(Event)) error {
-	events, err := heldEvents(path)
-	for _, e := range events {
-		reprice(&e)
-		fn(e)
+	v, err := heldEvents(path)
+	for i, n := 0, v.len(); i < n; i++ {
+		fn(v.at(i))
 	}
 	return err
 }

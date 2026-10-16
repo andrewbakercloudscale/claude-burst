@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func eventLine(t *testing.T, id string) string {
@@ -150,5 +152,56 @@ func TestHeldEventsAreRepricedOnEachRead(t *testing.T) {
 	_ = scanEvents(path, func(e Event) { usd = e.APIEquivalentUSD })
 	if usd != 1.5 {
 		t.Errorf("after a price arrived: %v, want 1.5", usd)
+	}
+}
+
+// Every field of Event survives packing. Each is set to a value of its own,
+// so a field added to Event and not to packedEvent, or two swapped, fails.
+func TestPackingKeepsEveryField(t *testing.T) {
+	var e Event
+	v := reflect.ValueOf(&e).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		switch f.Kind() {
+		case reflect.String:
+			f.SetString(fmt.Sprintf("s%d", i))
+		case reflect.Int, reflect.Int64:
+			f.SetInt(int64(1000 + i))
+		case reflect.Float64:
+			f.SetFloat(float64(i) + 0.25)
+		case reflect.Bool:
+			f.SetBool(true)
+		case reflect.Struct:
+			if _, ok := f.Interface().(time.Time); ok {
+				f.Set(reflect.ValueOf(time.Date(2026, 10, 16, 9, 0, 0, 123, time.FixedZone("", 7200))))
+				continue
+			}
+			t.Fatalf("Event.%s: a %s, which this test does not know how to fill", v.Type().Field(i).Name, f.Type())
+		default:
+			t.Fatalf("Event.%s: a %s, which this test does not know how to fill", v.Type().Field(i).Name, f.Type())
+		}
+	}
+	var tab strTable
+	p, ok := pack(&e, &tab)
+	if !ok {
+		t.Fatal("an event with small counts was not packed")
+	}
+	if got := p.unpack(tab.strs); !reflect.DeepEqual(got, e) {
+		t.Errorf("packing changed the event:\n got %+v\nwant %+v", got, e)
+	}
+	if size := unsafe.Sizeof(p); size > 160 {
+		t.Errorf("a packed event is %d bytes, want 160 at most", size)
+	}
+}
+
+// A count too big for 32 bits is held whole, and read back exactly.
+func TestAnEventTooBigToPackIsHeldWhole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	b, _ := json.Marshal(Event{Time: time.Now(), RequestID: "big", Route: "anthropic", InputTokens: 1 << 40})
+	appendTo(t, path, eventLine(t, "a")+string(b)+"\n"+eventLine(t, "c"))
+	var got []Event
+	_ = scanEvents(path, func(e Event) { got = append(got, e) })
+	if len(got) != 3 || got[1].RequestID != "big" || got[1].InputTokens != 1<<40 || got[2].RequestID != "c" {
+		t.Errorf("got %+v", got)
 	}
 }

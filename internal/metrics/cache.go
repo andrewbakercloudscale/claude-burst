@@ -17,9 +17,9 @@ import (
 // never changes, so each file is now parsed once and kept in memory: a
 // rotated file until rotation moves another file to its name, the live file
 // from where the last read stopped. A read costs a walk over the events
-// held: 4ms for all 173,000 against 175ms to parse them. The price is
-// memory, about 75MB for that history, and no more than that grows to:
-// rotation keeps at most maxBackups files of maxBytes each.
+// held: 7.5ms for all 174,000 against 210ms to parse them. The price
+// is memory, 34MB for that history packed (pack.go), and no more than
+// that grows to: rotation keeps at most maxBackups files of maxBytes each.
 
 // heldFile is one metrics file's events, as parsed so far.
 type heldFile struct {
@@ -27,7 +27,43 @@ type heldFile struct {
 	ino    uint64
 	offset int64  // bytes parsed: always the end of a complete line
 	head   []byte // the file's first bytes, which say it is still the same file
-	events []Event
+	events []packedEvent
+	strs   strTable
+	wholes []Event // events too big to pack; their packedEvent points here
+}
+
+// wholeMark in a packedEvent's httpStatus says the event is held whole, at
+// wholes[durationMS].
+const wholeMark = -1 << 31
+
+// heldView is a file's events as one call found them. Every slice in it is
+// only ever appended to past its end, so it is read without a lock.
+type heldView struct {
+	events []packedEvent
+	strs   []string
+	wholes []Event
+	tail   *Event // a last line with no newline yet, which parsed
+}
+
+func (v heldView) len() int {
+	if v.tail != nil {
+		return len(v.events) + 1
+	}
+	return len(v.events)
+}
+
+// at returns event i, priced with the prices known now.
+func (v heldView) at(i int) Event {
+	var e Event
+	if i == len(v.events) {
+		e = *v.tail
+	} else if p := &v.events[i]; p.httpStatus == wholeMark {
+		e = v.wholes[p.durationMS]
+	} else {
+		e = p.unpack(v.strs)
+	}
+	reprice(&e)
+	return e
 }
 
 const headLen = 256
@@ -38,21 +74,20 @@ var held = struct {
 }{m: map[string]*heldFile{}}
 
 // heldEvents returns path's events, parsing only what was added since the
-// last call. The slice it returns is never changed afterwards, so callers
-// read it without a lock.
-func heldEvents(path string) ([]Event, error) {
+// last call.
+func heldEvents(path string) (heldView, error) {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		forget(path)
-		return nil, nil
+		return heldView{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return heldView{}, err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return heldView{}, err
 	}
 	var ino uint64
 	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
@@ -78,20 +113,20 @@ func heldEvents(path string) ([]Event, error) {
 	// what was parsed or starting differently (rewritten in place), is
 	// parsed from the start.
 	if h.ino != ino || st.Size() < h.offset || !bytes.HasPrefix(head, h.head) && !bytes.HasPrefix(h.head, head) {
-		h.ino, h.offset, h.head, h.events = ino, 0, nil, nil
+		h.ino, h.offset, h.head, h.events, h.strs, h.wholes = ino, 0, nil, nil, strTable{}, nil
 	}
 	if len(head) > len(h.head) {
 		h.head = head
 	}
+	view := func() heldView { return heldView{events: h.events, strs: h.strs.strs, wholes: h.wholes} }
 	if st.Size() == h.offset {
-		return h.events, nil
+		return view(), nil
 	}
 	if _, err := f.Seek(h.offset, io.SeekStart); err != nil {
-		return nil, err
+		return heldView{}, err
 	}
 	// Appending writes only past the end of any slice already handed out,
 	// so a caller still walking one never sees it change.
-	events := h.events
 	r := bufio.NewReaderSize(f, 64*1024)
 	for {
 		line, err := r.ReadSlice('\n')
@@ -108,20 +143,25 @@ func heldEvents(path string) ([]Event, error) {
 			// What is left has no newline yet: the writer is part way
 			// through it, or a file written by hand ends without one. It
 			// is not held, so it is read again next time, whole; when it
-			// parses already it is in this answer, on a copy, since the
-			// slot after the held events is the next append's.
-			h.events = events
+			// parses already it is in this answer.
+			v := view()
 			var e Event
 			if len(bytes.TrimSpace(line)) > 0 && json.Unmarshal(line, &e) == nil {
-				return append(events[:len(events):len(events)], e), nil
+				v.tail = &e
 			}
-			return events, nil
+			return v, nil
 		}
 		h.offset += int64(len(line))
 		var e Event
-		if json.Unmarshal(line, &e) == nil {
-			events = append(events, e)
+		if json.Unmarshal(line, &e) != nil {
+			continue
 		}
+		p, ok := pack(&e, &h.strs)
+		if !ok {
+			p = packedEvent{httpStatus: wholeMark, durationMS: int32(len(h.wholes))}
+			h.wholes = append(h.wholes, e)
+		}
+		h.events = append(h.events, p)
 	}
 }
 
