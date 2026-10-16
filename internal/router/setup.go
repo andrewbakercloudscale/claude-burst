@@ -83,6 +83,18 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		t.Proxy = upstreamProxy
 		t.ResponseHeaderTimeout = responseHeaderTimeout
 		t.TLSClientConfig = &tls.Config{RootCAs: roots}
+		// Ping a connection that has gone quiet, and close it when the ping
+		// is not answered. Every request to Anthropic shares one HTTP/2
+		// connection, and one that dies with the network (a hotspot
+		// dropping, then coming back on the same address) sends no reset:
+		// without pings Go waits on it until the kernel gives up, which is
+		// many minutes. On 2026-10-16 five Remote Control streams opened at
+		// 17:03, as the hotspot came back, sat on such a connection deaf for
+		// twelve minutes, heartbeats hanging beside them, until Claude Code
+		// cancelled them all at 17:15; the phone could not reach a session
+		// in all that time. A closed connection fails every stream on it,
+		// and Claude Code opens each again on a new one within seconds.
+		t.HTTP2 = &http.HTTP2Config{SendPingTimeout: upstreamPingAfter, PingTimeout: upstreamPingTimeout}
 		if resolver != nil {
 			// /etc/hosts now points the upstream hostname at this process, so
 			// the standard resolver would make the gateway call itself. See
@@ -141,6 +153,16 @@ type StartupProblem struct {
 // which took down the dashboard the mistake is corrected in. New has logged
 // each; serve puts them on screen.
 func (s *Server) StartupProblems() []StartupProblem { return s.startupProblems }
+
+// upstreamPingAfter is how long a connection to the upstream may go without
+// a frame before it is pinged, and upstreamPingTimeout how long the ping may
+// go unanswered before the connection is closed as dead. Anthropic answers a
+// ping in well under a second even mid-generation, so a live connection is
+// never closed by this; a dead one is found in under half a minute.
+const (
+	upstreamPingAfter   = 15 * time.Second
+	upstreamPingTimeout = 10 * time.Second
+)
 
 // slowHeaderWait is how long a Messages request that did not ask for a stream
 // may take to start answering.

@@ -72,6 +72,9 @@ func (s *Server) DropHeldStreams(why string) int {
 			c.CloseIdleConnections()
 		}
 	}
+	if s.logger == nil {
+		return n
+	}
 	s.logger.Printf("remote control: %s, ended %d held stream(s) so Claude Code opens them again on a new connection", why, n)
 	return n
 }

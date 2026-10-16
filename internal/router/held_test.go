@@ -3,11 +3,16 @@ package router
 import (
 	"bufio"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 // A sleep, or a move to another network, is why the held streams are ended;
@@ -136,5 +141,43 @@ func TestHeldStreamsAreEndedSoClaudeCodeOpensThemAgain(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stream could not be opened again")
+	}
+}
+
+// TestUpstreamConnectionsArePinged: a connection that dies without a reset
+// must be found by a ping, or Remote Control streams on it stay deaf for
+// as long as the kernel takes to give up (2026-10-16, twelve minutes).
+func TestUpstreamConnectionsArePinged(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(config.Default(), filepath.Join(dir, "state.json"), filepath.Join(dir, "m.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transports []*http.Transport
+	transports = append(transports, s.passthroughClient.Transport.(*http.Transport))
+	switch tr := s.client.Transport.(type) {
+	case *http.Transport:
+		transports = append(transports, tr)
+	case *headerWaitTransport:
+		transports = append(transports, tr.quick, tr.slow)
+	}
+	for i, tr := range transports {
+		if tr.HTTP2 == nil || tr.HTTP2.SendPingTimeout <= 0 || tr.HTTP2.PingTimeout <= 0 {
+			t.Errorf("transport %d: no HTTP/2 health ping: %+v", i, tr.HTTP2)
+		}
+	}
+}
+
+// TestNetworkBackEndsHeldStreams: coming back on the same hotspot changes
+// no address, so the recovery itself must make sessions reconnect.
+func TestNetworkBackEndsHeldStreams(t *testing.T) {
+	s := &Server{logger: log.New(io.Discard, "", 0)}
+	r := httptest.NewRequest(http.MethodGet, "/v1/code/sessions/x/worker/events/stream", nil)
+	held, done := s.held.hold(r)
+	defer done()
+	s.alertNetworkDown()
+	s.alertNetworkUp()
+	if held.Context().Err() == nil {
+		t.Fatal("the held stream was not ended when the network came back")
 	}
 }

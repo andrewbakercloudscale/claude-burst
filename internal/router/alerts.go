@@ -189,6 +189,12 @@ func (s *Server) alertNetworkUp() {
 	s.alerts.mu.Unlock()
 	if was {
 		notice.Publish(alertNetwork, notice.OK, "Network back", "Anthropic is answering again.")
+		// Remote Control streams opened while the network was coming back
+		// can sit on a connection that never worked, and the Mac coming back
+		// on the hotspot it left keeps its address, so WatchNetwork sees no
+		// change. Ending them makes every session reconnect to the phone now
+		// rather than when someone types in it (2026-10-16).
+		s.DropHeldStreams("the network came back")
 	}
 }
 
