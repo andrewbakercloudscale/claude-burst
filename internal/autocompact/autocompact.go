@@ -62,8 +62,9 @@
 // below the floor, never above the fixed Compact at, a tenth a day at most
 // once a threshold is in use (the first one learned goes straight there),
 // nothing learned from fewer than MinCompactions, and back to the fixed
-// Compact at where most compactions fail or sessions end before one has
-// paid for itself. How often a session may compact at all stays the
+// Compact at where most compactions fail or, for a size from the formula,
+// sessions end before one has paid for itself (a replay has already charged
+// each size for that). How often a session may compact at all stays the
 // compaction settings' delay.
 package autocompact
 
@@ -423,8 +424,14 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		// is what a Compact at is worked out from.
 		if !r.Cold {
 			a.costs = append(a.costs, r.CostUSD)
+			// In tokens at the run's own model's price, so runs on
+			// different models pool: the latest run's price turns it back
+			// into money below. Pooled in USD, a Haiku run last priced an
+			// Opus repository's compactions at four times the tokens, the
+			// payback guard below fired, and claude-burst went from 175k
+			// to 500k on four days to 16 Oct 2026.
 			if p > 0 {
-				a.c0 = append(a.c0, math.Max(0, r.CostUSD-p*float64(r.Before)))
+				a.c0 = append(a.c0, math.Max(0, r.CostUSD/p-float64(r.Before)))
 			}
 		}
 		if in.Now.Sub(r.Last) >= settled {
@@ -497,7 +504,8 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		r.TurnsAfter = int(median(a.turnsAfter))
 		r.PaybackTurn, r.SavedTurnUSD, r.Measured = 0, 0, nil
 
-		extraUSD := median(a.c0)
+		extraTokens := median(a.c0)
+		extraUSD := extraTokens * a.price
 		// Room to work in: half as much again as a compaction leaves.
 		low := max(b.Floor, r.AfterTokens*3/2)
 		// best is the size before the bounds are applied to it.
@@ -521,7 +529,7 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 			r.Reason = "no run long enough to measure how fast the context grows: on the starting size, the middle of the range"
 			continue
 		default:
-			best = Optimal(r.AfterTokens, r.GrowthTurn, int64(extraUSD/a.price), a.fails.Rate)
+			best = Optimal(r.AfterTokens, r.GrowthTurn, int64(extraTokens), a.fails.Rate)
 			cheapest := best
 			best = Latest(best, r.AfterTokens, r.GrowthTurn, a.price, extraUSD)
 			late := best
@@ -547,7 +555,9 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare:
 			target = b.Ceiling
 			r.Reason = fmt.Sprintf("%d of %d compactions lost money: back to the fixed Compact at", a.fails.Count(), a.fails.Attempts)
-		case len(a.turnsAfter) >= MinCompactions && r.TurnsAfter < 2*r.PaybackTurn:
+		// Not for a replayed size: the replay already charged each size's
+		// compactions against the turns the sessions really went on for.
+		case !measured && len(a.turnsAfter) >= MinCompactions && r.TurnsAfter < 2*r.PaybackTurn:
 			target = b.Ceiling
 			r.Reason = fmt.Sprintf("sessions go on %d turns after a compaction and one needs %d to pay for itself: back to the fixed Compact at", r.TurnsAfter, r.PaybackTurn)
 		case best < low:

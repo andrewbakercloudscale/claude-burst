@@ -430,3 +430,49 @@ func TestAReplayedSizeStaysInsideTheBoundsAndTheGuards(t *testing.T) {
 		t.Fatalf("target %d (%s), want the ceiling", r.Target, r.Reason)
 	}
 }
+
+// A compaction's cost beyond reading the history is pooled in tokens, so
+// a repository whose latest run was on a cheaper model is not priced as if
+// every compaction had been: on 16 Oct 2026 a Haiku run last quadrupled
+// claude-burst's payback and sent it from 175k to 500k.
+func TestTheLatestRunsModelDoesNotRepriceTheOthers(t *testing.T) {
+	cheap := func(string) float64 { return readPrice }
+	priced := func(last string) Inputs {
+		var runs []metrics.CompactionRun
+		for i := 0; i < 4; i++ {
+			runs = append(runs, swapped(fmt.Sprintf("a%d", i), 300_000, 70_000, 0.40, 40, 2_000))
+		}
+		h := swapped("a9", 300_000, 70_000, 0.10, 40, 2_000)
+		h.Model, h.Last = last, h.Last.Add(time.Minute)
+		in := inputs(append(runs, h)...)
+		in.ReadPrice = func(m string) float64 {
+			if m == "haiku" {
+				return readPrice / 4
+			}
+			return cheap(m)
+		}
+		return in
+	}
+	same := Learn(empty(), priced("m"), bounds, true).Repos["/src/repo-a"]
+	haiku := Learn(empty(), priced("haiku"), bounds, true).Repos["/src/repo-a"]
+	if haiku.PaybackTurn != same.PaybackTurn || haiku.Target != same.Target {
+		t.Fatalf("latest on a cheaper model: payback %d target %d, want %d and %d as with the same model", haiku.PaybackTurn, haiku.Target, same.PaybackTurn, same.Target)
+	}
+}
+
+// A replayed size is not sent back to the fixed Compact at because
+// sessions end soon after a compaction: the replay charged every size for
+// the turns its sessions really ran.
+func TestAReplayedSizeIsNotOverruledByThePaybackGuard(t *testing.T) {
+	b := Bounds{Floor: 100_000, Ceiling: 500_000, Start: 300_000}
+	short := swapped("a1", 150_000, 70_000, 0.40, 10, 2_000)
+	grow := metrics.CompactionRun{Session: "a9", Model: "m", At: now.Add(-72 * time.Hour), Last: now.Add(-71 * time.Hour), Start: 20_000, End: 220_000, Turns: 100}
+	in := inputs(short, short, short, grow)
+	if r := Learn(empty(), in, b, true).Repos["/src/repo-a"]; r.Target != b.Ceiling {
+		t.Fatalf("formula: target %d, want the guard to send it to the ceiling", r.Target)
+	}
+	in.Measured = map[string]metrics.StrategyRepo{"/src/repo-a": replay(1000, 140, map[int64]float64{150: 100, 175: 103, 500: 160})}
+	if r := Learn(empty(), in, b, true).Repos["/src/repo-a"]; r.Target != 175_000 || strings.Contains(r.Reason, "back to the fixed") {
+		t.Fatalf("replayed: target %d (%s), want the replay's 175k", r.Target, r.Reason)
+	}
+}
