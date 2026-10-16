@@ -215,3 +215,51 @@ func TestTheReplayIsCheckedAgainstWhatHappenedFromTheFirstSizeOnRecord(t *testin
 		t.Fatalf("a track with no sizes on record: %+v", plain.Track)
 	}
 }
+
+// A subagent's requests come between its session's own, under the same id
+// and model. They are a context of their own: not the user clearing the
+// session's, and the session's next request after one is not a new swap.
+// So the session costs what it would with no subagent, plus the subagent's
+// own requests.
+func TestASubagentsRequestsAreNotTheSessionClearingOrSwapping(t *testing.T) {
+	SetPricer(func(model string, in, out, read, write int64) (float64, bool) {
+		return float64(read)/1e6 + float64(write)*6/1e6 + float64(out)*10/1e6, true
+	})
+	t.Cleanup(func() { SetPricer(nil) })
+	at := time.Now().Add(-2 * time.Hour)
+	replay := func(withAgent bool) Strategies {
+		n := 0
+		ev := func(agent, rest string) string {
+			n++
+			return `{"time":"` + at.Add(time.Duration(n)*time.Minute).Format(time.RFC3339) + `","session_id":"S","agent_id":"` + agent + `","slot":"primary","model":"m","http_status":200,` + rest + `}`
+		}
+		lines := []string{
+			ev("", `"cache_read_tokens":100000`), ev("", `"cache_read_tokens":200000`),
+			ev("", `"cache_read_tokens":200000,"api_equivalent_usd":0.2,"note":"compaction summary"`),
+			ev("", `"cache_write_tokens":60000,"compacted_messages":40`), // the one swap
+		}
+		for i, k := range []int{70, 80, 90} {
+			if withAgent {
+				lines = append(lines, ev("a1", fmt.Sprintf(`"cache_read_tokens":%d`, 20_000+i*5_000)))
+			}
+			lines = append(lines, ev("", fmt.Sprintf(`"cache_read_tokens":%d,"compacted_messages":40`, k*1000)))
+		}
+		p := filepath.Join(t.TempDir(), "m.jsonl")
+		if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		st, err := CompactionStrategiesSince(p, at, 150_000, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	alone, with := replay(false), replay(true)
+	const agentTokens = 20_000 + 25_000 + 30_000
+	for name, pair := range map[string][2]StrategyCost{"actual": {alone.Actual, with.Actual}, "fixed": {alone.Fixed, with.Fixed}, "default": {alone.Default, with.Default}} {
+		a, w := pair[0], pair[1]
+		if w.Compactions != a.Compactions || math.Abs(w.CompactionUSD-a.CompactionUSD) > 1e-9 || w.Tokens != a.Tokens+agentTokens {
+			t.Fatalf("%s with a subagent %+v, want %+v plus %d tokens", name, w, a, agentTokens)
+		}
+	}
+}

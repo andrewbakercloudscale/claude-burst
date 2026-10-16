@@ -408,7 +408,14 @@ func CompactionStrategiesTracked(path string, since time.Time, fixedAt int64, de
 			if e.Slot != "primary" || !ok(e) || e.SessionID == "" {
 				return
 			}
-			key := e.SessionID + "|" + e.Model
+			// A session's subagents share its id and model, and their
+			// requests come between its own: keyed by session alone, each
+			// one read as the user clearing (the context halved) and the
+			// next of the session's own as a new swap. On the 8,037
+			// requests from 8 to 16 Oct 2026, 1,000 were a subagent's: 51
+			// false clears reset the twins and 19 false swaps charged
+			// Actual a rewrite.
+			key := e.SessionID + "|" + e.AgentID + "|" + e.Model
 			s := sessions[key]
 			if s == nil {
 				s = &strategySession{def: twin{at: claudeCodeTrigger}, fixed: twin{at: st.FixedAt, delay: delay}}
