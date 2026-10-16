@@ -10,6 +10,7 @@ import (
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/keepawake"
+	"github.com/andrewbakercloudscale/claude-burst/internal/looseends"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
@@ -18,7 +19,11 @@ func captureAlerts(t *testing.T) func() []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "notices.json")
 	notice.SetDefault(notice.New(path, nil))
-	t.Cleanup(func() { notice.Default().Flush(2 * time.Second); notice.SetDefault(nil) })
+	// The notifier's daily loose-ends reminder scans this Mac's real
+	// repositories; no test of other alerts wants that.
+	was := looseScan
+	looseScan = func(config.Config, time.Time) looseends.Report { return looseends.Report{} }
+	t.Cleanup(func() { notice.Default().Flush(2 * time.Second); notice.SetDefault(nil); looseScan = was })
 	return func() []string {
 		notice.Flush(2 * time.Second)
 		evs, err := notice.Read(path)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/coord"
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 )
 
 // Session coordination: the dashboard switch, its two timings, and who is
@@ -21,17 +22,19 @@ const maxCoordMinutes = 240
 
 // Coordinator reads the coordination state the hooks keep.
 func Coordinator(cfg config.Config) (*coord.Coordinator, error) {
-	dir := os.Getenv("CLAUDE_BURST_COORD_DIR")
+	// A session leaving files uncommitted is announced on screen, except
+	// for a coordinator on a state directory of its own (the live test).
+	dir, notices := os.Getenv("CLAUDE_BURST_COORD_DIR"), ""
 	if dir == "" {
 		cd, err := config.ConfigDir()
 		if err != nil {
 			return nil, err
 		}
-		dir = filepath.Join(cd, "coord")
+		dir, notices = filepath.Join(cd, "coord"), notice.Path(cd)
 	}
 	exe, _ := os.Executable()
 	c := cfg.SessionCoordination.Resolved()
-	return &coord.Coordinator{Dir: dir, Exe: exe, Settings: coord.Settings{
+	return &coord.Coordinator{Dir: dir, Exe: exe, Notices: notices, Settings: coord.Settings{
 		MasterIdle: time.Duration(c.MasterIdleMinutes) * time.Minute,
 		Nudge:      time.Duration(c.NudgeMinutes) * time.Minute,
 	}.Resolved()}, nil

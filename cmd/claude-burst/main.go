@@ -63,6 +63,8 @@ func main() {
 		shuntCmd(os.Args[2:])
 	case "coord":
 		coordCmd(os.Args[2:])
+	case "loose-ends":
+		looseEndsCmd(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
@@ -92,6 +94,7 @@ Commands:
   stats             Summarize local routing/token metrics
   shunt disable     Remove the hook and skill of token shunting (removed), if an earlier install left them
   coord             Session coordination: status, send, release (see: coord help)
+  loose-ends        Uncommitted files, unpushed commits and stashes in the repositories sessions use (--json)
   codex             Codex through Burst: enable, disable, status (gateway on 127.0.0.1:7779)
   restore-config    Put back the newest backup of config.json that loads, when the one in place does not
   console           support console: audit, log, restart and repair, up when the gateway is not (127.0.0.1:7789)

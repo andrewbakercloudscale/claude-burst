@@ -53,6 +53,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/looseends"
+	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
 	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 )
 
@@ -92,6 +94,9 @@ type Coordinator struct {
 	Exe      string           // this binary, for the commands sessions are told to run
 	Settings Settings         // timings
 	Now      func() time.Time // the clock; tests move it
+	// Notices is the notices.json a session leaving work uncommitted is
+	// announced in, on screen. Empty: not announced (tests, the live test).
+	Notices string
 }
 
 func (c *Coordinator) now() float64 {
@@ -136,10 +141,22 @@ type message struct {
 	TS   float64 `json:"ts"`
 }
 
+// orphan is a file a session left uncommitted when it ended with nobody to
+// hand it to: a loose end. It is kept until the file is committed or
+// another session edits it, so the next session in the repository, the
+// dashboard and the end-of-session alert can say whose work it is.
+type orphan struct {
+	Session string  `json:"session"`
+	Label   string  `json:"label"`          // t.label of the session, which may be gone from Sessions
+	Name    string  `json:"name,omitempty"` // its name in Claude Code, when it had one
+	Left    float64 `json:"left"`
+}
+
 type state struct {
 	Sessions map[string]*session  `json:"sessions"`
 	Files    map[string]*shared   `json:"files"`
 	Inbox    map[string][]message `json:"inbox"`
+	Orphans  map[string]*orphan   `json:"orphans,omitempty"`
 }
 
 // tx is the state under the lock, plus what this invocation needs.
@@ -150,6 +167,9 @@ type tx struct {
 	// gitc is each tracked file's git state, read before the lock was
 	// taken (prewarm); git() falls back to asking git for anything else.
 	gitc map[string]fileState
+	// orphaned is the files this invocation found left uncommitted by an
+	// ending session, announced once the state is saved.
+	orphaned []string
 }
 
 // git is path's git state: from the prewarm when it has it, else from git.
@@ -178,10 +198,14 @@ func (c *Coordinator) prewarm() map[string]fileState {
 		return nil
 	}
 	var d struct {
-		Files map[string]json.RawMessage `json:"files"`
+		Files   map[string]json.RawMessage `json:"files"`
+		Orphans map[string]json.RawMessage `json:"orphans"`
 	}
-	if json.Unmarshal(b, &d) != nil || len(d.Files) == 0 {
+	if json.Unmarshal(b, &d) != nil || len(d.Files)+len(d.Orphans) == 0 {
 		return nil
+	}
+	for p, v := range d.Orphans {
+		d.Files[p] = v
 	}
 	out := make(map[string]fileState, len(d.Files))
 	var mu sync.Mutex
@@ -257,10 +281,14 @@ func (c *Coordinator) with(fn func(t *tx) error) error {
 	if d.Inbox == nil {
 		d.Inbox = map[string][]message{}
 	}
+	if d.Orphans == nil {
+		d.Orphans = map[string]*orphan{}
+	}
 	t := &tx{Coordinator: c, d: d, now: c.now(), gitc: gitc}
 	if err := fn(t); err != nil {
 		return err
 	}
+	defer t.announce()
 	b, err := json.MarshalIndent(d, "", " ")
 	if err != nil {
 		return err
@@ -454,6 +482,16 @@ func (t *tx) handOn(path, why string) {
 	}
 	if next == "" {
 		delete(t.d.Files, path)
+		if t.git(path) == fileDirty {
+			name := ""
+			if s := t.d.Sessions[old]; s != nil {
+				name = sessionName(s.Transcript, s.Label)
+			}
+			t.d.Orphans[path] = &orphan{Session: old, Label: t.label(old), Name: name, Left: t.now}
+			t.orphaned = append(t.orphaned, path)
+			t.Log("loose end %s left uncommitted by %s (%s)", path, short(old), why)
+			return
+		}
 		t.Log("free %s from %s (%s)", path, short(old), why)
 		return
 	}
@@ -534,6 +572,18 @@ func (t *tx) gc() {
 	for p := range t.d.Files {
 		t.valid(p)
 	}
+	t.tidyOrphans()
+}
+
+// tidyOrphans forgets loose ends that are no longer loose: committed,
+// discarded, or gone.
+func (t *tx) tidyOrphans() {
+	for p, o := range t.d.Orphans {
+		if t.git(p) != fileDirty {
+			delete(t.d.Orphans, p)
+			t.Log("loose end %s tied up (left by %s)", p, short(o.Session))
+		}
+	}
 }
 
 func (t *tx) endSession(sid, why string) {
@@ -546,6 +596,58 @@ func (t *tx) endSession(sid, why string) {
 	if s := t.d.Sessions[sid]; s != nil {
 		s.Ended = true
 	}
+}
+
+// who names the session that left the file.
+func (o *orphan) who() string {
+	if o.Name != "" {
+		return fmt.Sprintf("session \"%s\" (%s)", o.Name, o.Label)
+	}
+	return "session " + o.Label
+}
+
+// announce puts up an alert for the files this invocation found left
+// uncommitted, one per session that left them.
+func (t *tx) announce() {
+	if t.Notices == "" || len(t.orphaned) == 0 {
+		return
+	}
+	by := map[string][]string{}
+	var order []string
+	for _, p := range t.orphaned {
+		o := t.d.Orphans[p]
+		if o == nil {
+			continue
+		}
+		k := o.who()
+		if by[k] == nil {
+			order = append(order, k)
+		}
+		by[k] = append(by[k], p)
+	}
+	p := notice.New(t.Notices, nil)
+	for _, k := range order {
+		files := by[k]
+		sort.Strings(files)
+		var names []string
+		for _, f := range files {
+			names = append(names, homeRel(f))
+		}
+		n := fmt.Sprintf("%d files", len(files))
+		if len(files) == 1 {
+			n = "a file"
+		}
+		p.Publish("loose-ends", notice.Error, fmt.Sprintf("A session ended leaving %s uncommitted", n),
+			fmt.Sprintf("%s: %s. The next session there is told; see Loose ends in the dashboard.", strings.TrimPrefix(k, "session "), strings.Join(names, ", ")))
+	}
+	p.Flush(2 * time.Second)
+}
+
+func homeRel(p string) string {
+	if h, err := os.UserHomeDir(); err == nil && strings.HasPrefix(p, h+"/") {
+		return "~" + p[len(h):]
+	}
+	return p
 }
 
 func (t *tx) masterOf(sid string) []string {
@@ -734,6 +836,14 @@ func (c *Coordinator) Hook(name string, in io.Reader, out io.Writer) error {
 }
 
 func (c *Coordinator) sessionStart(h hookInput, out io.Writer) error {
+	// The repository's loose ends are read before the lock: git status on
+	// a big tree must not hold up every other session's hooks.
+	var loose looseends.Repo
+	if h.Cwd != "" {
+		if root := looseends.TopLevel(h.Cwd); root != "" {
+			loose = looseends.ScanRepo(root, nil)
+		}
+	}
 	return c.with(func(t *tx) error {
 		t.gc()
 		sid := t.touch(h)
@@ -777,9 +887,117 @@ func (c *Coordinator) sessionStart(h hookInput, out io.Writer) error {
 				lines = append(lines, line)
 			}
 		}
+		lines = append(lines, t.looseLines(loose, sid)...)
 		emit(out, "SessionStart", map[string]any{"additionalContext": strings.Join(lines, "\n")})
 		return nil
 	})
+}
+
+// maxLooseLines is how many uncommitted files a session is told about.
+const maxLooseLines = 15
+
+// looseLines tells a starting session what is lying about in its
+// repository that no running session is responsible for: files a closed
+// session left uncommitted, other uncommitted files nobody masters,
+// commits nobody pushed, stashes. Files a live session masters are its
+// work in progress and are left out.
+func (t *tx) looseLines(r looseends.Repo, sid string) []string {
+	var files []string
+	orphans := 0
+	for _, f := range r.Uncommitted {
+		if m := t.d.Files[f.Path]; m != nil && m.Master != sid && t.alive(m.Master) {
+			continue
+		}
+		line := "- " + f.Path
+		if o := t.d.Orphans[f.Path]; o != nil {
+			orphans++
+			line += fmt.Sprintf(" (left uncommitted by %s when it ended, %s ago)", o.who(), t.agoLong(o.Left))
+		} else if f.Status == "??" {
+			line += " (untracked"
+			if f.MTime > 0 {
+				line += ", changed " + t.agoLong(f.MTime) + " ago"
+			}
+			line += ")"
+		} else if f.MTime > 0 {
+			line += fmt.Sprintf(" (uncommitted, no session recorded, changed %s ago)", t.agoLong(f.MTime))
+		}
+		files = append(files, line)
+	}
+	if len(files) == 0 && r.Ahead == 0 && len(r.Stashes) == 0 {
+		return nil
+	}
+	out := []string{"", fmt.Sprintf("LOOSE ENDS in this repository (%s), work no running session is responsible for:", r.Root)}
+	if len(files) > maxLooseLines {
+		files = append(files[:maxLooseLines], fmt.Sprintf("- and %d more (`git status`)", len(files)-maxLooseLines))
+	}
+	out = append(out, files...)
+	if r.Ahead > 0 {
+		to := r.Upstream
+		if to == "" {
+			to = "any remote branch"
+		}
+		out = append(out, fmt.Sprintf("- %d commit(s) on %s not pushed to %s", r.Ahead, r.Branch, to))
+	}
+	if n := len(r.Stashes); n > 0 {
+		out = append(out, fmt.Sprintf("- %d stash entr%s (`git stash list`)", n, map[bool]string{true: "y", false: "ies"}[n == 1]))
+	}
+	ask := "In your first reply, tell the user about these in a line or two and ask what to do with them: commit them (by name, after reading `git diff`), or leave them."
+	if orphans > 0 {
+		ask = "In your first reply, tell the user about these in a line or two. Files a closed session left are usually finished or nearly finished work: read `git diff -- <path>` and offer to commit them (by name, locally), or leave them."
+	}
+	out = append(out, ask+" Never discard, stash, reset or check out over them yourself, and do not push unless the user asks.")
+	return out
+}
+
+// agoLong is ago for spans of hours and days.
+func (t *tx) agoLong(ts float64) string {
+	s := t.now - ts
+	switch {
+	case s < 90*60:
+		return t.ago(ts)
+	case s < 48*3600:
+		return fmt.Sprintf("%.0fh", s/3600)
+	}
+	return fmt.Sprintf("%.0fd", s/86400)
+}
+
+// Owners is who is responsible for each uncommitted file coordination
+// knows about: the live master, or the session that left it. Read without
+// the lock, as prewarm does: state.json is replaced by rename.
+func (c *Coordinator) Owners() map[string]looseends.Owner {
+	out := map[string]looseends.Owner{}
+	b, err := os.ReadFile(filepath.Join(c.Dir, "state.json"))
+	if err != nil {
+		return out
+	}
+	d := &state{}
+	if json.Unmarshal(b, d) != nil {
+		return out
+	}
+	if d.Sessions == nil {
+		d.Sessions = map[string]*session{}
+	}
+	t := &tx{Coordinator: c, d: d, now: c.now()}
+	for p, o := range d.Orphans {
+		label := o.Label
+		if o.Name != "" {
+			label = o.Name + " (" + o.Label + ")"
+		}
+		out[p] = looseends.Owner{Session: o.Session, Label: label, Since: o.Left}
+	}
+	for p, f := range d.Files {
+		if !t.alive(f.Master) {
+			continue
+		}
+		label := t.label(f.Master)
+		if s := d.Sessions[f.Master]; s != nil {
+			if n := sessionName(s.Transcript, s.Label); n != "" {
+				label = n + " (" + label + ")"
+			}
+		}
+		out[p] = looseends.Owner{Session: f.Master, Label: label, Since: f.Since, Live: true}
+	}
+	return out
 }
 
 func snippet(v any) string {
@@ -827,6 +1045,15 @@ func (c *Coordinator) preTool(h hookInput, out io.Writer) error {
 		f := t.valid(path)
 		if f == nil {
 			t.d.Files[path] = &shared{Master: sid, Since: t.now, Touched: t.now, Agent: h.AgentID}
+			if o := t.d.Orphans[path]; o != nil {
+				delete(t.d.Orphans, path)
+				if t.git(path) == fileDirty {
+					t.Log("%s adopts loose end %s (left by %s)", short(sid), path, short(o.Session))
+					emit(out, "PreToolUse", map[string]any{"additionalContext": fmt.Sprintf("COORDINATION: you are now the master of %s. It holds uncommitted changes %s left when it ended %s ago, without committing them. Read `git diff -- %s` and keep them: commit them with your work, or ask the user if they look unintended. Never discard them yourself.",
+						path, o.who(), t.ago(o.Left), path)})
+					return nil
+				}
+			}
 			if t.git(path) == fileDirty {
 				// Work no session is recorded as making: by hand, by a shell
 				// command, or by a session that ended without committing.
@@ -1084,6 +1311,7 @@ func (c *Coordinator) preBash(h hookInput, out io.Writer) error {
 // also the ones it masters that git keeps no record of, which no commit
 // would ever settle.
 func (t *tx) settle(sid string, turnOver bool) {
+	t.tidyOrphans()
 	for p, f := range t.d.Files {
 		switch t.git(p) {
 		case fileClean:

@@ -161,4 +161,16 @@ stateDiagram-v2
     Cleared --> [*]
 ```
 
+## Loose ends
+
+A session that closes with files uncommitted and nobody to hand them to leaves them in the working tree with nobody responsible for them. The Stop hook makes this rare, but a window closed mid-turn, a crash or a session that ignored the reminder still does it, and the next session there finds the changes in its way or sweeps them into its own commit. Coordination now keeps track of them:
+
+- **Recorded.** When a master ends and its file still has uncommitted changes, the file is kept in `state.json` as a loose end with the session that left it (its name in Claude Code, folder and short id) and when. The log line is `loose end <file> left uncommitted by <session> (...)`. It is forgotten once the file is committed or discarded (`loose end <file> tied up`), or when another session edits it, which adopts it (`<session> adopts loose end <file>`): that session is told whose changes they are and to keep them.
+- **Announced.** The session's end puts up a red alert naming the files: "A session ended leaving 2 files uncommitted".
+- **Briefed.** A session starting in a repository is told, after the coordination rules, what is lying there that no running session is responsible for: files a closed session left (and who), other uncommitted files with no session recorded, commits not pushed and stashes. A running session's files are its work in progress and are left out. It is told to mention them in its first reply and ask the user whether to commit them; never to discard, stash or reset them, and never to push unless asked.
+- **Listed.** The dashboard's **Loose ends** section (under Sessions) scans every repository a session has worked in over the last 30 days (from the working directory in each transcript, temporary folders left out): uncommitted files with who left them, unpushed commits against the remote branch as last fetched (nothing is fetched), and stashes. Its menu dot is red while a closed session's files are lying about, amber when anything is older than a day. `claude-burst loose-ends` prints the same report in a terminal (`--json` for the raw report).
+- **Reminded.** From 09:00 local time, once a day, an amber alert goes up if anything has been loose for more than 24 hours, naming the counts and repositories.
+
+Nothing here commits, pushes, stashes or deletes. Whether half-finished work is worth keeping is the user's call; the point is that it is never forgotten.
+
 What it cannot do: stop an edit made through a shell command (sessions are told not to, and Claude Code follows that), or keep sessions sharing a working tree from seeing each other's uncommitted changes. For large parallel pieces of work, `claude --worktree` gives each session its own copy; this covers the shared-tree case.

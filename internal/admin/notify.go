@@ -99,6 +99,7 @@ type notifier struct {
 	intercept   interceptCheck
 	alerts      alertRounds
 	config      configWatch
+	looseDay    string // the day the loose-ends reminder was last looked at
 }
 
 // alertConfigKind is the notice kind for a config.json that will not load,
@@ -188,6 +189,7 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 	}
 	alertBypass(!n.started, n.intercept, ic)
 	s.alertRound(&n.alerts, cfg, now)
+	n.looseNudge(cfg, now)
 	n.started, n.pfEvents, n.selfEvents, n.intercept = true, pf, self, ic
 }
 

@@ -899,6 +899,7 @@
   <div class="navgroup">Sessions</div>
   <a class="navlink" href="#" data-target="handoverSection"><span class="nd" id="nd-handover"></span><span class="label">Session handover</span></a>
   <a class="navlink" href="#" data-target="sec-coord"><span class="nd" id="nd-coord"></span><span class="label">Session coordination</span></a>
+  <a class="navlink" href="#" data-target="sec-loose"><span class="nd" id="nd-loose"></span><span class="label">Loose ends</span></a>
   <a class="navlink" href="#" data-target="sec-sessions"><span class="nd" id="nd-sessions"></span><span class="label">Session options</span></a>
   <a class="navlink" href="#" data-target="sec-panel"><span class="nd" id="nd-panel"></span><span class="label">Usage panel</span></a>
   <a class="navlink" href="#" data-target="sec-band"><span class="nd" id="nd-band"></span><span class="label">In-session band</span></a>
@@ -1592,6 +1593,15 @@
       <h3 style="margin:18px 0 6px;font-size:13px">Recent activity</h3>
       <div class="hint" style="margin-bottom:6px">What session coordination has done, newest first: files shared between sessions, actions it blocked, files passed from one session to another, and files released after a commit.</div>
       <div id="coActivity"></div>
+    </div>
+  </section>
+
+  <section id="sec-loose" style="scroll-margin-top:70px">
+    <h2>Loose ends <span class="hint">work left uncommitted, unpushed or stashed in the repositories your sessions use</span></h2>
+    <div class="body">
+      <div class="hint" style="margin:0 0 10px">Every repository a Claude Code session has worked in over the last <span id="leDays">30</span> days, with anything lying in it: files nobody committed, commits nobody pushed, and stashes. With session coordination on, a file a session left uncommitted when it closed names that session; a file a running session is still working on says so, and is its work in progress rather than a loose end. Three things happen without you: a session that closes leaving files uncommitted puts up a red alert, the next session to start in that repository is told what is lying there and asks you what to do with it, and from 09:00 a reminder goes up once a day if anything is more than <span id="leStale">24</span> hours old. Nothing here commits, pushes, stashes or deletes anything: whether half-finished work is worth keeping is your call. Unpushed is against the remote branch as this Mac last fetched it.</div>
+      <div class="row" style="align-items:center;margin-bottom:8px"><button id="leRefresh">&#x21bb; Refresh</button><span class="hint" id="leSummary"></span></div>
+      <div id="leRepos"></div>
     </div>
   </section>
 
@@ -6640,6 +6650,54 @@ $("coSave").onclick = async () => {
   loadCoord();
 };
 loadCoord = serial("Session coordination", loadCoord);
+
+// ---- Loose ends ---------------------------------------------------------------
+function leAgo(at, t) { return t > 0 ? coAgo(Math.max(0, Math.round(at - t))) : "?"; }
+function leHome(p) { return esc((p || "").replace(/^\/Users\/[^/]+/, "~")); }
+const leStatus = {"??": "new, untracked", " M": "changed", "M ": "changed, staged", "MM": "changed, partly staged", "A ": "added", "AM": "added", " D": "deleted", "D ": "deleted, staged", "R ": "renamed", "RM": "renamed, changed", "UU": "merge conflict"};
+function leFile(f, at, root, staleS) {
+  const rel = leHome(f.path.startsWith(root + "/") ? f.path.slice(root.length + 1) : f.path);
+  const o = f.owner;
+  let who;
+  if (o && o.live) who = `<span class="hint">being worked on by ${esc(o.label)}</span>`;
+  else if (o) who = `<span style="color:var(--bad)">left by ${esc(o.label)} when it closed, ${leAgo(at, o.since)} ago</span>`;
+  else who = `<span class="hint">no session recorded, changed ${leAgo(at, f.mtime)} ago</span>`;
+  const old = !(o && o.live) && at - (o ? o.since : f.mtime) > staleS;
+  return `<div style="font-size:12px;padding:1px 0"><span class="mono"${old ? ' style="color:var(--warn)"' : ""}>${rel}</span> <span class="hint">${esc(leStatus[f.status] || f.status.trim())}</span> ${who}</div>`;
+}
+async function loadLoose() {
+  let d;
+  try { d = await getJSON("/api/loose-ends"); } catch { return; }
+  const rp = d.report || {}, repos = rp.repos || [], at = rp.at || Date.now() / 1000, staleS = (d.stale_hours || 24) * 3600;
+  $("leDays").textContent = d.within_days || 30;
+  $("leStale").textContent = d.stale_hours || 24;
+  let files = 0, commits = 0, stashes = 0, left = 0;
+  for (const r of repos) {
+    files += (r.uncommitted || []).filter(f => !(f.owner && f.owner.live)).length;
+    left += (r.uncommitted || []).filter(f => f.owner && !f.owner.live).length;
+    commits += r.ahead || 0; stashes += (r.stashes || []).length;
+  }
+  const st = d.stale || {}, stale = (st.files || 0) + (st.commits || 0) + (st.stashes || 0);
+  setDot("nd-loose", left ? "bad" : stale ? "warn" : "ok");
+  const parts = [];
+  if (files) parts.push(`${files} uncommitted file${files === 1 ? "" : "s"}${left ? `, ${left} left by a closed session` : ""}`);
+  if (commits) parts.push(`${commits} unpushed commit${commits === 1 ? "" : "s"}`);
+  if (stashes) parts.push(`${stashes} stash${stashes === 1 ? "" : "es"}`);
+  $("leSummary").textContent = `${rp.scanned || 0} repositories scanned: ` + (parts.length ? parts.join(", ") + (stale ? `; ${stale} older than ${d.stale_hours} h` : "") : "nothing loose");
+  $("leRepos").innerHTML = repos.length ? `<table><thead><tr><th>Repository</th><th>Uncommitted</th><th>Unpushed</th><th class="num">Stashes</th></tr></thead><tbody>${
+    repos.map(r => {
+      const unc = (r.uncommitted || []);
+      const shown = unc.slice(0, 12).map(f => leFile(f, at, r.root, staleS)).join("") + (unc.length > 12 ? `<div class="hint">and ${unc.length - 12} more</div>` : "");
+      const up = r.ahead ? `<b>${r.ahead}</b> <span class="hint">to ${esc(r.upstream || "any remote")}</span>${(r.unpushed || []).slice(0, 5).map(c => `<div style="font-size:12px"><span class="mono hint">${esc(c.hash)}</span> ${esc(c.subject.length > 90 ? c.subject.slice(0, 90) + "..." : c.subject)} <span class="hint">${leAgo(at, c.when)} ago</span></div>`).join("")}` : '<span class="hint">-</span>';
+      const sx = (r.stashes || []).length ? (r.stashes || []).map(x => `<div style="font-size:12px" title="${esc(x.subject)}"><span class="mono">${esc(x.ref)}</span> <span class="hint">${leAgo(at, x.when)} ago</span></div>`).join("") : '<span class="hint">-</span>';
+      return `<tr><td><b>${esc(r.root.split("/").pop())}</b><div class="hint mono" style="font-size:11px">${leHome(r.root)}</div><div class="hint" style="font-size:11px">${esc(r.branch || "detached")}${r.no_remote ? ", no remote" : ""}</div>${r.error ? `<div style="color:var(--bad)">${esc(r.error)}</div>` : ""}</td><td>${shown || '<span class="hint">-</span>'}</td><td>${up}</td><td class="num">${sx}</td></tr>`;
+    }).join("")
+  }</tbody></table>` : `<div class="empty">Nothing loose: every repository is committed and pushed.</div>`;
+}
+loadLoose = serial("Loose ends", loadLoose);
+$("leRefresh").onclick = () => loadLoose();
+loadLoose();
+setInterval(() => { if (!document.hidden) loadLoose(); }, 60000);
 loadCoord();
 setInterval(() => { if (!document.hidden) loadCoord(); }, 10000);
 
