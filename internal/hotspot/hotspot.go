@@ -109,26 +109,54 @@ func parseLidClosed(out string) bool {
 	return false
 }
 
-// Online reports whether any probe address accepts a TCP connection. All
-// are dialled at once, so offline takes one 4s timeout, not one per address.
+// Online reports whether any probe address accepts a TCP connection.
 var Online = func() bool {
 	return anyAccepts(probeAddrs, 4*time.Second)
 }
 
+// staggerAfter is how long the first probe gets on its own before the others
+// are dialled too.
+var staggerAfter = 500 * time.Millisecond
+
+// anyAccepts dials the first address alone and the rest only if it has not
+// answered within staggerAfter, then takes the first success. The watcher
+// asks every 5 seconds: dialling all four each time was 48 connections a
+// minute to public resolvers, which security proxies (Zscaler here) log and
+// System Sentinel reported as a failing app on 2026-10-18. Online, that is one
+// connection a check; offline still takes one timeout, not one per address.
 func anyAccepts(addrs []string, timeout time.Duration) bool {
-	ok := make(chan bool, len(addrs))
-	for _, a := range addrs {
-		go func(a string) {
-			c, err := net.DialTimeout("tcp", a, timeout)
-			if err == nil {
-				c.Close()
-			}
-			ok <- err == nil
-		}(a)
+	if len(addrs) == 0 {
+		return false
 	}
-	for range addrs {
-		if <-ok {
-			return true
+	ok := make(chan bool, len(addrs))
+	dial := func(a string) {
+		c, err := net.DialTimeout("tcp", a, timeout)
+		if err == nil {
+			c.Close()
+		}
+		ok <- err == nil
+	}
+	go dial(addrs[0])
+	pending, rest := 1, addrs[1:]
+	spread := func() {
+		for _, a := range rest {
+			go dial(a)
+		}
+		pending += len(rest)
+		rest = nil
+	}
+	stagger := time.NewTimer(staggerAfter)
+	defer stagger.Stop()
+	for pending > 0 {
+		select {
+		case good := <-ok:
+			pending--
+			if good {
+				return true
+			}
+			spread() // the first failed fast: try the others now
+		case <-stagger.C:
+			spread()
 		}
 	}
 	return false

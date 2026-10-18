@@ -40,7 +40,9 @@ func TestStaleCountsOnlyWhatIsOlderThanADayAndNotLive(t *testing.T) {
 
 func TestTheLooseEndsReminderGoesUpOnceADayFromNine(t *testing.T) {
 	alerts := captureAlerts(t)
-	looseScan = func(config.Config, time.Time) looseends.Report { return looseFixture(time.Now()) }
+	// The fixture's ages are measured from the scan's own time, not the clock:
+	// built from time.Now() it passed only on the day it was written (16 Oct).
+	looseScan = func(_ config.Config, at time.Time) looseends.Report { return looseFixture(at) }
 	n := &notifier{}
 	early := time.Date(2026, 10, 16, 8, 30, 0, 0, time.Local)
 	n.looseNudge(config.Config{}, early)

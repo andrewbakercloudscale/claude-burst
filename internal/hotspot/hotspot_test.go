@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -202,5 +203,66 @@ func TestAnyAccepts(t *testing.T) {
 	}
 	if anyAccepts([]string{dead}, time.Second) {
 		t.Fatal("nothing listening is offline")
+	}
+}
+
+// Online, a check makes one connection: the others are dialled only when the
+// first has not answered.
+func TestAnyAcceptsDialsOneWhenTheFirstAnswers(t *testing.T) {
+	var hits [3]int32
+	var addrs []string
+	for i := range hits {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		go func(i int, ln net.Listener) {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				atomic.AddInt32(&hits[i], 1)
+				c.Close()
+			}
+		}(i, ln)
+		addrs = append(addrs, ln.Addr().String())
+	}
+	if !anyAccepts(addrs, time.Second) {
+		t.Fatal("online")
+	}
+	time.Sleep(staggerAfter + 200*time.Millisecond)
+	got := [3]int32{atomic.LoadInt32(&hits[0]), atomic.LoadInt32(&hits[1]), atomic.LoadInt32(&hits[2])}
+	if got != [3]int32{1, 0, 0} {
+		t.Fatalf("connections per address = %v, want [1 0 0]", got)
+	}
+}
+
+// A first address that refuses at once does not wait out the stagger.
+func TestAnyAcceptsMovesOnWhenTheFirstRefuses(t *testing.T) {
+	closed, _ := net.Listen("tcp", "127.0.0.1:0")
+	dead := closed.Addr().String()
+	closed.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	start := time.Now()
+	if !anyAccepts([]string{dead, ln.Addr().String()}, time.Second) {
+		t.Fatal("the second answers")
+	}
+	if d := time.Since(start); d >= staggerAfter {
+		t.Fatalf("took %s: waited for the stagger after a refusal", d)
 	}
 }
