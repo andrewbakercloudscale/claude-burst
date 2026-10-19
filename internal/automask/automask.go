@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Rule is one kind of personal data.
@@ -28,6 +29,8 @@ type Rule struct {
 	re      *regexp.Regexp
 	group   int // submatch to mask; 0 is the whole match, -1 the first that matched
 	valid   func(string) bool
+	// edge vets what stands either side of the value.
+	edge    func(text string, lo, hi int) bool
 	keep4   bool // show the last four digits in the mask
 	exact   bool // the value is told apart as written: a dash is part of a key
 	envOnly bool // tried only on the output of a tool call that names a .env file
@@ -75,8 +78,9 @@ var Rules = []*Rule{
 		re:   regexp.MustCompile(`(?i)\b[A-Z0-9_.-]*(?:api[_-]?key|secret|token|passw(?:or)?d)[A-Z0-9_]*["']?\s*[:=]\s*["']?([A-Za-z0-9+/_.~-]{12,}={0,2})`), group: 1,
 		valid: validSecret, exact: true},
 	{ID: "card", One: "credit card number", Name: "Credit card number", Plural: "credit card numbers", Prefix: "CARD", Default: true,
-		Note: "Visa, Mastercard, Amex, Discover, Diners, JCB; Luhn checked, so random long numbers are left alone",
-		re:   regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`), valid: validCard, keep4: true},
+		Note:  "Visa, Mastercard, Amex, Discover, Diners, JCB, written solid or grouped as on a card; Luhn checked, and never part of a decimal or a longer run of numbers",
+		re:    regexp.MustCompile(`\b(?:\d{13,19}|\d{4}(?: \d{4}){3}(?: \d{3})?|\d{4}(?:-\d{4}){3}(?:-\d{3})?|\d{4} \d{6} \d{4,5}|\d{4}-\d{6}-\d{4,5})\b`),
+		valid: validCard, edge: cardEdge, keep4: true},
 	{ID: "said", One: "SA ID number", Name: "South African ID number", Plural: "SA ID numbers", Prefix: "SAID", Default: true,
 		Note: "13 digits with a real birth date and a valid check digit",
 		re:   regexp.MustCompile(`\b\d{13}\b`), valid: validSAID},
@@ -170,6 +174,9 @@ type Hit struct {
 	Rule  *Rule
 	Mask  string
 	Where string
+	// Context is the text around the mask as it was sent, the value masked:
+	// enough to tell a test fixture from a real secret.
+	Context string
 }
 
 // Session holds one session's masks, so the same value always gets the same
@@ -288,7 +295,7 @@ func (s *Session) mask(text, where string, on func(*Rule) bool, env bool) (strin
 				continue
 			}
 			v := text[lo:hi]
-			if r.valid != nil && !r.valid(v) || r.words && !wholeWord(text, lo, hi) {
+			if r.valid != nil && !r.valid(v) || r.words && !wholeWord(text, lo, hi) || r.edge != nil && !r.edge(text, lo, hi) {
 				continue
 			}
 			key := r.ID + "|" + v
@@ -319,7 +326,44 @@ func (s *Session) mask(text, where string, on func(*Rule) bool, env bool) (strin
 			text = b.String()
 		}
 	}
+	// From the text as sent, so every rule has had its turn at it.
+	for i := range hits {
+		hits[i].Context = around(text, hits[i].Mask)
+	}
 	return text, hits, changed
+}
+
+// contextChars is how much of the text either side of a mask Context keeps.
+const contextChars = 40
+
+// around is the text either side of the first mask, on one line, cut
+// at a character boundary.
+func around(text, mask string) string {
+	i := strings.Index(text, mask)
+	if i < 0 {
+		return ""
+	}
+	lo, hi := i-contextChars, i+len(mask)+contextChars
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > len(text) {
+		hi = len(text)
+	}
+	for lo > 0 && !utf8.RuneStart(text[lo]) {
+		lo++
+	}
+	for hi < len(text) && !utf8.RuneStart(text[hi]) {
+		hi--
+	}
+	out := strings.Join(strings.Fields(text[lo:hi]), " ")
+	if lo > 0 {
+		out = "..." + out
+	}
+	if hi < len(text) {
+		out += "..."
+	}
+	return out
 }
 
 // Seen is when the session last masked anything, for pruning idle ones.
@@ -398,6 +442,35 @@ func luhn(d string) bool {
 		alt = !alt
 	}
 	return sum%10 == 0
+}
+
+// cardEdge leaves a number that is part of something longer: the decimals
+// of a price worked out to 16 places, digits after a thousands comma, or
+// four groups of four in a longer column of figures.
+func cardEdge(text string, lo, hi int) bool {
+	isDigit := func(i int) bool { return i >= 0 && i < len(text) && text[i] >= '0' && text[i] <= '9' }
+	grouped := strings.ContainsAny(text[lo:hi], " -")
+	if lo >= 2 && isDigit(lo-2) {
+		switch text[lo-1] {
+		case '.', ',':
+			return false
+		case ' ', '-':
+			if grouped {
+				return false
+			}
+		}
+	}
+	if hi+1 < len(text) && isDigit(hi+1) {
+		switch text[hi] {
+		case '.', ',':
+			return false
+		case ' ', '-':
+			if grouped {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validCard(v string) bool {

@@ -178,3 +178,53 @@ func TestMasksTheUsersOwnWords(t *testing.T) {
 		t.Errorf("masked without a list: %s", out)
 	}
 }
+
+func TestCardLeavesNumbersThatArePartOfSomethingLonger(t *testing.T) {
+	const visa = "4111111111111111"
+	for _, in := range []string{
+		"cost $35." + visa,                // the decimals of a price
+		"total 1," + visa + " rows",       // after a thousands comma
+		"ratio " + visa + ".5",            // before a decimal point
+		"12 4111 1111 1111 1111 3",        // four groups in a longer column
+		"4 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1", // single digits in a table
+		"41 1111 1111 1111 11",            // spaced, but not as a card is
+		"4111 1111-1111 1111",             // separators that do not match
+		visa + "0000",                     // a longer run of digits
+	} {
+		out, hits, _ := NewSession().Mask(in, "tool_result", defaults)
+		if len(hits) != 0 || out != in {
+			t.Errorf("masked %q as %q", in, out)
+		}
+	}
+	for _, in := range []string{
+		"card " + visa + ".",
+		"card 4111 1111 1111 1111, thanks",
+		"card 4111-1111-1111-1111",
+		"amex 3782 822463 10005",
+		"12 " + visa, // solid, after a number: still a card
+	} {
+		out, hits, _ := NewSession().Mask(in, "tool_result", defaults)
+		if len(hits) != 1 || !strings.Contains(out, "[CARD-1 ...") {
+			t.Errorf("%q not masked: %q", in, out)
+		}
+	}
+}
+
+func TestHitContextIsTheMaskedTextAroundIt(t *testing.T) {
+	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	in := strings.Repeat("x", 100) + "\nexport AWS_KEY=" + key + "  # test fixture\n" + strings.Repeat("y", 100)
+	out, hits, _ := NewSession().Mask(in, "tool_result", defaults)
+	if len(hits) != 1 {
+		t.Fatalf("hits = %+v, out = %q", hits, out)
+	}
+	c := hits[0].Context
+	if strings.Contains(c, key) || !strings.Contains(c, "export AWS_KEY="+hits[0].Mask+" # test fixture") {
+		t.Errorf("context = %q", c)
+	}
+	if !strings.HasPrefix(c, "...") || !strings.HasSuffix(c, "...") || strings.Contains(c, "\n") {
+		t.Errorf("context not cut to one line: %q", c)
+	}
+	if _, h2, _ := NewSession().Mask("ключ "+key, "user", defaults); len(h2) != 1 || h2[0].Context != "ключ "+h2[0].Mask {
+		t.Errorf("short context = %+v", h2)
+	}
+}

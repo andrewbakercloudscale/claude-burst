@@ -189,6 +189,7 @@ type AutomaskHit struct {
 	Name    string    `json:"name"`
 	Where   string    `json:"where"`
 	Mask    string    `json:"mask"`
+	Context string    `json:"context,omitempty"` // the text around it as sent, masked
 }
 
 const maskRecentMax = 50
@@ -434,7 +435,7 @@ func (s *Server) noteMasked(sid, source, repo string, hits []automask.Hit) {
 	for _, h := range hits {
 		s.automask.totals[h.Rule.ID]++
 		s.automask.recent = append(s.automask.recent, AutomaskHit{At: now, Session: sid, Source: source, Repo: repo,
-			Rule: h.Rule.ID, Name: h.Rule.Name, Where: h.Where, Mask: h.Mask})
+			Rule: h.Rule.ID, Name: h.Rule.Name, Where: h.Where, Mask: h.Mask, Context: h.Context})
 	}
 	if n := len(s.automask.recent); n > maskRecentMax {
 		s.automask.recent = append([]AutomaskHit(nil), s.automask.recent[n-maskRecentMax:]...)
