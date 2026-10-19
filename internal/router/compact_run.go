@@ -467,6 +467,9 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// it is the thread's, so it holds what the thread held. Once, and only
 	// for a history long enough to be the conversation and not a subagent
 	// starting in the same minute.
+	if ask := s.compaction.asks[prefix]; ask != nil && len(msgs) >= longHistory {
+		ask.answered = true
+	}
 	if ask := s.compaction.asks[prefix]; ask != nil && ask.context > 0 && len(msgs) >= longHistory {
 		if st.lastContext == 0 && st.summary == "" && now.Sub(ask.at) < time.Minute {
 			st.lastContext = ask.context
@@ -566,6 +569,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// from when the history still starts with exactly that request, else
 	// the latest plain prompt before it.
 	nextCut, nextCutHash := 0, ""
+	tightWas := st.nextTightP0
 	if st.next != "" {
 		if tp := st.nextTightP0; tp > 0 && len(msgs) > tp {
 			if h := st.hashOf(msgs, tp); h == st.nextTightHash && messageRole(msgs[tp]) == "assistant" {
@@ -585,9 +589,11 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	// the same as far as it goes, is that request sent again: wait.
 	resent := st.next != "" && nextCut == 0 && st.nextTightP0 > 0 && len(msgs) == st.nextTightP0 && st.hashOf(msgs, len(msgs)) == st.nextTightHash
 	if st.next != "" && nextCut == 0 && !resent {
+		// The tight cut, cleared above when it moved back, is what the
+		// summary was written from: the log said "of 0" without it.
 		at := st.nextP0
-		if st.nextTightP0 > 0 {
-			at = st.nextTightP0
+		if tightWas > 0 {
+			at = tightWas
 		}
 		s.logger.Printf("req=%s compaction dropped session=%s: history no longer matches the waiting summary (%s); window reopened", rid, key, divergence(msgs, at, st.nextMarks))
 		st.next, st.nextHash, st.nextP0, st.nextMarks = "", "", 0, nil

@@ -2310,3 +2310,58 @@ func TestCompactionLockIsReleasedByAPanic(t *testing.T) {
 		t.Fatal("the compaction lock was still held after a recovered panic")
 	}
 }
+
+// A turn whose request ends in Claude Code's system note, with no earlier
+// prompt to fall back to: the note comes back as a string once it is no
+// longer last. The summary still applies at the reply. On 18 Oct 2026 each
+// one was dropped instead and another started, 14 in 20 minutes.
+func TestSummaryAppliesWhenTheTrailingSystemNoteIsRewritten(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	var logBuf strings.Builder
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, MidTurn: true})
+	s.logger.SetOutput(io.MultiWriter(testLogWriter{t}, &logBuf))
+	h := msgs(t, `[
+ {"role":"user","content":"hi"},
+ {"role":"assistant","content":[{"type":"text","text":"hello"}]},
+ {"role":"user","content":"big task"},
+ {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]},
+ {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"old file"}]},
+ {"role":"system","content":[{"type":"text","text":"<total_tokens>900 tokens left</total_tokens>"}]}]`)
+	send(t, s, "S", h[:5])
+	send(t, s, "S", h)
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	next := append([]json.RawMessage(nil), h...)
+	next[5] = json.RawMessage(`{"role":"system","content":"<total_tokens>900 tokens left</total_tokens>"}`)
+	next = append(next,
+		json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Read","input":{}}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"new file"}]}`))
+	send(t, s, "S", next)
+	got := f.last()
+	if strings.Contains(logBuf.String(), "compaction dropped") {
+		t.Fatalf("a rewritten system note must not drop the summary:\n%s", logBuf.String())
+	}
+	if !strings.Contains(got, "THE GIST") || strings.Contains(got, "old file") || !strings.Contains(got, "new file") {
+		t.Fatalf("want the summary swapped in, cut at the reply:\n%s", got)
+	}
+}
+
+// An ask the conversation's history never answered is made again after
+// the short gap, not the long one. On 19 Oct 2026 a session asked at 300k
+// went on as a thread to 345k for 19 minutes before it was asked again.
+func TestAnUnansweredAskIsMadeAgainSoon(t *testing.T) {
+	a := &threadAPI{ctx: 250_000}
+	s := threadServer(t, a, config.CompactionConfig{Enabled: true, CompactAtTokens: 200_000, WarnAtPercent: 75, WindowMinutes: 60})
+	send(t, s, "S", msgs(t, session)[:5]) // msg_01, 250k
+	if !askedForHistory(continueThread(t, s, "S", "msg_01", toolResult("one"))) {
+		t.Fatal("want the history asked for")
+	}
+	if rec := continueThread(t, s, "S", "msg_01x", toolResult("two")); rec.Code != http.StatusOK {
+		t.Fatalf("inside the short gap the thread goes on, got %d %s", rec.Code, rec.Body)
+	}
+	s.compaction.mu.Lock()
+	s.compaction.asks["S|claude-opus-5-5|"].at = time.Now().Add(-askToSwapGap)
+	s.compaction.mu.Unlock()
+	if !askedForHistory(continueThread(t, s, "S", "msg_02", toolResult("three"))) {
+		t.Fatal("no history came back: past the short gap it is asked again")
+	}
+}

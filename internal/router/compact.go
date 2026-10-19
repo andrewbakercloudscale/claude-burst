@@ -106,10 +106,21 @@ func prefixHash(msgs []json.RawMessage, n int) string {
 // boundary changed after every summary, so each one was dropped as soon as
 // it was ready and a new one started: six summaries and eighteen notices in
 // one session, none of them swapped in.
+//
+// A system message is Claude Code's own note between turns (the tokens
+// left, tools added), not what was said, and Claude Code writes the newest
+// one differently once it is no longer last: a block list, then a string.
+// Only its place is kept. On 18 Oct 2026 a turn with no prompt to fall back
+// to ended in one, so every summary of it was dropped at the next request
+// and another started: 14 in 20 minutes, none swapped in, while the session
+// grew from 200k to 303k over a 175k limit.
 func hashForm(v any) any {
 	msg, ok := v.(map[string]any)
 	if !ok {
 		return v
+	}
+	if msg["role"] == "system" {
+		return map[string]any{"role": "system"}
 	}
 	blocks, ok := msg["content"].([]any)
 	if !ok {

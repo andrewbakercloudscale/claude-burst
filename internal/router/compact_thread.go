@@ -84,6 +84,12 @@ type threadAsk struct {
 	// deaf: the same request came again instead of the history, so this
 	// client does not replay and is not asked again.
 	deaf bool
+	// answered: a history long enough to be the conversation came whole
+	// after the ask. Until it does, the ask is made again after
+	// askToSwapGap, not askToStartGap: on 19 Oct 2026 a session was asked
+	// at 300k, its history never came back whole, and it went on as a
+	// thread to 345k for 19 minutes before it was asked again.
+	answered bool
 }
 
 // The least time between two requests for a session's history: to start a
@@ -155,6 +161,9 @@ func (s *Server) applyThreadRequest(in *http.Request, body []byte, msgs []json.R
 		// history the API holds, and the inspector has only what was last
 		// sent whole.
 		gap, why = askToSwapGap, wanted
+	}
+	if gap == askToStartGap && ask != nil && !ask.answered {
+		gap = askToSwapGap
 	}
 	if why != "" && (ask == nil || now.Sub(ask.at) >= gap) {
 		if s.compaction.asks == nil {
