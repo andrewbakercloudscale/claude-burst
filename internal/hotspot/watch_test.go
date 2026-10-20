@@ -271,8 +271,12 @@ func TestWatchBackOnlineStartsTheNextOutageFresh(t *testing.T) {
 	for _, e := range events {
 		// The whole message after the timestamp: the give-up line also
 		// ends in "back online".
-		if _, msg, _ := strings.Cut(e[len("2006-01-02 "):], " "); msg == "back online" {
+		if _, msg, _ := strings.Cut(e[len("2006-01-02 "):], " "); strings.HasPrefix(msg, "back online after ") {
 			backOnline++
+			// Every stubbed join fails, so the Mac came back by itself.
+			if !strings.Contains(msg, "not by a join of Burst's") {
+				t.Errorf("says how the spell ended: %q", msg)
+			}
 		}
 	}
 	if n := backOnline; n != 1 {

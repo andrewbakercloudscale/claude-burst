@@ -32,6 +32,7 @@ const (
 	signingName        = "Claude Burst Local Signing"
 	signingIdentifier  = "ninja.andrewbaker.claude-burst"
 	privacySettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+	wifiSettingsURL    = "x-apple.systempreferences:com.apple.wifi-settings-extension"
 )
 
 // Variables so tests never run security, codesign or open, or touch the
@@ -226,6 +227,17 @@ func (s *Server) handleOpenPrivacySettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, map[string]string{"detail": "System Settings is open at Privacy & Security, Files and Folders. Find claude-burst and turn on the folders it needs."})
+}
+
+// handleOpenWiFiSettings opens System Settings at Wi-Fi, where "Ask to join
+// hotspots" is. Burst cannot set it: it lives in a file only root can read
+// or write, and airportd would not notice an edit anyway.
+func (s *Server) handleOpenWiFiSettings(w http.ResponseWriter, r *http.Request) {
+	if out, err := permExec("open", wifiSettingsURL); err != nil {
+		http.Error(w, "could not open System Settings: "+strings.TrimSpace(string(out)+" "+err.Error()), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"detail": "System Settings is open at Wi-Fi. Scroll to the bottom and set Ask to join hotspots to Automatic."})
 }
 
 type gitAccess struct {

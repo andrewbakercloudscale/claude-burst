@@ -198,6 +198,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/permissions-check", s.mutating(s.handlePermissionsCheck))
 	mux.HandleFunc("/api/signing-setup", s.mutating(s.handleSigningSetup))
 	mux.HandleFunc("/api/open-privacy-settings", s.mutating(s.handleOpenPrivacySettings))
+	mux.HandleFunc("/api/open-wifi-settings", s.mutating(s.handleOpenWiFiSettings))
 	mux.HandleFunc("/api/upgrade-status", s.readOnly(s.handleUpgradeStatus))
 	mux.HandleFunc("/api/upgrade", s.mutating(s.handleUpgrade))
 	mux.HandleFunc("/api/finder-install", s.mutating(s.handleFinderInstall))

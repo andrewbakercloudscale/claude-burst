@@ -122,13 +122,27 @@ func TestJoinTriesThreeTimes(t *testing.T) {
 }
 
 func TestBackgroundAttemptIsOneTryAndRestoresOnlyWhenAsked(t *testing.T) {
-	fail := errors.New("Could not find network Phone.")
+	fail := errors.New("Failed to join network Phone. Error: -3900")
 	calls, restored := stubJoin(t, fail)
 	if _, err := Join("Phone", false); err == nil || *calls != 1 || *restored {
 		t.Fatalf("one try, no Wi-Fi toggle: calls=%d restored=%v", *calls, *restored)
 	}
 	if _, err := Join("Phone", true); err == nil || !*restored {
 		t.Fatal("the last attempt restores Wi-Fi")
+	}
+}
+
+// A phone that is not broadcasting was never joined, so nothing was left
+// and there is nothing to restore; turning Wi-Fi off and on would only cut
+// short macOS's own Instant Hotspot rejoin.
+func TestAPhoneNotFoundLeavesWiFiAlone(t *testing.T) {
+	_, restored := stubJoin(t, errors.New("Could not find network Phone."))
+	if _, err := Join("Phone", true); err == nil || *restored {
+		t.Fatalf("not found: no Wi-Fi toggle, restored=%v", *restored)
+	}
+	_, restored = stubJoin(t, errors.New("Could not find network Phone."))
+	if steps := JoinSteps("Phone", nil); *restored || len(steps) != 3 {
+		t.Fatalf("the test button too: restored=%v steps=%+v", *restored, steps)
 	}
 }
 

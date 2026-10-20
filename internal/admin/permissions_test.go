@@ -192,6 +192,18 @@ func TestOpenPrivacySettings(t *testing.T) {
 	}
 }
 
+// Open Wi-Fi settings opens the pane with "Ask to join hotspots".
+func TestOpenWiFiSettings(t *testing.T) {
+	s := newTestServer(t)
+	calls := stubPermissions(t, "", false, nil)
+	if rr := mutate(t, s, "/api/open-wifi-settings", "{}"); rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(*calls) != 1 || (*calls)[0] != "open "+wifiSettingsURL {
+		t.Errorf("calls: %q", *calls)
+	}
+}
+
 // Check also runs git in a checkout under Desktop, the way the update check
 // does: macOS asks about git on its own, and an unanswered prompt shows as
 // waiting rather than a GitHub failure.

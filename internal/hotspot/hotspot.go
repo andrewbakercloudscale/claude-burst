@@ -231,7 +231,7 @@ var join = func(ctx context.Context, ssid string) (string, error) {
 func Explain(msg string) string {
 	switch {
 	case strings.Contains(msg, "Could not find network"):
-		return "the Mac cannot see it. An iPhone only broadcasts its hotspot while Settings > Personal Hotspot is open on the phone, or while something is connected to it: open that screen, turn on Maximise Compatibility, and try again."
+		return "the Mac cannot see it. An iPhone only broadcasts its hotspot while Settings > Personal Hotspot is open on the phone, or while something is connected to it: open that screen, turn on Maximise Compatibility, and try again. So that the Mac finds it without that screen, set System Settings > Wi-Fi > Ask to join hotspots to Automatic."
 	case strings.Contains(msg, "-3900"), strings.Contains(msg, "Failed to join"):
 		return "the Mac saw it but could not join. Usually a wrong password: press Show beside the Password field to check it, correct it and Save, then try again."
 	}
@@ -310,6 +310,7 @@ func joinSteps(ssid string, attempts int, restoreOnFail bool, progress func(Step
 		return fmt.Sprintf("Attempt %d of %d", i, attempts)
 	}
 	var err error
+	notFound := false
 	for i := 1; i <= attempts; i++ {
 		emit(Step{Name: name(i), Pending: true, Detail: "joining " + ssid})
 		start := time.Now()
@@ -322,6 +323,7 @@ func joinSteps(ssid string, attempts int, restoreOnFail bool, progress func(Step
 			break
 		}
 		logEvent("join %q failed (attempt %d of %d): %v", ssid, i, attempts, err)
+		notFound = strings.Contains(err.Error()+" "+msg, "Could not find network")
 		detail := Explain(err.Error() + " " + msg)
 		if detail == "" {
 			detail = strings.Join(strings.Fields(err.Error()), " ")
@@ -335,7 +337,13 @@ func joinSteps(ssid string, attempts int, restoreOnFail bool, progress func(Step
 		}
 	}
 	if err != nil {
-		if restoreOnFail {
+		// Not found: the join never got as far as leaving a network, so
+		// there is nothing to restore. Turning Wi-Fi off and on then only
+		// interrupts macOS's own Instant Hotspot rejoin over Bluetooth, the
+		// one path that finds a phone which has stopped broadcasting. On
+		// 19 Oct 2026 the phone lost signal on a drive and every join for
+		// 30 minutes was "Could not find network".
+		if restoreOnFail && !notFound {
 			emit(Step{Name: "Back on a network", Pending: true, Detail: "waiting for macOS to rejoin a known network"})
 			r := restore()
 			emit(Step{Name: "Back on a network", OK: Online(), Detail: r})
@@ -460,6 +468,11 @@ func Watch(ctx context.Context) {
 	openedOffline := false
 	// saidLidOpen: this offline spell's log already says why nothing is tried.
 	saidLidOpen := false
+	// offlineSince and joined say, when the Mac is back, how long the spell
+	// was and whether a join of Burst's ended it or macOS (Instant Hotspot)
+	// or the phone did: what tells whether "Ask to join hotspots" works.
+	var offlineSince time.Time
+	joined := false
 	wasShut := lidClosed()
 	wait := config.HotspotConfig{}.CheckEvery()
 	for {
@@ -478,18 +491,27 @@ func Watch(ctx context.Context) {
 		}
 		if Online() {
 			if offline >= cfg.Hotspot.OfflineAfter() {
-				logEvent("back online")
+				by := "not by a join of Burst's: macOS or the phone reconnected"
+				if joined {
+					by = "Burst joined " + fmt.Sprintf("%q", cfg.Hotspot.SSID)
+				}
+				logEvent("back online after %s offline; %s", now().Sub(offlineSince).Round(time.Second), by)
 			}
+			offlineSince, joined = time.Time{}, false
 			offline, firstTry, gaveUp, openedOffline, saidLidOpen = 0, time.Time{}, false, false, false
 			continue
 		}
 		offline++
+		if offline == 1 {
+			offlineSince = now()
+		}
 		lid := lidClosed()
 		opened := lidJustOpened(cfg.Hotspot, wasShut, lid, offline)
 		wasShut = lid
 		if opened {
 			logEvent("lid opened with no network: trying %q now, and until back online", cfg.Hotspot.SSID)
-			_, _ = watchJoin(cfg.Hotspot.SSID, false)
+			_, err := watchJoin(cfg.Hotspot.SSID, false)
+			joined = joined || err == nil
 			// A fresh spell: an earlier give-up no longer applies.
 			firstTry, lastTry, gaveUp, openedOffline = now(), now(), false, true
 			continue
@@ -534,7 +556,8 @@ func Watch(ctx context.Context) {
 		// off and on, in case the Mac is stuck with no network at all.
 		last := now().Sub(firstTry)+cfg.Hotspot.RetryEvery()+attemptTimeout >= giveUp
 		logEvent("joining %q (%s of %s tried)", cfg.Hotspot.SSID, now().Sub(firstTry).Round(time.Minute), giveUp)
-		_, _ = watchJoin(cfg.Hotspot.SSID, last)
+		_, err = watchJoin(cfg.Hotspot.SSID, last)
+		joined = joined || err == nil
 		// The gap runs from the end of the attempt, not its start.
 		lastTry = now()
 	}
