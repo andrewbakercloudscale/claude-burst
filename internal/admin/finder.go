@@ -618,6 +618,10 @@ func newUUID() string {
 	return strings.ToUpper(fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]))
 }
 
+// dockOpener is Ghostty Dock's opener (github ghossty-dock, bin/), which
+// opens a launcher as a tab in the running Ghostty instead of a new app.
+const dockOpener = "ghostty-dock-open"
+
 // writeWorkflow writes the Quick Action bundle: the same two files
 // Automator writes for a "Run Shell Script" service on folders in Finder.
 func writeWorkflow(f finderShortcut) error {
@@ -629,11 +633,18 @@ func writeWorkflow(f finderShortcut) error {
 		return err
 	}
 	info := fmt.Sprintf(infoPlistTmpl, xmlEscape(f.Name))
-	// macOS cannot start a Ghostty window from its binary; open -na with -e
-	// is the supported way. A clean window that quits with its last tab.
+	// With Ghostty Dock installed, each session opens as a tab in the one
+	// shared Ghostty, which its sidebar lists with the session's status.
+	// Without it: macOS cannot start a Ghostty window from its binary, so
+	// open -na with -e, a clean window that quits with its last tab - and a
+	// separate Ghostty app, with its own Dock icon, per session.
 	cmd := `for folder in "$@"; do
   [ -d "$folder" ] || continue
-  open -na Ghostty.app --args --window-save-state=never --quit-after-last-window-closed=true -e "` + f.launcherPath() + `" "$folder" &
+  if [ -x "$HOME/.local/bin/` + dockOpener + `" ]; then
+    "$HOME/.local/bin/` + dockOpener + `" "` + f.launcherPath() + `" "$folder" &
+  else
+    open -na Ghostty.app --args --window-save-state=never --quit-after-last-window-closed=true -e "` + f.launcherPath() + `" "$folder" &
+  fi
 done
 `
 	doc := fmt.Sprintf(documentWflowTmpl, xmlEscape(cmd), newUUID(), newUUID(), newUUID())

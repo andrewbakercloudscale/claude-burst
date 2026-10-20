@@ -59,6 +59,11 @@ func TestFinderInstallWritesBothShortcutsAndTheirLaunchers(t *testing.T) {
 		if !strings.Contains(string(doc), `-e "`+r.launcher(f.launcher)+`" "$folder" &amp;`) {
 			t.Errorf("%s does not run its launcher, XML-escaped:\n%s", f.Name, doc)
 		}
+		// Ghostty Dock's opener, when installed, puts the session in a tab of
+		// the shared Ghostty instead of starting another Ghostty app.
+		if !strings.Contains(string(doc), `"$HOME/.local/bin/ghostty-dock-open" "`+r.launcher(f.launcher)+`" "$folder" &amp;`) {
+			t.Errorf("%s does not prefer the Ghostty Dock opener:\n%s", f.Name, doc)
+		}
 		info, _ := os.ReadFile(filepath.Join(filepath.Dir(r.workflow(f.Name)), "Info.plist"))
 		if !strings.Contains(string(info), "<string>"+f.Name+"</string>") || !strings.Contains(string(info), "public.folder") {
 			t.Errorf("%s Info.plist lacks its menu item or folder type:\n%s", f.Name, info)
