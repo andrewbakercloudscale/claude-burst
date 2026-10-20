@@ -222,7 +222,10 @@ func (c *compactor) handoffFiles() (dir string, files map[string][]byte) {
 		if latest[sid].Sub(st.seen) > handoffLeftBehind {
 			continue
 		}
-		if st.rawContext > st.hand.Raw {
+		// What Claude Code holds now, down as well as up: a figure that only
+		// grew kept an overestimate (2,306k for some 300k, from screenshots
+		// counted by their base64) and handed off at 800k a session far below.
+		if st.rawContext > 0 {
 			st.hand.Raw = st.rawContext
 		}
 		// A session's subagents share its id. The main conversation is the
