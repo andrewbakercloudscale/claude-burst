@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -70,6 +71,39 @@ func contextBytes(top map[string]json.RawMessage, msgs []json.RawMessage) []int6
 		}
 	}
 	return out
+}
+
+// mediaBytes is what a base64 image or document counts for in tokenBytes:
+// about 1,600 tokens (an image at Claude's largest size) at 4 bytes a token.
+const mediaBytes = 6400
+
+// tokenBytes is the body's size in bytes as text, for scaling a token count
+// by: each base64 payload counts as mediaBytes, not its length. A screenshot
+// is some 400k of base64 and costs some 1,600 tokens, so a history of 51 of
+// them (aws-regulatory-risk-score, 20 Oct 2026) was put at 2,306k tokens
+// held by Claude Code where it held about 300k.
+func tokenBytes(body []byte) int64 {
+	n := int64(len(body))
+	key := []byte(`"data":"`)
+	for i := 0; ; {
+		j := bytes.Index(body[i:], key)
+		if j < 0 {
+			return n
+		}
+		start := i + j + len(key)
+		end := start
+		for end < len(body) && isBase64(body[end]) {
+			end++
+		}
+		if end < len(body) && body[end] == '"' && end-start >= 1024 {
+			n -= int64(end-start) - mediaBytes
+		}
+		i = end
+	}
+}
+
+func isBase64(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/' || c == '='
 }
 
 // isMemoryReminder is Claude Code's reminder carrying the CLAUDE.md files

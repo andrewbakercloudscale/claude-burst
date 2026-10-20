@@ -790,7 +790,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	}
 	ci.applied, ci.removedMsgs, ci.removedBytes = true, len(msgs)-len(out), int64(len(body)-len(newBody))
 	ci.parts = contextBytes(top, out)
-	ci.rawBytes, ci.sentBytes = int64(len(body)), int64(len(newBody))
+	ci.rawBytes, ci.sentBytes = tokenBytes(body), tokenBytes(newBody)
 	return newBody, in.WithContext(context.WithValue(in.Context(), compactInfoKey{}, ci))
 }
 
