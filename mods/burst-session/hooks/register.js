@@ -99,6 +99,15 @@ const HANDOFF_ALWAYS_AT = 800000
 let heldSeen = 0 // the most this session was last seen to hold, kept for when the gateway is gone
 let handed = '' // the hand-off already made or refused, so it is not tried again
 
+// markHanded remembers the hand-off for the session, not just this process.
+// Ghostty Dock's restart resumes every session in a new process, and each
+// one compacted again with a summary it already held or that did not fit:
+// "Already compacted" three times in one session on 20 Oct 2026.
+async function markHanded($, of) {
+  handed = of
+  try { await $.store.set('handed:' + sid, of) } catch (err) { $.ui.log('could not note the hand-off: ' + err) }
+}
+
 // The dashboard's address as the gateway was told it: admin_listen, a
 // host:port on this Mac. Anything else, a missing file included, is the
 // default: the mod must never be pointed at another machine by a config file.
@@ -260,7 +269,7 @@ async function leaveBurst($) {
   const again = reopened
   reopened = false
   if (!out && !again && !h.full && (raw < HANDOFF_ALWAYS_AT || !(await handoffInPathOn($)))) return
-  handed = h.of
+  await markHanded($, h.of)
   try {
     // Still over its limit after the summary: /compact-async-full itself.
     if (h.full) await compactFast($)
@@ -302,7 +311,7 @@ async function compactFast($) {
   if (!(await handoffOn($))) return toast($, "/" + FAST + " is off: turn on Hand Burst's summary to Claude Code on the dashboard", 'warn')
   const h = await readHandoff($)
   if (!h) return toast($, tookIn ? ALREADY : 'Burst holds no summary of this session yet: nothing compacted', 'warn')
-  handed = h.of
+  await markHanded($, h.of)
   try {
     await handOver($, h)
   } catch (err) {
@@ -316,6 +325,12 @@ async function enter($, id) {
   since = Math.floor((await $.clock.now()) / 1000)
   toastsMarked = 0
   handed = ''
+  try {
+    const v = await $.store.get('handed:' + id)
+    if (typeof v === 'string') handed = v
+  } catch (err) {
+    // Nothing noted: no hand-off made yet.
+  }
   asked = ''
   tookIn = false
   reopened = false
@@ -360,7 +375,7 @@ export function register(on) {
     if (cut < 1 && mine && h && String((e.messages && e.messages[0] && e.messages[0].text) || '').includes(h.lead)) return { skip: ALREADY }
     if (cut < 1 && mine) return { skip: "Burst's summary does not fit this session as Claude Code holds it, so nothing was compacted. /compact has Claude Code write its own" }
     if (cut < 1) return next(e)
-    handed = h.of
+    await markHanded($, h.of)
     tookIn = true
     await taken($, h)
     toast($, "Async Full Compaction: " + cut + ' messages replaced with the summary Burst already wrote')

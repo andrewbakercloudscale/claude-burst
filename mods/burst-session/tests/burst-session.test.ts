@@ -662,6 +662,13 @@ test('a session opened again is compacted with the summary as it opens, in the p
   await start($)
   await clock.advance(5000)
   expect(calls).toEqual(['/compact', '/compact'])
+  // Opened again with no newer summary (Ghostty Dock restarts every
+  // session): it already has that one, or it did not fit.
+  world.pid = '6262'
+  await start($)
+  await clock.advance(5000)
+  await clock.advance(5000)
+  expect(calls).toEqual(['/compact', '/compact'])
 })
 
 test('a session opened again that Burst never summarised, or with the hand-off off, is left alone', async ($, on) => {
