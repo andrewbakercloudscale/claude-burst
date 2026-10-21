@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"syscall"
@@ -211,4 +212,52 @@ func isStaleWriteFailure(err error) bool {
 		return false
 	}
 	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
+}
+
+// connectionLost reports an error that says the connection the request
+// rode on died after it was sent, rather than that the server refused or
+// was slow to answer it: Go's HTTP/2 client closing a connection whose
+// pings went unanswered, or the kernel timing out a read on a socket the
+// network went out from under. Either is what a laptop changing networks
+// produces, and neither says anything about Anthropic until a new
+// connection fails too (primaryAnswersFresh). A timeout waiting for the
+// response headers is not one of these: that is the slow primary failover
+// exists for.
+func connectionLost(err error) bool {
+	// net/http's error for it is unexported (errClientConnLost), so the
+	// text is all there is to match.
+	if strings.Contains(err.Error(), "http2: client connection lost") {
+		return true
+	}
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "read" && errors.Is(err, syscall.ETIMEDOUT)
+}
+
+// The fresh-connection answer is kept briefly, per host: the requests on one
+// dead connection all fail in the same instant, and one check serves them.
+var (
+	freshProbeMu   sync.Mutex
+	freshProbeAt   = map[string]time.Time{}
+	freshProbeSeen = map[string]bool{}
+)
+
+// primaryAnswersFresh reports whether u's host answers an HTTP request on a
+// new connection. Any status counts: a 404 for "/" is the server answering.
+func (s *Server) primaryAnswersFresh(u *url.URL) bool {
+	if s.freshClient == nil || u == nil {
+		return false
+	}
+	base := u.Scheme + "://" + u.Host
+	freshProbeMu.Lock()
+	defer freshProbeMu.Unlock()
+	if at, ok := freshProbeAt[base]; ok && time.Since(at) < webProbeTTL {
+		return freshProbeSeen[base]
+	}
+	resp, err := s.freshClient.Get(base + "/")
+	if err == nil {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+	}
+	freshProbeAt[base], freshProbeSeen[base] = time.Now(), err == nil
+	return err == nil
 }

@@ -103,6 +103,8 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		}
 		return t
 	}
+	fresh := newTransport(5 * time.Second)
+	fresh.DisableKeepAlives = true
 	var inference http.RoundTripper = newTransport(timeout)
 	if timeout > 0 && timeout < slowHeaderWait {
 		inference = &headerWaitTransport{quick: newTransport(timeout), slow: newTransport(slowHeaderWait)}
@@ -121,6 +123,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		secondary:       secondary,
 		client:          &http.Client{Timeout: 0, Transport: inference, CheckRedirect: neverFollow},
 		probe:           probeNetwork,
+		freshClient:     &http.Client{Timeout: 5 * time.Second, Transport: fresh, CheckRedirect: neverFollow},
 		// Control-plane traffic (notably Claude Code's Remote Control, which
 		// registers and then long-polls for work) can legitimately hold a
 		// connection open for minutes before sending any response header.

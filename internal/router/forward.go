@@ -287,6 +287,22 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			s.logger.Printf("req=%s client_gone route=%s err=%q (left during retries; no failover, not replayed)", rid, p.Name(), err)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, metrics.StatusClientClosed, start, pruned, "", 0, "client cancelled during retries: "+err.Error(), destination)
 			return
+		} else if slot == "primary" && allowFailover && connectionLost(err) && s.primaryAnswersFresh(req.URL) {
+			// The connection died under the request, and Anthropic answers
+			// on a new one: the network changed, Anthropic did not fail. On
+			// 2026-10-21 at 07:58 the Mac moved between networks, the HTTP/2
+			// connection opened on the old one stopped answering pings, and
+			// the five requests on it failed over to Together within 60ms,
+			// DNS and the control request both fine. Not resent: the request
+			// went out whole and may have run. Claude Code retries a 502 and
+			// opens a new connection doing it.
+			s.clientFor(in.URL.Path).CloseIdleConnections()
+			if ok, skipped := s.repeats.allow("connection lost", time.Now()); ok {
+				s.logger.Printf("req=%s no_failover route=%s reason=%q (the connection died under the request and %s answers on a new one: the network changed)%s", rid, p.Name(), "connection lost", p.Name(), andMore(skipped))
+			}
+			http.Error(w, "the connection to "+p.Name()+" was lost (this Mac's network changed) and it answers on a new one -- not failing over; retry: "+err.Error(), http.StatusBadGateway)
+			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "connection lost, primary answers on a new one; not failed over: "+err.Error(), destination)
+			return
 		} else {
 			s.notePrimaryFailure(slot, err)
 			if allowFailover {

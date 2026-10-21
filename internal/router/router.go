@@ -83,6 +83,9 @@ type Server struct {
 	// tests can say "the network is down" or "up" without depending on the
 	// machine they run on having working DNS.
 	probe func() netProbe
+	// freshClient asks the primary's host whether it answers on a new
+	// connection, never a pooled one: see connectionLost.
+	freshClient *http.Client
 	// passthroughClient serves non-inference paths; identical to client but
 	// with no ResponseHeaderTimeout, for long-polling control-plane requests.
 	passthroughClient *http.Client

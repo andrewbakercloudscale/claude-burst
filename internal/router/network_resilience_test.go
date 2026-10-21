@@ -523,3 +523,54 @@ func TestNoFailoverAfterTheClientLeft(t *testing.T) {
 		t.Fatal("replayed after the client left")
 	}
 }
+
+type failingRoundTripper struct{}
+
+func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("dial tcp: connection refused")
+}
+
+// A connection that dies under its requests while Anthropic answers on a new
+// one is the network changing, not Anthropic failing: on 2026-10-21 five
+// requests on one dead HTTP/2 connection failed over to Together at once,
+// DNS and the control request both fine. When a new connection fails too,
+// it still fails over.
+func TestLostConnectionFailsOverOnlyWhenANewOneFailsToo(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		newFails bool
+		failover bool
+	}{
+		{"h2 connection lost, new connection answers", errors.New(`Post "https://api.anthropic.com/v1/messages": http2: client connection lost`), false, false},
+		{"read timed out, new connection answers", &net.OpError{Op: "read", Net: "tcp", Err: &os.SyscallError{Syscall: "read", Err: syscall.ETIMEDOUT}}, false, false},
+		{"h2 connection lost, new connection fails", errors.New("http2: client connection lost"), true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := newRecordingUpstream(t)
+			s, logBuf := newChainServerWithSecondary(t, up.srv.URL, nil)
+			s.probe = func() netProbe { return netProbe{dnsOK: true} }
+			s.primaryDetector = newMeteredFailureDetector(60, 3, 1)
+			if tc.newFails {
+				s.freshClient.Transport = failingRoundTripper{}
+			}
+			ft := &flakyTransport{neverRecover: true, err: tc.err, next: s.client.Transport}
+			s.client.Transport = ft
+
+			rr := httptest.NewRecorder()
+			s.ServeHTTP(rr, messagesRequest("claude-sonnet-5"))
+			replayed := ft.primaryAttempts("") != ft.primaryAttempts("127.0.0.1:1")
+			if replayed != tc.failover {
+				t.Fatalf("replayed to the secondary = %v, want %v; log:\n%s", replayed, tc.failover, logBuf)
+			}
+			if !tc.failover {
+				if rr.Code != http.StatusBadGateway || !strings.Contains(logBuf.String(), `reason="connection lost"`) {
+					t.Fatalf("want a 502 and a connection-lost line, got %d; log:\n%s", rr.Code, logBuf)
+				}
+				if s.inOverflow(time.Now()) {
+					t.Fatal("a network change must not open a failover window")
+				}
+			}
+		})
+	}
+}
