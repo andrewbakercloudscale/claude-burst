@@ -137,6 +137,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		statePath:         statePath,
 		logger:            logger,
 		resolver:          resolver,
+		browserUpstream:   interceptUpstream(cfg),
 	}
 	s.loadState()
 	return s, nil

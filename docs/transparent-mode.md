@@ -59,6 +59,16 @@ Anthropic is unreachable machine-wide, not just in one session. `transparent-roo
 install` therefore refuses to run unless `/healthz` answers, and verifies the pf redirect
 works *before* touching `/etc/hosts`; `remove` undoes `/etc/hosts` first.
 
+## Browsers
+
+The hosts entry and pf rule are machine-wide, so browsers reach the gateway too: claude.ai and the
+Claude in Chrome extension call `api.anthropic.com` from the page. The gateway refuses any request
+with an `Origin` header, which used to break the extension on every site ("Could not verify this
+site's safety category"). In transparent mode, a request with an `Origin` that is addressed to the
+intercepted host is now passed to the real upstream as sent: no failover, no secondary, no stored
+credential, nothing recorded. The browser gets what Anthropic would have given it without Burst.
+A request with an `Origin` under any other Host is still refused.
+
 ## How it avoids calling itself
 
 Once `/etc/hosts` maps the hostname to the gateway, that mapping applies to the gateway's
