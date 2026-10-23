@@ -32,6 +32,10 @@ let sid = ''
 let home = ''
 let burst = null // last /api/mod answer, null while the dashboard is down
 let down = false
+let misses = 0 // polls in a row the dashboard did not answer
+// Down only after this many: one slow or lost poll (the Mac waking, a busy
+// gateway) said "not answering" then "back" seconds apart, for nothing.
+const DOWN_AFTER = 3
 let panel = [] // the usage panel's summary rows, as parsed segments
 let since = 0 // alerts at or before this were here before the session
 let showBar = true // the context bar under the band; /context-bar toggles it
@@ -740,13 +744,25 @@ async function compactionLines($) {
 }
 
 async function refresh($) {
+  let answer
   try {
     const r = await $.http.fetch(DASHBOARD + '/api/mod?session=' + encodeURIComponent(sid) + '&since=' + since)
     if (!r.ok) throw new Error('status ' + r.status)
-    burst = JSON.parse(r.text)
-    if (burst.session) heldSeen = burst.session.raw || 0
-    if (down) toast($, 'Burst gateway back')
-    down = false
+    answer = JSON.parse(r.text)
+  } catch (err) {
+    if (++misses < DOWN_AFTER) return
+    if (!down) toast($, 'Burst dashboard not answering', 'error')
+    down = true
+    burst = null
+    return
+  }
+  misses = 0
+  burst = answer
+  if (burst.session) heldSeen = burst.session.raw || 0
+  if (down) toast($, 'Burst gateway back')
+  down = false
+  // Its own errors are not the dashboard's: they used to say it was down.
+  try {
     for (const a of burst.alerts || []) {
       since = Math.max(since, a.ts)
       if (burst.toasts && (await claim($, a.id))) toast($, 'Burst: ' + a.title, a.severity)
@@ -754,9 +770,7 @@ async function refresh($) {
     await markToasts($, !!burst.toasts)
     if (burst.toasts) await compactionLines($)
   } catch (err) {
-    if (!down) toast($, 'Burst dashboard not answering', 'error')
-    down = true
-    burst = null
+    $.ui.log('alerts not shown: ' + err)
   }
   if (home && sid) {
     try {

@@ -198,9 +198,12 @@ test('compaction lines are taken from the gateway and shown as toasts, once', as
 
 test('a dashboard that stops answering says so once, and again when it is back', async ($, on) => {
   const toasts: string[] = []
-  const clock = stubs(on, [mod(), null, null, mod()], toasts)
+  const clock = stubs(on, [mod(), null, null, null, mod()], toasts)
   await start($)
   await clock.advance(5000)
+  await clock.advance(5000)
+  // Two missed polls are a blip, not down.
+  expect(toasts).toEqual([])
   await clock.advance(5000)
   // Red, since a toast cannot be coloured: a restart is the problem to notice.
   expect(toasts).toEqual(['\u{1F534} Burst dashboard not answering'])
