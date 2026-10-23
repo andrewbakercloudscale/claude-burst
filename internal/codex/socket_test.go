@@ -237,6 +237,14 @@ func TestATurnOverAWebSocketIsMaskedAndCounted(t *testing.T) {
 	// second turn on the same socket, refused; then a third left without
 	// an answer when Codex hangs up.
 	up.say(`{"type":"error","error":{"type":"invalid_request_error","code":"websocket_connection_limit_reached"},"status":400}`)
+	// Through the gateway before the next turn is sent.
+	for !bytes.Contains(back, []byte("websocket_connection_limit_reached")) {
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatalf("Codex got %q, not the expired socket's error: %v", back, err)
+		}
+		back = append(back, buf[:n]...)
+	}
 	conn.Write(clientFrame(0x80|opText, key, []byte(socketTurn)))
 	up.waitGot(t, 2*len(masked))
 	up.say(`{"type":"error","error":{"message":"try again","type":"server_error"},"status":503}`)
