@@ -751,12 +751,37 @@ func peekBody(resp *http.Response, n int64) []byte {
 // is what metrics.IsOffline reads, as for Claude Code's.
 const offlineNote = "local network unavailable (this Mac is offline): "
 
-// offline reports whether err is this Mac having no network: chatgpt.com
-// does not resolve, or no route leads anywhere.
+// offline reports whether err is this Mac having no network: no route leads
+// anywhere, or chatgpt.com does not resolve and neither does a name nobody
+// Burst routes to. ChatGPT's name failing alone (a network or DNS filter
+// that blocks it) is a failure, and stays one.
 func offline(err error) bool {
-	var dns *net.DNSError
-	if errors.As(err, &dns) && (dns.IsNotFound || dns.IsTemporary) {
+	if errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
 		return true
 	}
-	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
+	var dns *net.DNSError
+	return errors.As(err, &dns) && (dns.IsNotFound || dns.IsTemporary) && controlDNSFails()
+}
+
+// controlHost is resolved to tell an offline Mac from a blocked ChatGPT.
+var controlHost = "captive.apple.com"
+
+// The answer is kept briefly: Codex sends its failing requests five at once.
+var (
+	controlMu  sync.Mutex
+	controlAt  time.Time
+	controlBad bool
+)
+
+func controlDNSFails() bool {
+	controlMu.Lock()
+	defer controlMu.Unlock()
+	if time.Since(controlAt) < 10*time.Second {
+		return controlBad
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := net.DefaultResolver.LookupHost(ctx, controlHost)
+	controlAt, controlBad = time.Now(), err != nil
+	return controlBad
 }
