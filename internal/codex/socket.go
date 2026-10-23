@@ -237,6 +237,17 @@ func (s *socket) event(line []byte) {
 		if ev.Status == 0 {
 			ev.Status = http.StatusBadGateway
 		}
+		// With no turn waiting this answers nothing Codex asked: ChatGPT ends
+		// a socket at 60 minutes ("websocket_connection_limit_reached"), also
+		// one Codex opened and never used, and Codex opens a new one for its
+		// next turn. They were counted as failed turns, up to seven at once.
+		s.mu.Lock()
+		idle := len(s.pending) == 0
+		s.mu.Unlock()
+		if idle {
+			s.g.logger.Printf("codex: ChatGPT ended a websocket with no turn on it (session %s): %s", logID(s.r.Header.Get("Session-Id")), snippet(ev.Error))
+			return
+		}
 		s.g.noteRefusal(ev.Status, http.Header{}, line)
 		s.g.recordTurn(s.r, s.answered().start, ev.Status, usage{}, snippet(ev.Error))
 	case bytes.Contains(line, []byte(`"response.failed"`)) || bytes.Contains(line, []byte(`"response.incomplete"`)):

@@ -710,5 +710,12 @@ func IsOffline(e Event) bool {
 // IsError is a request that failed for a reason other than the client
 // leaving or this Mac being offline.
 func IsError(e Event) bool {
-	return e.HTTPStatus >= 400 && e.HTTPStatus != StatusClientClosed && !IsOffline(e)
+	return e.HTTPStatus >= 400 && e.HTTPStatus != StatusClientClosed && !IsOffline(e) && !socketExpired(e)
+}
+
+// socketExpired is ChatGPT ending a Codex WebSocket at its 60 minutes with
+// no turn on it, which Codex answers by opening a new one. The gateway
+// recorded it as a failed turn until 23 Oct 2026 (codex.socket.event).
+func socketExpired(e Event) bool {
+	return e.HTTPStatus == 400 && e.DurationMS == 0 && strings.Contains(e.Note, "websocket_connection_limit_reached")
 }

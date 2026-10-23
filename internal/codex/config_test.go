@@ -205,3 +205,64 @@ func TestEnableWritesThroughSymlink(t *testing.T) {
 		t.Errorf("after disable: %q", b)
 	}
 }
+
+// The Codex app rewrites config.toml when a setting changes, dropping
+// Burst's markers and turning its inline table into a table. That is still
+// Burst's provider: routed, no conflict, and Disable and Enable both work.
+func TestUnmarkedBurstProviderIsBursts(t *testing.T) {
+	rewritten := `model_provider = "claude-burst"
+notify = [ "/x/notify", "turn-ended" ]
+
+[model_providers.claude-burst]
+name = "Claude Burst"
+base_url = "http://127.0.0.1:7779/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = true
+
+[desktop]
+followUpQueueMode = "steer"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(path, []byte(rewritten), 0o600)
+	st := ReadStatus(path)
+	if !st.Enabled || st.Conflict != "" || st.BaseURL != "http://127.0.0.1:7779/backend-api/codex" {
+		t.Errorf("status %+v", st)
+	}
+
+	if err := Enable(path, "127.0.0.1:7779", ""); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.HasPrefix(string(b), beginMark) || strings.Count(string(b), "Claude Burst\"") != 1 {
+		t.Errorf("enable did not put it back in its markers:\n%s", b)
+	}
+
+	os.WriteFile(path, []byte(rewritten), 0o600)
+	if err := Disable(path, ""); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(path)
+	if want := "notify = [ \"/x/notify\", \"turn-ended\" ]\n\n[desktop]\nfollowUpQueueMode = \"steer\"\n"; string(b) != want {
+		t.Errorf("disable left:\n%q", b)
+	}
+	if st := ReadStatus(path); st.Enabled || st.Conflict != "" {
+		t.Errorf("after disable %+v", st)
+	}
+}
+
+// A claude-burst provider that is not Burst's (another name or host) stays
+// the user's: a conflict, and never removed.
+func TestUnmarkedProviderOfTheUsersOwnIsLeftAlone(t *testing.T) {
+	orig := "model_provider = \"claude-burst\"\n\n[model_providers.claude-burst]\nname = \"mine\"\nbase_url = \"https://example.com\"\n"
+	path := filepath.Join(t.TempDir(), "config.toml")
+	os.WriteFile(path, []byte(orig), 0o600)
+	if st := ReadStatus(path); st.Enabled || st.Conflict != "claude-burst" {
+		t.Errorf("status %+v", st)
+	}
+	if err := Disable(path, ""); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != orig {
+		t.Errorf("changed: %q", b)
+	}
+}

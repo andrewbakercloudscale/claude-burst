@@ -59,3 +59,18 @@ func TestCodexUnrouteRefusesAnUnterminatedBlock(t *testing.T) {
 		t.Fatalf("code %d, out %q, file:\n%s", code, out, got)
 	}
 }
+
+// Burst's provider as the Codex app leaves it after rewriting config.toml:
+// no markers, a table. Removed; one of the user's own of that name is not.
+func TestCodexUnrouteRemovesBurstsUnmarkedProvider(t *testing.T) {
+	user := "notify = 1\n\n[desktop]\nx = 1\n"
+	in := "model_provider = \"claude-burst\"\nnotify = 1\n\n[model_providers.claude-burst]\nname = \"Claude Burst\"\nbase_url = \"http://127.0.0.1:7779/backend-api/codex\"\n\n[desktop]\nx = 1\n"
+	got, code, out := runUnroute(t, &in)
+	if code != 0 || got != user || !strings.Contains(out, "removed Burst's provider") {
+		t.Fatalf("code %d, out %q, file:\n%q", code, out, got)
+	}
+	mine := "model_provider = \"claude-burst\"\n\n[model_providers.claude-burst]\nname = \"mine\"\nbase_url = \"https://example.com\"\n"
+	if got, code, _ := runUnroute(t, &mine); code != 0 || got != mine {
+		t.Fatalf("the user's own provider: code %d, file:\n%s", code, got)
+	}
+}

@@ -5526,7 +5526,7 @@ function codexChecks(c, s, now) {
     ok: !!st.enabled && !st.invalid,
     detail: st.invalid ? `${st.path} does not parse, so Codex cannot start either: ${st.invalid}`
       : st.enabled ? `${st.path} sends Codex to ${st.base_url}`
-      : st.conflict ? `Codex uses its own model provider "${st.conflict}", so Burst leaves it alone`
+      : st.conflict ? `Codex is set to use another model provider, "${st.conflict}" (model_provider in ${st.path}), so its turns go there and not through Burst`
       : "Codex goes straight to ChatGPT, so Burst sees none of its turns",
   });
   if (st.enabled || c.listen) {
@@ -5614,7 +5614,7 @@ function codexRouteState(c) {
     (c.listen_error ? ` (${c.listen_error})` : "") + `.` + ((c.status || {}).enabled ? " Codex is routed here and gets no answer: send it straight to ChatGPT below, or run burst-off." : "")};
   const st = c.status || {};
   if (st.enabled) return {cls: "ok", text: `Codex goes through Burst: ${st.base_url}`};
-  if (st.conflict) return {cls: "warn", text: `Codex uses its own model provider "${st.conflict}" (set in ${st.path}), so Burst leaves it alone. Remove that line to route Codex here.`};
+  if (st.conflict) return {cls: "warn", text: `Codex is set to use another model provider, "${st.conflict}" (the model_provider line in ${st.path}), so its turns go there and not through Burst. To route Codex through Burst, delete that line, then press Route Codex through Burst.`};
   if (!st.installed) return {cls: "", text: `Codex has not run on this Mac (no ${st.path.replace(/\/config\.toml$/, "")} folder).`};
   return {cls: "", text: "Codex goes straight to ChatGPT, not through Burst."};
 }

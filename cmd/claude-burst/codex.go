@@ -113,7 +113,7 @@ func codexCmd(args []string) {
 		case st.Enabled:
 			fmt.Println("Codex: through Claude Burst,", st.BaseURL)
 		case st.Conflict != "":
-			fmt.Printf("Codex: straight to its own provider %q (set in %s)\n", st.Conflict, path)
+			fmt.Printf("Codex: set to use another model provider, %q (model_provider in %s), not Burst\n", st.Conflict, path)
 		default:
 			fmt.Println("Codex: straight to ChatGPT (not through Burst)")
 		}
