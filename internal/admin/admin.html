@@ -2836,7 +2836,8 @@ function renderRequests(rows, el = "requests") {
         <td><span class="pill ${slot === "primary" ? "p" : "s"}">${esc(slot)}</span></td>
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
         <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "-")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--muted)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
-        <td class="mono st-${slot === "refused" || slot === "not http" ? 5 : String(e.http_status)[0]}">${esc((slot === "refused" || slot === "not http") && !e.http_status ? "no answer" : e.http_status)}</td>
+        ${e.http_status === 502 && String(e.note || "").startsWith("local network ") ? `<td class="mono" style="color:var(--muted)" title="502: this Mac had no network">offline</td>`
+          : `<td class="mono st-${slot === "refused" || slot === "not http" ? 5 : String(e.http_status)[0]}">${esc((slot === "refused" || slot === "not http") && !e.http_status ? "no answer" : e.http_status)}</td>`}
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
         <td class="num">${e.cache_read_tokens ? num(e.cache_read_tokens) : "-"}</td>
