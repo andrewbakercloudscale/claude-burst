@@ -1,11 +1,15 @@
 package router
 
 import (
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 // The gateway listener had no request guard while the admin listener did
@@ -107,4 +111,59 @@ func (s *Server) logRefusal(rid, reason string, r *http.Request) {
 type guardCounters struct {
 	guardLoggedAt atomic.Int64
 	guardRefused  atomic.Int64
+}
+
+func interceptUpstream(cfg config.Config) *url.URL {
+	if !cfg.Intercept.Transparent() || cfg.Intercept.Host == "" {
+		return nil
+	}
+	if u, err := url.Parse(cfg.AnthropicBaseURL); err == nil && strings.EqualFold(u.Hostname(), cfg.Intercept.Host) {
+		return u
+	}
+	return &url.URL{Scheme: "https", Host: cfg.Intercept.Host}
+}
+
+func (s *Server) browserToUpstream(r *http.Request) bool {
+	return s.browserUpstream != nil && r.Header.Get("Origin") != "" &&
+		hostOnly(r.Host) == strings.ToLower(s.cfg.Intercept.Host)
+}
+
+func (s *Server) passBrowserThrough(w http.ResponseWriter, r *http.Request) {
+	rid := requestIDFrom(r.Context())
+	maxBytes := s.cfg.MaxRequestMB * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
+	if err != nil || int64(len(body)) > maxBytes {
+		http.Error(w, "failed reading request", http.StatusBadRequest)
+		return
+	}
+	req, err := buildForwardRequest(r.Context(), s.browserUpstream, r, body, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp, err := s.passthroughClient.Do(req)
+	if err != nil {
+		s.logger.Printf("req=%s error stage=browser_passthrough origin=%q err=%v", rid, r.Header.Get("Origin"), err)
+		http.Error(w, "claude-burst: upstream unreachable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	f, _ := w.(http.Flusher)
+	buf := make([]byte, 32<<10)
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			if f != nil {
+				f.Flush()
+			}
+		}
+		if rerr != nil {
+			return
+		}
+	}
 }
