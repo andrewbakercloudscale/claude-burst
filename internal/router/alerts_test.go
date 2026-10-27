@@ -97,6 +97,12 @@ func TestAlertSecondaryKeyOnlyWhenAWorkingKeyStops(t *testing.T) {
 	s.alerts = alertState{}                      // forget the setup's own check
 	s.alertSecondaryKey(errors.New("never set")) // a keyless secondary: not news
 	s.alertSecondaryKey(nil)
+	s.alertSecondaryKey(errors.New("timed out: Keychain locked")) // once is a blip
+	s.alertSecondaryKey(nil)
+	if got := titles(events()); len(got) != 0 {
+		t.Fatalf("one failed check alerted: %q", got)
+	}
+	s.alertSecondaryKey(errors.New("timed out: Keychain locked"))
 	s.alertSecondaryKey(errors.New("timed out: Keychain locked"))
 	s.alertSecondaryKey(nil)
 	got := titles(events())

@@ -39,6 +39,7 @@ type alertState struct {
 	networkDown bool
 	keyMissing  bool
 	keyWorked   bool
+	keyFailed   int // checks in a row that could not read a key that worked
 	failures    []time.Time
 	failing     bool
 	lastFailure time.Time
@@ -204,14 +205,20 @@ func (s *Server) alertNetworkUp() {
 // all is a supported single plan setup, and saying so at every start would
 // be noise.
 func (s *Server) alertSecondaryKey(err error) {
+	// One check that fails is not news: on 27 Oct 2026 a Mac under heavy
+	// load could not read a key that was there, toasted every session, and
+	// read it again a minute later. Two checks in a row are.
 	s.alerts.mu.Lock()
-	warn := err != nil && s.alerts.keyWorked && !s.alerts.keyMissing
+	if err != nil && s.alerts.keyWorked {
+		s.alerts.keyFailed++
+	}
+	warn := err != nil && s.alerts.keyFailed >= 2 && !s.alerts.keyMissing
 	back := err == nil && s.alerts.keyMissing
 	if warn {
 		s.alerts.keyMissing = true
 	}
 	if err == nil {
-		s.alerts.keyWorked, s.alerts.keyMissing = true, false
+		s.alerts.keyWorked, s.alerts.keyMissing, s.alerts.keyFailed = true, false, 0
 	}
 	s.alerts.mu.Unlock()
 	switch {

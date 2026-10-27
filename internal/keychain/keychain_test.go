@@ -214,6 +214,19 @@ func TestParseKeychainDateGarbage(t *testing.T) {
 
 // A security call that hangs (a locked Keychain's dialog) gives up at the
 // timeout with an error that says why, instead of hanging its caller.
+func TestLoadSaysNotFoundOnlyWhenNothingIsStored(t *testing.T) {
+	t.Setenv("SOME_KEY", "")
+	stubSecurity(t, "The specified item could not be found in the keychain.", 44)
+	if _, err := Load("svc", "SOME_KEY"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("exit 44 must read as not found, got %v", err)
+	}
+	stubSecurity(t, "User interaction is not allowed.", 36)
+	_, err := Load("svc", "SOME_KEY")
+	if err == nil || strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "User interaction is not allowed") {
+		t.Fatalf("another failure must say what it was, got %v", err)
+	}
+}
+
 func TestLoadTimesOut(t *testing.T) {
 	hang := filepath.Join(t.TempDir(), "security")
 	if err := os.WriteFile(hang, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {

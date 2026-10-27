@@ -108,8 +108,14 @@ func Load(service, envVar string) (string, error) {
 	if errors.Is(err, errTimedOut) {
 		return "", fmt.Errorf("reading %q: %w", service, err)
 	}
-	if err != nil {
+	// Only exit 44 (errSecItemNotFound) is a missing key. Any other failure
+	// said "not found" until 27 Oct 2026, when a key that was there could not
+	// be read for a minute on a Mac under heavy load.
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 44 {
 		return "", fmt.Errorf("key not found in %s or macOS Keychain (service %q)", envVar, service)
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading %q from the Keychain: %v: %s", service, err, strings.TrimSpace(string(out)))
 	}
 	v := strings.TrimSpace(string(out))
 	if v == "" {
