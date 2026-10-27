@@ -38,6 +38,7 @@ let misses = 0 // polls in a row the dashboard did not answer
 const DOWN_AFTER = 3
 let panel = [] // the usage panel's summary rows, as parsed segments
 let since = 0 // alerts at or before this were here before the session
+const toasted = new Set() // alert ids this session has already handled
 let showBar = true // the context bar under the band; /context-bar toggles it
 let band = true // the band above the prompt; off where the sidebar has it
 let ready = false // false until the session's first answer: nothing is known yet, which is not down
@@ -765,6 +766,10 @@ async function refresh($) {
   try {
     for (const a of burst.alerts || []) {
       since = Math.max(since, a.ts)
+      // Polls overlap when the dashboard is slow, and each answer since the
+      // same `since` held the same alert: three toasts of one on 27 Oct 2026.
+      if (a.id && toasted.has(a.id)) continue
+      if (a.id) toasted.add(a.id)
       if (burst.toasts && (await claim($, a.id))) toast($, 'Burst: ' + a.title, a.severity)
     }
     await markToasts($, !!burst.toasts)

@@ -272,6 +272,17 @@ test('toasts are off unless the dashboard turns them on', async ($, on) => {
   expect(world.lines.length).toBe(1)
 })
 
+test('an alert two answers both hold is toasted once', async ($, on) => {
+  // Polls overlap while the dashboard is slow, each asking since the same time.
+  const toasts: string[] = []
+  const alert = { id: 'k', kind: 'secondary-key', severity: 'warn', title: 'Secondary key unavailable', ts: 1000000100 }
+  const clock = stubs(on, [mod(), mod({ alerts: [alert] }), mod({ alerts: [alert] })], toasts, [], false, [], {}, { runs: [], posts: [] })
+  await start($)
+  await clock.advance(5000)
+  await clock.advance(5000)
+  expect(toasts).toEqual(['\u{1F7E1} Burst: Secondary key unavailable'])
+})
+
 test('a standing problem is a line in the band and in the pane', async ($, on) => {
   stubs(on, [mod({ problems: [{ id: 'a', kind: 'network', severity: 'error', title: 'Network offline', ts: 1 }] })], [])
   on('ui.open', () => ({ value: { isPlaced: true } }))
