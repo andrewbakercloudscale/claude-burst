@@ -280,6 +280,7 @@ func serve(args []string) {
 	go background(logger, "hotspot watcher", time.Minute, func() { hotspot.Watch(context.Background()) })
 	go background(logger, "network watcher", time.Minute, func() { srv.WatchNetwork(context.Background()) })
 	go background(logger, "idle session watcher", time.Minute, func() { srv.WatchIdleSessions(context.Background()) })
+	go background(logger, "memory watcher", time.Minute, func() { watchMemory(context.Background(), logger) })
 	// ReadHeaderTimeout bounds only the request headers, never a long
 	// streaming reply, so it cannot cut a slow model off; it stops a client
 	// that opens a connection and never finishes its headers from holding it.
