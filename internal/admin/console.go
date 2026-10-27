@@ -42,6 +42,8 @@ type Console struct {
 	// real launchd or open a real Terminal from a test.
 	Run      func(ctx context.Context, name string, args ...string) ([]byte, error)
 	Terminal func(scriptPath string) error
+	// Answers, when set, replaces asking the dashboard whether it answers.
+	Answers func(ctx context.Context) bool
 }
 
 // NewConsole returns a console for the installed gateway.
@@ -253,11 +255,32 @@ func (c *Console) handleRestart(w http.ResponseWriter, r *http.Request) {
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
 	target := domain + "/" + GatewayLabel
 	if _, err := c.Run(ctx, "launchctl", "print", target); err == nil {
-		if out, err := c.Run(ctx, "launchctl", "kickstart", "-k", target); err != nil {
-			http.Error(w, "launchctl kickstart failed: "+strings.TrimSpace(string(out)+" "+err.Error()), http.StatusInternalServerError)
+		// Until 27 Oct 2026 this was `kickstart -k`, which waits for the
+		// gateway to exit. A gateway that is not answering drains for 50s
+		// first, so the 20s here ran out, the console said "kickstart failed:
+		// signal: killed", and Burst was turned off two seconds after it had
+		// come back. Now nothing here waits: a gateway that answers is asked
+		// to stop (it finishes its replies, at most 50s, and launchd starts it
+		// again); one that does not is stopped at once, since nothing it holds
+		// is getting anywhere.
+		if !c.dashboardAnswers(ctx) {
+			c.Run(ctx, "launchctl", "kill", "SIGKILL", target)
+			if out, err := c.Run(ctx, "launchctl", "kickstart", target); err != nil && !strings.Contains(string(out), "already running") {
+				http.Error(w, "launchctl kickstart failed: "+strings.TrimSpace(string(out)+" "+err.Error()), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]string{"detail": "The gateway was not answering, so it was stopped at once and started again. Checks turn green when it is serving, usually within 30 seconds."})
 			return
 		}
-		writeJSON(w, map[string]string{"detail": "Restarted the gateway. Checks refresh in a few seconds."})
+		if _, err := c.Run(ctx, "launchctl", "kill", "SIGTERM", target); err != nil {
+			if out, err := c.Run(ctx, "launchctl", "kickstart", target); err != nil {
+				http.Error(w, "launchctl kickstart failed: "+strings.TrimSpace(string(out)+" "+err.Error()), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]string{"detail": "Started the gateway. Checks refresh in a few seconds."})
+			return
+		}
+		writeJSON(w, map[string]string{"detail": "Restarting the gateway: it finishes the replies in flight first (at most 50 seconds), then starts again. Checks turn green when it is back."})
 		return
 	}
 	home, _ := os.UserHomeDir()
@@ -271,6 +294,25 @@ func (c *Console) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"detail": "Started the gateway. Checks refresh in a few seconds."})
+}
+
+// dashboardAnswers is whether the gateway's dashboard answers its lightest
+// request in a few seconds; Console.Answers stands in for it in tests.
+func (c *Console) dashboardAnswers(ctx context.Context) bool {
+	if c.Answers != nil {
+		return c.Answers(ctx)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.Default()
+	}
+	a := cfg.AdminListen
+	if a == "" || a == "off" {
+		return true // nothing to ask; a graceful restart is the safe guess
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return httpCheck(ctx, "Dashboard", "http://"+a+"/api/mod").OK
 }
 
 // handleRestoreConfig puts back the newest backup of config.json that
