@@ -40,6 +40,7 @@ func newTestConsole(t *testing.T) (*Console, *[]string, *string) {
 			return nil, nil
 		},
 		Terminal: func(p string) error { opened = p; return nil },
+		Answers:  func(context.Context) bool { return true },
 	}
 	return c, &ran, &opened
 }
@@ -72,8 +73,9 @@ func TestConsoleStatusWithBrokenConfig(t *testing.T) {
 	}
 }
 
-// Restart kickstarts a loaded gateway, clears the turned-off marker, and is
-// in the audit.
+// Restart asks a loaded gateway that answers to stop without waiting for
+// it (it drains, and launchd starts it again), clears the turned-off marker,
+// and is in the audit.
 func TestConsoleRestartIsAudited(t *testing.T) {
 	c, ran, _ := newTestConsole(t)
 	dir, _ := config.ConfigDir()
@@ -82,7 +84,8 @@ func TestConsoleRestartIsAudited(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
-	if !strings.Contains(strings.Join(*ran, "\n"), "kickstart -k gui/") {
+	all := strings.Join(*ran, "\n")
+	if !strings.Contains(all, "launchctl kill SIGTERM gui/") || strings.Contains(all, "kickstart -k") || strings.Contains(all, "SIGKILL") {
 		t.Fatalf("ran %q", *ran)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "rolled-back")); err == nil {
@@ -92,6 +95,22 @@ func TestConsoleRestartIsAudited(t *testing.T) {
 	evs := notice.ReadAudit(notice.AuditPath(notice.Path(dir)), 5)
 	if len(evs) != 1 || evs[0].Title != "Console: /api/console/restart" || !evs[0].AuditOnly {
 		t.Fatalf("audit = %+v", evs)
+	}
+}
+
+// A gateway that does not answer is stopped at once and started again: on
+// 27 Oct 2026 Restart waited for its 50s drain, ran out of time and said it
+// had failed.
+func TestConsoleRestartStopsAGatewayThatDoesNotAnswerAtOnce(t *testing.T) {
+	c, ran, _ := newTestConsole(t)
+	c.Answers = func(context.Context) bool { return false }
+	rec := consoleDo(t, c.Handler(), http.MethodPost, "/api/console/restart")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "not answering") {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	all := strings.Join(*ran, "\n")
+	if !strings.Contains(all, "launchctl kill SIGKILL gui/") || !strings.Contains(all, "launchctl kickstart gui/") || strings.Contains(all, "SIGTERM") {
+		t.Fatalf("ran %q", *ran)
 	}
 }
 
