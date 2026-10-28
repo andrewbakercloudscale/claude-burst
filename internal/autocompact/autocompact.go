@@ -547,12 +547,19 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 		extraUSD := extraTokens * a.price
 		// Room to work in: half as much again as a compaction leaves.
 		low := max(b.Floor, r.AfterTokens*3/2)
-		// best is the size before the bounds are applied to it.
+		// best is the size before the bounds are applied to it, and saving
+		// what the replay says it saves over the fixed Compact at.
 		var best int64
+		saving := -1.0
 		switch {
 		case measured:
 			m := in.Measured[root]
 			best = latest.At
+			if z, ok := sizeOf(m.Sizes, b.Ceiling); ok {
+				saving = z.USD - latest.USD
+			} else if m.Fixed.USD > 0 {
+				saving = m.Fixed.USD - latest.USD
+			}
 			r.Measured = &Measured{Requests: m.Requests, CheapestAt: cheapest.At, CheapestUSD: cheapest.USD,
 				LatestAt: latest.At, LatestUSD: latest.USD, ActualUSD: m.Actual.USD, FixedUSD: m.Fixed.USD}
 			r.Reason = fmt.Sprintf("replayed over the %d requests of the last %d days, which cost $%.2f as Burst ran them: cheapest at %dk ($%.2f)", m.Requests, int(Window.Hours()/24), m.Actual.USD, cheapest.At/1000, cheapest.USD)
@@ -600,9 +607,15 @@ func Learn(st State, in Inputs, b Bounds, step bool) State {
 			target = raised
 		}
 		switch {
-		case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare:
+		// With a replay, losses send it back only when they cost more than
+		// the replay's size saves: on 28 Oct 2026 six summaries dropped
+		// unused, $1.00 in all, sent a repository whose replay was cheapest
+		// at 150k ($21.94 against $24.89 at the fixed 500k) back to 500k.
+		case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare && (saving < 0 || a.fails.LostUSD >= saving):
 			target = b.Ceiling
 			r.Reason = fmt.Sprintf("%d of %d compactions lost money: back to the fixed Compact at", a.fails.Count(), a.fails.Attempts)
+		case a.fails.Attempts >= backOffAttempts && a.fails.Rate > backOffShare:
+			r.Reason += fmt.Sprintf("; %d of %d compactions lost money, $%.2f in all, less than the $%.2f this size saves over the fixed Compact at, so it stays", a.fails.Count(), a.fails.Attempts, a.fails.LostUSD, saving)
 		// Not for a replayed size: the replay already charged each size's
 		// compactions against the turns the sessions really went on for.
 		case !measured && len(a.turnsAfter) >= MinCompactions && r.TurnsAfter < 2*r.PaybackTurn:
