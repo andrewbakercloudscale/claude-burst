@@ -419,15 +419,22 @@ func TestAReplayedSizeStaysInsideTheBoundsAndTheGuards(t *testing.T) {
 	if r == nil || r.Measured.CheapestAt != 175_000 || r.Threshold != 200_000 {
 		t.Fatalf("%+v, want the cheapest inside the bounds (175k) and the latest within its slack (200k)", r)
 	}
-	// Most compactions losing money: back to the ceiling all the same.
+	// Most compactions losing money, and more than the replayed size saves
+	// over the ceiling ($1 here): back to the ceiling all the same.
 	var runs []metrics.CompactionRun
 	for i := 0; i < 4; i++ {
-		runs = append(runs, swapped(fmt.Sprintf("a%d", i), 200_000, 190_000, 0.50, 3, 1_000))
+		runs = append(runs, swapped(fmt.Sprintf("a%d", i), 200_000, 90_000, 0.50, 3, 1_000))
 	}
 	in2 := inputs(runs...)
-	in2.Measured = in.Measured
+	in2.Measured = map[string]metrics.StrategyRepo{"/src/repo-a": replay(1000, 140, map[int64]float64{100: 50, 175: 100, 200: 104, 250: 105, 400: 51})}
 	if r = Learn(empty(), in2, b, true).Repos["/src/repo-a"]; r.Target != b.Ceiling || !strings.Contains(r.Reason, "lost money") {
 		t.Fatalf("target %d (%s), want the ceiling", r.Target, r.Reason)
+	}
+	// The same losses beside a size that saves far more than they cost
+	// stay on the replay's size, a tenth up for the streak of losses.
+	in2.Measured = in.Measured
+	if r = Learn(empty(), in2, b, true).Repos["/src/repo-a"]; r.Target != 220_000 || !strings.Contains(r.Reason, "so it stays") {
+		t.Fatalf("target %d (%s), want the replay's 200k and a tenth", r.Target, r.Reason)
 	}
 }
 
