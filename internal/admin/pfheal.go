@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,7 +24,7 @@ import (
 
 const pfHealLabel = "ninja.andrewbaker.claude-burst-pfheal"
 
-// A cycle runs every 120s. Two missed cycles plus slack: long enough that a
+// A cycle runs every 5s (it was 120s, then 30s, until 30 Oct 2026). Two missed cycles plus slack: long enough that a
 // wake-from-sleep gap is not reported as death, short enough that a genuinely
 // dead daemon is visible within minutes.
 const pfHealStaleAfter = 6 * time.Minute
@@ -40,7 +41,34 @@ var (
 	pfHealPlist     = "/Library/LaunchDaemons/" + pfHealLabel + ".plist"
 	pfHealHeartbeat = "/etc/claude-burst/pf-heal.heartbeat"
 	pfHealLog       = "/var/log/claude-burst-pf.log"
+	pfHealLibexec   = "/usr/local/libexec/claude-burst"
 )
+
+// pfHealCopies are what install-pf-heal.sh puts in pfHealLibexec. The daemon
+// runs those copies, never the repo's, so an update that changes the repo
+// leaves it on the old code until someone re-arms it with sudo, which an
+// update cannot do. The faster repair of 30 Oct 2026 reached nobody who had
+// already armed the guard, and nothing said so. install-pf-heal.sh is copied
+// only so this comparison covers the plist it writes.
+var pfHealCopies = []string{"pf-heal.sh", "transparent-root.sh", "install-pf-heal.sh"}
+
+// pfHealOutdated names the copies that differ from the repo's. A repo file
+// that cannot be read says nothing, so it is skipped rather than reported;
+// a missing installed copy is reported, since every install before the
+// installer was copied predates the faster repair.
+func pfHealOutdated(scriptsDir string) []string {
+	var out []string
+	for _, name := range pfHealCopies {
+		want, err := os.ReadFile(filepath.Join(scriptsDir, name))
+		if err != nil {
+			continue
+		}
+		if got, err := os.ReadFile(filepath.Join(pfHealLibexec, name)); err != nil || !bytes.Equal(got, want) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 // The gateway watchdog: a user LaunchAgent, so its plist and heartbeat live in
 // $HOME. Reported alongside the pf guard because the two cover the two halves
@@ -117,6 +145,9 @@ type pfHealInfo struct {
 	LogPath    string   `json:"log_path"`
 	HasLog     bool     `json:"has_log"`
 	InstallCmd string   `json:"install_cmd,omitempty"`
+	// Outdated names the installed copies that differ from the repo's: the
+	// guard runs, but on old code, until it is re-armed.
+	Outdated []string `json:"outdated,omitempty"`
 }
 
 func pfHealStatus(scriptsDir string) pfHealInfo {
@@ -137,6 +168,9 @@ func pfHealStatus(scriptsDir string) pfHealInfo {
 	}
 	if scriptsDir != "" {
 		info.InstallCmd = "sudo " + scriptsDir + "/install-pf-heal.sh"
+		if info.Installed {
+			info.Outdated = pfHealOutdated(scriptsDir)
+		}
 	}
 	return info
 }
@@ -219,7 +253,7 @@ echo "other software on this Mac (VPN and endpoint-security clients reload pf"
 echo "on network change and on wake). When that happens while /etc/hosts still"
 echo "redirects, EVERY process here is refused for the intercepted host."
 echo
-echo "This installs a root LaunchDaemon that checks every 30s and on every network change, and:"
+echo "This installs a root LaunchDaemon that checks every 5s and on every network change, and:"
 echo "  - reloads the rule if it has gone missing"
 echo "  - removes the redirect entirely if it cannot, so this Mac can still"
 echo "    reach Anthropic directly"

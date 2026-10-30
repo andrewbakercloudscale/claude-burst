@@ -65,9 +65,9 @@ func TestPFHealStatusStates(t *testing.T) {
 	beat := filepath.Join(dir, "heartbeat")
 	logf := filepath.Join(dir, "pf.log")
 
-	oldPlist, oldBeat, oldLog := pfHealPlist, pfHealHeartbeat, pfHealLog
-	pfHealPlist, pfHealHeartbeat, pfHealLog = plist, beat, logf
-	t.Cleanup(func() { pfHealPlist, pfHealHeartbeat, pfHealLog = oldPlist, oldBeat, oldLog })
+	oldPlist, oldBeat, oldLog, oldLib := pfHealPlist, pfHealHeartbeat, pfHealLog, pfHealLibexec
+	pfHealPlist, pfHealHeartbeat, pfHealLog, pfHealLibexec = plist, beat, logf, filepath.Join(dir, "libexec")
+	t.Cleanup(func() { pfHealPlist, pfHealHeartbeat, pfHealLog, pfHealLibexec = oldPlist, oldBeat, oldLog, oldLib })
 
 	writeBeat := func(age time.Duration) {
 		ts := strconv.FormatInt(time.Now().Add(-age).Unix(), 10)
@@ -145,5 +145,53 @@ func TestPFHealInstallScriptDelegates(t *testing.T) {
 	}
 	if !strings.Contains(script, "Press any key to close this window") {
 		t.Errorf("script does not hold the Terminal window open:\n%s", script)
+	}
+}
+
+// TestPFHealStatusSaysWhenTheGuardRunsOldCode: an update changes the repo, not
+// the root-owned copies the daemon runs, so the guard can be armed and running
+// last month's repair. Only a comparison with the repo says so.
+func TestPFHealStatusSaysWhenTheGuardRunsOldCode(t *testing.T) {
+	dir := t.TempDir()
+	repo, lib := filepath.Join(dir, "scripts"), filepath.Join(dir, "libexec")
+	for _, d := range []string{repo, lib} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldPlist, oldLib := pfHealPlist, pfHealLibexec
+	pfHealPlist, pfHealLibexec = filepath.Join(dir, "daemon.plist"), lib
+	t.Cleanup(func() { pfHealPlist, pfHealLibexec = oldPlist, oldLib })
+	write := func(path, body string) {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, name := range pfHealCopies {
+		write(filepath.Join(repo, name), "new "+name)
+	}
+	if got := pfHealStatus(repo).Outdated; got != nil {
+		t.Errorf("not installed: nothing can be outdated, got %v", got)
+	}
+
+	write(pfHealPlist, "<plist/>")
+	write(filepath.Join(lib, "pf-heal.sh"), "old pf-heal.sh")
+	write(filepath.Join(lib, "transparent-root.sh"), "new transparent-root.sh")
+	got := pfHealStatus(repo).Outdated
+	if strings.Join(got, ",") != "pf-heal.sh,install-pf-heal.sh" {
+		t.Errorf("want the changed copy and the missing installer copy, got %v", got)
+	}
+
+	for _, name := range pfHealCopies {
+		write(filepath.Join(lib, name), "new "+name)
+	}
+	if got := pfHealStatus(repo).Outdated; got != nil {
+		t.Errorf("copies match the repo: want nothing outdated, got %v", got)
+	}
+
+	// A repo that cannot be read proves nothing either way.
+	if got := pfHealStatus(filepath.Join(dir, "missing")).Outdated; got != nil {
+		t.Errorf("unreadable repo: want nothing reported, got %v", got)
 	}
 }
