@@ -2758,6 +2758,7 @@ function renderGuards(s) {
   const armed = guards.filter(g => g && g.running).length;
   $("guardsSummary").textContent = bad
     ? "not armed, traffic is unprotected"
+    : armed === guards.length && guards.some(g => g && g.outdated && g.outdated.length) ? "armed, pf guard out of date"
     : armed === guards.length ? (guards.length === 1 ? "armed" : "both armed")
     : `${armed} of ${guards.length} armed`;
 
@@ -2765,7 +2766,8 @@ function renderGuards(s) {
   // Re-opening on every 2s refresh would take the panel away from anyone who
   // read it and closed it again while the condition persisted -- and the
   // condition can persist for as long as it takes to fix.
-  setHeadState("guardsHead", bad ? "bad" : armed === guards.length ? "ok" : "warn");
+  const stale = guards.some(g => g && g.outdated && g.outdated.length);
+  setHeadState("guardsHead", bad ? "bad" : armed === guards.length && !stale ? "ok" : "warn");
 
   if (bad && !guardsWereBad) setGuardsOpen(true);
   guardsWereBad = bad;
@@ -2798,7 +2800,12 @@ function renderGuard(id, s, ph, noun, notArmedText) {
             : `${Math.round(age / 3600)} h ago`;
 
   let cls, headline;
-  if (ph.running) {
+  const stale = ph.outdated && ph.outdated.length;
+  if (ph.running && stale) {
+    // Running, but on the copies an older install left: an update changes
+    // the repo, not what a root daemon runs, and cannot re-arm it without sudo.
+    cls = "warn"; headline = `ARMED BUT OUT OF DATE, last checked ${ago}`;
+  } else if (ph.running) {
     cls = "ok"; headline = `ARMED, last checked ${ago}`;
   } else if (ph.installed) {
     cls = "bad";
@@ -2814,7 +2821,11 @@ function renderGuard(id, s, ph, noun, notArmedText) {
   } else if (ph.running) {
     body += "\n\nNothing to report, it has not had to act since this was armed.";
   }
-  if (!ph.running && ph.install_cmd) {
+  if (stale) {
+    body += "\n\nIt is running older copies of " + ph.outdated.join(", ") +
+      " than this version ships. Re-arm it with the button below to get the current repair" +
+      (ph.install_cmd ? ", or from a terminal:\n" + ph.install_cmd : ".");
+  } else if (!ph.running && ph.install_cmd) {
     body += "\n\nArm it with the button below, or from a terminal:\n" + ph.install_cmd;
   }
   note($(id + "Status"), cls, body);
@@ -4047,7 +4058,7 @@ $("armSelfHeal").onclick = async () => {
 // Terminal window with the user watching, not silently from an
 // unauthenticated loopback page.
 $("armPfHeal").onclick = async () => {
-  if (!confirm("Arm the pf redirect guard?\n\nA Terminal window will open and ask for your password. It installs a root LaunchDaemon that checks the pf rdr rule every 2 minutes, reloads it if something has dropped it, and removes the redirect entirely if it cannot repair it.\n\nRemove it later with: sudo scripts/install-pf-heal.sh uninstall")) return;
+  if (!confirm("Arm the pf redirect guard?\n\nA Terminal window will open and ask for your password. It installs a root LaunchDaemon that checks the pf redirect every 5 seconds and on every network change, reloads it if something has dropped it, and removes the redirect entirely if it cannot repair it.\n\nRemove it later with: sudo scripts/install-pf-heal.sh uninstall")) return;
   $("armPfHeal").disabled = true;
   try {
     const r = await post("/api/pf-heal-install");
@@ -4221,8 +4232,9 @@ function readinessChecks(s, verdict) {
     const ph = s.intercept.pf_heal;
     out.push({
       key: "pfguard", label: "pf redirect guard", target: "guardsSection",
-      ok: !!ph.running, critical: false,
-      detail: ph.running ? "armed" : "not armed, nothing repairs the redirect if it is dropped",
+      ok: !!ph.running && !(ph.outdated && ph.outdated.length), critical: false,
+      detail: !ph.running ? "not armed, nothing repairs the redirect if it is dropped"
+        : ph.outdated && ph.outdated.length ? "armed on old code, re-arm it for the current repair" : "armed",
     });
   }
 
@@ -4453,7 +4465,7 @@ function renderNav(s, counts) {
   const ph = s.intercept.mode === "transparent" ? s.intercept.pf_heal : null;
   const guards = [sh].concat(ph ? [ph] : []).filter(Boolean);
   const armed = guards.filter(g => g.running).length;
-  setDot("nd-guards", guards.length && armed === guards.length ? "ok"
+  setDot("nd-guards", guards.length && armed === guards.length && !guards.some(g => g.outdated && g.outdated.length) ? "ok"
     : guards.some(g => isBad(s, g)) ? "bad" : "warn");
   setCount("nc-guards", guards.length ? armed + "/" + guards.length : null);
 

@@ -131,7 +131,7 @@ do_uninstall() {
   # Only its own files: the directory is shared with the lid-awake daemon,
   # and deleting that one's script leaves a KeepAlive daemon pointing at
   # nothing, with SleepDisabled possibly left on.
-  rm -f "$SCRIPT" "$LIBEXEC/transparent-root.sh"
+  rm -f "$SCRIPT" "$LIBEXEC/transparent-root.sh" "$LIBEXEC/install-pf-heal.sh"
   rmdir "$LIBEXEC" 2>/dev/null || true
   # Without this, status() reads a heartbeat from a daemon that no longer
   # exists and reports RUNNING for the next ten minutes.
@@ -164,6 +164,11 @@ do_install() {
 
   "$INSTALL_BIN" -d "${OWNER_ARGS[@]}" -m 755 "$LIBEXEC"
   "$INSTALL_BIN" "${OWNER_ARGS[@]}" -m 755 "$ROOT/scripts/pf-heal.sh" "$ROOT/scripts/transparent-root.sh" "$LIBEXEC/"
+  # A copy of this installer too, never run from here: the dashboard compares
+  # all three with the repo's so an update that changes any of them (the plist
+  # this file writes included) says the guard needs re-arming. Updates cannot
+  # do it themselves without sudo, and until 30 Oct 2026 nothing said so.
+  "$INSTALL_BIN" "${OWNER_ARGS[@]}" -m 644 "$ROOT/scripts/install-pf-heal.sh" "$LIBEXEC/"
 
   mkdir -p "$(dirname "$PLIST")"
   # The daemon runs the INSTALLED transparent-root.sh, not the repo's, so a
@@ -282,6 +287,7 @@ self_test() {
 
   [[ -x "$SCRIPT" ]] && ok "pf-heal.sh copied and executable" || bad "pf-heal.sh not installed at $SCRIPT"
   [[ -x "$LIBEXEC/transparent-root.sh" ]] && ok "transparent-root.sh copied" || bad "transparent-root.sh not installed"
+  cmp -s "$ROOT/scripts/install-pf-heal.sh" "$LIBEXEC/install-pf-heal.sh" && ok "installer copied for the dashboard to compare" || bad "install-pf-heal.sh not copied to $LIBEXEC"
   [[ -f "$PLIST" ]] && ok "plist written" || bad "no plist at $PLIST"
   grep -q "bootstrap system $PLIST" "$tmp/launchctl.calls" 2>/dev/null \
     && ok "daemon bootstrapped" || bad "launchctl bootstrap was never called"
@@ -306,7 +312,7 @@ self_test() {
   run do_uninstall
   (( rc == 0 )) && ok "do_uninstall completes" || { bad "do_uninstall exited $rc"; printf '%s\n' "$out" | sed 's/^/      /'; }
   [[ -e "$PLIST" ]] && bad "uninstall left the plist behind" || ok "uninstall removed the plist"
-  [[ -e "$SCRIPT" || -e "$LIBEXEC/transparent-root.sh" ]] && bad "uninstall left its scripts behind" || ok "uninstall removed its own scripts"
+  [[ -e "$SCRIPT" || -e "$LIBEXEC/transparent-root.sh" || -e "$LIBEXEC/install-pf-heal.sh" ]] && bad "uninstall left its scripts behind" || ok "uninstall removed its own scripts"
   [[ -e "$LIBEXEC/lid-awake-root.sh" ]] && ok "uninstall kept the lid-awake script" || bad "uninstall deleted the lid-awake daemon's script"
   rm -f "$LIBEXEC/lid-awake-root.sh"
   [[ -e "$HEARTBEAT" ]] && bad "uninstall left the heartbeat behind" || ok "uninstall cleared the heartbeat"
