@@ -193,7 +193,7 @@ do_install() {
   <dict>
     <key>CLAUDE_BURST_ROOT_HELPER</key><string>$LIBEXEC/transparent-root.sh</string>
   </dict>
-  <key>StartInterval</key><integer>30</integer>
+  <key>StartInterval</key><integer>5</integer>
   <key>WatchPaths</key>
   <array>
     <string>/var/run/resolv.conf</string>
