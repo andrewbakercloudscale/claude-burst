@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Installs (or removes) the pf self-heal LaunchDaemon: a root job that runs
-# scripts/pf-heal.sh every 30s and on every network change to notice when
+# scripts/pf-heal.sh every 5s and on every network change to notice when
 # transparent mode's pf rdr rule has been dropped from the loaded ruleset, reload it, and -- if it cannot
 # -- remove the redirect so this Mac can reach Anthropic directly again.
 #
@@ -176,8 +176,8 @@ do_install() {
   # network change, so the daemon now runs the moment the network changes
   # (pf-heal.sh then watches the path for a minute, because whatever reloads
   # pf does so a few seconds AFTER the change). /etc/pf.conf is watched for
-  # the other software that rewrites pf. The interval drops to 30s as the
-  # backstop: a healthy cycle is one local curl.
+  # the other software that rewrites pf. The interval is 5s as the
+  # backstop (it was 30s until 30 Oct 2026): a healthy cycle is one local curl.
   cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -218,7 +218,7 @@ PLIST
   cat <<OUT
 
 Installed pf self-heal LaunchDaemon: $LABEL
-Runs as root every 30s AND on every network change. Each cycle:
+Runs as root every 5s AND on every network change. Each cycle:
   - no /etc/hosts redirect installed -> does nothing (a rollback stays rolled back)
   - pf rdr rule loaded               -> does nothing, silently
   - rule missing                     -> logs it, runs 'transparent-root.sh reload-anchor',
