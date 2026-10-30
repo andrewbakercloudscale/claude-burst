@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime/debug"
 	"runtime/metrics"
 	"strconv"
 	"strings"
@@ -33,7 +34,22 @@ const (
 	// memWarnBytes is how much the gateway may hold before the line is a
 	// warning: it held under 100MB on the morning of 27 Oct 2026.
 	memWarnBytes = 1 << 30
+	// memSoftLimit is the Go runtime's soft memory limit. Without one Go
+	// keeps what a burst of large requests took, and returns it to macOS
+	// slowly: on 30 Oct 2026 it held 964MB mapped with 250MB in RAM and
+	// the rest pushed to swap on a Mac short of memory. Near the limit the
+	// collector runs sooner and gives pages back; it is soft, so a burst
+	// past it still succeeds, with the collector capped at half a core.
+	// GOMEMLIMIT in the environment overrides it.
+	memSoftLimit = 512 << 20
 )
+
+// limitMemory sets memSoftLimit, unless GOMEMLIMIT already set one.
+func limitMemory() {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(memSoftLimit)
+	}
+}
 
 // memSample is what one memory line says. RSS and swap come from ps and
 // sysctl, and are zero when those did not answer.

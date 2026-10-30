@@ -371,3 +371,53 @@ func sentTo(f *fakeAnthropic) int {
 	defer f.mu.Unlock()
 	return len(f.bodies)
 }
+
+// The cache holds the bytes of a message only when it was masked: a message
+// sent as it came is its hash alone, so a session's whole conversation is
+// not kept a second time in the gateway.
+func TestAutomaskCacheHoldsOnlyMaskedMessages(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	history := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"my card is 4111 1111 1111 1111"}`),
+		json.RawMessage(`{"role":"assistant","content":"nothing to see"}`),
+		json.RawMessage(`{"role":"user","content":"still nothing"}`),
+	}
+	send(t, s, "S1", history)
+	first := f.last()
+	send(t, s, "S1", history)
+	if f.last() != first {
+		t.Fatalf("second send differs:\n%s\n%s", f.last(), first)
+	}
+	if strings.Contains(first, "4111 1111") {
+		t.Fatalf("sent unmasked: %s", first)
+	}
+	s.automask.mu.Lock()
+	defer s.automask.mu.Unlock()
+	ms := s.automask.sessions["S1"]
+	held, clean := 0, 0
+	for _, v := range ms.cache {
+		if v == nil {
+			clean++
+		} else {
+			held++
+		}
+	}
+	if held != 1 || clean != 2 {
+		t.Fatalf("cache holds %d masked and %d clean, want 1 and 2", held, clean)
+	}
+}
+
+// A body with nothing to mask goes out as the very bytes that came in.
+func TestAutomaskLeavesACleanBodyUntouched(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	body := []byte(`{"model":"claude-opus-5-5","system":"be brief","messages":[{"role":"user","content":"hello"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", nil)
+	out, why := s.applyAutomaskFor(req, body, "anthropic")
+	if why != "" || &out[0] != &body[0] {
+		t.Fatalf("clean body was rebuilt (%q): %s", why, out)
+	}
+}
