@@ -221,6 +221,61 @@ type maskSession struct {
 // (the masks themselves are kept, so nothing changes on the wire).
 const maskCacheMax = 20000
 
+// cached returns what to send for raw, and whether that differs from raw,
+// calling scan only the first time the session sends raw. scan runs under
+// ms.scan. A message that goes out as it came is held as its hash alone
+// (a nil value): until 30 Oct 2026 the cache kept a copy of every message
+// of every session for a day, which was most of the gateway's heap, when
+// nearly every message is sent unchanged.
+func (m *masker) cached(ms *maskSession, raw json.RawMessage, scan func() (json.RawMessage, []automask.Hit)) (json.RawMessage, []automask.Hit, bool) {
+	key := sha1.Sum(raw)
+	m.mu.Lock()
+	out, ok := ms.cache[key]
+	m.mu.Unlock()
+	if ok {
+		if out == nil {
+			return raw, nil, false
+		}
+		return out, nil, true
+	}
+	ms.scan.Lock()
+	out, hits := scan()
+	ms.scan.Unlock()
+	changed := len(out) != len(raw) || string(out) != string(raw)
+	var keep []byte
+	if changed {
+		keep = bytes.Clone(out)
+	}
+	m.mu.Lock()
+	ms.cache[key] = keep
+	m.mu.Unlock()
+	if !changed {
+		return raw, hits, false
+	}
+	return out, hits, true
+}
+
+// rawRef is a JSON value as a slice of the body it was decoded from.
+// json.RawMessage copies every value it decodes, and a request near a
+// million tokens is several MB, decoded twice over (the top level, then
+// the messages) on every request, although nearly every one goes out as it
+// came. json.Unmarshal hands an Unmarshaler a slice of its own input, and
+// the body is never written to, so the slice is good for as long as the
+// body is. Nothing that outlives the request may hold one.
+type rawRef []byte
+
+func (r *rawRef) UnmarshalJSON(b []byte) error { *r = b; return nil }
+
+// topOf is a body's top level ready to be encoded again, for the rare
+// request that changed.
+func topOf(top map[string]rawRef) map[string]json.RawMessage {
+	full := make(map[string]json.RawMessage, len(top))
+	for k, v := range top {
+		full[k] = json.RawMessage(v)
+	}
+	return full
+}
+
 func newMasker(c config.AutomaskConfig, path string, logger *log.Logger) *masker {
 	m := &masker{cfg: c, sessions: map[string]*maskSession{}, notices: map[string][]string{}, totals: map[string]int{},
 		since: time.Now(), path: path, logger: logger}
@@ -341,11 +396,11 @@ func (s *Server) applyAutomaskFor(in *http.Request, body []byte, provider string
 	on := func(r *automask.Rule) bool { return RuleOn(cfg, r) }
 	sid := in.Header.Get("x-claude-code-session-id")
 
-	var top map[string]json.RawMessage
+	var top map[string]rawRef
 	if json.Unmarshal(body, &top) != nil {
 		return body, "it is not JSON"
 	}
-	var msgs []json.RawMessage
+	var msgs []rawRef
 	if json.Unmarshal(top["messages"], &msgs) != nil {
 		return body, "it has no list of messages"
 	}
@@ -366,32 +421,23 @@ func (s *Server) applyAutomaskFor(in *http.Request, body []byte, provider string
 
 	var hits []automask.Hit
 	changed := false
-	for i, raw := range msgs {
-		key := sha1.Sum(raw)
-		m.mu.Lock()
-		out, ok := ms.cache[key]
-		m.mu.Unlock()
-		if !ok {
-			var h []automask.Hit
-			// Messages are scanned in order, so a tool call is noted
-			// before the message that carries its output.
-			ms.scan.Lock()
+	outs := make([]json.RawMessage, len(msgs))
+	for i, ref := range msgs {
+		raw := json.RawMessage(ref)
+		// Messages are scanned in order, so a tool call is noted before
+		// the message that carries its output.
+		out, h, c := m.cached(ms, raw, func() (json.RawMessage, []automask.Hit) {
 			noteEnvCalls(ms.env, raw)
-			out, h = maskMessage(ms.masks, raw, on, ms.env)
-			ms.scan.Unlock()
-			hits = append(hits, h...)
-			m.mu.Lock()
-			ms.cache[key] = out
-			m.mu.Unlock()
-		}
-		if len(out) != len(raw) || string(out) != string(raw) {
-			msgs[i] = out
-			changed = true
-		}
+			return maskMessage(ms.masks, raw, on, ms.env)
+		})
+		hits = append(hits, h...)
+		outs[i] = out
+		changed = changed || c
 	}
-	if sys, ok := top["system"]; ok {
-		if out, h, c := maskContent(ms.masks, sys, "system", on, nil, false); c {
-			top["system"] = out
+	var sys json.RawMessage
+	if ref, ok := top["system"]; ok {
+		if out, h, c := maskContent(ms.masks, json.RawMessage(ref), "system", on, nil, false); c {
+			sys = out
 			hits = append(hits, h...)
 			changed = true
 		}
@@ -399,12 +445,16 @@ func (s *Server) applyAutomaskFor(in *http.Request, body []byte, provider string
 	if !changed {
 		return body, ""
 	}
-	nm, err := json.Marshal(msgs)
+	nm, err := json.Marshal(outs)
 	if err != nil {
 		return body, ""
 	}
-	top["messages"] = nm
-	nb, err := json.Marshal(top)
+	full := topOf(top)
+	full["messages"] = nm
+	if sys != nil {
+		full["system"] = sys
+	}
+	nb, err := json.Marshal(full)
 	if err != nil {
 		return body, ""
 	}

@@ -1,7 +1,6 @@
 package router
 
 import (
-	"crypto/sha1"
 	"encoding/json"
 	"strings"
 	"time"
@@ -32,11 +31,11 @@ func (s *Server) MaskCodex(sid, repo string, body []byte) []byte {
 	}
 	on := func(r *automask.Rule) bool { return RuleOn(cfg, r) }
 
-	var top map[string]json.RawMessage
+	var top map[string]rawRef
 	if json.Unmarshal(body, &top) != nil {
 		return body
 	}
-	var items []json.RawMessage
+	var items []rawRef
 	if raw, ok := top["input"]; ok && json.Unmarshal(raw, &items) != nil {
 		// A plain string input, or a shape not known: the instructions
 		// are still masked below.
@@ -60,29 +59,20 @@ func (s *Server) MaskCodex(sid, repo string, body []byte) []byte {
 
 	var hits []automask.Hit
 	changed := false
-	for i, raw := range items {
-		k := sha1.Sum(raw)
-		m.mu.Lock()
-		out, ok := ms.cache[k]
-		m.mu.Unlock()
-		if !ok {
-			var h []automask.Hit
-			ms.scan.Lock()
-			out, h = maskCodexItem(ms.masks, raw, on, ms.env)
-			ms.scan.Unlock()
-			hits = append(hits, h...)
-			m.mu.Lock()
-			ms.cache[k] = out
-			m.mu.Unlock()
-		}
-		if len(out) != len(raw) || string(out) != string(raw) {
-			items[i] = out
-			changed = true
-		}
+	outs := make([]json.RawMessage, len(items))
+	for i, ref := range items {
+		raw := json.RawMessage(ref)
+		out, h, c := m.cached(ms, raw, func() (json.RawMessage, []automask.Hit) {
+			return maskCodexItem(ms.masks, raw, on, ms.env)
+		})
+		hits = append(hits, h...)
+		outs[i] = out
+		changed = changed || c
 	}
-	if ins, ok := top["instructions"]; ok {
-		if out, h, c := maskContent(ms.masks, ins, "system", on, nil, false); c {
-			top["instructions"] = out
+	var ins json.RawMessage
+	if ref, ok := top["instructions"]; ok {
+		if out, h, c := maskContent(ms.masks, json.RawMessage(ref), "system", on, nil, false); c {
+			ins = out
 			hits = append(hits, h...)
 			changed = true
 		}
@@ -90,14 +80,18 @@ func (s *Server) MaskCodex(sid, repo string, body []byte) []byte {
 	if !changed {
 		return body
 	}
+	full := topOf(top)
 	if items != nil {
-		nb, err := json.Marshal(items)
+		nb, err := json.Marshal(outs)
 		if err != nil {
 			return body
 		}
-		top["input"] = nb
+		full["input"] = nb
 	}
-	nb, err := json.Marshal(top)
+	if ins != nil {
+		full["instructions"] = ins
+	}
+	nb, err := json.Marshal(full)
 	if err != nil {
 		return body
 	}
