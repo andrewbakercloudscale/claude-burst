@@ -562,6 +562,22 @@ func TestRootReloadAnchorFallsBackToTheMainRulesetWhenThePathStaysBroken(t *test
 	if !strings.Contains(r.out, "the anchor-only reload did not bring the real path back") {
 		t.Fatalf("the fallback did not say why it ran:\n%s", r.out)
 	}
+
+	// The next break skips the step that just failed: it only kept every
+	// request refused 10s longer before the main reload that fixed it.
+	r = e.run(t, "reload-anchor")
+	if r.code != 0 {
+		t.Fatalf("second reload-anchor exit %d:\n%s", r.code, r.out)
+	}
+	sameCalls(t, "reload-anchor pfctl calls after a failed anchor-only reload", only(r.calls, "pfctl "), []string{
+		"pfctl -n -f <tmp>/etc/pf.conf",
+		"pfctl -f <tmp>/etc/pf.conf",
+		"pfctl -s info",
+		"pfctl -a claude-burst -F states",
+	}, r.out)
+	if !strings.Contains(r.out, "so it is skipped for 6h") {
+		t.Fatalf("the skip did not say why:\n%s", r.out)
+	}
 }
 
 // The anchor-only step itself fails, at the dry run or at the load: the full
