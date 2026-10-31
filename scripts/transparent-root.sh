@@ -64,6 +64,7 @@ PF_CONF="${CLAUDE_BURST_PF_CONF:-/etc/pf.conf}"
 PF_ANCHOR_FILE="${CLAUDE_BURST_PF_ANCHOR:-/etc/pf.anchors/claude-burst}"
 STATE_DIR="${CLAUDE_BURST_ROOT_STATE_DIR:-/etc/claude-burst}"
 STATE_FILE="$STATE_DIR/transparent.state"
+ANCHOR_ONLY_RETRY_AFTER=21600
 # Test seams, defaulting to the real thing. Tests point PFCTL at a stub that
 # logs its argv, and set the effective uid to 0 so the root-only paths run
 # against temp files. Neither grants anything: a non-root caller that claims
@@ -325,8 +326,16 @@ do_reload_anchor() {
   # everywhere else here: if the real path does not answer after the narrow
   # load, or the narrow load itself fails, the full reload below runs exactly
   # as it always did, and the output says which one happened and why.
-  local why=""
-  if anchor_referenced_live; then
+  # Skipped for a while after it last failed: from 29 to 31 Oct 2026 it failed
+  # at every one of about 160 breaks, and each failure kept every Claude Code
+  # request refused for 10s more before the main reload below fixed it. It is
+  # tried again once the window passes, so a Mac where it does work goes back
+  # to it.
+  local why="" failed_at now
+  failed_at="$(state_get anchor_only_failed_at)"; now="$(date +%s)"
+  if [[ "$failed_at" == <-> ]] && (( now - failed_at < ANCHOR_ONLY_RETRY_AFTER )); then
+    why="the anchor-only reload failed $(( (now - failed_at) / 60 )) min ago, so it is skipped for $(( ANCHOR_ONLY_RETRY_AFTER / 3600 ))h"
+  elif anchor_referenced_live; then
     echo "== reloading this anchor only (the running main ruleset references it and is not touched) =="
     local arc=0
     load_anchor_only || arc=$?
@@ -341,10 +350,12 @@ do_reload_anchor() {
         echo "  direct 127.0.0.1:$gport : $ndirect"
         echo "  real path (port $port)  : OK"
         echo "  the anchor-only reload was enough; the main ruleset was not reloaded"
+        state_set anchor_only_failed_at ""
         direct_verdict "$ndirect"
         return 0
       fi
       why="the anchor-only reload did not bring the real path back"
+      state_set anchor_only_failed_at "$now"
     elif (( arc == 1 )); then
       why="pf rejected the anchor-only dry run"
     else

@@ -272,6 +272,31 @@ dashboard_answers() {
   $CURL -sf -o /dev/null -m 2 "$DASHBOARD_URL" 2>/dev/null
 }
 
+# What pf and loopback look like at the moment of a break, written before the
+# repair changes it. Added 31 Oct 2026, at 61 breaks a day: the rule is loaded
+# and referenced at every break, the anchor-only reload has failed at every
+# one, the main ruleset reload has fixed every one, and the dashboard check
+# that should have shortened them has never once answered. Those point at pf
+# refusing loopback connections in general (a full state table, or rules
+# other software added), and only root can look, so the daemon does it here.
+pf_snapshot() {
+  local gport="$1"
+  log "  snapshot: dashboard :7788 http=$($CURL -s -o /dev/null -w '%{http_code}' -m 2 "$DASHBOARD_URL" 2>/dev/null) direct :$gport http=$($CURL -sk -o /dev/null -w '%{http_code}' -m 2 "https://127.0.0.1:$gport/healthz" 2>/dev/null)"
+  {
+    echo "    -- pfctl -si (states and refusal counters)"
+    "$PFCTL" -si 2>/dev/null | grep -iE 'status|current entries|searches|inserts|removals|state-|memory|src-limit|congestion|synproxy|translate|match' | sed 's/^/      /'
+    echo "    -- pfctl -sm (limits)"
+    "$PFCTL" -sm 2>/dev/null | sed 's/^/      /'
+    echo "    -- skipped interfaces"
+    "$PFCTL" -sI -v 2>/dev/null | grep -i skip | sed 's/^/      /'
+    echo "    -- main ruleset nat/rdr"
+    "$PFCTL" -sn 2>/dev/null | head -20 | sed 's/^/      /'
+    echo "    -- anchors"
+    "$PFCTL" -sA 2>/dev/null | head -20 | sed 's/^/      /'
+    "$PFCTL" -a com.apple -sA 2>/dev/null | head -20 | sed 's/^/      /'
+  } >> "$LOG" 2>/dev/null || true
+}
+
 # Is anything listening on the gateway port at all? Distinguishes "pf is not
 # redirecting" from "pf is redirecting into a hole", which need different
 # repairs. Deliberately does NOT probe over the redirect: this is the one
@@ -395,6 +420,7 @@ if anchor_referenced; then ref=referenced; else ref=NOT-REFERENCED; fi
 if gateway_listening; then gw=listening;   else gw=DOWN;           fi
 pf="$(pf_status)"
 log "BROKEN: /etc/hosts redirects $INTERCEPT_HOST here but it does not answer from this gateway -- every process on this Mac is affected (pf: $pf, rdr rule: $rdr, main ruleset: $ref, gateway on :$gport: $gw)"
+pf_snapshot "$gport"
 
 if (( CHECK_ONLY )); then
   log "check: --check given, so nothing was repaired."
@@ -569,6 +595,9 @@ self_test() {
   # The dashboard answers when the gateway is up; a stub, so the fake curl's
   # call count (break-at) counts only real path probes.
   dashboard_answers() { [[ -f "$tmp/gw" ]]; }
+  # Its own curls would count as path probes; what matters here is that a
+  # break takes one, before the repair.
+  pf_snapshot() { echo "$1" >> "$tmp/snapshots"; }
   notify() { :; }
   # Restarting a LaunchAgent needs a console user and a real launchd; the stub
   # records the attempt and flips the gateway flag, which is what the decision
@@ -759,6 +788,8 @@ STUB
   want "the redirect failed" && bad "repaired at once with the gateway not answering" show || ok "gateway not answering -> the full budget runs first"
   dashboard_answers() { [[ -f "$tmp/gw" ]]; }
   FAST_CONFIRM_SLEEPS=""; HEALTH_PROBE_BUDGET=0; HEALTH_PROBE_SLEEP=0
+
+  [[ -s "$tmp/snapshots" ]] && ok "a break writes a pf snapshot before repairing" || bad "no break wrote a pf snapshot"
 
   echo
   if (( fails == 0 )); then echo "self-test: all checks passed"; return 0; fi
