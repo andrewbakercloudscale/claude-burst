@@ -426,6 +426,10 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		return
 	}
 
+	if resp.StatusCode == http.StatusBadRequest && slot == "primary" {
+		s.noteTooLong(in, errorExcerpt(errBody))
+	}
+
 	if allowFailover {
 		if d := fd.OnResponse(resp.StatusCode, resp.Header, errBody); d.Failover {
 			s.activateOverflow(model, d.ResetAt, d.Claim, d.Reason)

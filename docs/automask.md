@@ -114,7 +114,7 @@ set -a; . ./.env; set +a; ./deploy.sh
 - **Tool calls are not masked.** If Claude itself types a secret into a command, that text is sent as written.
 - **Requests only.** Claude's answers are not changed on the way back.
 - **Codex turns Burst cannot read are not masked.** A turn Codex sends compressed, or larger than 64MB, goes to ChatGPT as Codex wrote it, and the gateway log (`codex: automask could not read ...`) and a pop-up say so. A turn sent over a WebSocket, which is how Codex sends them by default, is read and masked like one sent as a request: Burst does not pass on Codex's offer to compress the socket, so its messages can be read. Refusing it would stop Codex working, so it is passed on and reported. A Claude Code request Burst cannot read is refused instead. Codex's sign-in, plugins and cloud tasks do not pass through Burst at all.
-- **Switching a rule on rewrites history once.** A session that already holds a matching value pays one cache rewrite the first time it is masked.
+- **A switch applies to every session's whole history, from its next request.** Switching a rule on pays one cache rewrite in a session that holds a matching value. Switching one off does the same, and sends every value that rule was hiding, in the history of every session, to the provider as written, not just what you type next. There is no way to turn it off for one message: to give Claude a key without that, put it in a file and have a command read it. A summary Burst has written survives the switch.
 - **The local transcript is not changed.** Claude Code's own files under `~/.claude` still hold what you typed and what tools returned.
 
 The design note, with the reasoning behind each rule, is [design/automask.md](design/automask.md).

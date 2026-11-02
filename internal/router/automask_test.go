@@ -455,3 +455,39 @@ func TestAutomaskBigBodyKeepsEveryMessage(t *testing.T) {
 		}
 	}
 }
+
+// Automask's switch changes how a history reads, not what it is: a summary
+// stays through it, each way, and one written with a rule off is masked once
+// the rule is back on.
+func TestASummarySurvivesAutomaskBeingSwitched(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	history := append([]json.RawMessage(nil), msgs(t, session)...)
+	history[1] = json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"my card is 4111 1111 1111 1111"}]}`)
+	send(t, s, "S", history[:5])
+	send(t, s, "S", history[:7])
+	s.compaction.running.Wait()
+	send(t, s, "S", history)
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatalf("the summary did not swap in: %s", f.last())
+	}
+	s.SetAutomask(config.AutomaskConfig{})
+	send(t, s, "S", history)
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatalf("switching Automask off dropped the summary: %s", f.last())
+	}
+	s.compaction.mu.Lock()
+	st := stateFor(s, "S")
+	st.summary += " card 4111 1111 1111 1111"
+	s.compaction.mu.Unlock()
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	send(t, s, "S", history)
+	got := f.last()
+	if !strings.Contains(got, "THE GIST") {
+		t.Fatalf("switching Automask on dropped the summary: %s", got)
+	}
+	if strings.Contains(got, "4111 1111") {
+		t.Fatalf("a summary written with the rule off went out unmasked: %s", got)
+	}
+}

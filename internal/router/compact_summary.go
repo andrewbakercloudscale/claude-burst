@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -111,6 +113,38 @@ func (s *Server) requestSummary(parent context.Context, in *http.Request, top ma
 	ctx, cancel := context.WithTimeout(parent, summaryTimeout)
 	defer cancel()
 	in = in.WithContext(context.WithValue(ctx, requestIDKey, newRequestID()))
+	summary, err := s.summaryOfHistory(ctx, in, top, history, cut)
+	// A history past the model's window cannot be summarised whole, and no
+	// later attempt could either: it only grows. On 2 Nov 2026 a session lost
+	// its summaries at 1.05M, and every attempt to write a new one was refused
+	// as too long. The newest part is summarised instead, and the summary says
+	// what it does not cover. The API names the sizes, so the refusal is the
+	// measurement, and it costs nothing.
+	share := 1.0
+	for try := 0; try < summaryFitTries; try++ {
+		have, limit, tooLong := promptTooLong(err)
+		if !tooLong {
+			break
+		}
+		share *= summaryFitMargin * float64(limit) / float64(have)
+		trimmed, trimmedCut, omitted := withoutOldest(history, cut, share)
+		if omitted == 0 {
+			break
+		}
+		s.logger.Printf("req=%s compaction summary: %d tokens is over the %d the model takes, so the oldest %d of %d messages are left out of it", requestIDFrom(in.Context()), have, limit, omitted, len(history))
+		summary, err = s.summaryOfHistory(ctx, in, top, trimmed, trimmedCut)
+		if err == nil {
+			notice.Publish(alertCompact, notice.Warn, "Summary leaves out the oldest messages",
+				fmt.Sprintf("The history was too long to summarise whole, so the oldest %d of %d messages are not in the summary. Claude Code's transcript still holds them.", omitted, len(history)))
+			return fmt.Sprintf("(The oldest %d of %d messages of this conversation did not fit in the request that wrote this summary, so it does not cover them. They are still in Claude Code's transcript of the session.)\n\n%s", omitted, len(history), summary), nil
+		}
+	}
+	return summary, err
+}
+
+// summaryOfHistory writes the summary of history up to cut, asking once more
+// if the model calls a tool instead.
+func (s *Server) summaryOfHistory(ctx context.Context, in *http.Request, top map[string]json.RawMessage, history []json.RawMessage, cut int) (string, error) {
 	msgs := withSummaryInstruction(history, cut)
 	summary, blocks, err := s.summaryCall(ctx, in, top, msgs, metrics.NoteSummary)
 	if err != errSummaryCalledTool {
@@ -128,6 +162,65 @@ func (s *Server) requestSummary(parent context.Context, in *http.Request, top ma
 	s.logger.Printf("req=%s compaction summary: the model called a tool instead; the call is refused and it is asked once more", requestIDFrom(in.Context()))
 	summary, _, err = s.summaryCall(ctx, in, top, again, metrics.NoteSummaryRetry)
 	return summary, err
+}
+
+const (
+	// summaryFitTries is how many shorter histories are tried after a refusal.
+	// Bytes only approximate tokens, an image most of all, so a first guess can
+	// miss, and each refusal measures what is left.
+	summaryFitTries = 3
+	// summaryFitMargin is the share of the model's window a shortened history
+	// aims for, leaving room for the system prompt, the tools and the summary.
+	summaryFitMargin = 0.9
+)
+
+var promptTooLongRE = regexp.MustCompile(`prompt is too long: (\d+) tokens > (\d+) maximum`)
+
+// promptTooLong reads the sizes from the API's refusal of a request too long
+// for the model.
+func promptTooLong(err error) (have, limit int64, ok bool) {
+	if err == nil {
+		return 0, 0, false
+	}
+	return tooLongSizes(err.Error())
+}
+
+func tooLongSizes(text string) (have, limit int64, ok bool) {
+	m := promptTooLongRE.FindStringSubmatch(text)
+	if m == nil {
+		return 0, 0, false
+	}
+	have, _ = strconv.ParseInt(m[1], 10, 64)
+	limit, _ = strconv.ParseInt(m[2], 10, 64)
+	return have, limit, have > limit && limit > 0
+}
+
+// withoutOldest returns history without its oldest messages, keeping about
+// share of its bytes, with the cut moved to match and how many went. 0 went
+// when no message fits the rules. It always starts at a reply: a tool result
+// cannot open a conversation, since its call would be gone, and a reply needs
+// no prompt of its own in front. rewriteWithSummary is what makes such a cut
+// valid for the API, and takes the thinking out as it does for any summary.
+func withoutOldest(history []json.RawMessage, cut int, share float64) ([]json.RawMessage, int, int) {
+	total := 0
+	for _, m := range history {
+		total += len(m)
+	}
+	keep := int(float64(total) * share)
+	suffix := total
+	for i := 1; i < len(history); i++ {
+		suffix -= len(history[i-1])
+		if suffix > keep || messageRole(history[i]) != "assistant" {
+			continue
+		}
+		if cut <= i {
+			return nil, 0, 0
+		}
+		note := fmt.Sprintf("The oldest %d of %d messages of this conversation are left out here because the whole of it is too long to send. Summarise what follows.", i, len(history))
+		out := rewriteWithSummary(history, note, i, len(history))
+		return out, len(out) - (len(history) - cut), i
+	}
+	return nil, 0, 0
 }
 
 // errSummaryCalledTool: the summary call ended in a tool call.

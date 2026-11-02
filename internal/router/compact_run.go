@@ -91,6 +91,9 @@ type compactState struct {
 	// swap has been compared with the limit. Memory only: after a restart
 	// the next answer is judged again, and the mod acts once per summary.
 	judged string
+	// maskedUnder is the Automask settings the hashes above were taken under
+	// (masker.fingerprint): see followMaskSettings.
+	maskedUnder string
 	// reopenedAt is when a swap that left the session over its limit last
 	// reopened the window (noteSessionContext), so it does once a window
 	// and a cut that keeps too much cannot summarise on every request.
@@ -106,6 +109,69 @@ func (st *compactState) hashOf(msgs []json.RawMessage, n int) string {
 		return prefixHash(msgs[1:], n-1)
 	}
 	return prefixHash(msgs, n)
+}
+
+// followMaskSettings keeps a summary when the Automask settings changed since
+// this conversation's last request. The switch rewrites what the history looks
+// like, not what it is: its hashes stop matching, and on 2 Nov 2026 switching
+// Automask off dropped the summaries of a session holding 1.05M, which could
+// then send nothing at all. The hashes are taken again from this request. A
+// summary is masked under the new settings too: one written with a rule off
+// can hold a value that rule now masks, and it used to go with the drop.
+func (s *Server) followMaskSettings(st *compactState, sid, key, rid string, msgs []json.RawMessage) bool {
+	now := s.automask.fingerprint()
+	if st.maskedUnder == now {
+		return false
+	}
+	was := st.maskedUnder
+	st.maskedUnder = now
+	if was == "" {
+		return true // never recorded: nothing to compare with
+	}
+	kept := 0
+	if st.summary != "" && len(msgs) > st.p0 && st.hashOf(msgs, st.p0) != st.hash {
+		st.hash, st.marks = st.hashOf(msgs, st.p0), messageMarks(msgs, st.p0)
+		kept++
+	}
+	if st.next != "" {
+		if st.nextP0 > 0 && len(msgs) > st.nextP0 && st.hashOf(msgs, st.nextP0) != st.nextHash {
+			st.nextHash = st.hashOf(msgs, st.nextP0)
+			kept++
+		}
+		if tp := st.nextTightP0; tp > 0 && len(msgs) >= tp && st.hashOf(msgs, tp) != st.nextTightHash {
+			st.nextTightHash, st.nextMarks = st.hashOf(msgs, tp), messageMarks(msgs, tp)
+			kept++
+		}
+	}
+	st.summary = s.automask.maskText(sid, st.summary)
+	st.next = s.automask.maskText(sid, st.next)
+	if kept > 0 {
+		s.logger.Printf("req=%s compaction kept session=%s: the Automask settings changed, which changed how this history reads and not what it is, so its summary stays", rid, key)
+	}
+	return true
+}
+
+// noteTooLong is told the API refused a request as too long for the model. It
+// is the one measure of a history that nothing answered: the size on record
+// can be from a swap long gone, too small to start a summary. The next request
+// can then start one at once.
+func (s *Server) noteTooLong(in *http.Request, reason string) {
+	have, _, ok := tooLongSizes(reason)
+	ci := compactInfoFrom(in.Context())
+	if !ok || ci.key == "" {
+		return
+	}
+	s.compaction.mu.Lock()
+	defer s.compaction.mu.Unlock()
+	st := s.compaction.sessions[ci.key]
+	if st == nil {
+		return
+	}
+	st.lastContext, st.rawContext = have, have
+	if st.summary == "" && st.next == "" && !st.pending {
+		st.startedAt = time.Time{}
+	}
+	s.compaction.save()
 }
 
 // besideSummary reports whether msgs stops at or before the summary's cut
@@ -549,6 +615,10 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 			s.logger.Printf("req=%s compaction adopted session=%s: the same conversation under another session id (%s), whose summary of %d messages fits this history", rid, key, from, st.p0)
 			dirty = true
 		}
+	}
+
+	if s.followMaskSettings(st, sid, key, rid, msgs) {
+		dirty = true
 	}
 
 	// A summary only fits the history it was made from.
