@@ -164,6 +164,9 @@ type fakeAnthropic struct {
 	rejectMidTurn bool
 	// toolFirst answers the first summary request with a tool call.
 	toolFirst bool
+	// maxBytes refuses a request longer than this as the API does, with one
+	// token to a byte.
+	maxBytes int
 }
 
 func (f *fakeAnthropic) handler(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +179,13 @@ func (f *fakeAnthropic) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := f.context
 	n := f.summaries
+	if f.maxBytes > 0 && len(b) > f.maxBytes {
+		f.mu.Unlock()
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: %d tokens > %d maximum"}}`, len(b), f.maxBytes)
+		return
+	}
 	reject := f.rejectMidTurn && !isSummary && strings.Contains(string(b), "THE GIST") && strings.Contains(string(b), `"signature":"s3"`)
 	f.mu.Unlock()
 	if reject {
@@ -2363,5 +2373,95 @@ func TestAnUnansweredAskIsMadeAgainSoon(t *testing.T) {
 	s.compaction.mu.Unlock()
 	if !askedForHistory(continueThread(t, s, "S", "msg_02", toolResult("three"))) {
 		t.Fatal("no history came back: past the short gap it is asked again")
+	}
+}
+
+// A history past the model's window is summarised from its newest part: the
+// whole of it can never be, however often it is tried, and the session could
+// send nothing until a summary fits.
+func TestAHistoryTooLongToSummariseIsSummarisedFromItsNewestPart(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	var long []json.RawMessage
+	pad := strings.Repeat("x", 1000)
+	for i := 0; i < 40; i++ {
+		long = append(long,
+			json.RawMessage(fmt.Sprintf(`{"role":"user","content":"prompt %d %s"}`, i, pad)),
+			json.RawMessage(fmt.Sprintf(`{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"reply %d %s"}]}`, i, pad)))
+	}
+	long = append(long, json.RawMessage(`{"role":"user","content":"next"}`))
+	send(t, s, "S", long[:3])
+	f.mu.Lock()
+	f.maxBytes = 30_000 // the history is about 80k
+	f.mu.Unlock()
+	send(t, s, "S", long)
+	s.compaction.running.Wait()
+
+	s.compaction.mu.Lock()
+	st := stateFor(s, "S")
+	next := st.next
+	s.compaction.mu.Unlock()
+	if !strings.Contains(next, "THE GIST") || !strings.Contains(next, "did not fit") {
+		t.Fatalf("summary = %q", next)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var fitted string
+	for _, b := range f.bodies {
+		if strings.Contains(b, "Summarize the transcript inside") && len(b) <= f.maxBytes {
+			fitted = b
+		}
+	}
+	if fitted == "" {
+		t.Fatal("no summary request fitted")
+	}
+	if strings.Contains(fitted, "prompt 0 ") || !strings.Contains(fitted, "reply 39 ") || !strings.Contains(fitted, "are left out here") {
+		t.Fatalf("the oldest should go and the newest stay: %.300s", fitted)
+	}
+}
+
+func TestWithoutOldestStartsAtAReplyAndMovesTheCut(t *testing.T) {
+	h := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"done"}]}`),
+		json.RawMessage(`{"role":"user","content":"more"}`),
+	}
+	out, cut, omitted := withoutOldest(h, len(h), 0.5)
+	if omitted != 3 || cut != len(out) || messageRole(out[0]) != "user" || messageRole(out[1]) != "assistant" {
+		t.Fatalf("omitted %d cut %d of %d: %s", omitted, cut, len(out), out[0])
+	}
+	if _, _, omitted := withoutOldest(h, len(h), 0.0001); omitted != 0 {
+		t.Fatalf("nothing can be kept, yet %d went", omitted)
+	}
+	if _, _, ok := promptTooLong(fmt.Errorf("summary request: status 400: invalid_request_error: prompt is too long: 1056085 tokens > 1000000 maximum")); !ok {
+		t.Fatal("the API's wording not recognised")
+	}
+	if _, _, ok := promptTooLong(fmt.Errorf("status 401: revoked")); ok {
+		t.Fatal("another error read as too long")
+	}
+}
+
+// A refusal as too long is the session's size, however small the size on
+// record: the next request can then start a summary.
+func TestARequestRefusedAsTooLongOpensTheWayToASummary(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	s.compaction.mu.Lock()
+	stateFor(s, "S").startedAt = time.Now()
+	s.compaction.mu.Unlock()
+	f.mu.Lock()
+	f.maxBytes = 10
+	f.mu.Unlock()
+	send(t, s, "S", all[:7])
+	s.compaction.mu.Lock()
+	st := stateFor(s, "S")
+	size, opened := st.lastContext, st.startedAt.IsZero()
+	s.compaction.mu.Unlock()
+	if size <= 10 || !opened {
+		t.Fatalf("size on record %d, window opened %v", size, opened)
 	}
 }

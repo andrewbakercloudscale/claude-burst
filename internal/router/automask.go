@@ -295,6 +295,41 @@ func (s *Server) SetAutomask(c config.AutomaskConfig) {
 	}
 }
 
+// fingerprint names the settings in force: what decides how a history reads
+// on the way out, so a summary can tell it was made under other ones.
+func (m *masker) fingerprint() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, _ := json.Marshal(m.cfg)
+	sum := sha1.Sum(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// maskText masks a summary of session sid under the settings in force,
+// with the masks the session already has.
+func (m *masker) maskText(sid, text string) string {
+	m.mu.Lock()
+	cfg := m.cfg
+	ms := m.sessions[sid]
+	m.mu.Unlock()
+	if text == "" || ms == nil || !Covers(cfg, MaskAnthropic) {
+		return text
+	}
+	raw, err := json.Marshal(text)
+	if err != nil {
+		return text
+	}
+	on := func(r *automask.Rule) bool { return RuleOn(cfg, r) }
+	ms.scan.Lock()
+	out, _, changed := maskContent(ms.masks, raw, "summary", on, nil, false)
+	ms.scan.Unlock()
+	var masked string
+	if !changed || json.Unmarshal(out, &masked) != nil {
+		return text
+	}
+	return masked
+}
+
 // AutomaskTotals is how many values each rule has masked since
 // AutomaskSince, for the dashboard.
 func (s *Server) AutomaskTotals() map[string]int {

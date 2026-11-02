@@ -94,6 +94,7 @@ func newCompactor(c config.CompactionConfig, path string, logger *log.Logger) *c
 // of a 500k context was lost one restart before it applied, and the next
 // request paid for it again.
 type savedCompaction struct {
+	MaskedUnder string    `json:"masked_under,omitempty"`
 	LastContext int64     `json:"last_context"`
 	WarnedAt    time.Time `json:"warned_at"`
 	StartedAt   time.Time `json:"started_at"`
@@ -159,8 +160,9 @@ func (c *compactor) load() {
 			next: v.Next, nextP0: v.NextP0, nextHash: v.NextHash, nextTightP0: v.NextTightP0, nextTightHash: v.NextTightHash, seen: v.Seen,
 			notices: v.Notices, swappedFrom: v.SwappedFrom, swappedMsgs: v.SwappedMsgs, exposureWarned: v.ExposureWarned, hand: v.Hand,
 			// With no hash saved there is nothing made the old way.
-			tail:  v.Tail || (v.Hash == "" && v.NextHash == "" && v.NextTightHash == ""),
-			parts: v.Parts, rawContext: v.Raw, marks: v.Marks, nextMarks: v.NextMarks}
+			tail:        v.Tail || (v.Hash == "" && v.NextHash == "" && v.NextTightHash == ""),
+			maskedUnder: v.MaskedUnder,
+			parts:       v.Parts, rawContext: v.Raw, marks: v.Marks, nextMarks: v.NextMarks}
 		if st.hand != nil {
 			st.handOf = st.hand.Of
 		}
@@ -201,7 +203,7 @@ func (c *compactor) save() {
 		out[k] = savedCompaction{LastContext: st.lastContext, WarnedAt: st.warnedAt, StartedAt: st.startedAt, Pending: st.pending,
 			Summary: st.summary, P0: st.p0, Hash: st.hash, SwapAt: st.swapAt,
 			Next: st.next, NextP0: st.nextP0, NextHash: st.nextHash, NextTightP0: st.nextTightP0, NextTightHash: st.nextTightHash, Seen: st.seen,
-			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned, Hand: st.hand, Tail: st.tail,
+			Notices: st.notices, SwappedFrom: st.swappedFrom, SwappedMsgs: st.swappedMsgs, ExposureWarned: st.exposureWarned, Hand: st.hand, Tail: st.tail, MaskedUnder: st.maskedUnder,
 			Parts: st.parts, Raw: st.rawContext, Marks: st.marks, NextMarks: st.nextMarks}
 	}
 	w := &diskWrite{}
