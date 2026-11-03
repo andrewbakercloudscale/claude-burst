@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,59 @@ import (
 // primaryRetryDelays are the waits between retries of a primary request that
 // failed at the transport level, about 30 seconds in all. A variable for tests.
 var primaryRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+
+// outageRetryDelays are the waits before Burst sends a model request again
+// itself, when Anthropic answered with a server error (500, 502, 503, 504,
+// 529) or this Mac's network was down and nothing reached Anthropic. Claude
+// Code's own retries come within a second or two and then put "API Error:
+// 500" on screen: on 2026-11-03 at 18:05 one session got six 500s in three
+// bursts of two, each burst over in under two seconds, while other sessions
+// were answered. A wait of 5 and then 10 seconds rides out a short server
+// blip or a car passing through a dead zone. Nothing has reached the client
+// when this runs, so it sees only a slower reply. A variable for tests.
+var outageRetryDelays = []time.Duration{5 * time.Second, 10 * time.Second}
+
+// outageAttemptKey holds how many outageRetryDelays a request has used.
+const outageAttemptKey ctxKey = 1
+
+// retryableServerStatus is a status that says Anthropic failed this time,
+// not that the request is wrong: worth sending again unchanged.
+func retryableServerStatus(code int) bool {
+	switch code {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout, 529:
+		return true
+	}
+	return false
+}
+
+// waitToResend waits out the next outage delay for a primary model request
+// and returns the request to send again, or false when it should not be:
+// not a model request, not the primary, the delays used up, or the client
+// gone during the wait. The attempts it replaces write no metric row of their
+// own: one request is one row, as the dashboard's trace and failure counts
+// read it, and the log has a line for each wait.
+func (s *Server) waitToResend(in *http.Request, slot, route, why string) (*http.Request, bool) {
+	// The dashboard's trace sends a test message to see what Anthropic
+	// answers right now, and that answer is the point.
+	if slot != "primary" || !isInference(in.URL.Path) || in.Header.Get(TraceHeader) != "" {
+		return nil, false
+	}
+	n, _ := in.Context().Value(outageAttemptKey).(int)
+	if n >= len(outageRetryDelays) {
+		return nil, false
+	}
+	d := outageRetryDelays[n]
+	s.logger.Printf("req=%s retry route=%s reason=%q -> waiting %s, then sending again (Burst's resend %d of %d)",
+		requestIDFrom(in.Context()), route, why, d, n+1, len(outageRetryDelays))
+	select {
+	case <-in.Context().Done():
+		return nil, false
+	case <-time.After(d):
+	}
+	s.clientFor(in.URL.Path).CloseIdleConnections()
+	return in.WithContext(context.WithValue(in.Context(), outageAttemptKey, n+1)), true
+}
 
 // withModel rewrites the "model" field of an Anthropic request body, leaving
 // everything else byte-for-byte as the client sent it.
@@ -201,6 +255,12 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			if ok, skipped := s.repeats.allow("network down", time.Now()); ok {
 				s.logger.Printf("req=%s no_failover route=%s reason=%q (local network unavailable: control DNS failed)%s", rid, p.Name(), "network down", andMore(skipped))
 			}
+			if safeToResend(err) {
+				if in2, ok := s.waitToResend(in, slot, p.Name(), "network down"); ok {
+					s.forward(w, in2, body, slot, p, fd, allowFailover, note, ladder)
+					return
+				}
+			}
 			http.Error(w, "local network unavailable (DNS is failing on this machine) -- not failing over, since the secondary is behind the same network: "+err.Error(), http.StatusBadGateway)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "local network unavailable; not failed over: "+err.Error(), destination)
 			return
@@ -212,6 +272,12 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			// unlike above: the carrier sends it, not Anthropic, and the
 			// control request proves it.
 			s.notePrimaryFailure(slot, err)
+			if safeToResend(err) {
+				if in2, ok := s.waitToResend(in, slot, p.Name(), "network not passing traffic"); ok {
+					s.forward(w, in2, body, slot, p, fd, allowFailover, note, ladder)
+					return
+				}
+			}
 			if s.primaryAnsweredWithin(webDownGrace) {
 				// Anthropic answered another request moments ago: slow, not
 				// cut. On 2026-10-06 a congested phone hotspot took 7 to 12
@@ -428,6 +494,17 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 
 	if resp.StatusCode == http.StatusBadRequest && slot == "primary" {
 		s.noteTooLong(in, errorExcerpt(errBody))
+	}
+
+	// A server error is waited out and sent again before it counts towards
+	// failing over. Counted on every resend, one request that met a short
+	// blip would be three failures (TestControlPlaneSuccessDoesNotReset-
+	// InferenceFailures caught that). Only the last attempt is counted.
+	if retryableServerStatus(resp.StatusCode) {
+		if in2, ok := s.waitToResend(in, slot, p.Name(), fmt.Sprintf("status=%d %s", resp.StatusCode, errorExcerpt(errBody))); ok {
+			s.forward(w, in2, body, slot, p, fd, allowFailover, note, ladder)
+			return
+		}
 	}
 
 	if allowFailover {
