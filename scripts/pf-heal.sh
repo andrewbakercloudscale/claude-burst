@@ -308,6 +308,15 @@ gateway_port() {
   printf '%s' "${g:-7777}"
 }
 
+# console_user_present: someone other than root is logged in at the console.
+# The gateway is that user's LaunchAgent, so it stops at logout and starts
+# again at login.
+console_user_present() {
+  local uid
+  uid=$(stat -f %u /dev/console 2>/dev/null) || return 1
+  [[ -n "$uid" && "$uid" != "0" ]]
+}
+
 # Restarting the gateway is a USER LaunchAgent operation and this runs as root,
 # so it has to be re-entered as the console user -- `launchctl kickstart` from
 # root against gui/<uid> is refused. Best-effort by design: if there is no
@@ -431,6 +440,18 @@ if [[ ! -x "$ROOT_HELPER" ]]; then
   log "FATAL: cannot repair -- no executable helper at $ROOT_HELPER"
   notify error "Burst redirect broken, cannot repair" "The guard's repair helper is missing, so Claude Code cannot reach Anthropic. Run: sudo /usr/local/libexec/claude-burst/transparent-root.sh remove"
   return 1
+fi
+
+# --- 3b. Nobody logged in: the gateway is meant to be down. ------------------
+# A logout stops the user's LaunchAgents, the gateway with them, and the
+# Claude Code sessions that would use it. On 2026-11-04 the user logged out at
+# 18:23; this guard counted three failed repairs it could never make (no
+# console user to restart into) and removed the redirect at 18:29, so after
+# the 20:15 login every session went straight to Anthropic until it was
+# reinstalled by hand. Wait for a login instead, and do not count it.
+if [[ "$gw" == "DOWN" ]] && ! console_user_present; then
+  log "waiting: nobody is logged in, so the gateway (a user LaunchAgent) is stopped as it should be -- not repairing, not counting towards removing the redirect"
+  return 0
 fi
 
 # --- 4. Repair whichever piece is actually missing. ---------------------------
@@ -602,6 +623,7 @@ self_test() {
   # Restarting a LaunchAgent needs a console user and a real launchd; the stub
   # records the attempt and flips the gateway flag, which is what the decision
   # tree actually turns on.
+  console_user_present() { [[ ! -f "$tmp/logged-out" ]]; }
   restart_gateway() { echo restart >> "$tmp/restarts"; [[ -f "$tmp/gw-wont-start" ]] && return 1; touch "$tmp/gw"; return 0; }
 
   mkdir -p "$STATE_DIR"
@@ -721,6 +743,21 @@ STUB
   run; want "BAILED OUT" && ok "second failure -> bailed out" || bad "did not bail out at the limit" show
   grep -qF "$HOSTS_MARKER" "$HOSTS_FILE" 2>/dev/null \
     && bad "bail-out left the hosts redirect in place" || ok "bail-out removed the hosts redirect"
+
+  # 6a. THE 2026-11-04 LOGOUT: gateway down because nobody is logged in.
+  #     Never repaired, never counted, never removed.
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"; rm -f "$tmp/rdr" "$tmp/ref" "$tmp/gw" "$FAIL_COUNT_FILE" "$tmp/restarts"
+  touch "$tmp/logged-out"
+  run; run; run
+  want "nobody is logged in" && ok "logged out -> waits for a login" || bad "logged out was treated as a break" show
+  grep -qF "$HOSTS_MARKER" "$HOSTS_FILE" && ok "logged out -> redirect kept" || bad "removed the redirect while nobody was logged in"
+  [[ ! -s "$FAIL_COUNT_FILE" || "$(cat "$FAIL_COUNT_FILE")" == 0 ]] && ok "logged out -> no failures counted" || bad "counted $(cat "$FAIL_COUNT_FILE") failures while logged out"
+  [[ ! -f "$tmp/restarts" ]] && ok "logged out -> no restart attempted" || bad "tried to restart with nobody logged in"
+  rm -f "$tmp/logged-out" "$tmp/anchor-wont-load" "$tmp/gw-wont-start"
+  run
+  want "HEALED" && ok "after login -> repaired as usual" || bad "did not repair after login" show
+  rm -f "$tmp/rdr" "$tmp/ref" "$tmp/gw"
+  touch "$tmp/anchor-wont-load" "$tmp/gw-wont-start"
 
   # 6b. A remove that exits 0 with the hosts block still there is not a
   #     bail-out: the Mac is still cut off. It must not be announced as one,
