@@ -182,6 +182,9 @@ func newRootEnv(t *testing.T, flags ...string) *rootEnv {
 		"CLAUDE_BURST_ROOT_STATE_DIR": e.stateDir,
 		"CLAUDE_BURST_PFCTL":          filepath.Join(bin, "pfctl"),
 		"CLAUDE_BURST_TEST_EUID":      "0",
+		// Not the real ~/.config/claude-burst/config.json, whose port is
+		// this Mac's, not the test's.
+		"CLAUDE_BURST_USER_CONFIG": filepath.Join(dir, "no-config.json"),
 	}
 	// Every seam the script reads must be set here, or it falls back to a
 	// real system path. Checked against the script itself so a new seam
@@ -772,5 +775,24 @@ func TestRootScriptsFixThePathWhenRoot(t *testing.T) {
 	refuse, trap := strings.Index(src, "if [[ $EUID -eq 0 ]]; then\n  echo \"run this without sudo"), strings.Index(src, "\ntrap ")
 	if refuse < 0 || trap < 0 || refuse > trap {
 		t.Errorf("rollback.sh must refuse a root run before it sets its trap (refusal at %d, trap at %d)", refuse, trap)
+	}
+}
+
+// A reinstall after the guard's bail-out: `remove` cleared the state file,
+// so the port comes from the user's config, not the fixed 7777 that refused
+// a healthy gateway on 17777 on 2026-11-04.
+func TestRootInstallUsesConfiguredGatewayPort(t *testing.T) {
+	t.Parallel()
+	e := newRootEnv(t)
+	for i, kv := range e.env {
+		if strings.HasPrefix(kv, "CLAUDE_BURST_USER_CONFIG=") {
+			cfg := strings.TrimPrefix(kv, "CLAUDE_BURST_USER_CONFIG=")
+			write(t, cfg, "{\n  \"listen\": \"127.0.0.1:17777\",\n  \"x\": 1\n}\n")
+			e.env[i] = kv
+		}
+	}
+	r := e.run(t, "install")
+	if len(r.calls) == 0 || r.calls[0] != "curl https://127.0.0.1:17777/healthz" {
+		t.Fatalf("first call %q, want the configured port 17777:\n%s", r.calls, r.out)
 	}
 }

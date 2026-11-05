@@ -70,6 +70,9 @@ ANCHOR_ONLY_RETRY_AFTER=21600
 # against temp files. Neither grants anything: a non-root caller that claims
 # uid 0 still cannot write a real /etc file.
 PFCTL="${CLAUDE_BURST_PFCTL:-pfctl}"
+# The user's config.json, read only for its gateway port; empty means the
+# invoking user's own.
+USER_CONFIG="${CLAUDE_BURST_USER_CONFIG:-}"
 ROOT_EUID="${CLAUDE_BURST_TEST_EUID:-$EUID}"
 pfctl() { command "$PFCTL" "$@"; }
 
@@ -615,8 +618,22 @@ flush_dns() {
 
 # --- actions -----------------------------------------------------------------
 
+# configured_gateway_port reads "listen" from the invoking user's Claude
+# Burst config (sudo sets SUDO_USER; the console user otherwise).
+configured_gateway_port() {
+  local user home cfg="$USER_CONFIG"
+  if [[ -z "$cfg" ]]; then
+    user="${SUDO_USER:-$(stat -f %Su /dev/console 2>/dev/null)}"
+    [[ -n "$user" && "$user" != root ]] || return 0
+    home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+    cfg="$home/.config/claude-burst/config.json"
+  fi
+  [[ -f "$cfg" ]] || return 0
+  sed -nE 's/^[[:space:]]*"listen"[[:space:]]*:[[:space:]]*"[^"]*:([0-9]+)".*/\1/p' "$cfg" | head -1
+}
+
 do_install() {
-  local host="$HOST_DEFAULT" port="$PORT_DEFAULT" gport="$GATEWAY_PORT_DEFAULT"
+  local host="$HOST_DEFAULT" port="$PORT_DEFAULT" gport=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --host) host="$2"; shift 2 ;;
@@ -625,6 +642,13 @@ do_install() {
       *) die "unknown argument: $1" ;;
     esac
   done
+  # Without --gateway-port, the port the gateway is configured to listen on.
+  # `remove` clears the state file that held it, and the fixed default (7777)
+  # is not where this Mac's gateway listens (17777), so the reinstall every
+  # bail-out message suggests failed with "gateway is not responding" against
+  # a healthy gateway (2026-11-04).
+  [[ -n "$gport" ]] || gport="$(configured_gateway_port)"
+  : "${gport:=$GATEWAY_PORT_DEFAULT}"
   need_root install
   setup_helper
 
