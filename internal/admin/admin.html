@@ -5536,7 +5536,13 @@ function codexChecks(c, s, now) {
   if (!st.installed) return null;
   const out = [];
   out.push({
-    key: "cxroute", label: "Codex goes through Burst", target: "sec-codex", critical: !!st.invalid,
+    // The label says what is true, as each check's does: a warning chip
+    // reading "Codex goes through Burst" read as Codex going through Burst.
+    key: "cxroute", target: "sec-codex", critical: !!st.invalid,
+    label: st.invalid ? "Codex config does not parse"
+      : st.enabled ? "Codex goes through Burst"
+      : st.conflict ? "Codex uses another provider"
+      : "Codex bypasses Burst",
     ok: !!st.enabled && !st.invalid,
     detail: st.invalid ? `${st.path} does not parse, so Codex cannot start either: ${st.invalid}`
       : st.enabled ? `${st.path} sends Codex to ${st.base_url}`
