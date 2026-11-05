@@ -27,6 +27,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
+	"github.com/andrewbakercloudscale/claude-burst/internal/rcreconnect"
 	"github.com/andrewbakercloudscale/claude-burst/internal/rotate"
 	"github.com/andrewbakercloudscale/claude-burst/internal/router"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
@@ -280,6 +281,9 @@ func serve(args []string) {
 	go background(logger, "hotspot watcher", time.Minute, func() { hotspot.Watch(context.Background()) })
 	go background(logger, "network watcher", time.Minute, func() { srv.WatchNetwork(context.Background()) })
 	go background(logger, "idle session watcher", time.Minute, func() { srv.WatchIdleSessions(context.Background()) })
+	// A session whose Remote Control gave up after network drops gets
+	// /remote-control typed into it once that is safe (internal/rcreconnect).
+	go background(logger, "remote control reconnect", time.Minute, func() { watchRemoteControl(srv, logger) })
 	limitMemory()
 	go background(logger, "memory watcher", time.Minute, func() { watchMemory(context.Background(), logger) })
 	// ReadHeaderTimeout bounds only the request headers, never a long
@@ -568,4 +572,23 @@ func panicked(logger *log.Logger, name string, restartAfter time.Duration, run f
 	}()
 	run()
 	return false
+}
+
+// watchRemoteControl runs rcreconnect every minute. "Network up" is Burst's
+// own view: Anthropic answered within two minutes and the Mac is not offline.
+func watchRemoteControl(srv *router.Server, logger *log.Logger) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	up := func() bool {
+		h := srv.Health()
+		return !h.NetworkDown && !h.LastAnswer.IsZero() && time.Since(h.LastAnswer) < 2*time.Minute
+	}
+	w := rcreconnect.New(rcreconnect.Live(home, up, logger.Printf))
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for range t.C {
+		w.Tick()
+	}
 }
