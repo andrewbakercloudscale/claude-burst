@@ -2506,3 +2506,63 @@ func TestDroppedSummaryStartsAgainFromTheEstimatedHistory(t *testing.T) {
 	}
 	waitFor(t, func() bool { return f.summaryCount() > n })
 }
+
+// On 6 Nov 2026 a refusal fallback to another model had Claude Code take
+// the effort note out of message 1. The summary must stay, its cut moved.
+func TestSummaryStaysWhenASystemNoteIsTakenOut(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	var logBuf strings.Builder
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
+	s.logger.SetOutput(io.MultiWriter(testLogWriter{t}, &logBuf))
+	base := msgs(t, session)
+	note := json.RawMessage(`{"role":"system","content":[],"output_config":{"effort":"medium"}}`)
+	all := append([]json.RawMessage{base[0], note}, base[1:]...)
+	send(t, s, "S", all[:6])
+	send(t, s, "S", all[:8])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	f.mu.Lock()
+	f.context = 60_000
+	f.mu.Unlock()
+	send(t, s, "S", all[:10])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the summary must apply first")
+	}
+
+	without := append([]json.RawMessage{all[0]}, all[2:10]...)
+	n := f.summaryCount()
+	send(t, s, "S", without)
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatalf("a history that lost only a system note keeps its summary:\n%s", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "compaction dropped") {
+		t.Fatalf("nothing may be dropped:\n%s", logBuf.String())
+	}
+	// And it keeps fitting the requests after.
+	more := append(append([]json.RawMessage(nil), without...),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"done with third"}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"text","text":"fourth task"}]}`))
+	send(t, s, "S", more)
+	if !strings.Contains(f.last(), "THE GIST") || !strings.Contains(f.last(), "fourth task") {
+		t.Fatal("the moved summary must keep applying")
+	}
+	if f.summaryCount() != n {
+		t.Fatal("no new summary is needed")
+	}
+}
+
+// A real change still drops the summary, system notes or not.
+func TestRealignDoesNotHideAChangedMessage(t *testing.T) {
+	m := msgs(t, session)
+	marks := messageMarks(m, 6)
+	changed := append([]json.RawMessage(nil), m...)
+	changed[3] = json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"done differently"}]}`)
+	if _, ok := realign(marks, changed, true); ok {
+		t.Fatal("a changed message must not realign")
+	}
+	note := json.RawMessage(`{"role":"system","content":"hook note"}`)
+	added := append([]json.RawMessage{m[0], note, note}, m[1:]...)
+	to, ok := realign(marks, added, true)
+	if !ok || to[6] != 8 {
+		t.Fatalf("two notes added: want the cut at 8, got %v %v", to, ok)
+	}
+}
