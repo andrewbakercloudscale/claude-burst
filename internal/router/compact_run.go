@@ -625,6 +625,34 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 		dirty = true
 	}
 
+	// Claude Code adds and takes out its own system notes in a history it
+	// has already sent: on 6 Nov 2026 a refusal fallback to another model
+	// took out the effort note at message 1, and a summary of 1099 messages
+	// was dropped and a 668k history sent whole. A history that differs
+	// from the one a summary was made from only in those notes is still
+	// that history: the summary stays, its cut moved to match.
+	if st.summary != "" && len(st.marks) == st.p0 && (len(msgs) <= st.p0 || st.hashOf(msgs, st.p0) != st.hash) {
+		if to, ok := realign(st.marks, msgs, st.tail); ok && to[st.p0] < len(msgs) {
+			p := to[st.p0]
+			s.logger.Printf("req=%s compaction kept session=%s: only Claude Code's system notes changed before message %d, so the summary stays and covers messages [0, %d) of %d", rid, key, st.p0, p, len(msgs))
+			st.swapAt = min(max(p, st.swapAt+p-st.p0), len(msgs))
+			st.p0, st.hash, st.marks = p, st.hashOf(msgs, p), messageMarks(msgs, p)
+			dirty = true
+		}
+	}
+	if st.next != "" && st.nextTightP0 > 0 && len(st.nextMarks) == st.nextTightP0 && (len(msgs) <= st.nextTightP0 || st.hashOf(msgs, st.nextTightP0) != st.nextTightHash) {
+		if to, ok := realign(st.nextMarks, msgs, st.tail); ok && to[st.nextTightP0] < len(msgs) {
+			tp := to[st.nextTightP0]
+			s.logger.Printf("req=%s compaction kept session=%s: only Claude Code's system notes changed before message %d, so the waiting summary stays, cut at %d", rid, key, st.nextTightP0, tp)
+			if st.nextP0 > 0 && st.nextP0 <= st.nextTightP0 {
+				st.nextP0 = to[st.nextP0]
+				st.nextHash = st.hashOf(msgs, st.nextP0)
+			}
+			st.nextTightP0, st.nextTightHash, st.nextMarks = tp, st.hashOf(msgs, tp), messageMarks(msgs, tp)
+			dirty = true
+		}
+	}
+
 	// A summary only fits the history it was made from.
 	// A dropped summary also reopens the window: the session is back to its
 	// full history, and on 2026-09-30 the window kept it there, at 450k and
@@ -937,4 +965,37 @@ func estimateRaw(st *compactState, body []byte) int64 {
 		return 0
 	}
 	return int64(float64(st.rawContext) * float64(tokenBytes(body)) / float64(st.rawBytes))
+}
+
+// sysMark is the mark of any system message: hashForm keeps only its role.
+var sysMark = prefixHash([]json.RawMessage{json.RawMessage(`{"role":"system"}`)}, 1)
+
+// realign lines up the history marks were taken from with msgs, skipping
+// system messages on both sides. It returns, for each index i of that
+// history up to len(marks), the index in msgs where it now is, and false
+// when some other message differs. Message 0 is not compared when
+// skipFirst: Claude Code rewrites it without the history changing.
+func realign(marks []string, msgs []json.RawMessage, skipFirst bool) ([]int, bool) {
+	to := make([]int, len(marks)+1)
+	j := 0
+	for i, m := range marks {
+		if m == sysMark {
+			to[i] = j
+			continue
+		}
+		for j < len(msgs) && prefixHash(msgs[j:j+1], 1) == sysMark {
+			j++
+		}
+		if j >= len(msgs) || (!(i == 0 && skipFirst) && prefixHash(msgs[j:j+1], 1) != m) {
+			return nil, false
+		}
+		to[i] = j
+		j++
+	}
+	// The kept tail starts at a message of the conversation, not a note.
+	for j < len(msgs) && prefixHash(msgs[j:j+1], 1) == sysMark {
+		j++
+	}
+	to[len(marks)] = j
+	return to, true
 }
