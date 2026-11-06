@@ -132,3 +132,31 @@ func TestResolveRefusesAnIDThatIsNotOne(t *testing.T) {
 		t.Fatalf("a real id: %q %q", name, root)
 	}
 }
+
+// A session that keeps missing is retried less and less often, to missMax:
+// its transcript is gone for good, and globbing every project directory for
+// it each minute was most of what the usage panel cost.
+func TestResolveBacksOffARepeatedMiss(t *testing.T) {
+	projects := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(filepath.Join(projects, "-p"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := NewWith(projects, nil)
+	now := time.Unix(1_000_000, 0)
+	r.now = func() time.Time { return now }
+	r.Resolve("gone")
+	for _, want := range []time.Duration{missTTL, 2 * missTTL, 4 * missTTL} {
+		if got := r.miss["gone"].wait; got != want {
+			t.Fatalf("wait %v, want %v", got, want)
+		}
+		now = now.Add(want)
+		r.Resolve("gone")
+	}
+	for i := 0; i < 10; i++ {
+		now = now.Add(missMax)
+		r.Resolve("gone")
+	}
+	if got := r.miss["gone"].wait; got != missMax {
+		t.Fatalf("wait %v, want the cap %v", got, missMax)
+	}
+}

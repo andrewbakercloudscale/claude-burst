@@ -34,13 +34,27 @@ const (
 // missTTL is how long a session with no transcript is remembered as
 // unknown. A transcript can appear after the first request that names it,
 // so a miss is retried, but not on every request.
-const missTTL = time.Minute
+//
+// Each further miss waits twice as long, to missMax: a session whose
+// transcript is gone (deleted, or Codex's, or a headless run's) stays gone,
+// and the usage panel names every session in 30 days of history. Retried
+// each minute, those globs over every project directory were 14% of the
+// gateway's CPU on 6 Nov 2026.
+const (
+	missTTL = time.Minute
+	missMax = time.Hour
+)
+
+type missed struct {
+	at   time.Time
+	wait time.Duration
+}
 
 // Resolver caches session id to repository.
 type Resolver struct {
 	mu   sync.Mutex
 	hit  map[string][2]string // session -> {name, root}
-	miss map[string]time.Time // session -> when it was last not found
+	miss map[string]missed    // session -> when it was last not found
 	dir  string               // Claude Code's projects directory
 	temp []string             // scratch roots
 	now  func() time.Time
@@ -61,7 +75,7 @@ func New() *Resolver {
 // NewWith resolves against projectsDir, grouping directories under any of
 // temp as Temp. For tests.
 func NewWith(projectsDir string, temp []string) *Resolver {
-	return &Resolver{hit: map[string][2]string{}, miss: map[string]time.Time{},
+	return &Resolver{hit: map[string][2]string{}, miss: map[string]missed{},
 		dir: projectsDir, temp: temp, now: time.Now}
 }
 
@@ -76,7 +90,8 @@ func (r *Resolver) Resolve(session string) (name, root string) {
 	if v, ok := r.hit[session]; ok {
 		return v[0], v[1]
 	}
-	if t, ok := r.miss[session]; ok && r.now().Sub(t) < missTTL {
+	m, missedBefore := r.miss[session]
+	if missedBefore && r.now().Sub(m.at) < m.wait {
 		return Unknown, ""
 	}
 	matches, _ := filepath.Glob(filepath.Join(r.dir, "*", session+".jsonl"))
@@ -86,9 +101,13 @@ func (r *Resolver) Resolve(session string) (name, root string) {
 	}
 	if cwd == "" {
 		if len(r.miss) > 10000 {
-			r.miss = map[string]time.Time{}
+			r.miss = map[string]missed{}
 		}
-		r.miss[session] = r.now()
+		wait := missTTL
+		if missedBefore {
+			wait = min(2*m.wait, missMax)
+		}
+		r.miss[session] = missed{at: r.now(), wait: wait}
 		return Unknown, ""
 	}
 	delete(r.miss, session)
