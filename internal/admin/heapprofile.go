@@ -1,9 +1,12 @@
 package admin
 
 import (
+	"bytes"
 	"net/http"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
+	"time"
 )
 
 // handleHeapProfile writes the gateway's heap profile, for
@@ -24,4 +27,30 @@ func handleHeapProfile(w http.ResponseWriter, r *http.Request) {
 	if err := pprof.Lookup("heap").WriteTo(w, 0); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// handleCPUProfile samples where the gateway spends CPU for ?seconds=N
+// (30 by default, 120 at most), for
+// `go tool pprof http://127.0.0.1:7788/api/cpu-profile?seconds=60`.
+// macOS's sample(1) loses Go's goroutine stacks, so it shows the hot
+// functions but never which request or loop called them; this does.
+// One at a time: the runtime has only the one CPU profiler.
+func handleCPUProfile(w http.ResponseWriter, r *http.Request) {
+	secs := 30
+	if v, err := strconv.Atoi(r.URL.Query().Get("seconds")); err == nil && v > 0 {
+		secs = min(v, 120)
+	}
+	var buf bytes.Buffer
+	if err := pprof.StartCPUProfile(&buf); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	select {
+	case <-time.After(time.Duration(secs) * time.Second):
+	case <-r.Context().Done():
+	}
+	pprof.StopCPUProfile()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="cpu.pb.gz"`)
+	_, _ = w.Write(buf.Bytes())
 }
