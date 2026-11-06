@@ -2465,3 +2465,44 @@ func TestARequestRefusedAsTooLongOpensTheWayToASummary(t *testing.T) {
 		t.Fatalf("size on record %d, window opened %v", size, opened)
 	}
 }
+
+// On 6 Nov 2026 a model switch rewrote an old message and the summary was
+// dropped while the context on record was the compacted one, below the
+// limit. The new summary must start on the request that goes whole, from
+// the history's estimated size, not wait for the API's answer and then
+// for the next request.
+func TestDroppedSummaryStartsAgainFromTheEstimatedHistory(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
+	all := msgs(t, session)
+	// Most of the history is one long tool result the summary replaces.
+	all[6] = json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"` + strings.Repeat("output ", 20_000) + `"}]}`)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	// The swapped request is small, and only the estimate says how large
+	// the history behind it is.
+	f.mu.Lock()
+	f.context = 60_000
+	f.mu.Unlock()
+	send(t, s, "S", all[:9])
+	if !strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("the summary must apply first")
+	}
+	s.compaction.mu.Lock()
+	st := stateFor(s, "S")
+	raw, last := st.rawContext, st.lastContext
+	s.compaction.mu.Unlock()
+	if raw < 400_000 || last >= 400_000 {
+		t.Fatalf("want a compacted context under the limit over a history above it, got last %d raw %d", last, raw)
+	}
+
+	changed := append([]json.RawMessage(nil), all[:9]...)
+	changed[1] = json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file":"a"}}]}`)
+	n := f.summaryCount()
+	send(t, s, "S", changed)
+	if strings.Contains(f.last(), "THE GIST") {
+		t.Fatal("a changed history must go without the summary")
+	}
+	waitFor(t, func() bool { return f.summaryCount() > n })
+}
