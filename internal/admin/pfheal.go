@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -183,6 +184,40 @@ var pfHealEventKeywords = []string{"BROKEN", "HEALED", "recovered", "GIVING UP",
 	"repair FAILED", "not running", "reloaded successfully", "FAILED to reload", "standing down"}
 
 func pfHealEvents(path string, max int) []string {
+	hits := pfHealHits(path)
+	if len(hits) > max {
+		hits = hits[len(hits)-max:]
+	}
+	return hits
+}
+
+// pfHealSeen holds each log's event lines with the size and time they were
+// read at. The notifier counts them every 10 seconds, and the pf guard's log
+// passed 890KB on 6 Nov 2026: read and split again each time, that was the
+// gateway's steadiest work with nothing else happening. The logs only change
+// when a guard writes, which is rare, so a read now costs a stat.
+var pfHealSeen = struct {
+	sync.Mutex
+	m map[string]pfHealRead
+}{m: map[string]pfHealRead{}}
+
+type pfHealRead struct {
+	size int64
+	mod  time.Time
+	hits []string
+}
+
+func pfHealHits(path string) []string {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	pfHealSeen.Lock()
+	r, ok := pfHealSeen.m[path]
+	pfHealSeen.Unlock()
+	if ok && r.size == st.Size() && r.mod.Equal(st.ModTime()) {
+		return r.hits
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -196,9 +231,12 @@ func pfHealEvents(path string, max int) []string {
 			}
 		}
 	}
-	if len(hits) > max {
-		hits = hits[len(hits)-max:]
-	}
+	// Full slice expression: a caller appending to what it was given must
+	// not write into the held copy.
+	hits = hits[:len(hits):len(hits)]
+	pfHealSeen.Lock()
+	pfHealSeen.m[path] = pfHealRead{size: st.Size(), mod: st.ModTime(), hits: hits}
+	pfHealSeen.Unlock()
 	return hits
 }
 

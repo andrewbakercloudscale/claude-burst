@@ -177,6 +177,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/handover-reveal", s.mutating(s.handleHandoverReveal))
 	mux.HandleFunc("/api/mac", s.readOnly(s.handleMac))
 	mux.HandleFunc("/api/heap-profile", s.readOnly(handleHeapProfile))
+	mux.HandleFunc("/api/cpu-profile", s.readOnly(handleCPUProfile))
 	mux.HandleFunc("/api/settings", s.readOnly(s.handleSettingsGet))
 	mux.HandleFunc("/api/alert-test", s.mutating(s.handleAlertTest))
 	mux.HandleFunc("/api/alert", s.mutating(s.handleAlertPublish))
