@@ -72,7 +72,7 @@ type verdict struct {
 }
 
 func (s *Server) contextInfo(cfg config.Config) contextInfo {
-	eff, _ := cachedScan("efficiency|"+s.metricsPath, func() (metrics.Efficiency, error) {
+	eff, _ := cachedScanAtLeast("efficiency|"+s.metricsPath, keepContext, func() (metrics.Efficiency, error) {
 		return metrics.EfficiencySince(s.metricsPath, time.Now().Add(-contextWindow))
 	})
 	ci := contextInfo{
@@ -91,7 +91,7 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	ci.Sessions = s.gateway.CompactionSessions()
 	ci.PromptNotice = promptNoticeState()
 	ci.MidTurnOff = s.gateway.MidTurnOff()
-	ci.CompactionStats, _ = cachedScan("compaction|"+s.metricsPath, func() (metrics.CompactionStats, error) {
+	ci.CompactionStats, _ = cachedScanAtLeast("compaction|"+s.metricsPath, keepContext, func() (metrics.CompactionStats, error) {
 		return metrics.CompactionStatsSince(s.metricsPath, time.Now().Add(-contextWindow))
 	})
 	// The fixed line is the one Compact at a user would set without the
@@ -107,7 +107,7 @@ func (s *Server) contextInfo(cfg config.Config) contextInfo {
 	// The sizes in force, as far back as they are on record: the replay at
 	// those is set beside what happened.
 	sizes := s.sizesOnRecord()
-	ci.Strategies, _ = cachedScan(fmt.Sprintf("strategies|%d|%d|%d|%s", fixedAt, pc.WindowMinutes, sizes.Len(), s.metricsPath), func() (metrics.Strategies, error) {
+	ci.Strategies, _ = cachedScanAtLeast(fmt.Sprintf("strategies|%d|%d|%d|%s", fixedAt, pc.WindowMinutes, sizes.Len(), s.metricsPath), keepContext, func() (metrics.Strategies, error) {
 		var repoOf func(string) (string, string)
 		if s.repos != nil {
 			repoOf = s.repos.resolve

@@ -30,6 +30,18 @@ var scans = struct {
 // cachedScan returns run's answer for key, from the last call when that was
 // slow and is recent enough. A failed run is not kept.
 func cachedScan[T any](key string, run func() (T, error)) (T, error) {
+	return cachedScanAtLeast(key, 0, run)
+}
+
+// cachedScanAtLeast is cachedScan for answers many callers ask for at once,
+// kept for at least min however quick they were. Every Claude Code session
+// runs Burst's mod and the usage panel, and each asks the same questions on
+// its own clock: with 7 sessions open on 6 Nov 2026, /api/mod every 5
+// seconds and /api/usage four times a minute each kept the gateway near 8%
+// of a core, 85% of it these passes, each one quick enough (5 to 95ms) that
+// none was ever kept. A figure that is a few seconds old is the same figure
+// to whoever reads it.
+func cachedScanAtLeast[T any](key string, min time.Duration, run func() (T, error)) (T, error) {
 	scans.Lock()
 	if e, ok := scans.m[key]; ok && time.Since(e.at) < e.keep {
 		scans.Unlock()
@@ -39,15 +51,39 @@ func cachedScan[T any](key string, run func() (T, error)) (T, error) {
 	start := time.Now()
 	v, err := run()
 	took := time.Since(start)
-	if err != nil || took < scanSlow {
+	if err != nil {
 		return v, err
 	}
-	keep := 20 * took
-	if keep > scanKeepMax {
-		keep = scanKeepMax
+	keep := time.Duration(0)
+	if took >= scanSlow {
+		keep = 20 * took
+		if keep > scanKeepMax {
+			keep = scanKeepMax
+		}
+	}
+	if keep < min {
+		keep = min
+	}
+	if keep == 0 {
+		return v, nil
 	}
 	scans.Lock()
+	// Answers are only looked up by their key, so entries whose time has
+	// passed are swept here rather than left to accumulate: the usage
+	// panel's keys carry a time of day.
+	for k, e := range scans.m {
+		if time.Since(e.at) >= e.keep {
+			delete(scans.m, k)
+		}
+	}
 	scans.m[key] = scanEntry{at: time.Now(), keep: keep, v: v}
 	scans.Unlock()
 	return v, nil
 }
+
+// Shared keeps for the answers every session's mod and panel poll.
+const (
+	keepShared  = 10 * time.Second // today's spend, the request counts
+	keepUsage   = 30 * time.Second // the usage panel's windows
+	keepContext = time.Minute      // the 30-day compaction figures
+)
