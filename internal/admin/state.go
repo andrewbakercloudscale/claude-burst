@@ -202,8 +202,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		route = "SECONDARY"
 	}
 
-	total, _ := cachedScan("total|"+s.metricsPath, func() (metrics.Summary, error) { return metrics.Summarize(s.metricsPath, time.Time{}) })
-	today, _ := cachedScan("today|"+s.metricsPath, func() (metrics.Summary, error) {
+	total, _ := cachedScanAtLeast("total|"+s.metricsPath, keepShared, func() (metrics.Summary, error) { return metrics.Summarize(s.metricsPath, time.Time{}) })
+	today, _ := cachedScanAtLeast("today|"+s.metricsPath, keepShared, func() (metrics.Summary, error) {
 		return metrics.Summarize(s.metricsPath, time.Now().Add(-24*time.Hour))
 	})
 

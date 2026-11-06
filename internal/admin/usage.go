@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -161,7 +162,13 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	if s.repos != nil {
 		repoOf = func(sid string) string { name, _ := s.repos.resolve(sid); return name }
 	}
-	rep, err := metrics.Usage(s.metricsPath, f, repoOf)
+	// Each session's usage panel asks the same windows, ending at its own
+	// "now": to the half minute, those are one question.
+	key := f
+	key.From, key.To = f.From.Truncate(keepUsage), f.To.Truncate(keepUsage)
+	rep, err := cachedScanAtLeast(fmt.Sprintf("usage|%s|%+v", s.metricsPath, key), keepUsage, func() (metrics.UsageReport, error) {
+		return metrics.Usage(s.metricsPath, f, repoOf)
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
