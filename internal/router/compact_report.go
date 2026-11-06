@@ -61,6 +61,7 @@ func (s *Server) noteSessionContext(in *http.Request, tok tokenUsage) {
 	}
 	if ci.sentBytes > 0 {
 		st.rawContext = int64(float64(ctxTokens) * float64(ci.rawBytes) / float64(ci.sentBytes))
+		st.rawBytes = ci.rawBytes
 		s.noteExposure(ci.key, st)
 		// The hand-off file says how much Claude Code holds, for a mod that
 		// finds the gateway gone. Rewritten when that has moved by a tenth.
