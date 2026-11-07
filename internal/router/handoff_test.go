@@ -271,3 +271,26 @@ func TestTakingTheSummaryInSetsWhatClaudeCodeHolds(t *testing.T) {
 		t.Fatalf("after: held = %d, want what Burst sends", raw)
 	}
 }
+
+// On 7 Nov 2026 the message before the cut was Claude Code's
+// "<total_tokens>... left" note, which the mod never finds in the
+// transcript: the hand-off never fitted. Anchors skip system notes.
+func TestHandoffAnchorsSkipSystemNotes(t *testing.T) {
+	m := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"start the work on the gateway please"}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"All three done and verified on the primary."}]}`),
+		json.RawMessage(`{"role":"system","content":"<total_tokens>14979861 tokens left</total_tokens>"}`),
+		json.RawMessage(`{"role":"user","content":"now do the render rework in stage two"}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"Starting on stage two of the render."}]}`),
+	}
+	h := buildHandoff("S", m, "THE GIST", 2, 1000, time.Now())
+	if h == nil {
+		t.Fatal("want a hand-off")
+	}
+	if h.Last.Role != "assistant" || !strings.HasPrefix(h.Last.Text, "Allthreedone") {
+		t.Fatalf("last must be the reply before the note, got %+v", h.Last)
+	}
+	if h.First.Role != "user" || !strings.HasPrefix(h.First.Text, "nowdothe") {
+		t.Fatalf("first must be the prompt after the note, got %+v", h.First)
+	}
+}

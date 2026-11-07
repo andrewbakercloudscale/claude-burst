@@ -125,7 +125,22 @@ func buildHandoff(sid string, msgs []json.RawMessage, summary string, p0 int, ra
 	if summary == "" || p0 <= 0 || p0 >= len(msgs) {
 		return nil
 	}
-	first, last := anchorOf(msgs[p0]), anchorOf(msgs[p0-1])
+	// Claude Code's system notes ("<total_tokens>... left", the effort
+	// note) are in what it sends but not in the transcript the mod searches,
+	// and the token count changes every request. On 7 Nov 2026 a hand-off
+	// named one as the message before the cut, never fitted, and the
+	// session's /compact did nothing. The anchors are conversation messages.
+	fi, li := p0, p0-1
+	for fi < len(msgs)-1 && messageRole(msgs[fi]) == "system" {
+		fi++
+	}
+	for li > 0 && messageRole(msgs[li]) == "system" {
+		li--
+	}
+	first, last := anchorOf(msgs[fi]), anchorOf(msgs[li])
+	if first.Role == "system" || last.Role == "system" {
+		return nil
+	}
 	// A short message ("Done.", "do both") cannot name itself, but the one
 	// just before it can: the mod then looks for the pair. Until 5 Oct 2026
 	// only tool results counted as that message, so a cut at a short prompt

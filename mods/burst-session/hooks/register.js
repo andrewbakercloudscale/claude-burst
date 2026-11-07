@@ -185,7 +185,10 @@ function anchorMatches(a, m) {
 // the same role, so a message of the request is a run of one role here.
 function handoffCut(h, msgs) {
   const runStart = (i) => { while (i > 0 && msgs[i - 1].role === msgs[i].role) i--; return i }
-  const lastNamed = !!h.last.tool || (h.last.text || '').length >= 16
+  // A system note before the cut is not in Claude Code's transcript, and its
+  // token count changes every request (7 Nov 2026): it names nothing here.
+  if (h.first.role === 'system') return -1
+  const lastNamed = h.last.role !== 'system' && (!!h.last.tool || (h.last.text || '').length >= 16)
   for (let i = 1; i < msgs.length; i++) {
     let cut = -1
     if (anchorMatches(h.first, msgs[i])) {
