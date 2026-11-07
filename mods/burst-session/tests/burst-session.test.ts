@@ -445,6 +445,22 @@ test("Claude Code's compaction is answered with Burst's summary: no summary requ
   expect(toasts).toContain("\u{1F535} Async Full Compaction: 5 messages replaced with the summary Burst already wrote")
 })
 
+// 7 Nov 2026: the gateway named Claude Code's "<total_tokens>... left" note
+// as the message before the cut. It is not in the transcript and its count
+// changes, so the hand-off never fitted. A system anchor names nothing:
+// the cut is found by the first kept message alone.
+test('a hand-off whose last anchor is a system note still fits by its first', async ($, on) => {
+  const calls: string[] = []
+  const world: World = { files: { [HANDOFF_FILE]: handoff({ last: { role: 'system', text: '<total_tokens>14979861tokensleft</total_tokens>' }, first: { role: 'user', text: 'secondtask,thelongone' } }) } }
+  stubs(on, [mod()], [], [], false, [], {}, world)
+  core(on, calls)
+  await start($)
+  const r = await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
+  expect(calls).toEqual([])
+  expect(r.messages[0].text).toBe(LEAD)
+  expect(r.messages[1].handle).toBe('h4')
+})
+
 test('/resume and /clear carry on under another session with no session.start: the mod follows it', async ($, on) => {
   const urls: string[] = []
   const calls: string[] = []
