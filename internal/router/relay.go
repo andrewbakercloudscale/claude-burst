@@ -3,7 +3,9 @@ package router
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -278,6 +280,27 @@ func requestModel(body []byte) string {
 		return v.Model
 	}
 	return ""
+}
+
+var errBodyTooLarge = errors.New("decoded request body exceeds the limit")
+
+// gunzipLimited decodes a gzip request body, refusing one that decodes to
+// more than limit bytes: the limit on what was read says nothing about what
+// it expands to.
+func gunzipLimited(body []byte, limit int64) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	plain, err := io.ReadAll(io.LimitReader(zr, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(plain)) > limit {
+		return nil, errBodyTooLarge
+	}
+	return plain, nil
 }
 
 // PriceTokens is the API-equivalent cost of one request's tokens at the

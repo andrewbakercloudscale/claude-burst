@@ -74,7 +74,7 @@ func (r *panelRig) run(script string, env ...string) string {
 	r.t.Helper()
 	cmd := exec.Command("zsh", script)
 	// Never GitHub: a panel with no copy of its repo is fetched from here.
-	cmd.Env = append(append(os.Environ(), "HOME="+r.home, "CLAUDE_BURST_PANEL_REPO="+r.origin), env...)
+	cmd.Env = append(append(os.Environ(), "HOME="+r.home, "CLAUDE_BURST_PANEL_REPO="+r.origin, "CLAUDE_BURST_REPO="), env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		r.t.Fatalf("update-panel.sh must never fail its caller: %v\n%s", err, out)
