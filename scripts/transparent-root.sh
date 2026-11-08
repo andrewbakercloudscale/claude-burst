@@ -312,6 +312,10 @@ direct_verdict() {
 # must never happen here: pfctl -f loads all-or-nothing, so a syntax error
 # would take the redirect down with it and every request on this Mac to the
 # intercepted host would break.
+# lo0_skipped_live: pf's running options skip the loopback interface, so no
+# rule on lo0 (our rdr) is applied. pf.conf never sets it; other software does.
+lo0_skipped_live() { pfctl -sI -v 2>/dev/null | grep -qE '^lo0[[:space:]].*skip'; }
+
 do_reload_anchor() {
   need_root reload-anchor
   local port gport
@@ -336,7 +340,13 @@ do_reload_anchor() {
   # to it.
   local why="" failed_at now
   failed_at="$(state_get anchor_only_failed_at)"; now="$(date +%s)"
-  if [[ "$failed_at" == <-> ]] && (( now - failed_at < ANCHOR_ONLY_RETRY_AFTER )); then
+  if lo0_skipped_live; then
+    # pf skips lo0 entirely while this flag is set, our rdr with it, and only
+    # a main ruleset load clears it: an anchor load leaves pf's options alone.
+    # Every pf break logged since 5 Nov 2026 had it, and the anchor-only
+    # reload healed none of 632.
+    why="pf has lo0 set to skip, which no anchor load can clear"
+  elif [[ "$failed_at" == <-> ]] && (( now - failed_at < ANCHOR_ONLY_RETRY_AFTER )); then
     why="the anchor-only reload failed $(( (now - failed_at) / 60 )) min ago, so it is skipped for $(( ANCHOR_ONLY_RETRY_AFTER / 3600 ))h"
   elif anchor_referenced_live; then
     echo "== reloading this anchor only (the running main ruleset references it and is not touched) =="

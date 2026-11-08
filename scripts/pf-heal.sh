@@ -297,6 +297,9 @@ pf_snapshot() {
   } >> "$LOG" 2>/dev/null || true
 }
 
+# lo0_skipped: pf's running options skip the loopback interface.
+lo0_skipped() { "$PFCTL" -sI -v 2>/dev/null | grep -qE '^lo0[[:space:]].*skip'; }
+
 # Is anything listening on the gateway port at all? Distinguishes "pf is not
 # redirecting" from "pf is redirecting into a hole", which need different
 # repairs. Deliberately does NOT probe over the redirect: this is the one
@@ -408,11 +411,21 @@ if ! hosts_redirect_present; then
   return 0
 fi
 
+# --- 1b. Is lo0 skipped? -------------------------------------------------------
+# While pf skips lo0 the redirect cannot work, and only a main ruleset load
+# clears the flag. Every pf break logged since 5 Nov 2026 had it set, so it is
+# looked at first, every cycle: it costs one pfctl call, and repairing on it
+# skips the probe budget the outcome check below takes to call a break.
+# The outcome still decides when the flag is clear. When the flag is set and
+# the path answers anyway, that is logged: it would disprove the cause.
+lo0skip=0
+lo0_skipped && lo0skip=1
+
 # --- 2. Does the real path work? ----------------------------------------------
 # The outcome, not a component. Everything below only runs when a request to
 # the intercepted host does NOT come back from this gateway -- which is the
 # single condition under which this Mac is broken, whatever the cause.
-if intercept_path_healthy; then
+if (( ! lo0skip )) && intercept_path_healthy; then
   prev=$(failures)
   if (( prev > 0 )); then
     log "recovered: $INTERCEPT_HOST answers from the gateway again after $prev failed cycle(s)"
@@ -428,6 +441,11 @@ if rdr_rule_loaded;   then rdr=loaded;     else rdr=MISSING;        fi
 if anchor_referenced; then ref=referenced; else ref=NOT-REFERENCED; fi
 if gateway_listening; then gw=listening;   else gw=DOWN;           fi
 pf="$(pf_status)"
+if (( lo0skip )) && (( ! CHECK_ONLY )) && real_path_probe; then
+  log "NOTE: pf skips lo0 and yet $INTERCEPT_HOST answers from this gateway: the skip flag is not what breaks the redirect, so it is not repaired on"
+  return 0
+fi
+(( lo0skip )) && log "lo0 skipped: pf has the loopback interface set to skip, so the redirect cannot work until the main ruleset is loaded again"
 log "BROKEN: /etc/hosts redirects $INTERCEPT_HOST here but it does not answer from this gateway -- every process on this Mac is affected (pf: $pf, rdr rule: $rdr, main ruleset: $ref, gateway on :$gport: $gw)"
 pf_snapshot "$gport"
 
@@ -647,6 +665,9 @@ d="$(dirname "$0")"
 if [[ "$1 $2" == "-s info" ]]; then
   echo "Status: Enabled for 0 days 01:00:00"; exit 0
 fi
+if [[ "$1" == "-sI" ]]; then
+  echo "en0"; [[ -f "$d/skip" ]] && echo "lo0 (skip)" || echo "lo0"; exit 0
+fi
 if [[ "$1" == "-a" ]]; then
   echo "no rdr on lo0 inet proto tcp from any to 127.0.0.1 port 7777"
   [[ -f "$d/rdr" ]] && echo "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7777"
@@ -662,7 +683,7 @@ STUB
 d="$(dirname "$0")"
 n=$(( $(cat "$d/curlcalls" 2>/dev/null || echo 0) + 1 )); echo $n > "$d/curlcalls"
 [[ -f "$d/break-at" && "$(cat "$d/break-at")" == "$n" ]] && { rm -f "$d/rdr"; exit 7; }
-[[ -f "$d/rdr" && -f "$d/ref" && -f "$d/gw" ]] && { echo '{"overflow":false}'; exit 0; }
+[[ -f "$d/rdr" && -f "$d/ref" && -f "$d/gw" && ( ! -f "$d/skip" || -f "$d/skip-harmless" ) ]] && { echo '{"overflow":false}'; exit 0; }
 exit 7
 STUB
   printf '#!/bin/zsh\n[[ -f "$(dirname "$0")/gw" ]] && exit 0\nexit 1\n' > "$LSOF"
@@ -672,7 +693,7 @@ d="$(dirname "$0")"
 case "$1" in
   reload-anchor)
     [[ -f "$d/anchor-wont-load" ]] && { echo "pf rejected the ruleset" >&2; exit 1; }
-    touch "$d/rdr" "$d/ref"; echo "reloaded"; exit 0 ;;
+    rm -f "$d/skip"; touch "$d/rdr" "$d/ref"; echo "reloaded"; exit 0 ;;
   remove)
     [[ -f "$d/remove-lies" ]] && { echo "removed"; exit 0; }
     rm -f "$d/hosts" "$d/rdr" "$d/ref"; echo "removed"; exit 0 ;;
@@ -827,6 +848,21 @@ STUB
   FAST_CONFIRM_SLEEPS=""; HEALTH_PROBE_BUDGET=0; HEALTH_PROBE_SLEEP=0
 
   [[ -s "$tmp/snapshots" ]] && ok "a break writes a pf snapshot before repairing" || bad "no break wrote a pf snapshot"
+
+  # 8 Nov 2026: every pf break since 5 Nov had lo0 set to skip, which only a
+  # main ruleset load clears. Seen with the flag, the break is repaired at
+  # once, without the probe budget; the flag alone, with a path that still
+  # answers, is logged and left.
+  rm -f "$tmp/curlcalls" "$tmp/break-at"; touch "$tmp/rdr" "$tmp/ref" "$tmp/gw" "$tmp/skip"
+  echo "$HOSTS_MARKER" > "$HOSTS_FILE"
+  clear_failures
+  run
+  { want "lo0 skipped" && want "HEALED"; } && ok "lo0 skipped -> repaired, and the path answers again" || bad "lo0 skip not repaired" show
+  [[ ! -f "$tmp/skip" ]] && ok "the repair cleared the skip flag" || bad "skip flag still set" show
+  touch "$tmp/skip" "$tmp/skip-harmless"
+  run
+  { want "NOTE: pf skips lo0" && ! want "BROKEN"; } && ok "lo0 skipped with a working path -> noted, not repaired" || bad "skip with a working path was repaired" show
+  rm -f "$tmp/skip" "$tmp/skip-harmless"
 
   echo
   if (( fails == 0 )); then echo "self-test: all checks passed"; return 0; fi
