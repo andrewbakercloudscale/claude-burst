@@ -36,6 +36,7 @@ import (
 //	fail_anchor_load   the anchor-only load exits 1
 //	flush_ineffective  the anchor still lists its rule after -F all
 //	anchor_unreadable  -a claude-burst -s nat exits 1
+//	lo0_skip           -sI -v reports lo0 set to skip
 //
 // A load of the main ruleset leaves full_loaded behind, which is what the
 // curl stub's needs_full waits for.
@@ -63,6 +64,9 @@ case "$*" in
   "-f "*)
     if [ -f "$d/fail_load" ]; then echo "pfctl: rules loaded"; exit 1; fi
     : > "$d/full_loaded"
+    exit 0 ;;
+  "-sI -v")
+    if [ -f "$d/lo0_skip" ]; then echo "lo0 (skip)"; else echo "lo0"; fi
     exit 0 ;;
   "-s info")
     if [ -f "$d/pf_disabled" ]; then echo "Status: Disabled for 0 days"; else echo "Status: Enabled for 0 days"; fi
@@ -423,7 +427,7 @@ func TestRootReloadAnchorCallOrder(t *testing.T) {
 		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
 	}
 	sameCalls(t, "reload-anchor pfctl calls", only(r.calls, "pfctl "), []string{
-		"pfctl -s nat",
+		"pfctl -sI -v", "pfctl -s nat",
 		"pfctl -n -f <tmp>/etc/pf.conf",
 		"pfctl -f <tmp>/etc/pf.conf",
 		"pfctl -s info",
@@ -449,7 +453,7 @@ func TestRootReloadAnchorRejectedDryRunNeverLoads(t *testing.T) {
 	if r.code == 0 {
 		t.Fatalf("a rejected dry run must fail the script:\n%s", r.out)
 	}
-	sameCalls(t, "pfctl calls", only(r.calls, "pfctl "), []string{"pfctl -s nat", "pfctl -n -f <tmp>/etc/pf.conf"}, r.out)
+	sameCalls(t, "pfctl calls", only(r.calls, "pfctl "), []string{"pfctl -sI -v", "pfctl -s nat", "pfctl -n -f <tmp>/etc/pf.conf"}, r.out)
 	if got := read(t, e.anchor); got != "# the anchor that was working\n" {
 		t.Fatalf("previous anchor not restored:\n%s", got)
 	}
@@ -474,7 +478,7 @@ func TestRootReloadAnchorFailedLoadFailsWhateverItPrints(t *testing.T) {
 		t.Fatalf("pfctl -f exited 1: the script must too:\n%s", r.out)
 	}
 	sameCalls(t, "pfctl calls", only(r.calls, "pfctl "), []string{
-		"pfctl -s nat",
+		"pfctl -sI -v", "pfctl -s nat",
 		"pfctl -n -f <tmp>/etc/pf.conf",
 		"pfctl -f <tmp>/etc/pf.conf",
 		"pfctl -f <tmp>/etc/pf.conf", // reloading the restored anchor
@@ -524,7 +528,7 @@ func TestRootReloadAnchorLoadsOnlyTheAnchorWhenReferenced(t *testing.T) {
 		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
 	}
 	sameCalls(t, "reload-anchor pfctl calls", only(r.calls, "pfctl "), []string{
-		"pfctl -s nat",
+		"pfctl -sI -v", "pfctl -s nat",
 		anchorDry,
 		anchorLoad,
 		"pfctl -s info",
@@ -552,7 +556,7 @@ func TestRootReloadAnchorFallsBackToTheMainRulesetWhenThePathStaysBroken(t *test
 		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
 	}
 	sameCalls(t, "reload-anchor pfctl calls", only(r.calls, "pfctl "), []string{
-		"pfctl -s nat",
+		"pfctl -sI -v", "pfctl -s nat",
 		anchorDry,
 		anchorLoad,
 		"pfctl -s info",
@@ -573,6 +577,7 @@ func TestRootReloadAnchorFallsBackToTheMainRulesetWhenThePathStaysBroken(t *test
 		t.Fatalf("second reload-anchor exit %d:\n%s", r.code, r.out)
 	}
 	sameCalls(t, "reload-anchor pfctl calls after a failed anchor-only reload", only(r.calls, "pfctl "), []string{
+		"pfctl -sI -v",
 		"pfctl -n -f <tmp>/etc/pf.conf",
 		"pfctl -f <tmp>/etc/pf.conf",
 		"pfctl -s info",
@@ -588,8 +593,8 @@ func TestRootReloadAnchorFallsBackToTheMainRulesetWhenThePathStaysBroken(t *test
 func TestRootReloadAnchorFallsBackWhenTheAnchorOnlyLoadFails(t *testing.T) {
 	t.Parallel()
 	for flag, want := range map[string][]string{
-		"reject_anchor_dry": {"pfctl -s nat", anchorDry, "pfctl -n -f <tmp>/etc/pf.conf", "pfctl -f <tmp>/etc/pf.conf", "pfctl -s info", "pfctl -a claude-burst -F states"},
-		"fail_anchor_load":  {"pfctl -s nat", anchorDry, anchorLoad, "pfctl -n -f <tmp>/etc/pf.conf", "pfctl -f <tmp>/etc/pf.conf", "pfctl -s info", "pfctl -a claude-burst -F states"},
+		"reject_anchor_dry": {"pfctl -sI -v", "pfctl -s nat", anchorDry, "pfctl -n -f <tmp>/etc/pf.conf", "pfctl -f <tmp>/etc/pf.conf", "pfctl -s info", "pfctl -a claude-burst -F states"},
+		"fail_anchor_load":  {"pfctl -sI -v", "pfctl -s nat", anchorDry, anchorLoad, "pfctl -n -f <tmp>/etc/pf.conf", "pfctl -f <tmp>/etc/pf.conf", "pfctl -s info", "pfctl -a claude-burst -F states"},
 	} {
 		e := newRootEnv(t)
 		e.install(t)
@@ -794,5 +799,28 @@ func TestRootInstallUsesConfiguredGatewayPort(t *testing.T) {
 	r := e.run(t, "install")
 	if len(r.calls) == 0 || r.calls[0] != "curl https://127.0.0.1:17777/healthz" {
 		t.Fatalf("first call %q, want the configured port 17777:\n%s", r.calls, r.out)
+	}
+}
+
+// pf set to skip lo0 ignores every rule on it, ours included, and only a load
+// of the main ruleset clears the option: the anchor-only step is not tried.
+func TestRootReloadAnchorGoesStraightToTheMainRulesetWhenLo0IsSkipped(t *testing.T) {
+	t.Parallel()
+	e := newRootEnv(t)
+	e.install(t)
+	e.flag(t, "ref_live", "lo0_skip")
+	r := e.run(t, "reload-anchor")
+	if r.code != 0 {
+		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
+	}
+	sameCalls(t, "reload-anchor pfctl calls with lo0 skipped", only(r.calls, "pfctl "), []string{
+		"pfctl -sI -v",
+		"pfctl -n -f <tmp>/etc/pf.conf",
+		"pfctl -f <tmp>/etc/pf.conf",
+		"pfctl -s info",
+		"pfctl -a claude-burst -F states",
+	}, r.out)
+	if !strings.Contains(r.out, "lo0 set to skip") {
+		t.Fatalf("the main reload did not say why it ran:\n%s", r.out)
 	}
 }
