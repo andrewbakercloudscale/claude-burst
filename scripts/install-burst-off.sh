@@ -2,8 +2,8 @@
 # Puts burst-off on the PATH: one command that turns Claude Burst off and gets
 # Claude Code working again, for whoever is stuck and has no idea where the
 # repo went. It is scripts/rollback.sh, copied with the two helpers it calls,
-# so a moved or deleted checkout cannot take it away. claude-burst enable
-# turns Burst back on.
+# so a moved or deleted checkout cannot take it away. burst-on turns Burst
+# back on.
 #
 # burst-reinstall goes with it: scripts/reinstall.sh, which fetches the newest
 # Burst and installs it again, and the path of this checkout for it to use.
@@ -29,10 +29,20 @@ mkdir -p "$OFF_DIR" "$INSTALL_DIR" &&
   chmod 755 "$OFF_DIR"/*.sh &&
   printf '%s\n' '#!/bin/zsh' \
     '# Turn Claude Burst off and get Claude Code working again. Installed by claude-burst.' \
-    '# Undo with: claude-burst enable' \
+    '# Undo with: burst-on' \
     'exec /bin/zsh "$HOME/.local/share/claude-burst/rollback.sh" "$@"' > "$INSTALL_DIR/burst-off" &&
   chmod 755 "$INSTALL_DIR/burst-off" ||
   echo "WARNING: could not install burst-off; scripts/rollback.sh does the same from this checkout" >&2
+
+# burst-on: scripts/turn-on.sh, the undo of burst-off in one run and one
+# password. Apart from the chain above for the same reason as burst-repair.
+cp -f "$ROOT/scripts/turn-on.sh" "$ROOT/scripts/trust-ca-systemwide.sh" "$OFF_DIR/" &&
+  chmod 755 "$OFF_DIR/turn-on.sh" "$OFF_DIR/trust-ca-systemwide.sh" &&
+  printf '%s\n' '#!/bin/zsh' \
+    '# Turn Claude Burst back on after burst-off. Installed by claude-burst.' \
+    'exec /bin/zsh "$HOME/.local/share/claude-burst/turn-on.sh" "$@"' > "$INSTALL_DIR/burst-on" &&
+  chmod 755 "$INSTALL_DIR/burst-on" ||
+  echo "WARNING: could not install burst-on; scripts/turn-on.sh does the same from this checkout" >&2
 
 # burst-repair: scripts/repair.sh, which finds the checkout from the path
 # recorded above, or clones one. The watchdog's alerts, diagnose.sh and the

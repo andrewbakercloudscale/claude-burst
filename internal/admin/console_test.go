@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -279,5 +280,95 @@ func TestTheLogEndpointRedactsLikeTheAuditView(t *testing.T) {
 	}
 	if !strings.Contains(body, "2026-10-04T17:16:19.000+02:00 level=info req=b ok route=anthropic status=200 note=\"kept as it is\"\n") {
 		t.Fatalf("a line with nothing to hide was changed:\n%s", body)
+	}
+}
+
+// bootedAgo makes the test console's sysctl say the Mac started d ago.
+func bootedAgo(c *Console, d time.Duration) {
+	run := c.Run
+	c.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "sysctl" {
+			sec := time.Now().Add(-d).Unix()
+			return []byte(fmt.Sprintf("{ sec = %d, usec = 0 } Tue Nov 11 09:48:20 2026\n", sec)), nil
+		}
+		return run(ctx, name, args...)
+	}
+}
+
+func consoleStatusOf(t *testing.T, c *Console) consoleStatus {
+	t.Helper()
+	rec := consoleDo(t, c.Handler(), http.MethodGet, "/api/console")
+	var st consoleStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("%v: %s", err, rec.Body)
+	}
+	return st
+}
+
+// For the first minutes after a boot the console says Burst is starting,
+// not broken: on 11 Nov 2026 a red console four seconds before the pf guard
+// healed the redirect ended in Burst being turned off.
+func TestConsoleSaysStartingUpJustAfterABoot(t *testing.T) {
+	c, _, _ := newTestConsole(t)
+	bootedAgo(c, 40*time.Second)
+	if st := consoleStatusOf(t, c); !st.StartingUp || st.UptimeSeconds < 39 || st.UptimeSeconds > 60 {
+		t.Fatalf("40s after boot: %+v", st)
+	}
+	bootedAgo(c, StartupGrace+time.Minute)
+	if st := consoleStatusOf(t, c); st.StartingUp {
+		t.Fatalf("after the grace: %+v", st)
+	}
+	// sysctl failing (the stub's nil output) is unknown, never "starting".
+	c2, _, _ := newTestConsole(t)
+	if st := consoleStatusOf(t, c2); st.StartingUp || st.UptimeSeconds != 0 {
+		t.Fatalf("no boot time: %+v", st)
+	}
+}
+
+// Turned off, the console offers Turn Burst back on; Restart says it does
+// not put the redirect back on its own.
+func TestConsoleOffersTurnOnAfterTurnOff(t *testing.T) {
+	c, _, opened := newTestConsole(t)
+	cfg := config.Default()
+	cfg.Intercept.Mode = config.InterceptTransparent
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := config.ConfigDir()
+	os.WriteFile(filepath.Join(dir, "rolled-back"), []byte("2026-11-11 09:54:09 rolled back by scripts/rollback.sh"), 0o600)
+	if st := consoleStatusOf(t, c); !st.TurnedOff || !st.NeedsTurnOn {
+		t.Fatalf("turned off: %+v", st)
+	}
+	rec := consoleDo(t, c.Handler(), http.MethodPost, "/api/console/restart")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Turn Burst back on puts those back") {
+		t.Fatalf("restart after turn-off: %d %s", rec.Code, rec.Body)
+	}
+	rec = consoleDo(t, c.Handler(), http.MethodPost, "/api/console/on")
+	if rec.Code != 200 || *opened == "" {
+		t.Fatalf("on: %d opened %q: %s", rec.Code, *opened, rec.Body)
+	}
+	b, _ := os.ReadFile(*opened)
+	if !strings.Contains(string(b), "'/repo/scripts/turn-on.sh'") {
+		t.Errorf("script:\n%s", b)
+	}
+}
+
+// While the Mac is starting, a missing redirect is not yet a reason to
+// offer Turn Burst back on: the pf guard is putting it back.
+func TestConsoleDoesNotOfferTurnOnWhileStarting(t *testing.T) {
+	c, _, _ := newTestConsole(t)
+	cfg := config.Default()
+	cfg.Intercept.Mode = config.InterceptTransparent
+	cfg.Intercept.Host = "127.0.0.1:1" // nothing answers: the redirect check fails
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	bootedAgo(c, 30*time.Second)
+	if st := consoleStatusOf(t, c); st.NeedsTurnOn || !st.StartingUp {
+		t.Fatalf("starting: %+v", st)
+	}
+	bootedAgo(c, time.Hour)
+	if st := consoleStatusOf(t, c); !st.NeedsTurnOn {
+		t.Fatalf("an hour on, redirect missing: %+v", st)
 	}
 }

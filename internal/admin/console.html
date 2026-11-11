@@ -17,6 +17,7 @@ section{background:var(--card);border:1px solid var(--line);border-radius:12px;p
 h2{font-size:1.05rem;margin:0 0 10px}
 .banner{border-radius:10px;padding:10px 14px;margin:0 0 14px;font-weight:600}
 .banner.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);border:1px solid var(--ok)}
+.banner.wait{background:color-mix(in srgb,var(--accent) 15%,transparent);border:1px solid var(--accent)}
 .banner.bad{background:color-mix(in srgb,var(--bad) 15%,transparent);border:1px solid var(--bad)}
 .banner a{color:inherit}
 .checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
@@ -49,13 +50,14 @@ pre.tail{margin:0;padding:10px;max-height:320px;overflow:auto;background:var(--c
   <section>
     <h2>Fix it</h2>
     <div class="actions">
-      <button class="act primary" data-act="restart">Restart gateway</button>
+      <button class="act primary" data-act="on" id="turnOn" hidden>Turn Burst back on</button>
+      <button class="act primary" data-act="restart" id="restart">Restart gateway</button>
       <button class="act" data-act="restore-config" id="restoreConfig" hidden>Restore last good config</button>
       <button class="act" data-act="repair">Repair</button>
       <button class="act" data-act="diagnose">Diagnostic report</button>
       <button class="act" data-act="off">Turn Burst off</button>
     </div>
-    <p class="explain">Restore last good config appears when config.json cannot be read, which stops the gateway starting: it puts back the newest backup that loads and keeps the broken file. Restart starts or restarts the gateway and turns Burst back on if it was turned off. Repair reinstalls what is broken (it asks for your password in a Terminal window). Diagnostic report writes one file with everything support needs, secrets redacted. Turn Burst off sends Claude Code straight to Anthropic.</p>
+    <p class="explain">Restore last good config appears when config.json cannot be read, which stops the gateway starting: it puts back the newest backup that loads and keeps the broken file. Turn Burst back on appears when Burst was turned off or the redirect is missing: it starts the gateway and puts back the redirect and the certificate trust, asking for your password once in a Terminal window. Restart starts or restarts the gateway only. Repair reinstalls what is broken (it asks for your password in a Terminal window). Diagnostic report writes one file with everything support needs, secrets redacted. Turn Burst off sends Claude Code straight to Anthropic, and takes out the redirect and the certificate trust; for a few minutes after the Mac starts, red checks are usually Burst still starting, so wait first.</p>
     <div id="msg"></div>
   </section>
 
@@ -76,6 +78,8 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const audit = window.BurstAudit.mount($("audit"), { limit: 300 });
+let startingUp = false, upFor = 0;
+const ago = (sec) => sec < 90 ? sec + " seconds" : Math.round(sec / 60) + " minutes";
 
 async function load() {
   let s;
@@ -94,9 +98,22 @@ async function load() {
   $("restoreConfig").classList.toggle("primary", !!s.config_error);
   $("checks").innerHTML = checks.map((c) =>
     `<li><i class="dot ${c.ok ? "ok" : ""}"></i><b>${esc(c.name)}</b><span>${esc(c.detail)}</span></li>`).join("");
+  $("turnOn").hidden = !s.needs_turn_on;
+  $("restart").classList.toggle("primary", !s.needs_turn_on);
+  startingUp = !!s.starting_up;
+  upFor = s.uptime_seconds || 0;
   const b = $("banner");
   b.hidden = false;
-  if (s.dashboard_up) {
+  if (s.starting_up && !s.turned_off && checks.some((c) => !c.ok)) {
+    b.className = "banner wait";
+    b.textContent = "This Mac started " + ago(upFor) + " ago. Burst is starting up and the pf guard is repairing the redirect: red checks are normal for the first few minutes. Nothing needs pressing; this page checks again every 10 seconds.";
+  } else if (s.turned_off) {
+    b.className = "banner bad";
+    b.textContent = "Burst is turned off: Claude Code goes straight to Anthropic. Turn Burst back on puts it back, with one password.";
+  } else if (s.dashboard_up && s.needs_turn_on) {
+    b.className = "banner bad";
+    b.textContent = "The gateway is up but Claude Code does not reach it: the redirect is missing. Turn Burst back on puts it back, with one password.";
+  } else if (s.dashboard_up) {
     b.className = "banner ok";
     b.innerHTML = `Burst is up. <a href="${esc(s.dashboard)}">Open the dashboard</a> for everything else.`;
   } else {
@@ -110,7 +127,12 @@ document.querySelector(".actions").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-act]");
   if (!btn) return;
   const act = btn.dataset.act;
-  if (act === "off" && !confirm("Turn Burst off? Claude Code goes straight to Anthropic until you press Restart.")) return;
+  if (act === "off") {
+    const q = startingUp
+      ? "This Mac started " + ago(upFor) + " ago and Burst is most likely still starting: the checks usually turn green by themselves within a few minutes.\n\nTurn Burst off anyway? It takes out the gateway, the redirect and the certificate trust, and Turn Burst back on asks for your password to put them back."
+      : "Turn Burst off? Claude Code goes straight to Anthropic. It takes out the gateway, the redirect and the certificate trust; Turn Burst back on puts them back, with one password.";
+    if (!confirm(q)) return;
+  }
   btn.disabled = true;
   $("msg").className = "";
   $("msg").textContent = "Working...";

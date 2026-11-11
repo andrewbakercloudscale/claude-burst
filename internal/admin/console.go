@@ -71,6 +71,7 @@ func (c *Console) Handler() http.Handler {
 	mux.HandleFunc("/api/console/repair", mutating(audited("console", c.handleTerminal("repair"))))
 	mux.HandleFunc("/api/console/diagnose", mutating(audited("console", c.handleTerminal("diagnose"))))
 	mux.HandleFunc("/api/console/off", mutating(audited("console", c.handleTerminal("off"))))
+	mux.HandleFunc("/api/console/on", mutating(audited("console", c.handleTerminal("on"))))
 	return guard("", mux)
 }
 
@@ -98,7 +99,25 @@ type consoleStatus struct {
 	ConfigError string         `json:"config_error,omitempty"`
 	LogTail     []string       `json:"log_tail"`
 	Now         time.Time      `json:"now"`
+	// UptimeSeconds is how long ago this Mac started, 0 when unknown.
+	UptimeSeconds int64 `json:"uptime_seconds"`
+	// StartingUp: the Mac started under StartupGrace ago. Red checks then
+	// are mostly Burst still coming up, not Burst broken.
+	StartingUp bool `json:"starting_up"`
+	// TurnedOff: burst-off ran and nothing has turned Burst back on.
+	TurnedOff bool `json:"turned_off"`
+	// NeedsTurnOn offers "Turn Burst back on": turned off, or the redirect
+	// is missing after start-up, which Restart alone cannot put back.
+	NeedsTurnOn bool `json:"needs_turn_on"`
 }
+
+// StartupGrace is how long after the Mac starts the console says "starting
+// up" rather than "broken". On 11 Nov 2026 the Mac booted with a load of
+// 200 or more: the dashboard did not answer, pf came up off, the console
+// said the dashboard was down, and Burst was turned off at 09:53:54, four
+// seconds before the pf guard had the redirect working again. Undoing that
+// took three passwords.
+const StartupGrace = 3 * time.Minute
 
 // handleStatus answers "is Burst working, and if not, where does it stop".
 func (c *Console) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -129,12 +148,22 @@ func (c *Console) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if dir, err := config.ConfigDir(); err == nil {
 		if b, err := os.ReadFile(filepath.Join(dir, "rolled-back")); err == nil {
+			st.TurnedOff = true
 			st.Checks = append(st.Checks, consoleCheck{"Turned off", false,
-				"Burst was turned off on purpose (" + strings.TrimSpace(string(b)) + "). Restart turns it back on."})
+				"Burst was turned off on purpose (" + strings.TrimSpace(string(b)) + "). Turn Burst back on puts back everything that took out, with one password."})
 		}
 	}
+	if up, ok := c.uptime(ctx); ok {
+		st.UptimeSeconds = int64(up / time.Second)
+		st.StartingUp = up < StartupGrace
+	}
+	st.NeedsTurnOn = st.TurnedOff
 	if cfg.Intercept.Mode == config.InterceptTransparent {
-		st.Checks = append(st.Checks, redirectCheck(ctx, cfg.Intercept.Host))
+		chk := redirectCheck(ctx, cfg.Intercept.Host)
+		if !chk.OK && !st.StartingUp {
+			st.NeedsTurnOn = true
+		}
+		st.Checks = append(st.Checks, chk)
 	} else {
 		st.Checks = append(st.Checks, dialCheck("Gateway port", cfg.Listen))
 	}
@@ -160,6 +189,28 @@ func (c *Console) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, st)
+}
+
+// uptime is how long ago this Mac started, from kern.boottime, which
+// sysctl prints as "{ sec = 1762847300, usec = 0 } Tue Nov 11 09:48:20 2026".
+func (c *Console) uptime(ctx context.Context) (time.Duration, bool) {
+	out, err := c.Run(ctx, "sysctl", "-n", "kern.boottime")
+	if err != nil {
+		return 0, false
+	}
+	var sec int64
+	i := strings.Index(string(out), "sec = ")
+	if i < 0 {
+		return 0, false
+	}
+	if _, err := fmt.Sscanf(string(out)[i:], "sec = %d", &sec); err != nil || sec <= 0 {
+		return 0, false
+	}
+	up := time.Since(time.Unix(sec, 0))
+	if up < 0 {
+		return 0, false
+	}
+	return up, true
 }
 
 func dialCheck(name, addr string) consoleCheck {
@@ -248,10 +299,21 @@ func tailLines(path string, n int) ([]string, error) {
 func (c *Console) handleRestart(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
+	// Restart starts the gateway, and burst-off took more than that out:
+	// in transparent mode the redirect and the CA trust too, which need
+	// root. Said here, so a press of Restart after Turn Burst off does not
+	// read as Burst being back on.
+	also := ""
 	if dir, err := config.ConfigDir(); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "rolled-back")); err == nil {
+			if cfg, err := config.Load(); err == nil && cfg.Intercept.Mode == config.InterceptTransparent {
+				also = " Burst had been turned off, which also took out the redirect and the certificate trust: Turn Burst back on puts those back."
+			}
+		}
 		os.Remove(filepath.Join(dir, "rolled-back"))
 		os.Remove(filepath.Join(dir, "rolled-back.noted"))
 	}
+	reply := func(detail string) { writeJSON(w, map[string]string{"detail": detail + also}) }
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
 	target := domain + "/" + GatewayLabel
 	if _, err := c.Run(ctx, "launchctl", "print", target); err == nil {
@@ -269,7 +331,7 @@ func (c *Console) handleRestart(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "launchctl kickstart failed: "+strings.TrimSpace(string(out)+" "+err.Error()), http.StatusInternalServerError)
 				return
 			}
-			writeJSON(w, map[string]string{"detail": "The gateway was not answering, so it was stopped at once and started again. Checks turn green when it is serving, usually within 30 seconds."})
+			reply("The gateway was not answering, so it was stopped at once and started again. Checks turn green when it is serving, usually within 30 seconds.")
 			return
 		}
 		if _, err := c.Run(ctx, "launchctl", "kill", "SIGTERM", target); err != nil {
@@ -277,10 +339,10 @@ func (c *Console) handleRestart(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "launchctl kickstart failed: "+strings.TrimSpace(string(out)+" "+err.Error()), http.StatusInternalServerError)
 				return
 			}
-			writeJSON(w, map[string]string{"detail": "Started the gateway. Checks refresh in a few seconds."})
+			reply("Started the gateway. Checks refresh in a few seconds.")
 			return
 		}
-		writeJSON(w, map[string]string{"detail": "Restarting the gateway: it finishes the replies in flight first (at most 50 seconds), then starts again. Checks turn green when it is back."})
+		reply("Restarting the gateway: it finishes the replies in flight first (at most 50 seconds), then starts again. Checks turn green when it is back.")
 		return
 	}
 	home, _ := os.UserHomeDir()
@@ -293,7 +355,7 @@ func (c *Console) handleRestart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "launchctl bootstrap failed: "+strings.TrimSpace(string(out)+" "+err.Error()), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"detail": "Started the gateway. Checks refresh in a few seconds."})
+	reply("Started the gateway. Checks refresh in a few seconds.")
 }
 
 // dashboardAnswers is whether the gateway's dashboard answers its lightest
@@ -338,7 +400,8 @@ func (c *Console) handleRestoreConfig(w http.ResponseWriter, r *http.Request) {
 var consoleScripts = map[string]struct{ file, says string }{
 	"repair":   {"repair.sh", "A Terminal window is repairing Burst. It asks for your password for the parts that need it."},
 	"diagnose": {"diagnose.sh", "A Terminal window is writing a diagnostic report (secrets redacted) and copying it to the clipboard."},
-	"off":      {"rollback.sh", "A Terminal window is turning Burst off: Claude Code goes straight to Anthropic. Restart here turns it back on."},
+	"off":      {"rollback.sh", "A Terminal window is turning Burst off: Claude Code goes straight to Anthropic. Turn Burst back on, here, undoes it."},
+	"on":       {"turn-on.sh", "A Terminal window is turning Burst back on: the gateway, the redirect and the certificate trust. It asks for your password once."},
 }
 
 func (c *Console) handleTerminal(which string) http.HandlerFunc {
@@ -351,9 +414,9 @@ func (c *Console) handleTerminal(which string) http.HandlerFunc {
 		if filepath.IsAbs(c.RootHelper) {
 			script = filepath.Join(filepath.Dir(c.RootHelper), sc.file)
 		}
-		if script == "" && which == "off" {
-			if home, err := os.UserHomeDir(); err == nil && fileExists(filepath.Join(home, ".local", "bin", "burst-off")) {
-				script = filepath.Join(home, ".local", "bin", "burst-off")
+		if fallback := map[string]string{"off": "burst-off", "on": "burst-on"}[which]; script == "" && fallback != "" {
+			if home, err := os.UserHomeDir(); err == nil && fileExists(filepath.Join(home, ".local", "bin", fallback)) {
+				script = filepath.Join(home, ".local", "bin", fallback)
 			}
 		}
 		if script == "" {
