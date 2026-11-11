@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
 // The support console: a small page served by its own process
@@ -164,6 +165,13 @@ func (c *Console) handleStatus(w http.ResponseWriter, r *http.Request) {
 			st.NeedsTurnOn = true
 		}
 		st.Checks = append(st.Checks, chk)
+		if !st.TurnedOff {
+			bc := bundleCheck(cfg.Intercept.CABundle)
+			if !bc.OK && !st.StartingUp { // the gateway puts it back as it starts
+				st.NeedsTurnOn = true
+			}
+			st.Checks = append(st.Checks, bc)
+		}
 	} else {
 		st.Checks = append(st.Checks, dialCheck("Gateway port", cfg.Listen))
 	}
@@ -211,6 +219,19 @@ func (c *Console) uptime(ctx context.Context) (time.Duration, bool) {
 		return 0, false
 	}
 	return up, true
+}
+
+// bundleCheck is whether Claude Code's CA bundle holds Burst's CA: without
+// it every Claude Code session started from then on refuses the gateway,
+// while the redirect check, which trusts the System keychain, stays green.
+// That was the state from 09:54 to 11:30 on 11 Nov 2026, and nothing showed it.
+func bundleCheck(bundle string) consoleCheck {
+	const name = "Claude Code trusts Burst"
+	b, err := os.ReadFile(bundle)
+	if err != nil || !tlsca.HasBlock(string(b)) {
+		return consoleCheck{name, false, "Burst's CA is not in " + bundle + ", so new Claude Code sessions refuse the gateway. The gateway puts it back when it starts: Restart gateway, or Turn Burst back on."}
+	}
+	return consoleCheck{name, true, "Burst's CA is in " + bundle}
 }
 
 func dialCheck(name, addr string) consoleCheck {

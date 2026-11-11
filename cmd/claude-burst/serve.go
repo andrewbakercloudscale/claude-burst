@@ -368,12 +368,33 @@ func startableConfig(cfg config.Config, loadErr error) (config.Config, []router.
 // that looks like a network fault. Corporate tooling can regenerate that
 // file and drop our block, so say so plainly rather than leaving it to be
 // discovered.
+//
+// A bundle with no block at all is put right too, unless Burst was turned
+// off on purpose. Until 11 Nov 2026 this only warned, in a log nobody
+// reads: burst-off took the block out at 09:54, the gateway was started
+// again at 09:55, and it served for over an hour while every Claude Code
+// session started in that time would have refused it. A gateway serving
+// in transparent mode is a gateway Claude Code must trust; nothing else
+// puts the block back without someone running enable.
 func checkCABundle(bundle string, caPEM []byte, logger *log.Logger, errOut io.Writer) {
 	b, rerr := os.ReadFile(bundle)
 	if rerr != nil || !tlsca.HasBlock(string(b)) {
-		msg := fmt.Sprintf("WARNING: the local CA is not present in %s -- Claude Code will reject this gateway's certificate. Run: claude-burst enable", bundle)
-		fmt.Fprintln(errOut, msg)
-		logger.Print(msg)
+		if turnedOff() {
+			msg := fmt.Sprintf("WARNING: the local CA is not present in %s, and Burst was turned off (burst-off), so it is left out. burst-on puts it back", bundle)
+			fmt.Fprintln(errOut, msg)
+			logger.Print(msg)
+			return
+		}
+		if err := tlsca.EnsureInBundle(bundle, caPEM); err != nil {
+			msg := fmt.Sprintf("WARNING: the local CA is not present in %s and could not be put back (%v) -- Claude Code will reject this gateway's certificate. Run: claude-burst enable", bundle, err)
+			fmt.Fprintln(errOut, msg)
+			logger.Print(msg)
+			notice.Publish("tls", notice.Warn, "Claude Code does not trust the gateway", msg)
+			return
+		}
+		logger.Printf("the local CA was missing from %s: put it back. Claude Code sessions started before now refuse the gateway until restarted", bundle)
+		notice.Publish("tls", notice.Warn, "Put Burst's certificate back in Claude Code's trust file",
+			"It was missing from "+bundle+", so new Claude Code sessions would have refused the gateway. Sessions started while it was missing need a restart (claude --continue keeps their history).")
 		return
 	}
 	if strings.Contains(string(b), strings.TrimSpace(string(caPEM))) {
@@ -388,6 +409,17 @@ func checkCABundle(bundle string, caPEM []byte, logger *log.Logger, errOut io.Wr
 	} else {
 		logger.Printf("CA renewed: updated the Claude Burst block in %s; the System keychain still needs: sudo scripts/trust-ca-systemwide.sh", bundle)
 	}
+}
+
+// turnedOff is whether burst-off's marker is there: Burst was taken out of
+// the path on purpose and nothing has put it back.
+func turnedOff() bool {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(dir, "rolled-back"))
+	return err == nil
 }
 
 const (
