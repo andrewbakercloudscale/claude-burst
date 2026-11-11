@@ -316,3 +316,34 @@ func TestStderrLogIsDatedAndBoundedWhileRunning(t *testing.T) {
 		t.Fatalf("stderr is not launchd.err.log, yet %q would be cut back", got)
 	}
 }
+
+// A gateway that starts with its CA missing from Claude Code's bundle puts
+// it back, keeping what else the bundle holds, unless Burst was turned off
+// on purpose. On 11 Nov 2026 it only warned, and served for over an hour
+// with new sessions unable to trust it.
+func TestCheckCABundlePutsAMissingCABack(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir, _ := config.ConfigDir()
+	os.MkdirAll(dir, 0o700)
+	_, caPEM, err := tlsca.LoadOrCreate(filepath.Join(dir, "ca"), "api.anthropic.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(t.TempDir(), "bundle.pem")
+	const corporate = "# corporate root\n-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+	os.WriteFile(bundle, []byte(corporate), 0o600)
+	logger := log.New(&bytes.Buffer{}, "", 0)
+
+	os.WriteFile(filepath.Join(dir, "rolled-back"), []byte("x"), 0o600)
+	checkCABundle(bundle, caPEM, logger, &bytes.Buffer{})
+	if b, _ := os.ReadFile(bundle); string(b) != corporate {
+		t.Fatalf("turned off, the bundle was changed:\n%s", b)
+	}
+
+	os.Remove(filepath.Join(dir, "rolled-back"))
+	checkCABundle(bundle, caPEM, logger, &bytes.Buffer{})
+	b, _ := os.ReadFile(bundle)
+	if !strings.HasPrefix(string(b), corporate) || !strings.Contains(string(b), strings.TrimSpace(string(caPEM))) {
+		t.Fatalf("the CA was not put back, or the rest was lost:\n%s", b)
+	}
+}

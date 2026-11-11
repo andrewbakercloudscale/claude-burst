@@ -15,6 +15,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
 	"github.com/andrewbakercloudscale/claude-burst/internal/notice"
+	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
 // newTestConsole runs nothing real: launchctl and Terminal are recorders,
@@ -370,5 +371,36 @@ func TestConsoleDoesNotOfferTurnOnWhileStarting(t *testing.T) {
 	bootedAgo(c, time.Hour)
 	if st := consoleStatusOf(t, c); !st.NeedsTurnOn {
 		t.Fatalf("an hour on, redirect missing: %+v", st)
+	}
+}
+
+// A CA bundle without Burst's CA is a red check of its own: the redirect
+// check trusts the System keychain and stays green without it.
+func TestConsoleChecksClaudeCodesCABundle(t *testing.T) {
+	c, _, _ := newTestConsole(t)
+	cfg := config.Default()
+	cfg.Intercept.Mode = config.InterceptTransparent
+	cfg.Intercept.Host = "127.0.0.1:1"
+	cfg.Intercept.CABundle = filepath.Join(t.TempDir(), "bundle.pem")
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(cfg.Intercept.CABundle, []byte("# corporate only\n"), 0o600)
+	bootedAgo(c, time.Hour)
+	st := consoleStatusOf(t, c)
+	var found *consoleCheck
+	for i := range st.Checks {
+		if st.Checks[i].Name == "Claude Code trusts Burst" {
+			found = &st.Checks[i]
+		}
+	}
+	if found == nil || found.OK || !st.NeedsTurnOn {
+		t.Fatalf("missing CA: %+v", st)
+	}
+	os.WriteFile(cfg.Intercept.CABundle, []byte(tlsca.BundleBlock([]byte("-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----\n"))), 0o600)
+	for _, ch := range consoleStatusOf(t, c).Checks {
+		if ch.Name == "Claude Code trusts Burst" && !ch.OK {
+			t.Fatalf("CA present: %+v", ch)
+		}
 	}
 }

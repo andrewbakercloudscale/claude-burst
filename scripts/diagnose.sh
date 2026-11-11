@@ -153,6 +153,15 @@ run_checks() {
     esac
   fi
 
+  # Claude Code trusts the gateway through its own CA bundle, not the
+  # System keychain, so the redirect can pass above while every new session
+  # refuses the gateway (11 Nov 2026, 09:54 to 11:30).
+  if [ "$MODE" = transparent ] && [ -z "$OFF" ]; then
+    v="$(cfg intercept.ca_bundle "$HOME/.claude/certs/node-extra-ca-certs.pem")"
+    if grep -q '^# BEGIN claude-burst CA' "$v" 2>/dev/null; then pass "Claude Code's CA bundle holds Burst's CA ($v)"
+    else fail "Burst's CA is not in Claude Code's CA bundle ($v): new sessions refuse the gateway" "run: burst-on (or claude-burst enable --force)"; fi
+  fi
+
   # The secondary's address, with no key sent: any HTTP answer is a path.
   v="$(cfg secondary.base_url "")"
   if [ -z "$v" ]; then skip "no secondary with an address is configured"
