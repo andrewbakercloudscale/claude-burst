@@ -431,6 +431,7 @@ fi
 if [[ "$HTTP" != "000" && -n "$REMOTE" && "$REMOTE" != 127.* ]]; then
   echo "verified: api.anthropic.com reachable directly (HTTP $HTTP via $REMOTE)"
   echo "rollback complete: sessions already open keep working, new ones go straight to Anthropic"
+  echo "turn it back on with: burst-on (one password; the support console's Turn Burst back on runs the same)"
 else
   echo "WARNING: could not verify direct connectivity (HTTP ${HTTP:-000}, remote ${REMOTE:-none})" >&2
   echo "  settings/gateway were rolled back, but something is still in the way. Check:" >&2

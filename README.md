@@ -62,7 +62,7 @@ Every section has a picture in [the dashboard guide](docs/dashboard.md#the-dashb
 
 ### Support console
 
-http://127.0.0.1:7789/ is a small page served by its own process, so it answers when the gateway and its dashboard do not: which part is down, the latest log lines, the audit (every on-screen alert and every action taken from the dashboard or the console, each with the log lines around it), and buttons to Restart the gateway, Repair, write a Diagnostic report or Turn Burst off. Turning Burst off leaves it running, so it is also where you turn Burst back on. The same audit is under General, Audit on the dashboard.
+http://127.0.0.1:7789/ is a small page served by its own process, so it answers when the gateway and its dashboard do not: which part is down, the latest log lines, the audit (every on-screen alert and every action taken from the dashboard or the console, each with the log lines around it), and buttons to Restart the gateway, Repair, write a Diagnostic report or Turn Burst off. Turning Burst off leaves it running, so it is also where you turn Burst back on: **Turn Burst back on** appears whenever Burst is off or the redirect is missing, and puts back the gateway, the redirect and the CA trust in one Terminal window with one password (`burst-on` does the same). For the first three minutes after the Mac starts, the console says Burst is starting up rather than broken: pf comes up off after a boot and the pf guard puts the redirect back within seconds to a minute, so red checks then need no button. The same audit is under General, Audit on the dashboard.
 
 ### Repair Burst
 
@@ -154,7 +154,8 @@ It makes no request to the model, so it works while the gateway is down and Clau
 No Claude Code session open, or the commands are not there? In any terminal:
 
 ```sh
-burst-off            # the same thing; on your PATH from v0.11. Undo: claude-burst enable
+burst-off            # the same thing; on your PATH from v0.11. Undo: burst-on
+burst-on             # turn Burst back on after burst-off: gateway, redirect and CA trust, one password
 burst-reinstall      # fetch the newest Burst and install it again; from v0.19
 burst-repair         # the Repair one-liner above, from the copy the installer keeps
 ```
