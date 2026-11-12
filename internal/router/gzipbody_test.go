@@ -82,3 +82,28 @@ func TestBrokenGzipIsRefused(t *testing.T) {
 		t.Fatalf("status %d, upstream called %v", rr.Code, called)
 	}
 }
+
+// A turn Burst cannot read is reported, once a session an hour, not skipped
+// in silence.
+func TestUnreadableTurnIsReported(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"id":"msg_1","type":"message","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer primary.Close()
+	s, logs := newTestServer(t, primary.URL, "")
+	send := func() {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader("zstd bytes"))
+		req.Header.Set("Content-Encoding", "zstd")
+		req.Header.Set("x-claude-code-session-id", "sess-unread")
+		s.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	send()
+	send()
+	if n := strings.Count(logs.String(), "reason=unreadable session=sess-unread"); n != 1 {
+		t.Fatalf("reported %d times, want once:\n%s", n, logs)
+	}
+	if !strings.Contains(logs.String(), "Content-Encoding zstd") {
+		t.Errorf("the reason is not named:\n%s", logs)
+	}
+}
