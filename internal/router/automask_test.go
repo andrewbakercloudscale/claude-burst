@@ -330,7 +330,8 @@ func TestAutomaskRefusesWhatItCannotRead(t *testing.T) {
 	const readable = `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"hello"}]}`
 	unreadable := []struct{ name, path, body, encoding string }{
 		{"not JSON", "/v1/messages", "my card is 4111 1111 1111 1111", ""},
-		{"compressed", "/v1/messages", readable, "gzip"},
+		// gzip is opened as it arrives (gzipbody.go); one it cannot open stays unreadable.
+		{"compressed", "/v1/messages", readable, "br"},
 		{"no messages", "/v1/messages/batches", `{"requests":[{"params":{"messages":[]}}]}`, ""},
 		{"count_tokens, not JSON", "/v1/messages/count_tokens", "4111 1111 1111 1111", ""},
 	}

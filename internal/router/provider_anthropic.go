@@ -38,9 +38,20 @@ func (p *PassthroughProvider) Name() string { return p.name }
 
 func (p *PassthroughProvider) Prepare(ctx context.Context, in *http.Request, body []byte) (*http.Request, string, error) {
 	model := requestModel(body)
-	req, err := buildForwardRequest(ctx, p.base, in, body, false)
+	out, gz := body, false
+	if clientGzipped(in.Context()) && len(body) > 0 {
+		z, err := gzipForUpstream(body)
+		if err != nil {
+			return nil, "", &ProviderError{Status: http.StatusBadGateway, Stage: "build_request", Model: model, Err: err}
+		}
+		out, gz = z, true
+	}
+	req, err := buildForwardRequest(ctx, p.base, in, out, false)
 	if err != nil {
 		return nil, "", &ProviderError{Status: http.StatusBadGateway, Stage: "build_request", Model: model, Err: err}
+	}
+	if gz {
+		req.Header.Set("Content-Encoding", "gzip")
 	}
 	return req, model, nil
 }
