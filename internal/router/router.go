@@ -300,6 +300,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	} else if ok {
 		r, body = r2, plain
 	}
+	s.alertUnreadable(r, body, rid)
 
 	// ONE RULE, applied twice below: a request that cannot fail over does not
 	// feed the failover detector either. Only /v1/messages can fail over, so

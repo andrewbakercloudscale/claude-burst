@@ -17,13 +17,14 @@ import (
 
 // Kinds published from here. An ok event of a kind resolves it.
 const (
-	alertFailover  = "failover"
-	alertLimit     = "limit"
-	alertUpstream  = "upstream"
-	alertNetwork   = "network"
-	alertSecondary = "secondary-key"
-	alertCompact   = "compaction"
-	alertContext   = "context"
+	alertFailover   = "failover"
+	alertLimit      = "limit"
+	alertUpstream   = "upstream"
+	alertNetwork    = "network"
+	alertSecondary  = "secondary-key"
+	alertCompact    = "compaction"
+	alertContext    = "context"
+	alertUnreadable = "unreadable"
 )
 
 // Upstream failures: this many 5xx replies within upstreamWindow is an
@@ -43,6 +44,7 @@ type alertState struct {
 	failures    []time.Time
 	failing     bool
 	lastFailure time.Time
+	unreadable  map[string]time.Time // session -> when its unreadable request was last reported
 }
 
 // alertFailedOver is called when a model's rejection window opens.
