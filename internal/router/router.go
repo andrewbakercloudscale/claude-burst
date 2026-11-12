@@ -100,7 +100,9 @@ type Server struct {
 	// never silent. Held by failoverMu; not part of state.json.
 	failoverMu sync.Mutex
 	// alerts is what the on-screen alerts need to say a problem ended.
-	alerts          alertState
+	alerts alertState
+	// sent watches what sessions really send against their limits.
+	sent            sentWatch
 	failoverNotices []string
 
 	// health is whether the primary is answering right now, for the

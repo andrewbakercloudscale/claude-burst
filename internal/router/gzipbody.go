@@ -89,6 +89,7 @@ func (s *Server) alertUnreadable(r *http.Request, body []byte, rid string) {
 	}
 	sid := r.Header.Get("x-claude-code-session-id")
 	now := time.Now()
+	s.noteUnread(sid, now)
 	s.alerts.mu.Lock()
 	if s.alerts.unreadable == nil {
 		s.alerts.unreadable = map[string]time.Time{}
@@ -113,7 +114,7 @@ func (s *Server) alertUnreadable(r *http.Request, body []byte, rid string) {
 	}
 	who := "a session"
 	if sid != "" {
-		who = "session " + sid[:min(8, len(sid))]
+		who = "session " + short(sid)
 	}
 	s.logger.Printf("req=%s warn stage=read_body reason=unreadable session=%s: %s, so compaction, the inspector and pricing skip it and it is sent as it came", rid, sid, why)
 	notice.Publish(alertUnreadable, notice.Warn, "Burst cannot read Claude Code's requests",

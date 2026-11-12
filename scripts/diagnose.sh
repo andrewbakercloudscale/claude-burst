@@ -162,6 +162,21 @@ run_checks() {
     else fail "Burst's CA is not in Claude Code's CA bundle ($v): new sessions refuse the gateway" "run: burst-on (or claude-burst enable --force)"; fi
   fi
 
+  # Model requests the gateway could not read leave model="" on their ok
+  # line while tokens were spent: compaction, pricing and the inspector all
+  # skip them. Control-plane streams are model="" with no tokens, and do not
+  # count. 11 to 12 Nov 2026: 317 such turns in a day (gzipped bodies),
+  # and nothing said so.
+  if [ -f "$CFG/claude-burst.log" ]; then
+    # The last 6 hours: a fixed problem stops failing the check once its
+    # lines are that old.
+    since="$(date -v-6H +%Y-%m-%dT%H:%M 2>/dev/null || date -d '6 hours ago' +%Y-%m-%dT%H:%M)"
+    read -r n bad <<<"$(tail -n 50000 "$CFG/claude-burst.log" | awk -v s="$since" '$1 >= s && / ok route=/ && !/in_tok=0 out_tok=0/ { n++; if (/ model="" /) bad++ } END { print n+0, bad+0 }')"
+    if [ "$n" -eq 0 ]; then skip "no model requests in the gateway's log in the last 6 hours"
+    elif [ "$bad" -ge 5 ] && [ $((bad * 100 / n)) -ge 5 ]; then fail "$bad of $n model requests in the last 6 hours had no readable model: Burst could not read them, so it did not compact or price them" "grep reason=unreadable $CFG/claude-burst.log; update Burst (v0.20.49 reads gzipped bodies)"
+    else pass "the gateway reads Claude Code's requests ($bad of $n in the last 6 hours without a model)"; fi
+  fi
+
   # The secondary's address, with no key sent: any HTTP answer is a path.
   v="$(cfg secondary.base_url "")"
   if [ -z "$v" ]; then skip "no secondary with an address is configured"
