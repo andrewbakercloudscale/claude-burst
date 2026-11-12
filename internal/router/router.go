@@ -132,6 +132,8 @@ type Server struct {
 	// resolver resolves the intercepted host bypassing /etc/hosts; nil
 	// outside transparent mode.
 	resolver *interceptResolver
+	// wsTransport carries WebSocket upgrades: HTTP/1.1 only (websocket.go).
+	wsTransport http.RoundTripper
 }
 
 // Logf writes one line to the gateway log, for other components (the
@@ -237,6 +239,10 @@ func (sw *statusWriter) Write(b []byte) (int, error) {
 }
 
 // Flush lets the SSE relay loop keep flushing through the wrapper.
+// Unwrap lets http.ResponseController reach the connection underneath, so
+// a WebSocket upgrade can take it over (websocket.go).
+func (sw *statusWriter) Unwrap() http.ResponseWriter { return sw.ResponseWriter }
+
 func (sw *statusWriter) Flush() {
 	if fl, ok := sw.ResponseWriter.(http.Flusher); ok {
 		fl.Flush()
@@ -273,6 +279,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	// Removes TraceHeader whatever it holds, so it is never forwarded.
 	r = s.withTrace(r, rid)
+	if isWebSocket(r) {
+		s.proxyWebSocket(w, r, rid)
+		return
+	}
 
 	// Read the body for every request, not just inference: Remote Control's
 	// register call (and any other control-plane POST) needs its body

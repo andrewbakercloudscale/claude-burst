@@ -137,6 +137,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		statePath:         statePath,
 		logger:            logger,
 		resolver:          resolver,
+		wsTransport:       http1Only(newTransport(0)),
 	}
 	s.loadState()
 	return s, nil
@@ -488,3 +489,14 @@ func upstreamRoots(bundle string, logger *log.Logger) *x509.CertPool {
 // cross-host redirect but not x-api-key, so an API key would go with it.
 // Claude Code follows (or refuses) redirects itself.
 func neverFollow(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// http1Only is t speaking HTTP/1.1 alone: a WebSocket upgrade has no
+// HTTP/2 form, and Go refuses one on an HTTP/2 connection.
+func http1Only(t *http.Transport) *http.Transport {
+	t.ForceAttemptHTTP2 = false
+	t.HTTP2 = nil
+	var p http.Protocols
+	p.SetHTTP1(true)
+	t.Protocols = &p
+	return t
+}
