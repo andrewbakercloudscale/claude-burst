@@ -805,8 +805,10 @@ function bandSegments(Text) {
     if (s && s.context > 0) {
       const pct = s.compact_at > 0 ? Math.round((s.context * 100) / s.compact_at) : 0
       const c = pct >= 100 ? 'red' : pct >= 80 ? 'yellow' : undefined
-      const label = 'ctx ' + kTokens(s.context) + (s.compact_at > 0 ? ' of ' + kTokens(s.compact_at) : '')
-      out.push(Text({ color: c, children: [label] }))
+      // A figure Burst has not measured since (not_measured_since) is the
+      // last one it had, not what the session sends: shown as old.
+      const label = 'ctx ' + kTokens(s.context) + (s.compact_at > 0 ? ' of ' + kTokens(s.compact_at) : '') + (s.not_measured_since ? ' (old)' : '')
+      out.push(Text({ color: s.not_measured_since ? 'yellow' : c, children: [label] }))
       // Claude Code's own history, which Burst's compaction never shrinks:
       // the gap is what Burst saves each turn. Information, so dim.
       if (s.raw > 0) out.push(Text({ dimColor: true, children: ['CC holds ' + kTokens(s.raw)] }))
@@ -884,7 +886,7 @@ function burstRows() {
   ]
   const s = burst.session
   if (s) {
-    rows.push(['Context sent', kTokens(s.context) + (s.compact_at > 0 ? ', compacts at ' + kTokens(s.compact_at) : ', compaction off'), undefined])
+    rows.push(['Context sent', kTokens(s.context) + (s.compact_at > 0 ? ', compacts at ' + kTokens(s.compact_at) : ', compaction off') + (s.not_measured_since ? ', an old figure' : ''), s.not_measured_since ? 'yellow' : undefined])
     for (const p of s.parts || []) rows.push(['  ' + p.name, kTokens(p.tokens), PART_COLOURS[p.name]])
     rows.push(['Compaction', s.state, s.state === 'ok' ? undefined : 'cyan'])
   } else {

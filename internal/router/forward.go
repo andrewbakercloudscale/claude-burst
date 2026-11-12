@@ -432,6 +432,7 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		tok.repeatedCalls, tok.rerunsAfterStub = pruned.repeatedCalls, pruned.rerunsAfterStub
 		if slot == "primary" {
 			s.noteSessionContext(in, tok)
+			s.watchSent(in, tok)
 		}
 		if broke != nil {
 			// Not an ok line and not a 200 in the metrics: until 12 Oct 2026

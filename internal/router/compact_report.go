@@ -275,6 +275,10 @@ type CompactionSession struct {
 	// Context: what goes if Burst drops out. RawUSD prices it uncached.
 	Raw    int64   `json:"raw,omitempty"`
 	RawUSD float64 `json:"raw_usd,omitempty"`
+	// NotMeasuredSince is set when the session has sent requests Burst
+	// could not read since Context was measured: Context is then the last
+	// figure Burst had, not what the session sends, and State says so.
+	NotMeasuredSince time.Time `json:"not_measured_since,omitzero"`
 }
 
 // CompactionSessions lists tracked sessions, largest context first.
@@ -292,6 +296,11 @@ func (s *Server) CompactionSessions() []CompactionSession {
 	for sid := range sids {
 		name, root := s.repos.Resolve(sid)
 		repos[sid] = where{name, root}
+	}
+
+	unread := make(map[string]time.Time, len(sids))
+	for sid := range sids {
+		unread[sid] = s.lastUnread(sid)
 	}
 
 	s.compaction.mu.Lock()
@@ -337,6 +346,13 @@ func (s *Server) CompactionSessions() []CompactionSession {
 		}
 		if !st.startedAt.IsZero() {
 			cs.CompactedAt = st.startedAt
+		}
+		// Until 12 Nov 2026 a session whose requests Burst could not read
+		// kept its last reading on the panel, "187k, compacted", for a day
+		// while it sent 366k a turn.
+		if u := unread[sid]; u.After(st.seen) && !st.seen.IsZero() {
+			cs.NotMeasuredSince = st.seen
+			cs.State = "not measured since " + measuredWhen(st.seen, time.Now()) + " (requests unreadable, not compacted)"
 		}
 		out = append(out, cs)
 	}
@@ -407,4 +423,14 @@ func lastMessageShape(msgs []json.RawMessage) string {
 		return "no messages"
 	}
 	return messageSkeleton([]byte(`{"messages":[` + string(msgs[len(msgs)-1]) + `]}`))
+}
+
+// measuredWhen is t as the panel says it: the time today, the day and time
+// before that.
+func measuredWhen(t, now time.Time) string {
+	t, now = t.Local(), now.Local()
+	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
+		return t.Format("15:04")
+	}
+	return t.Format("2 Jan 15:04")
 }
