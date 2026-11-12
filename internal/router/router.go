@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/andrewbakercloudscale/claude-burst/internal/ctxview"
 	"io"
@@ -285,6 +286,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("req=%s error stage=read_body reason=too_large limit_mb=%d actual_bytes=%d", rid, s.cfg.MaxRequestMB, len(body))
 		http.Error(w, fmt.Sprintf("request exceeds configured max_request_mb=%d", s.cfg.MaxRequestMB), http.StatusRequestEntityTooLarge)
 		return
+	}
+	// Opened here, once, so compaction and everything else read JSON. See
+	// gzipbody.go.
+	if r2, plain, ok, err := gunzipRequest(r, body, maxBytes); err != nil {
+		s.logger.Printf("req=%s error stage=read_body reason=gzip err=%v", rid, err)
+		status := http.StatusBadRequest
+		if errors.Is(err, errInflatedTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, "claude-burst: could not open the gzipped request body: "+err.Error(), status)
+		return
+	} else if ok {
+		r, body = r2, plain
 	}
 
 	// ONE RULE, applied twice below: a request that cannot fail over does not
