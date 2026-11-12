@@ -228,8 +228,8 @@ chmod +x ~/burst-bypass.sh && ~/burst-bypass.sh
 Needs macOS with Go 1.23+, the Xcode Command Line Tools and Claude Code already logged in; see [Requirements](#requirements).
 
 ```bash
-# 1. Clone the newest release tag from the Releases page (v0.20.50 at the time of writing)
-git clone --branch v0.20.50 https://github.com/andrewbakercloudscale/claude-burst.git
+# 1. Clone the newest release tag from the Releases page (v0.20.51 at the time of writing)
+git clone --branch v0.20.51 https://github.com/andrewbakercloudscale/claude-burst.git
 cd claude-burst
 
 #    Optional, from v0.20.30 on: check that the release key signed what you cloned. It prints
