@@ -218,6 +218,11 @@ type twin struct {
 	own bool
 }
 
+// strategyKey keeps a session's own requests apart from each subagent's
+// (CompactionStrategiesTracked says why). A struct key is built without an
+// allocation; the joined string it replaced was allocated for every event.
+type strategyKey struct{ session, agent, model string }
+
 type strategySession struct {
 	lastCtx       int64
 	lastCompacted int64
@@ -313,12 +318,12 @@ func CompactionStrategiesTracked(path string, since time.Time, fixedAt int64, de
 	if limit := now.AddDate(0, 0, -92); from.Before(limit) {
 		from = limit
 	}
-	dayIndex := map[string]int{}
+	dayIndex := map[int]int{}
 	var dates []string
 	for d := from.Local(); ; d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
-		if _, ok := dayIndex[key]; !ok {
-			dayIndex[key] = len(dates)
+		if _, ok := dayIndex[dayNum(d)]; !ok {
+			dayIndex[dayNum(d)] = len(dates)
 			dates = append(dates, key)
 		}
 		if key >= now.Local().Format("2006-01-02") {
@@ -346,7 +351,7 @@ func CompactionStrategiesTracked(path string, since time.Time, fixedAt int64, de
 	}
 	st.Track = newTrack()
 
-	sessions := map[string]*strategySession{}
+	sessions := map[strategyKey]*strategySession{}
 	repos := map[string]*StrategyRepo{}
 	repoBySession := map[string]*StrategyRepo{}
 	repoFor := func(session string) *StrategyRepo {
@@ -367,7 +372,7 @@ func CompactionStrategiesTracked(path string, since time.Time, fixedAt int64, de
 		return r
 	}
 	inWindow := func(e Event) (int, bool) {
-		i, ok := dayIndex[e.Time.Local().Format("2006-01-02")]
+		i, ok := dayIndex[dayNum(e.Time)]
 		return i, ok && !e.Time.Before(since)
 	}
 	// planAt is the size on record for the request's repository, for a
@@ -403,6 +408,10 @@ func CompactionStrategiesTracked(path string, since time.Time, fixedAt int64, de
 		}
 	}
 
+	// Every request's size twins are written into one buffer. record only
+	// adds them up, so nothing holds the slice once the request is counted;
+	// anything that keeps it must copy it first.
+	sizesBuf := make([]StrategyCost, len(st.Sizes))
 	for _, f := range historyFiles(path, since) {
 		err := scanEvents(f, func(e Event) {
 			if e.Slot != "primary" || !ok(e) || e.SessionID == "" {
@@ -415,7 +424,7 @@ func CompactionStrategiesTracked(path string, since time.Time, fixedAt int64, de
 			// requests from 8 to 16 Oct 2026, 1,000 were a subagent's: 51
 			// false clears reset the twins and 19 false swaps charged
 			// Actual a rewrite.
-			key := e.SessionID + "|" + e.AgentID + "|" + e.Model
+			key := strategyKey{e.SessionID, e.AgentID, e.Model}
 			s := sessions[key]
 			if s == nil {
 				s = &strategySession{def: twin{at: claudeCodeTrigger}, fixed: twin{at: st.FixedAt, delay: delay}}
@@ -448,7 +457,7 @@ func CompactionStrategiesTracked(path string, since time.Time, fixedAt int64, de
 			c := StrategyCosts{Requests: 1}
 			c.Default = s.def.step(s, e, ctx, swap)
 			c.Fixed = s.fixed.step(s, e, ctx, swap)
-			sizes := make([]StrategyCost, len(s.sizes))
+			sizes := sizesBuf[:len(s.sizes)]
 			for j := range s.sizes {
 				sizes[j] = s.sizes[j].step(s, e, ctx, swap)
 			}
