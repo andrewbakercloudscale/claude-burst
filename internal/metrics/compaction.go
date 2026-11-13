@@ -163,10 +163,15 @@ func rewriteUSD(model string, tokens, long int64) float64 {
 
 // compactionTracker replays sessions through the log in time order.
 type compactionTracker struct {
-	sessions map[string]*trackedSession
+	sessions map[sessionModel]*trackedSession
 }
 
+// sessionModel keys a tracked session. A struct key is built without an
+// allocation; session + "|" + model was allocated for every event replayed.
+type sessionModel struct{ session, model string }
+
 type trackedSession struct {
+	key           string // session|model for compactionEffect, made once
 	lastCtx       int64
 	lastCompacted int64 // CompactedMessages of the previous request
 	twin          int64 // the context without Burst; 0 until known
@@ -191,14 +196,15 @@ type compactionEffect struct {
 }
 
 func newCompactionTracker() *compactionTracker {
-	return &compactionTracker{sessions: map[string]*trackedSession{}}
+	return &compactionTracker{sessions: map[sessionModel]*trackedSession{}}
 }
 
-func (t *compactionTracker) session(key string) *trackedSession {
-	s := t.sessions[key]
+func (t *compactionTracker) session(session, model string) *trackedSession {
+	k := sessionModel{session, model}
+	s := t.sessions[k]
 	if s == nil {
-		s = &trackedSession{}
-		t.sessions[key] = s
+		s = &trackedSession{key: session + "|" + model}
+		t.sessions[k] = s
 	}
 	return s
 }
@@ -208,9 +214,8 @@ func (t *compactionTracker) observe(e Event) compactionEffect {
 	if e.Slot != "primary" || !ok(e) || e.SessionID == "" {
 		return fx
 	}
-	key := e.SessionID + "|" + e.Model
-	fx.sessionKey = key
-	s := t.session(key)
+	s := t.session(e.SessionID, e.Model)
+	fx.sessionKey = s.key
 	// A summary cut short (the stream broke, or the session was cleared)
 	// was still paid for: its cost counts, the summary does not.
 	if SummaryPaid(e.Note) {
@@ -276,7 +281,7 @@ func CompactionStatsSince(path string, since time.Time) (CompactionStats, error)
 	t := newCompactionTracker()
 	bySession := map[string]*CompactedSession{}
 	pendingSummary := map[string]float64{} // summary cost awaiting its swap
-	dayIndex := map[string]int{}
+	dayIndex := map[int]int{}
 	// Daily covers the window, but never more than 92 days: a zero since
 	// (every event) would otherwise list every day since year 1.
 	from := since
@@ -284,18 +289,17 @@ func CompactionStatsSince(path string, since time.Time) (CompactionStats, error)
 		from = limit
 	}
 	for d := from.Local(); !d.After(time.Now()); d = d.AddDate(0, 0, 1) {
-		key := d.Format("2006-01-02")
-		if _, ok := dayIndex[key]; !ok {
-			dayIndex[key] = len(st.Daily)
-			st.Daily = append(st.Daily, CompactionDay{Date: key})
+		if _, ok := dayIndex[dayNum(d)]; !ok {
+			dayIndex[dayNum(d)] = len(st.Daily)
+			st.Daily = append(st.Daily, CompactionDay{Date: d.Format("2006-01-02")})
 		}
 	}
 	if today := time.Now().Local().Format("2006-01-02"); len(st.Daily) == 0 || st.Daily[len(st.Daily)-1].Date != today {
-		dayIndex[today] = len(st.Daily)
+		dayIndex[dayNum(time.Now())] = len(st.Daily)
 		st.Daily = append(st.Daily, CompactionDay{Date: today})
 	}
 	dayOf := func(t time.Time) *CompactionDay {
-		if i, ok := dayIndex[t.Local().Format("2006-01-02")]; ok {
+		if i, ok := dayIndex[dayNum(t)]; ok {
 			return &st.Daily[i]
 		}
 		return nil
