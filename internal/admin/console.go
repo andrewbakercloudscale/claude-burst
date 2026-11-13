@@ -259,7 +259,7 @@ func redirectCheck(ctx context.Context, host string) consoleCheck {
 	}
 	const name = "Redirect to the gateway"
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+"/healthz", nil)
-	resp, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
+	resp, err := probeClient(4 * time.Second).Do(req)
 	if err != nil {
 		return consoleCheck{name, false, host + " did not reach Burst: " + err.Error()}
 	}
