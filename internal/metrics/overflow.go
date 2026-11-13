@@ -56,10 +56,10 @@ func OverflowSince(path string, since time.Time) (OverflowStats, error) {
 	if limit := now.AddDate(0, 0, -92); since.Before(limit) {
 		since = limit
 	}
-	index := map[string]int{}
+	index := map[int]int{}
 	y, m, d := since.Local().Date()
 	for day := time.Date(y, m, d, 0, 0, 0, 0, time.Local); !day.After(now); day = day.AddDate(0, 0, 1) {
-		index[day.Format("2006-01-02")] = len(st.Daily)
+		index[dayNum(day)] = len(st.Daily)
 		st.Daily = append(st.Daily, OverflowDay{Date: day.Format("2006-01-02")})
 	}
 	for _, f := range historyFiles(path, since) {
@@ -67,7 +67,7 @@ func OverflowSince(path string, since time.Time) (OverflowStats, error) {
 			if e.Time.Before(since) || slotOf(e) != "secondary" || !ok(e) || e.InputTokens+e.OutputTokens+e.CacheReadTokens == 0 {
 				return
 			}
-			i, known := index[e.Time.Local().Format("2006-01-02")]
+			i, known := index[dayNum(e.Time)]
 			if !known {
 				return
 			}
