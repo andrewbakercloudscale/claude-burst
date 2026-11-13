@@ -94,10 +94,9 @@ func (r *Resolver) Resolve(session string) (name, root string) {
 	if missedBefore && r.now().Sub(m.at) < m.wait {
 		return Unknown, ""
 	}
-	matches, _ := filepath.Glob(filepath.Join(r.dir, "*", session+".jsonl"))
 	cwd := ""
-	if len(matches) > 0 {
-		cwd = transcriptCwd(matches[0])
+	if path := r.transcriptPath(session); path != "" {
+		cwd = transcriptCwd(path)
 	}
 	if cwd == "" {
 		if len(r.miss) > 10000 {
@@ -116,12 +115,35 @@ func (r *Resolver) Resolve(session string) (name, root string) {
 	return name, root
 }
 
+// transcriptPath is session's transcript in the first project directory, by
+// name, that has one, or "" when none does. It asks each project directory
+// for the one file. filepath.Glob(dir/*/session.jsonl) found the same file
+// by reading every project directory's whole listing: with 3,776
+// transcripts in 32 project directories a lookup made 4,375 allocations and
+// took 2.4ms, where this makes 207 and takes 0.12ms (BenchmarkResolveMiss).
+// os.ReadDir sorts by name as Glob did, so two directories holding the same
+// session still give the first one.
+func (r *Resolver) transcriptPath(session string) string {
+	ents, err := os.ReadDir(r.dir)
+	if err != nil {
+		return ""
+	}
+	name := session + ".jsonl"
+	for _, e := range ents {
+		path := filepath.Join(r.dir, e.Name(), name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
 // plainID reports whether a session id can be a transcript's file name. The
 // id is a request header, so it is whatever the sender chose, and Resolve
-// puts it in a glob: "../../x" walked out of the projects directory and
-// "*" matched every session's transcript. Claude Code's ids are UUIDs;
-// letters, digits, "-" and "_" cover them and nothing a path or a pattern
-// is made of.
+// puts it in a path: "../../x" walked out of the projects directory and,
+// while the path was a glob, "*" matched every session's transcript. Claude
+// Code's ids are UUIDs; letters, digits, "-" and "_" cover them and nothing
+// a path or a pattern is made of.
 func plainID(s string) bool {
 	if s == "" || len(s) > 128 {
 		return false
