@@ -24,23 +24,29 @@ import (
 //
 //	held       prints that still find the label after bootout (the drain)
 //	bootfails  bootstrap calls that fail regardless
+//	pid        when present, list reports this pid once bootout has run:
+//	           another loader took the label
 //	calls      one line per invocation, "launchctl <verb>" or "sleep <n>"
 const launchctlStub = `#!/bin/zsh
 d="$STUB_DIR"
 echo "launchctl $1" >> "$d/calls"
 case "$1" in
-  bootout) exit 0 ;;
+  bootout) touch "$d/out"; exit 0 ;;
   print)
     n=$(cat "$d/held")
     if (( n > 0 )); then echo $((n-1)) > "$d/held"; exit 0; fi
     exit 113 ;;
   bootstrap)
     # launchd refuses while the old job still holds the label.
+    if [[ -f "$d/pid" ]]; then echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
     if (( $(cat "$d/held") > 0 )); then echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
     f=$(cat "$d/bootfails")
-    if (( f > 0 )); then echo $((f-1)) > "$d/bootfails"; echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
+    if (( f > 0 )); then echo $((f-1)) > "$d/bootfails"; echo "Bootstrap failed: 5: Input/output error" >&2; echo "Try re-running the command as root for richer errors." >&2; exit 5; fi
     exit 0 ;;
   kickstart) exit 0 ;;
+  list)
+    if [[ -f "$d/pid" && -f "$d/out" ]]; then echo '	"PID" = '"$(cat "$d/pid")"';'; fi
+    exit 0 ;;
 esac
 exit 0
 `
@@ -59,12 +65,18 @@ func repoRoot(t *testing.T) string {
 }
 
 type reloadRun struct {
-	calls  []string
-	stderr string
-	code   int
+	markerAfter bool
+	calls       []string
+	stderr      string
+	code        int
 }
 
 func runReload(t *testing.T, held, bootfails int) reloadRun {
+	t.Helper()
+	return runReloadWith(t, held, bootfails, "")
+}
+
+func runReloadWith(t *testing.T, held, bootfails int, takeoverPID string) reloadRun {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("launchd is macOS-only")
@@ -87,9 +99,16 @@ func runReload(t *testing.T, held, bootfails int) reloadRun {
 			t.Fatal(err)
 		}
 	}
+	if takeoverPID != "" {
+		if err := os.WriteFile(filepath.Join(dir, "pid"), []byte(takeoverPID), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	helper := filepath.Join(repoRoot(t), "scripts", "launchagent-reload.sh")
 	cmd := exec.Command("zsh", "-c", `source "$1"; reload_launchagent test.label /tmp/test.plist`, "zsh", helper)
-	cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "STUB_DIR="+dir)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "STUB_DIR="+dir,
+		// Never the real marker: it keeps the real watchdog away for 3 minutes.
+		"CLAUDE_BURST_PLANNED_RESTART="+filepath.Join(dir, "planned-restart"))
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -103,10 +122,11 @@ func runReload(t *testing.T, held, bootfails int) reloadRun {
 	calls := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	// Assert the stub ran: a helper that reached the real launchctl would
 	// leave no calls here and still might exit 0.
-	if len(calls) == 0 || calls[0] != "launchctl bootout" {
+	if count(calls, "launchctl bootout") != 1 {
 		t.Fatalf("stub launchctl was not the one called: %q", calls)
 	}
-	return reloadRun{calls: calls, stderr: stderr.String(), code: code}
+	_, merr := os.Stat(filepath.Join(dir, "planned-restart"))
+	return reloadRun{calls: calls, stderr: stderr.String(), code: code, markerAfter: merr == nil}
 }
 
 func count(calls []string, want string) int {
@@ -127,6 +147,7 @@ func TestReloadWaitsForTheDrainBeforeBootstrap(t *testing.T) {
 		t.Fatalf("exit %d, stderr: %s", r.code, r.stderr)
 	}
 	want := []string{
+		"launchctl list",
 		"launchctl bootout",
 		"launchctl print", "sleep 1",
 		"launchctl print", "sleep 1",
@@ -177,6 +198,43 @@ func TestReloadFailsLoudlyWhenLaunchdKeepsRefusing(t *testing.T) {
 	}
 }
 
+// 2026-11-16: the watchdog loaded the plist again right after bootout, so
+// every bootstrap failed while a new gateway served. A different pid is
+// success, not "would not load".
+func TestReloadAcceptsAJobLoadedMeanwhile(t *testing.T) {
+	r := runReloadWith(t, 0, 0, "4242")
+	if r.code != 0 {
+		t.Fatalf("exit %d, stderr: %s", r.code, r.stderr)
+	}
+	if count(r.calls, "launchctl bootstrap") != 1 || count(r.calls, "launchctl kickstart") != 0 {
+		t.Fatalf("calls %q", r.calls)
+	}
+	if strings.Contains(r.stderr, "failed") {
+		t.Fatalf("a job loaded meanwhile is not a failure, stderr: %s", r.stderr)
+	}
+}
+
+// The marker that keeps the watchdog away is written before bootout and
+// removed when the reload fails, so a failure does not hold it off.
+func TestReloadMarksThePlannedRestartAndClearsItOnFailure(t *testing.T) {
+	ok := runReload(t, 0, 0)
+	if !ok.markerAfter {
+		t.Fatal("a successful reload leaves the marker for the gateway to turn into .done")
+	}
+	bad := runReload(t, 0, 99)
+	if bad.markerAfter {
+		t.Fatal("a failed reload must remove the marker so the watchdog reloads the gateway")
+	}
+	for _, want := range []string{"would not load test.label", "not registered at all", "burst-repair"} {
+		if !strings.Contains(bad.stderr, want) {
+			t.Fatalf("failure report lacks %q: %s", want, bad.stderr)
+		}
+	}
+	if strings.Contains(bad.stderr, "richer errors") {
+		t.Fatalf("launchd's run-as-root hint is wrong for a user agent and must be dropped: %s", bad.stderr)
+	}
+}
+
 // A label that never disappears: the wait is bounded, then bootstrap is
 // still tried (and here, refused), so the helper cannot hang an install.
 func TestReloadWaitIsBounded(t *testing.T) {
@@ -184,7 +242,15 @@ func TestReloadWaitIsBounded(t *testing.T) {
 	if r.code == 0 {
 		t.Fatal("a label that never unloads must end in failure, not success")
 	}
-	if n := count(r.calls, "launchctl print"); n != 65 {
+	// Only the wait's polls: the failure report prints the label again.
+	waitCalls := r.calls
+	for i, c := range r.calls {
+		if c == "launchctl bootstrap" {
+			waitCalls = r.calls[:i]
+			break
+		}
+	}
+	if n := count(waitCalls, "launchctl print"); n != 65 {
 		t.Fatalf("polled %d times, want the 65s bound", n)
 	}
 }

@@ -173,6 +173,18 @@ if [[ -n "$pid_now" ]]; then echo "$pid_now" > "$PID_FILE"; else rm -f "$PID_FIL
 # job whose process has died, and on 2026-09-08 that is exactly what happened
 # -- this step passed, the reload never ran, and the redirect stayed pointed at
 # a gateway that was not there.
+# Not while an install or deploy is reloading it itself: between its bootout
+# and its bootstrap the gateway is gone on purpose, and a reload here took the
+# label first, so every bootstrap of the install failed and it stopped
+# halfway (2026-11-16 09:55). Only the live marker counts, for 90s: the
+# helper removes it when it fails, and .done means the restart is over.
+reloading_now() {
+  [[ -f "$planned" ]] && (( $(date +%s) - $(stat -f %m "$planned" 2>/dev/null || echo 0) < 90 ))
+}
+if ! launchagent_running && reloading_now; then
+  log "gateway is not running, but an install or deploy is reloading it (planned-restart is fresh): leaving it to that"
+  exit 0
+fi
 if ! launchagent_running; then
   log "gateway is not running (LaunchAgent unloaded or its process gone) -- attempting reload"
   # kickstart -k restarts a registered-but-dead job; ensure_launchagent_loaded
