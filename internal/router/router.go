@@ -51,7 +51,8 @@ type Server struct {
 	cfg             config.Config
 	primary         Provider
 	primaryDetector FailoverDetector
-	secondary       Provider // nil if no secondary is configured
+	secondary       Provider   // nil if no secondary is configured
+	fallbacks       []Provider // ordered overflow chain; secondary is fallbacks[0]
 	// startupProblems are settings New could not use and started without:
 	// see StartupProblems.
 	startupProblems []StartupProblem
@@ -436,7 +437,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			traceRoute(r.Context(), "secondary", why)
-			s.forward(w, r, body, "secondary", s.secondary, nil, false, "overflow window active", nil)
+			s.forwardFallback(w, r, body, "overflow window active")
 			return
 		}
 		traceRoute(r.Context(), "primary", "an overflow window is open, but there is no usable secondary, so Anthropic is asked anyway")

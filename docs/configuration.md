@@ -18,6 +18,7 @@ Everything lives in `~/.config/claude-burst/config.json`. You rarely need to edi
 | `primary` | `oauth-passthrough` to `api.anthropic.com` | The primary route, see below. | `configure --primary`, `--failover-strategy`; Dashboard, Routing |
 | `adopted_base_url` | unset | The `ANTHROPIC_BASE_URL` Claude Code had before `enable` (an enterprise gateway such as Portkey). It became `primary.base_url`; `disable`, the dashboard Revert and `rollback.sh` put it back. Written by `enable`. | Not edited by hand |
 | `secondary` | Bedrock slot with no key | The overflow route, see below and [Providers](providers.md). | `configure --secondary ...`; Dashboard, Secondary |
+| `fallback_routes` | empty | Additional overflow providers tried in order after `secondary`; accepts any number of routes. | `config.json` |
 | `metered_failover` | 60 s window, 3 HTTP failures, 1 transport failure | Thresholds for the metered failover strategies, see below. | `configure --metered-window-seconds`, `--metered-min-failures`; Dashboard, Failover & pricing |
 | `fallback_chain` | Fable to Opus | Other Claude models to try on your own plan before the secondary, see [Routing](routing.md#limits-are-per-model-and-are-never-inferred). | Dashboard, Failover & pricing |
 | `pricing` | Anthropic models built in | Per-million-token prices, keyed by the model that served the request (`input_per_mtok`, `output_per_mtok`, optional `cache_read_per_mtok`, `cache_write_per_mtok`). | Dashboard, Failover & pricing |
@@ -76,6 +77,64 @@ Legacy flat fields (`anthropic_base_url`, `bedrock_base_url`, `model_map`, `keyc
   }
 }
 ```
+
+### Ordered provider fallbacks
+
+`secondary` remains the first provider tried after the primary. Add any number of later providers in `fallback_routes`; Burst tries them in the order listed. This example keeps the free-tier-compatible providers after OpenRouter. Store each key separately in macOS Keychain before expecting that route to work.
+
+```json
+{
+  "secondary": {
+    "provider": "openai-compatible",
+    "base_url": "https://openrouter.ai/api/v1",
+    "model": "openrouter/free",
+    "keychain_service": "claude-burst-openrouter"
+  },
+  "fallback_routes": [
+    {
+      "provider": "openai-compatible",
+      "base_url": "https://api.groq.com/openai/v1",
+      "model": "openai/gpt-oss-20b",
+      "keychain_service": "claude-burst-groq"
+    },
+    {
+      "provider": "openai-compatible",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "model": "gemini-3.8-flash",
+      "keychain_service": "claude-burst-gemini"
+    },
+    {
+      "provider": "openai-compatible",
+      "base_url": "https://api.sambanova.ai/v1",
+      "model": "gpt-oss-120b",
+      "keychain_service": "claude-burst-sambanova"
+    },
+    {
+      "provider": "openai-compatible",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "model": "openai/gpt-oss-20b",
+      "keychain_service": "claude-burst-nvidia"
+    },
+    {
+      "provider": "openai-compatible",
+      "base_url": "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1",
+      "model": "@cf/google/gemma-4-26b-a4b-it",
+      "keychain_service": "claude-burst-cloudflare",
+      "disabled": true
+    },
+    {
+      "provider": "openai-compatible",
+      "base_url": "https://api.cohere.ai/compatibility/v1",
+      "model": "command-a-plus-05-2026",
+      "keychain_service": "claude-burst-cohere"
+    }
+  ]
+}
+```
+
+This example represents primary → OpenRouter Free → Groq → Gemini → SambaNova → NVIDIA NIM → Cohere. Cloudflare is saved as a disabled profile because its endpoint needs your account ID; set the correct URL and remove `disabled` after you create that account. Free plans use per-model quotas, daily allowances, or trial limits rather than one comparable credit balance. A configured provider without a Keychain credential is skipped. Each entry uses the same provider fields as `secondary`, including its own model and Keychain service. Requests advance on an upstream 429/5xx, a safe pre-response transport failure, or a missing route credential. Other request errors (such as malformed input or rejected credentials) are returned directly. Once a successful response starts streaming to Claude Code, Burst never replays it to another provider. Existing `secondary`-only configs continue to work unchanged.
+
+Edit `~/.config/claude-burst/config.json` and restart the gateway to change the chain. This feature does not add or enable API keys; configure each provider's key separately with `claude-burst keychain-set`.
 
 An Amazon Bedrock secondary instead has `"provider": "bedrock"`, the `bedrock-runtime` `base_url`, `"keychain_service": "claude-burst-bedrock"` and a required `model_map` from every Claude model to its Bedrock id, see [Amazon Bedrock notes](providers.md#amazon-bedrock-notes).
 
