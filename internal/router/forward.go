@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,6 +116,45 @@ func wantsStream(body []byte) bool {
 	return json.Unmarshal(body, &v) == nil && v.Stream
 }
 
+type fallbackRouteIndexKey struct{}
+
+func withFallbackRouteIndex(in *http.Request, index int) *http.Request {
+	return in.WithContext(context.WithValue(in.Context(), fallbackRouteIndexKey{}, index))
+}
+
+func fallbackRouteIndex(in *http.Request) (int, bool) {
+	index, ok := in.Context().Value(fallbackRouteIndexKey{}).(int)
+	return index, ok
+}
+
+func (s *Server) forwardFallback(w http.ResponseWriter, in *http.Request, body []byte, note string) {
+	if len(s.fallbacks) == 0 {
+		http.Error(w, "no fallback provider is configured", http.StatusServiceUnavailable)
+		return
+	}
+	in = withFallbackRouteIndex(in, 0)
+	s.forward(w, in, body, "secondary", s.fallbacks[0], nil, false, note, nil)
+}
+
+// advanceFallback retries this buffered request on the next configured
+// provider. It is called only before a response has been written to Claude.
+func (s *Server) advanceFallback(w http.ResponseWriter, in *http.Request, body []byte, model string, start time.Time, status int, reason string) bool {
+	index, ok := fallbackRouteIndex(in)
+	if !ok || index+1 >= len(s.fallbacks) {
+		return false
+	}
+	next := index + 1
+	p := s.fallbacks[next]
+	rid := requestIDFrom(in.Context())
+	s.logger.Printf("req=%s fallback route=%s index=%d reason=%q -> trying route=%s index=%d",
+		rid, s.fallbacks[index].Name(), index+2, reason, p.Name(), next+2)
+	s.writeMetric(in, "secondary", s.fallbacks[index].Name(), model, model, status, start, tokenUsage{}, "", 0,
+		"fallback route failed before response; trying "+p.Name()+": "+reason, "")
+	in = withFallbackRouteIndex(in, next)
+	s.forward(w, in, body, "secondary", p, nil, false, "fallback after "+s.fallbacks[index].Name()+": "+reason, nil)
+	return true
+}
+
 func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, slot string, p Provider, fd FailoverDetector, allowFailover bool, note string, ladder []string) {
 	rid := requestIDFrom(in.Context())
 	start := time.Now()
@@ -132,6 +172,9 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		var perr *ProviderError
 		if errors.As(err, &perr) {
 			status, stage, reqModel = perr.Status, perr.Stage, perr.Model
+		}
+		if stage == "keychain_load" && s.advanceFallback(w, in, body, reqModel, start, status, err.Error()) {
+			return
 		}
 		s.logger.Printf("req=%s error stage=%s route=%s requested_model=%q err=%q", rid, stage, p.Name(), reqModel, err)
 		http.Error(w, err.Error(), status)
@@ -369,6 +412,8 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 			http.Error(w, "the connection to "+p.Name()+" was lost (this Mac's network changed) and it answers on a new one -- not failing over; retry: "+err.Error(), http.StatusBadGateway)
 			s.writeMetric(in, slot, p.Name(), serveModel, model, http.StatusBadGateway, start, pruned, "", 0, "connection lost, primary answers on a new one; not failed over: "+err.Error(), destination)
 			return
+		} else if safeToResend(err) && s.advanceFallback(w, in, body, model, start, http.StatusBadGateway, "transport error: "+err.Error()) {
+			return
 		} else {
 			s.notePrimaryFailure(slot, err)
 			if allowFailover {
@@ -504,6 +549,11 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 	if retryableServerStatus(resp.StatusCode) {
 		if in2, ok := s.waitToResend(in, slot, p.Name(), fmt.Sprintf("status=%d %s", resp.StatusCode, errorExcerpt(errBody))); ok {
 			s.forward(w, in2, body, slot, p, fd, allowFailover, note, ladder)
+			return
+		}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || retryableServerStatus(resp.StatusCode) {
+		if s.advanceFallback(w, in, body, model, start, resp.StatusCode, "upstream status="+strconv.Itoa(resp.StatusCode)) {
 			return
 		}
 	}
@@ -669,5 +719,5 @@ func (s *Server) replayElsewhere(w http.ResponseWriter, in *http.Request, body [
 		d.Reason+"; request replayed to secondary", destination)
 	s.logger.Printf("req=%s failover route=%s model=%q claim=%q reason=%q (%s) -> replaying to secondary",
 		rid, p.Name(), model, d.Claim, d.Reason, trigger)
-	s.forward(w, in, body, "secondary", s.secondary, nil, false, d.Reason, nil)
+	s.forwardFallback(w, in, body, d.Reason)
 }

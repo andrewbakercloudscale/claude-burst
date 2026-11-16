@@ -8,6 +8,27 @@ import (
 	"testing"
 )
 
+func TestConfigLoadsOrderedFallbackRoutes(t *testing.T) {
+	data := []byte(`{"secondary":{"provider":"openai-compatible","base_url":"https://openrouter.ai/api/v1","model":"openrouter/free"},"fallback_routes":[{"provider":"openai-compatible","base_url":"https://api.groq.com/openai/v1","model":"openai/gpt-oss-20b","keychain_service":"claude-burst-groq"},{"provider":"anthropic-api-key","base_url":"https://api.anthropic.com"}]}`)
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ResolveRoutes()
+	if cfg.Secondary.Model != "openrouter/free" {
+		t.Fatalf("first fallback = %q, want OpenRouter model", cfg.Secondary.Model)
+	}
+	if len(cfg.FallbackRoutes) != 2 {
+		t.Fatalf("got %d later fallback routes, want 2", len(cfg.FallbackRoutes))
+	}
+	if got := cfg.FallbackRoutes[0].Model; got != "openai/gpt-oss-20b" {
+		t.Fatalf("second fallback model = %q, want Groq GPT-OSS 20B", got)
+	}
+	if got := cfg.FallbackRoutes[1].Provider; got != "anthropic-api-key" {
+		t.Fatalf("third fallback provider = %q, want anthropic-api-key", got)
+	}
+}
+
 func TestConfigBackwardCompat_LegacyFieldsSynthesizePrimarySecondary(t *testing.T) {
 	cfg := Default()
 	cfg.ResolveRoutes()

@@ -154,6 +154,21 @@ claude-burst keychain-set --provider openrouter   # reads OPENROUTER_API_KEY
 
 `claude-burst keychain-set --provider <label>` stores whatever `<label>_API_KEY` is set in the environment (uppercased, hyphens become underscores) into a macOS Keychain service named `claude-burst-<label>` by default, `--provider together` reads `TOGETHER_API_KEY` into `claude-burst-together`, `--provider openrouter` reads `OPENROUTER_API_KEY` into `claude-burst-openrouter`, and so on for any other vendor. Nothing here is a hardcoded allowlist; `<label>` can be anything. At request time, the gateway derives the same identity back out of whichever keychain service `secondary.keychain_service` actually names, so the two directions always agree without a second place to keep in sync (`internal/router.EnvVarForProvider` / `openAICompatibleIdentity`). Use `--secondary-keychain-service` on `configure` if you want a service name other than the `claude-burst-<label>` default (for example, to run two different OpenAI-compatible secondaries side by side under distinct names), and the matching `--service` on `keychain-set` to store the key under that same name. `keychain-set` never infers the service from whichever secondary happens to be configured: it used to, and the first time two OpenAI-compatible providers existed side by side it overwrote one provider's stored key with the other's. Storing several providers' keys and swapping which is active is now just independent config edits.
 
+### Groq free-tier fallback
+
+Groq exposes an OpenAI-compatible chat API, so it uses the generic provider adapter. Its free plan is rate-limited by model and account; it is limited free usage, not a fixed dollar-credit grant. Check the current limits in the [Groq Console](https://console.groq.com/docs/rate-limits). The example below uses GPT-OSS 20B, which supports tool calling; confirm that this model is enabled for your project in the [model list](https://console.groq.com/docs/models).
+
+```json
+{
+  "provider": "openai-compatible",
+  "base_url": "https://api.groq.com/openai/v1",
+  "model": "openai/gpt-oss-20b",
+  "keychain_service": "claude-burst-groq"
+}
+```
+
+Create an API key from [GroqCloud](https://console.groq.com/keys), then store it locally in macOS Keychain. In the VS Code terminal, run `read -s "GROQ_API_KEY?Paste Groq API key (hidden): "`, press Enter, paste the key at the hidden prompt, and press Enter again. Then run `export GROQ_API_KEY`, `claude-burst keychain-set --provider groq`, and `unset GROQ_API_KEY`. Do not put the key in `config.json` or the repository.
+
 **Dual-account (`/login` personal + work) OAuth failover was investigated and explicitly rejected**, in favor of the above. It would have required reading and independently refreshing a live Claude Code OAuth credential via an undocumented endpoint (`https://platform.claude.com/v1/oauth/token`), exactly the pattern this project's design principles (and the [original blog post](history/blog-two-prices-for-the-same-model.md)) call out as why other third-party tools have been blocked by Anthropic. Not planned.
 
 ## Amazon Bedrock notes
