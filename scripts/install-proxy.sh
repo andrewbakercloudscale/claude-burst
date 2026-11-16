@@ -106,7 +106,8 @@ launchctl enable "gui/$UID/$LABEL" >/dev/null 2>&1 || true
 # bootstrapped" if a previous rollback left it half-registered. It waits for
 # the old gateway to unload before bootstrapping: see launchagent-reload.sh.
 if ! reload_launchagent "$LABEL" "$PLIST"; then
-  echo "nothing past this point was changed" >&2
+  # Not "nothing was changed": the old gateway was already stopped.
+  echo "stopped here: settings.json, /etc/hosts, pf and the CA trust were not touched" >&2
   exit 1
 fi
 
