@@ -37,6 +37,23 @@ if burst_sign_ready; then
     allow_codesign
   fi
   rm -f "$probe"
+elif security find-identity -p codesigning "$KC" 2>/dev/null | grep -Fq "\"$BURST_SIGN_NAME\""; then
+  # The certificate and key are still there but macOS no longer trusts it
+  # (CSSMERR_TP_NOT_TRUSTED): its trust setting went, as the CA's did after
+  # the macOS 26.7.3 update in Nov 2026, and every build since fell back to
+  # ad hoc with the Desktop prompt after each deploy. Trust the same
+  # certificate again: a new one would be a second identity to clean up.
+  echo "\"$BURST_SIGN_NAME\" is in your Keychain but no longer trusted for code signing."
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  security find-certificate -c "$BURST_SIGN_NAME" -p "$KC" > "$tmp/cert.pem"
+  echo "Trusting it again for code signing (macOS asks for your password)..."
+  security add-trusted-cert -p codeSign -k "$KC" "$tmp/cert.pem"
+  if ! burst_sign_ready; then
+    echo "macOS still does not list \"$BURST_SIGN_NAME\" as a valid signing identity." >&2
+    exit 1
+  fi
+  echo "Signing identity ready."
 else
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT

@@ -27,7 +27,11 @@ burst_sign_ready() {
 # which it did. Never fails the caller: an unsigned build still runs.
 burst_sign() {
   if ! burst_sign_ready; then
-    echo "  signing: ad hoc (run scripts/signing-setup.sh once to stop macOS asking for Desktop access after every deploy)"
+    if security find-identity -p codesigning 2>/dev/null | grep -Fq "\"$BURST_SIGN_NAME\""; then
+      echo "  signing: ad hoc. WARNING: \"$BURST_SIGN_NAME\" is no longer trusted, so macOS asks for Desktop access after every deploy. Fix once: scripts/signing-setup.sh"
+    else
+      echo "  signing: ad hoc (run scripts/signing-setup.sh once to stop macOS asking for Desktop access after every deploy)"
+    fi
     return 0
   fi
   if codesign -f -s "$BURST_SIGN_NAME" -i "$BURST_SIGN_ID" "$1" 2>/dev/null; then
