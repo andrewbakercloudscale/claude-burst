@@ -16,7 +16,15 @@ Found on 17 Nov 2026 from Claude Desktop 5.11492.5 and its own log (`~/Library/L
 
 ## Setting it up
 
-Install as the [Quickstart](../README.md#quickstart) says; there is no separate Desktop install. Then:
+Open the Terminal app, paste this line and press Return:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/scripts/get.sh | bash
+```
+
+It does steps 1 and 2 below for you: transparent mode with the CA trusted system-wide, and, if Desktop is open, it asks once and then quits and reopens it. It asks for your password once; macOS may also show a window to allow trusting the certificate.
+
+By hand, install as the [Quickstart](../README.md#quickstart) says; there is no separate Desktop install. Then:
 
 1. **Transparent mode** (recommended, and the only one that reaches Cowork): let the install trust the CA system-wide. The dashboard's **Install** does it; by hand it is `sudo scripts/trust-ca-systemwide.sh`. Without it, every Desktop Code and Cowork session refuses the gateway, while the terminal's `claude` works.
 2. **Quit and reopen Claude Desktop** (Claude, Quit; not just closing the window). Desktop writes its CA bundle as it starts, so a Desktop that was open during the install keeps refusing the gateway until it restarts. The same goes after `claude-burst ca-rotate`.
