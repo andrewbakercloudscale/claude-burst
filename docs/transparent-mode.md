@@ -21,7 +21,10 @@ sudo scripts/transparent-root.sh install
 The dashboard's **Install** (Setup menu) does the same in the right order, and also trusts the
 CA in the System keychain (`scripts/trust-ca-systemwide.sh`), so other apps that talk to
 `api.anthropic.com`, such as Claude Desktop's updater, accept the gateway's certificate
-instead of failing their handshakes. The CA is name-constrained: it can only vouch for the
+instead of failing their handshakes. Claude Desktop's Code tab and Cowork need it too: Desktop
+hands the Claude Code it runs its own CA bundle, built from the System keychain when Desktop
+starts, never `NODE_EXTRA_CA_CERTS`, so quit and reopen Desktop after the install. See
+[Claude Desktop](claude-desktop.md). The CA is name-constrained: it can only vouch for the
 intercepted host, so even trusted system-wide it cannot be used to impersonate any other site.
 Installs made before the constraint existed regenerate the CA and re-trust it once. See
 [Trust and risk](../README.md#trust-and-risk).

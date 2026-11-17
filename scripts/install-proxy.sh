@@ -210,6 +210,18 @@ else
   echo "    sudo $DIR/install-pf-heal.sh" >&2
 fi
 
+# Claude Desktop hands the Claude Code its Code tab and Cowork run its own
+# CA bundle, written from the System keychain when Desktop starts (found
+# 17 Nov 2026), never NODE_EXTRA_CA_CERTS. A Desktop already open keeps
+# refusing the gateway until it is quit and reopened.
+desktop_app="${CLAUDE_BURST_APPLICATIONS_DIR:-/Applications}/Claude.app"
+[[ -d "$desktop_app" ]] || desktop_app="$HOME/Applications/Claude.app"
+if [[ -d "$desktop_app" ]]; then
+  echo
+  echo "Claude Desktop: quit it (Claude, Quit) and open it again, so its Code and Cowork"
+  echo "  sessions trust the gateway. It reads the System keychain's CAs only as it starts."
+fi
+
 echo
 echo "install complete -- restart Claude Code"
 echo "verify any time with: claude-burst status"

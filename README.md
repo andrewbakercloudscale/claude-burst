@@ -260,6 +260,8 @@ claude-burst open                            # the same, or the support console 
 
 If macOS asks whether "claude-burst" may access your Desktop (or Documents) folder after every update, run `scripts/signing-setup.sh` once: it signs builds with a local certificate so one Allow lasts. The dashboard's **Permissions** section shows whether the running build is signed and what macOS has allowed under Desktop, Documents and Downloads, and has buttons to set up signing and open the Privacy settings. The installer and `scripts/deploy.sh`, when run at a Terminal, press its **Check folder access** for you straight after starting the gateway, so macOS asks while you are there: click Allow on each. While one sits unanswered, the gateway's update check waits behind it and times out.
 
+**Using Claude Code through Claude Desktop** (its Code tab or Cowork) rather than a terminal? It works, with two differences: in transparent mode the CA must be trusted system-wide (the dashboard's Install does it) and Claude Desktop must be quit and reopened after the install, because Desktop gives its sessions its own CA bundle, written when it starts; and base-url mode does not reach Cowork. With no terminal panel to show the toasts, alerts go to macOS Notification Center. The support console's **Claude Desktop** row says whether Desktop's sessions reach Burst. See [Claude Desktop](docs/claude-desktop.md).
+
 OpenRouter, Bedrock and a metered API key are in [Providers](docs/providers.md). To keep Claude Code's Remote Control, switch to [transparent mode](docs/transparent-mode.md) from the dashboard's **Install** section once this works.
 
 ## What it does

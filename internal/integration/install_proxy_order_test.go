@@ -54,6 +54,13 @@ exit 1
 
 func runInstallProxy(t *testing.T, unhealthy int) (calls []string, out string, code int) {
 	t.Helper()
+	return runInstallProxyWith(t, unhealthy, nil)
+}
+
+// runInstallProxyWith is runInstallProxy with setup run on the temp HOME
+// first. Applications are looked for in HOME/Apps, never /Applications.
+func runInstallProxyWith(t *testing.T, unhealthy int, setup func(home string)) (calls []string, out string, code int) {
+	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-only")
 	}
@@ -109,6 +116,9 @@ func runInstallProxy(t *testing.T, unhealthy int) (calls []string, out string, c
 		}
 	}
 	write(t, filepath.Join(stub, "unhealthy"), strconv.Itoa(unhealthy))
+	if setup != nil {
+		setup(home)
+	}
 
 	var env []string
 	for _, kv := range os.Environ() {
@@ -119,7 +129,8 @@ func runInstallProxy(t *testing.T, unhealthy int) (calls []string, out string, c
 	}
 	env = append(env, "PATH="+bin+":/usr/bin:/bin", "HOME="+home, "ZDOTDIR="+home,
 		"STUB_DIR="+stub, "STUB_ROOT="+root,
-		"CLAUDE_BURST_ROLLED_BACK_MARKER="+filepath.Join(home, "rolled-back"))
+		"CLAUDE_BURST_ROLLED_BACK_MARKER="+filepath.Join(home, "rolled-back"),
+		"CLAUDE_BURST_APPLICATIONS_DIR="+filepath.Join(home, "Apps"))
 	cmd := exec.Command("zsh", "-f", filepath.Join(scripts, "install-proxy.sh"))
 	cmd.Env = env
 	cmd.Stdin = nil // no tty: the script must not prompt
@@ -198,5 +209,24 @@ func TestInstallProxyEnablesOnlyAfterHealthThenRedirects(t *testing.T) {
 	}
 	if indexOf(calls, "transparent-root.sh install --host api.anthropic.com --gateway-port 17777") < 0 {
 		t.Fatalf("the redirect must name the configured port explicitly: %q", calls)
+	}
+}
+
+// With Claude Desktop installed, the install says to quit and reopen it:
+// Desktop reads the System keychain's CAs into its own bundle only as it
+// starts (17 Nov 2026), so an open Desktop keeps refusing the gateway.
+func TestInstallProxyTellsClaudeDesktopUsersToReopenIt(t *testing.T) {
+	t.Parallel()
+	_, out, code := runInstallProxy(t, 0)
+	if code != 0 || strings.Contains(out, "Claude Desktop: quit it") {
+		t.Fatalf("no Desktop installed, exit %d:\n%s", code, out)
+	}
+	_, out, code = runInstallProxyWith(t, 0, func(home string) {
+		if err := os.MkdirAll(filepath.Join(home, "Apps", "Claude.app", "Contents"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if code != 0 || !strings.Contains(out, "Claude Desktop: quit it (Claude, Quit) and open it again") {
+		t.Fatalf("Desktop installed, exit %d:\n%s", code, out)
 	}
 }
