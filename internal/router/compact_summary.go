@@ -243,6 +243,13 @@ func (s *Server) summaryCall(ctx context.Context, in *http.Request, top map[stri
 	if err != nil {
 		return "", nil, err
 	}
+	// What the user removed in the inspector, as the turn the history came
+	// from had it removed: removals apply after compaction, so the history
+	// here still holds them. Until 17 Nov 2026 a removed picture went to
+	// every summary call, and the call's messages differed from the cache
+	// entry the turn wrote from the first removal on, so all of it after
+	// there was written to the cache again.
+	body = s.applyRemovals(in.Header.Get("x-claude-code-session-id"), body)
 	start := time.Now()
 	out, model, err := s.primary.Prepare(ctx, in, body)
 	if err != nil {

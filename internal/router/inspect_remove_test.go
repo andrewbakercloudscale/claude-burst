@@ -293,3 +293,65 @@ func TestAHelperRequestDoesNotStandForAThreadAfterARestart(t *testing.T) {
 		t.Fatalf("sent whole, the conversation is what the inspector shows: %v", rep != nil)
 	}
 }
+
+// A summary is written from the request as forwarded, so what the user
+// removed is left out of it too. Until 17 Nov 2026 removals were applied
+// after compaction and the summary was built from the history before them:
+// a picture removed in the inspector still went to the summary call, and
+// that call's messages differed from the cached request from the first
+// removal on, so all of it after there was written to the cache again.
+func TestTheSummaryRequestLeavesOutWhatWasRemoved(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true, CompactAtTokens: 400_000, WarnAtPercent: 75, WindowMinutes: 60})
+	s.removals = ctxview.Open("")
+	pic := strings.Repeat("iVBORw0KGgoAAAANSUhEUgAA", 200)
+	all := msgs(t, strings.Replace(session, `"content":"old file"`,
+		`"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"`+pic+`"}}]`, 1))
+	var m struct {
+		Content []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(all[2], &m); err != nil || len(m.Content) != 1 {
+		t.Fatalf("setup: %v", err)
+	}
+	text, _, _ := resultText(m.Content[0].Content)
+	id := ctxview.ID(grpResults, text)
+	if err := s.Removals().Add(RemovalKey("S"), ctxview.Removal{ID: id, Group: grpResults, Name: "Read"}); err != nil {
+		t.Fatal(err)
+	}
+
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	forwarded := f.last()
+	if strings.Contains(forwarded, pic) || !strings.Contains(forwarded, "burst-removed:"+id) {
+		t.Fatalf("setup: the picture was not removed from the turn:\n%.400s", forwarded)
+	}
+	waitFor(t, func() bool { return f.summaryCount() == 1 })
+	var summary string
+	f.mu.Lock()
+	for _, b := range f.bodies {
+		if strings.Contains(b, "Summarize the transcript inside") {
+			summary = b
+		}
+	}
+	f.mu.Unlock()
+	if strings.Contains(summary, pic) || !strings.Contains(summary, "burst-removed:"+id) {
+		t.Fatalf("the removed picture went to the summary call")
+	}
+	// Message for message the request the cache entry was written by, up
+	// to the last one, which carries the instruction.
+	var a, b struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	_ = json.Unmarshal([]byte(forwarded), &a)
+	_ = json.Unmarshal([]byte(summary), &b)
+	if len(a.Messages) != len(b.Messages) {
+		t.Fatalf("%d messages forwarded, %d in the summary call", len(a.Messages), len(b.Messages))
+	}
+	for i := 0; i < len(a.Messages)-1; i++ {
+		if !bytes.Equal(a.Messages[i], b.Messages[i]) {
+			t.Fatalf("message %d differs from the one forwarded:\n%s\n%s", i, a.Messages[i], b.Messages[i])
+		}
+	}
+}

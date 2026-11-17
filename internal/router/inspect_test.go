@@ -134,6 +134,46 @@ func TestAPictureResultHasASizeAndItsOwnIdentity(t *testing.T) {
 	}
 }
 
+// A tool result that is a PDF alone (the Read tool on a .pdf) is told from
+// every other one and costs its pages. Until 17 Nov 2026 such a result had
+// no text, so two of them had one id, removing one removed both, and each
+// showed as 0 tokens: the fault fixed for pictures on 2026-10-07.
+func TestADocumentResultHasASizeAndItsOwnIdentity(t *testing.T) {
+	doc := func(id string, pages int) string {
+		data := base64.StdEncoding.EncodeToString(fakePDF(pages))
+		return `{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"` + data + `"}}]}]}`
+	}
+	call := func(id, path string) string {
+		return `{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Read","input":{"file_path":"` + path + `"}}]}`
+	}
+	body := `{"messages":[{"role":"user","content":"read them"},` + call("a", "/nowhere/one.pdf") + `,` + doc("a", 10) + `,` +
+		call("b", "/nowhere/two.pdf") + `,` + doc("b", 2) + `,{"role":"assistant","content":"read"},{"role":"user","content":"` + strings.Repeat("word ", 400) + `"}]}`
+	items, prompts := contextItems([]byte(body))
+	ctxview.Scale(items, 100_000, prompts)
+	var docs []ContextItem
+	for _, it := range items {
+		if strings.HasPrefix(it.Name, "Read /nowhere/") {
+			docs = append(docs, it)
+		}
+	}
+	if len(docs) != 2 || docs[0].ID == docs[1].ID {
+		t.Fatalf("want two documents told apart, got %d: %+v", len(docs), docs)
+	}
+	if docs[0].Tokens < 10*pdfPageTokens || docs[1].Tokens < 2*pdfPageTokens || docs[1].Tokens >= docs[0].Tokens {
+		t.Errorf("tokens %d and %d, want about %d and %d", docs[0].Tokens, docs[1].Tokens, 10*pdfPageTokens, 2*pdfPageTokens)
+	}
+	var top struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	_ = json.Unmarshal([]byte(body), &top)
+	removed := map[string]ctxview.Removal{docs[0].ID: {ID: docs[0].ID, Name: docs[0].Name}}
+	out, _ := removeInMessage(top.Messages[2], removed)
+	kept, changed := removeInMessage(top.Messages[4], removed)
+	if !strings.Contains(string(out), "burst-removed:"+docs[0].ID) || changed || !strings.Contains(string(kept), `"document"`) {
+		t.Fatalf("removing one document must leave the other: changed %v", changed)
+	}
+}
+
 // The same command run again makes the older output worth a look, when it
 // is large enough to matter.
 func TestAnOlderOutputOfACommandRunAgainIsFlagged(t *testing.T) {
