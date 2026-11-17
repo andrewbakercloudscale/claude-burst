@@ -439,6 +439,32 @@ func TestRootReloadAnchorCallOrder(t *testing.T) {
 	}
 }
 
+// 16 Nov 2026: a macOS update put Apple's stock /etc/pf.conf back, so the
+// main reload loaded a ruleset with no claude-burst reference and every
+// repair failed until pf-heal gave up and removed the redirect. The repair
+// must put the reference back before reloading.
+func TestRootReloadAnchorRestoresAPfConfReferenceAnUpdateRemoved(t *testing.T) {
+	t.Parallel()
+	e := newRootEnv(t)
+	e.install(t)
+	write(t, e.pfConf, pfConfOrig)
+	r := e.run(t, "reload-anchor")
+	if r.code != 0 {
+		t.Fatalf("reload-anchor exit %d:\n%s", r.code, r.out)
+	}
+	if pf := read(t, e.pfConf); !strings.Contains(pf, `rdr-anchor "claude-burst"`) || !strings.Contains(pf, `load anchor "claude-burst"`) {
+		t.Fatalf("pf.conf still lacks the reference after the repair:\n%s", pf)
+	}
+	if !strings.Contains(r.out, "adding the reference back") {
+		t.Fatalf("the repair did not say it restored the reference:\n%s", r.out)
+	}
+	// Already there: left exactly as it was.
+	before := read(t, e.pfConf)
+	if r = e.run(t, "reload-anchor"); r.code != 0 || read(t, e.pfConf) != before || strings.Contains(r.out, "adding the reference back") {
+		t.Fatalf("second reload changed pf.conf or claimed to:\n%s", r.out)
+	}
+}
+
 // The dry run is rejected: non-zero exit, nothing loaded, and the previous
 // anchor put back.
 func TestRootReloadAnchorRejectedDryRunNeverLoads(t *testing.T) {

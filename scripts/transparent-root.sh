@@ -379,6 +379,16 @@ do_reload_anchor() {
   fi
   echo "== reloading the MAIN ruleset from $PF_CONF: $why =="
   echo "  this replaces the whole running ruleset: rules other software added to it that are not in $PF_CONF are dropped"
+  # The full reload only helps if the file references the anchor. A macOS
+  # update replaces /etc/pf.conf with Apple's stock one (16 Nov 2026, macOS
+  # 27.2.1): every repair then reloaded a ruleset with no claude-burst
+  # reference, the real path failed three times, and pf-heal removed the
+  # redirect. Put the reference back first; it is the install's own block.
+  if ! grep -qF "rdr-anchor \"$ANCHOR_NAME\"" "$PF_CONF" 2>/dev/null; then
+    echo "  $PF_CONF no longer references the anchor (a macOS update replaces it): adding the reference back"
+    [[ -n "$PY_HELPER" ]] || setup_helper
+    edit_file "$PF_CONF" pf_conf_add
+  fi
 
   echo "== validating ruleset (dry run) =="
   # NOT `pfctl -n -f ... | quiet_pf`: under `pipefail` a pipeline reports the
