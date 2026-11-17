@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/desktop"
 	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
@@ -333,7 +334,7 @@ func (s *Server) writeMetric(in *http.Request, slot, route, model, requestedMode
 		PrunedUSD:         float64(tok.prunedBytes/metrics.BytesPerToken) / 1_000_000 * price.InputPerMTok,
 		CompactedMessages: int64(compactInfoFrom(in.Context()).removedMsgs), CompactedBytes: compactInfoFrom(in.Context()).removedBytes,
 		APIEquivalentUSD: equiv, LimitClaim: claim, ResetAt: reset, Note: note, Destination: destination,
-		PricingUnknown: unpriced,
+		PricingUnknown: unpriced, Client: desktop.ClientOf(in.Header.Get("User-Agent")),
 	})
 	if err != nil {
 		// The request has already been served to Claude Code by this point;
