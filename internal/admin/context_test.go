@@ -133,7 +133,9 @@ func TestCompactionToggleSavesAppliesLiveAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config.CompactionConfig{Enabled: true, CompactAtTokens: 350000, WarnAtPercent: 60, WindowMinutes: 30}
+	// A body with no mode is the fixed mode, written out: a config.json with
+	// no mode is intelligent since 17 Nov 2026.
+	want := config.CompactionConfig{Enabled: true, CompactAtTokens: 350000, WarnAtPercent: 60, WindowMinutes: 30, Mode: config.CompactionFixed}
 	if !reflect.DeepEqual(cfg.PrimaryCompaction, want) {
 		t.Fatalf("config.json has %+v", cfg.PrimaryCompaction)
 	}

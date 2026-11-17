@@ -343,17 +343,30 @@ func TestForRepoTakesTheLearnedCompactAtInTheIntelligentMode(t *testing.T) {
 	if got, o := c.ForRepo("/src/pinned"); got.CompactAtTokens != 500_000 || o == nil || o.Learned {
 		t.Fatalf("an override must win: %d %+v", got.CompactAtTokens, o)
 	}
-	// Nothing learned: the middle of the 100k to 300k range, not the top of it.
-	if got, o := c.ForRepo("/src/other"); got.CompactAtTokens != 200_000 || o != nil {
+	// Nothing learned: 300k while it learns, inside the 100k to 300k range.
+	if got, o := c.ForRepo("/src/other"); got.CompactAtTokens != 300_000 || o != nil {
 		t.Fatalf("nothing learned: %d %+v", got.CompactAtTokens, o)
 	}
-	if got, _ := c.ForRepo(""); got.CompactAtTokens != 200_000 {
+	if got, _ := c.ForRepo(""); got.CompactAtTokens != 300_000 {
 		t.Fatalf("a session whose repository is unknown: %d", got.CompactAtTokens)
 	}
 	// Unset, the range is 100k to 500k, so a repository starts at 300k; the buffer is 20%.
 	d := CompactionConfig{Enabled: true, Mode: CompactionIntelligent}
 	if r := d.Resolved(); r.CompactAtTokens != 500_000 || d.StartTokens() != 300_000 || *r.BufferPercent != 20 {
 		t.Fatalf("intelligent defaults: up to %d, starting at %d, buffer %d", r.CompactAtTokens, d.StartTokens(), *r.BufferPercent)
+	}
+	// While it learns, a repository starts at 300k whatever the range, kept
+	// inside it.
+	for _, tc := range []struct{ floor, ceil, want int64 }{
+		{100_000, 700_000, 300_000}, {100_000, 900_000, 300_000}, {100_000, 250_000, 250_000}, {350_000, 600_000, 350_000},
+	} {
+		c := CompactionConfig{Enabled: true, Mode: CompactionIntelligent, FloorTokens: tc.floor, CompactAtTokens: tc.ceil}
+		if got := c.StartTokens(); got != tc.want {
+			t.Fatalf("start for %d to %d = %d, want %d", tc.floor, tc.ceil, got, tc.want)
+		}
+	}
+	if Default().PrimaryCompaction.Mode != CompactionIntelligent {
+		t.Fatalf("a new config.json is not intelligent: %q", Default().PrimaryCompaction.Mode)
 	}
 	if got := (CompactionConfig{Enabled: true}).StartTokens(); got != DefaultCompactionCompactAt {
 		t.Fatalf("fixed mode starts at Compact at: %d", got)

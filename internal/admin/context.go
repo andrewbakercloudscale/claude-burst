@@ -275,6 +275,12 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
+	// "" was the fixed mode before 17 Nov 2026, and a dashboard page loaded
+	// before the update still sends it; written out as "", it would load
+	// as intelligent, the default now.
+	if req.Mode == "" {
+		req.Mode = config.CompactionFixed
+	}
 	res := req.Resolved()
 	switch {
 	case res.CompactAtTokens < minCompactAt || res.CompactAtTokens > maxCompactAt:
@@ -286,7 +292,7 @@ func (s *Server) handleCompaction(w http.ResponseWriter, r *http.Request) {
 	case req.WindowMinutes < 0 || res.WindowMinutes > maxWindow:
 		http.Error(w, fmt.Sprintf("window must be between 1 and %d minutes", maxWindow), http.StatusBadRequest)
 		return
-	case req.Mode != "" && req.Mode != config.CompactionIntelligent:
+	case req.Mode != config.CompactionFixed && req.Mode != config.CompactionIntelligent:
 		http.Error(w, "mode must be fixed or intelligent", http.StatusBadRequest)
 		return
 	case *res.BufferPercent < 0 || *res.BufferPercent > maxBuffer:
