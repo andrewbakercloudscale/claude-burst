@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"os"
@@ -100,6 +101,7 @@ type notifier struct {
 	alerts      alertRounds
 	config      configWatch
 	looseDay    string // the day the loose-ends reminder was last looked at
+	bypass      bypassReminder
 }
 
 // alertConfigKind is the notice kind for a config.json that will not load,
@@ -188,6 +190,7 @@ func (s *Server) notifyRound(n *notifier, now time.Time) {
 		alertIntercept(n.intercept, ic)
 	}
 	alertBypass(!n.started, n.intercept, ic)
+	n.bypass.round(ic.bypassed, ic.on, now)
 	s.alertRound(&n.alerts, cfg, now)
 	n.looseNudge(cfg, now)
 	n.started, n.pfEvents, n.selfEvents, n.intercept = true, pf, self, ic
@@ -259,6 +262,43 @@ func alertBypass(first bool, was, now interceptCheck) {
 }
 
 const alertBypassKind = "bypass"
+
+// bypassRemindEvery is how often a bypass still in place is put on screen
+// again. alertBypass says it once, on the change or the first look after a
+// start, and an alert is a toast in whichever sessions are open then. On
+// 16 Nov 2026 the redirect went at 14:37, five minutes after a macOS update
+// rebooted the Mac, those toasts reached nobody who noticed, and Burst stayed
+// out of the path for 19 hours with nothing more said.
+const bypassRemindEvery = time.Hour
+
+// bypassReminder repeats the bypass alert while it lasts.
+type bypassReminder struct {
+	since, last time.Time
+}
+
+func (b *bypassReminder) round(bypassed, transparent bool, now time.Time) {
+	if !bypassed {
+		*b = bypassReminder{}
+		return
+	}
+	if b.since.IsZero() {
+		// alertBypass has just said it.
+		b.since, b.last = now, now
+		return
+	}
+	if now.Sub(b.last) < bypassRemindEvery {
+		return
+	}
+	b.last = now
+	hours := int(now.Sub(b.since).Hours())
+	fix := "Put it back: burst-on"
+	if !transparent {
+		fix = "Put it back: claude-burst enable"
+	}
+	notice.Publish(alertBypassKind, notice.Error,
+		fmt.Sprintf("Burst still bypassed (%dh)", hours),
+		"Claude Code has gone straight to Anthropic for "+fmt.Sprintf("%d hour(s)", hours)+": no compaction, failover or masking, and every long session re-sends its whole history. "+fix)
+}
 
 // hostsFile is /etc/hosts; a variable for tests.
 var hostsFile = "/etc/hosts"
