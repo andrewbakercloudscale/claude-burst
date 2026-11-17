@@ -335,7 +335,7 @@ func (s *Server) handleThreshold(w http.ResponseWriter, r *http.Request) {
 	} else {
 		a.Reason = fmt.Sprintf("nothing learned for this folder yet: the fixed Compact at of %dk", c.CompactAtTokens/1000)
 		if c.Intelligent() {
-			a.Reason = fmt.Sprintf("nothing learned for this folder yet: the starting size of %dk, the middle of %dk to %dk", c.StartTokens()/1000, c.FloorTokens/1000, c.CompactAtTokens/1000)
+			a.Reason = fmt.Sprintf("nothing learned for this folder yet: the starting size of %dk while it learns (range %dk to %dk)", c.StartTokens()/1000, c.FloorTokens/1000, c.CompactAtTokens/1000)
 		}
 	}
 	if !c.Enabled {

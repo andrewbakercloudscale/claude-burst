@@ -85,16 +85,16 @@ func TestGetAutoCompactionThreshold(t *testing.T) {
 			t.Fatalf("%s: %d %+v", q, code, a)
 		}
 	}
-	if a.Fixed != 300_000 || a.Floor != 120_000 || a.BufferPercent != config.DefaultCompactionBuffer || a.DelayMinutes != 45 || a.Previous != 210_000 || a.Failures.Unpaid != 1 || a.Failures.LostUSD != 0.31 {
+	if a.Fixed != 300_000 || a.Floor != 120_000 || a.BufferPercent != config.DefaultCompactionBuffer || a.DelayMinutes != 45 || a.Previous != 300_000 || a.Failures.Unpaid != 1 || a.Failures.LostUSD != 0.31 {
 		t.Fatalf("the rest of the answer: %+v", a)
 	}
 	// The running gateway has it too.
 	if cfg, err := config.Load(); err != nil || !cfg.PrimaryCompaction.Intelligent() || cfg.PrimaryCompaction.FloorTokens != 120_000 {
 		t.Fatalf("config.json: %+v %v", cfg.PrimaryCompaction, err)
 	}
-	// A folder nothing is known about starts in the middle of the range, 120k to 300k.
+	// A folder nothing is known about starts at 300k while it learns.
 	a, _ = threshold(t, s, "folder=never-seen")
-	if a.Threshold != 210_000 || a.Source != "start" || !strings.Contains(a.Reason, "nothing learned") {
+	if a.Threshold != 300_000 || a.Source != "start" || !strings.Contains(a.Reason, "nothing learned") {
 		t.Fatalf("unknown folder: %+v", a)
 	}
 	// The user's own override for the repository wins over the learned one.
@@ -111,6 +111,10 @@ func TestIntelligentCompactionSettingsAreValidatedAndListed(t *testing.T) {
 	s := newTestServer(t)
 	writeConfig(t, os.Getenv("HOME"))
 	seedLearned(t, s)
+	// Fixed first, so the switch to intelligent below re-learns.
+	if rr := mutate(t, s, "/api/compaction", `{"enabled":true,"mode":"fixed"}`); rr.Code != http.StatusOK {
+		t.Fatalf("fixed: %d %s", rr.Code, rr.Body.String())
+	}
 	for _, body := range []string{
 		`{"enabled":true,"mode":"clever"}`,
 		`{"enabled":true,"mode":"intelligent","buffer_percent":-5}`,

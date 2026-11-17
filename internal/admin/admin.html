@@ -1238,7 +1238,7 @@
       <div class="ic-panel">
       <h3 class="mac-h" style="margin-top:0">Compaction mode <span class="pill" id="icState">static</span></h3>
       <div class="row" style="gap:10px;margin:6px 0 10px;flex-wrap:wrap" role="radiogroup" aria-label="When to compact">
-        <label class="ic-choice"><input type="radio" name="icMode" value="" style="width:auto;margin:0 8px 0 0"><span><strong>Static</strong><br><span class="hint">One size for every repository.</span></span></label>
+        <label class="ic-choice"><input type="radio" name="icMode" value="fixed" style="width:auto;margin:0 8px 0 0"><span><strong>Static</strong><br><span class="hint">One size for every repository.</span></span></label>
         <label class="ic-choice"><input type="radio" name="icMode" value="intelligent" style="width:auto;margin:0 8px 0 0"><span><strong>Intelligent</strong><br><span class="hint">A size learned for each repository from a replay of its own requests.</span></span></label>
       </div>
       <div class="row" style="align-items:flex-end">
@@ -3324,7 +3324,7 @@ function renderCompaction(s) {
     }
     if (document.activeElement !== $("icFloor")) $("icFloor").value = Math.round((k.floor_tokens || 100000) / 1000);
     if (document.activeElement !== $("icBuffer")) $("icBuffer").value = k.buffer_percent ?? 20;
-    setMode(k.mode || "");
+    setMode(k.mode || "intelligent");
   }
   setPill("icState", !k.enabled ? "compaction off" : k.mode === "intelligent" ? "intelligent" : "static", k.enabled ? "ok" : "");
   loadLearned(false);
@@ -3504,7 +3504,7 @@ function savedFlash() {
 
 // Static or intelligent: one or the other. The chosen one's fields and
 // explanation are the only ones on the page.
-function getMode() { return document.querySelector('input[name="icMode"]:checked')?.value || ""; }
+function getMode() { return document.querySelector('input[name="icMode"]:checked')?.value || "intelligent"; }
 function setMode(m) {
   for (const r of document.querySelectorAll('input[name="icMode"]')) r.checked = r.value === m;
   showMode();
@@ -3537,7 +3537,7 @@ function renderLearned(v) {
   const k = n => n ? Math.round(n / 1000) + "k" : "-", on = v.enabled && v.mode === "intelligent";
   const rows = v.repos || [];
   if (!rows.length) {
-    $("icTable").innerHTML = `<div class="hint">No repository has been compacted in the last ${v.window_days} days, so there is nothing to learn from yet. Every repository compacts at ${v.enabled && v.mode === "intelligent" ? `${k(v.start)}, the middle of ${k(v.floor)} to ${k(v.fixed)}` : k(v.fixed)}.</div>`;
+    $("icTable").innerHTML = `<div class="hint">No repository has been compacted in the last ${v.window_days} days, so there is nothing to learn from yet. Every repository compacts at ${v.enabled && v.mode === "intelligent" ? `${k(v.start)} while it learns (range ${k(v.floor)} to ${k(v.fixed)})` : k(v.fixed)}.</div>`;
     return;
   }
   const src = {learned: ["learned", "p"], override: ["your override", "s"], off: ["never", "s"], fixed: ["fixed", "s"], start: ["starting size", "s"]};

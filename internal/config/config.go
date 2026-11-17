@@ -92,7 +92,7 @@ type CompactionConfig struct {
 	// none at all. Everything else (the warning percentage, the delay
 	// between compactions, mid-turn) applies to the repository's own limit.
 	RepoOverrides []RepoCompaction `json:"repo_overrides,omitempty"`
-	// Mode is how Compact at is chosen. "" is fixed: CompactAtTokens for
+	// Mode is how Compact at is chosen. CompactionFixed: CompactAtTokens for
 	// every repository without an override. CompactionIntelligent learns a
 	// Compact at for each repository from what its compactions cost and
 	// saved (internal/autocompact), adjusted once a day, never below
@@ -113,6 +113,12 @@ type CompactionConfig struct {
 
 // CompactionIntelligent is CompactionConfig.Mode for a learned Compact at.
 const CompactionIntelligent = "intelligent"
+
+// CompactionFixed is CompactionConfig.Mode for one Compact at for every
+// repository. It has to be written out: since 17 Nov 2026 Default() is
+// intelligent and Load starts from Default(), so a config.json with no mode
+// (every one written before, as "" was fixed then) is intelligent too.
+const CompactionFixed = "fixed"
 
 // Intelligent reports whether Compact at is learned per repository.
 func (c CompactionConfig) Intelligent() bool { return c.Mode == CompactionIntelligent }
@@ -168,16 +174,17 @@ func (c CompactionConfig) ForRepo(root string) (CompactionConfig, *RepoCompactio
 }
 
 // StartTokens is the size a repository compacts at in the intelligent mode
-// before anything has been learned for it: the middle of the range, since
-// the top of it (500k of a 100k to 500k range) is the most a guess can
-// cost. In the fixed mode it is Compact at.
+// before anything has been learned for it: 300k, the fixed mode's default,
+// kept inside the range. It used to be the middle of the range, so a ceiling
+// of 700k started every new repository at 400k while it was still learning;
+// since 17 Nov 2026 a guess is always the size Burst ships as its fixed one.
+// In the fixed mode it is Compact at.
 func (c CompactionConfig) StartTokens() int64 {
 	c = c.Resolved()
 	if !c.Intelligent() || c.FloorTokens >= c.CompactAtTokens {
 		return c.CompactAtTokens
 	}
-	const step = 5_000
-	return (c.FloorTokens + c.CompactAtTokens + step) / 2 / step * step
+	return min(max(int64(DefaultCompactionCompactAt), c.FloorTokens), c.CompactAtTokens)
 }
 
 // unlearned is c for a repository with no override and nothing learned.
@@ -820,6 +827,11 @@ func Default() Config {
 		ResetGraceSeconds:   10,
 		UnknownResetSeconds: 300,
 		MaxRequestMB:        128,
+		// Intelligent by default: each repository's Compact at is learned,
+		// starting at 300k while it learns (StartTokens). Load starts from
+		// here, so a config.json with no mode is intelligent; the fixed mode
+		// is written out as CompactionFixed.
+		PrimaryCompaction: CompactionConfig{Mode: CompactionIntelligent},
 
 		KeepAwakeLidClosedPower: KeepAwakeOnAC,
 		KeychainService:         "claude-burst-bedrock",
