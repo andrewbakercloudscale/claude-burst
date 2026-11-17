@@ -56,6 +56,7 @@
 #        lid-awake-root.sh screen                # no root; "off" or "leave": what the screen check would do
 #   (daemon only) reconcile | watch
 set -uo pipefail
+zmodload zsh/datetime zsh/zselect   # EPOCHSECONDS and a sleep that starts no process
 
 SELF="$0"
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -75,7 +76,7 @@ INSTALL_BIN=/usr/bin/install
 
 die() { echo "error: $*" >&2; exit 1; }
 need_root() { [[ $EUID -eq 0 ]] || die "must run as root: sudo $SELF $1"; }
-log() { print -r -- "$(date '+%Y-%m-%d %H:%M:%S %z') $*" >> "$LOG" 2>/dev/null; }
+log() { { print -r -- "$(date '+%Y-%m-%d %H:%M:%S %z') $*" >> "$LOG"; } 2>/dev/null; }
 
 # pmset -g prints "SleepDisabled\t\t0|1" under "System-wide power settings".
 current() { pmset -g | awk '$1 == "SleepDisabled" { print $2; exit }'; }
@@ -95,9 +96,10 @@ valid_idle() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 <= 1440 )); }
 # Only the gateway's own file under a user's home; read for its mtime only.
 valid_activity() { [[ "$1" =~ ^/Users/[A-Za-z0-9._-]+/\.config/claude-burst/last-activity$ ]]; }
 
+LID_NOW=""   # shut|open as the watcher last read it; saves an ioreg per check
 lid_closed() {
   # CLAUDE_BURST_TEST_LID (shut|open) is for the tests only; launchd never sets it.
-  case "${CLAUDE_BURST_TEST_LID:-}" in shut) return 0 ;; open) return 1 ;; esac
+  case "${LID_NOW:-${CLAUDE_BURST_TEST_LID:-}}" in shut) return 0 ;; open) return 1 ;; esac
   # Captured, never piped into grep -q: with pipefail, grep stopping at the
   # match killed ioreg mid-write and the pipeline failed, so a shut lid read
   # as open. On 3 Oct 2026 ten of ten checks said open with the lid shut, and
@@ -150,22 +152,68 @@ screen_decision() {
 
 DARK_FILE="$STATE_DIR/lid-awake.dark"   # exists while the screen is off for this closing
 LID_SEEN=""   # the lid as the last check saw it, so each change is logged once
-screen_check() {
+DECISION=""; DECIDED_AT=0; DARKENED_AT=0
+DECIDE_EVERY=30   # seconds between fresh screen decisions while the lid stays shut
+DARKEN_EVERY=2    # seconds between displaysleepnow calls while it should be dark
+
+# lid_events: one long-lived osascript reads AppleClamshellState straight from
+# IOKit once a second and prints "shut" or "open": on every change, and every
+# second while shut. Asking ioreg each second cost two process starts a second
+# all day (an ioreg and a sleep), about 15 a second as System Sentinel counts
+# them on 17 Nov 2026; this starts none. Its memory levels off at about 39 MB.
+# CLAUDE_BURST_TEST_LID_EVENTS (lines of shut|open) is for the tests only.
+lid_events() {
+  if [[ -n "${CLAUDE_BURST_TEST_LID_EVENTS:-}" ]]; then print -r -- "$CLAUDE_BURST_TEST_LID_EVENTS"; return 0; fi
+  osascript -l JavaScript - <<'JXA'
+ObjC.import('IOKit'); ObjC.import('Foundation');
+var svc = $.IOServiceGetMatchingService(0, $.IOServiceMatching('IOPMrootDomain'));
+var key = $.CFStringCreateWithCString(0, 'AppleClamshellState', 0x08000100);
+var out = $.NSFileHandle.fileHandleWithStandardOutput;
+var last = '';
+while (true) {
+  var v = $.IORegistryEntryCreateCFProperty(svc, key, 0, 0);
+  var s = (v && $.CFBooleanGetValue(v)) ? 'shut' : 'open';
+  if (v) $.CFRelease(v);
+  if (s !== last || s === 'shut') out.writeData($(s + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
+  last = s;
+  $.NSThread.sleepForTimeInterval(1);
+}
+JXA
+}
+
+# screen_step: act on one lid reading from lid_events. With the lid open it
+# starts no process at all. With it shut the decision (pmset, system_profiler)
+# is made on closing and then every DECIDE_EVERY seconds, not every second.
+screen_step() {
+  local lid=$1 now=$EPOCHSECONDS
+  [[ "$lid" == shut || "$lid" == open ]] || return 0
+  LID_NOW=$lid
   # Every closing is logged with what was decided, so a screen left lit
   # behind the lid shows why. On 3 Oct 2026 a closing left no line at all
   # and nothing could say whether it was missed or judged "leave".
-  local lid=open; lid_closed && lid=shut
   if [[ "$lid" != "$LID_SEEN" ]]; then
-    [[ -n "$LID_SEEN" && "$lid" == shut ]] && log "lid shut seen: SleepDisabled $(current), external displays $(external_displays), screen $(screen_decision)"
+    DECIDED_AT=0
+    if [[ -n "$LID_SEEN" && "$lid" == shut ]]; then
+      DECISION="$(screen_decision)"; DECIDED_AT=$now
+      log "lid shut seen: SleepDisabled $(current), external displays $(external_displays), screen $DECISION"
+    fi
     LID_SEEN=$lid
   fi
-  [[ "$lid" == open ]] && { rm -f "$DARK_FILE"; return 0; }
-  if [[ "$(screen_decision)" == off ]]; then
-    pmset displaysleepnow 2>/dev/null
+  if [[ "$lid" == open ]]; then
+    [[ -e "$DARK_FILE" ]] && rm -f "$DARK_FILE"
+    return 0
+  fi
+  (( now - DECIDED_AT >= DECIDE_EVERY )) && { DECISION="$(screen_decision)"; DECIDED_AT=$now; }
+  if [[ "$DECISION" == off ]]; then
+    if (( now - DARKENED_AT >= DARKEN_EVERY )); then
+      [[ -n "${CLAUDE_BURST_TEST_LID_EVENTS:-}" ]] && echo displaysleepnow || pmset displaysleepnow 2>/dev/null
+      DARKENED_AT=$now
+    fi
     [[ -f "$DARK_FILE" ]] || { touch "$DARK_FILE"; log "lid shut: screen off, the Mac stays awake"; }
   else
-    rm -f "$DARK_FILE"
+    [[ -e "$DARK_FILE" ]] && rm -f "$DARK_FILE"
   fi
+  return 0
 }
 
 set_sleep_disabled() {
@@ -286,13 +334,15 @@ do_reconcile() {
 do_watch() {
   need_root watch
   do_reconcile
-  # The idle window needs a clock as well as power-source events.
-  ( while sleep 60; do do_reconcile; done ) &
+  # The idle window needs a clock as well as power-source events. zselect
+  # waits inside zsh, where `sleep` would start a process each time.
+  ( while true; do zselect -t 6000; do_reconcile; done ) &
   local clock=$!
   # The screen, every second: dark before anyone sees it lit behind the lid.
-  # Five seconds left it glowing long enough to look like no fix at all, and
-  # with the lid open each check is one ioreg call.
-  ( while sleep 1; do screen_check; done ) &
+  # Five seconds left it glowing long enough to look like no fix at all.
+  # If the lid watcher ever exits, so does the daemon, and launchd's
+  # KeepAlive restarts the lot.
+  ( lid_events | while IFS= read -r lid; do screen_step "$lid"; done; kill $$ ) &
   local screen=$!
   trap "kill $clock $screen 2>/dev/null" EXIT
   # pslog prints a line on every power-source change and keeps running.
@@ -331,6 +381,8 @@ case "${1:-}" in
   screen)    screen_decision ;;
   screen-line) screen_line ;;
   reconcile) do_reconcile ;;
+  screen-steps) # tests only: feed CLAUDE_BURST_TEST_LID_EVENTS through screen_step, no root
+    mkdir -p "$STATE_DIR"; lid_events | while IFS= read -r lid; do screen_step "$lid"; done ;;
   watch)     do_watch ;;
   *) echo "usage: sudo $SELF apply [ac|always] | remove   |   $SELF status | desired [ac|always]" >&2; exit 2 ;;
 esac
