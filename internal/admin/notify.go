@@ -23,6 +23,9 @@ import (
 // notifications through osascript as well; macOS filed them under Script
 // Editor and dropped them silently until Script Editor had been allowed to
 // notify, so they were removed on 3 Oct 2026 in favour of the alerts.
+// Notification Center came back on 17 Nov 2026 through a helper app with its
+// own bundle id, never osascript: internal/alerting decides per alert,
+// alertchannels.go sets it.
 
 // handleAlertTest publishes one on-screen alert, so someone can see what
 // they look like and that the usage panel shows them. Each press shows:

@@ -52,7 +52,12 @@ func consoleCmd(args []string) {
 		for _, name := range []string{"console.err.log", "console.out.log"} {
 			_, _ = trimStderrLog(filepath.Join(dir, name), stderrLogMax, stderrLogKeep)
 		}
-		notice.SetDefault(notice.New(notice.Path(dir), logger))
+		pub := notice.New(notice.Path(dir), logger)
+		live, _ := routeAlerts(pub, false, logger)
+		notice.SetDefault(pub)
+		// Notification Center for the alerts the gateway did not post: the
+		// pf guard's, written while the gateway is down, and this console's.
+		watchAlerts(live, notice.AuditPath(pub.Path()), logger)
 		// Burst's alerts over the Codex window too: the usage panel only
 		// draws over Ghostty.
 		if ca := admin.NewCodexAlerts(dir); ca != nil {

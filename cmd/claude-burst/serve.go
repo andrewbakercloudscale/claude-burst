@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/admin"
+	"github.com/andrewbakercloudscale/claude-burst/internal/alerting"
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 	"github.com/andrewbakercloudscale/claude-burst/internal/hotspot"
 	"github.com/andrewbakercloudscale/claude-burst/internal/logline"
@@ -195,7 +196,9 @@ func serve(args []string) {
 	}
 	logger.Printf("claude-burst %s bound %s (%s) in %s -- accepting connections now", version, cfg.Listen, scheme, time.Since(bindStart))
 	if dir, err := config.ConfigDir(); err == nil {
-		notice.SetDefault(notice.New(notice.Path(dir), logger))
+		pub := notice.New(notice.Path(dir), logger)
+		alerting.SetDefault(routeAlerts(pub, true, logger))
+		notice.SetDefault(pub)
 		for _, p := range problems {
 			notice.Publish("startup", notice.Warn, p.Title, p.Detail)
 		}

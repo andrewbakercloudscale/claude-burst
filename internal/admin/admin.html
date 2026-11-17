@@ -826,6 +826,7 @@
    clicking them never flips the checkbox, each on its own row. */
 .mac-toggles .al-card { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 8px; }
 .mac-toggles .al-card label { border: 0; padding: 0; }
+.nt-ch { display: grid; grid-template-columns: max-content max-content; gap: 8px 12px; align-items: center; margin-top: 10px; }
 .mac-toggles .al-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: 28px; }
 .mac-toggles .al-row span { grid-column: auto; margin: 0; }
 .mac-toggles .al-lbl { color: var(--text); font-size: 13px; }
@@ -1839,10 +1840,17 @@
   </section>
 
   <section id="sec-notify" style="scroll-margin-top:70px">
-    <h2>Notifications</h2>
+    <h2>Notifications <span class="applies" data-where="config.json alerts" data-when="now"></span></h2>
     <div class="body">
-      <div class="hint">Burst's notifications are the pop-ups the usage panel floats over Claude Code's Ghostty window, the same style as its loading notice: failing over to the secondary and back, limits, failures, the network, guards repairing the redirect, compaction and more. Each stays at least 10 seconds while Ghostty is in front. Switch them on or off under <a href="#" data-target="sec-sessions">Session options</a>, <b>Show gateway alerts on screen</b>. Burst no longer sends macOS notifications. Inside a session with the mod, the <a href="#" data-target="sec-band">In-session band</a> shows them as toasts instead, and shows a problem that is still standing as a line.</div>
-      <div class="row" style="margin-top:10px"><button id="ntTest">Send a test alert</button></div>
+      <div class="hint">Burst's alerts go out two ways. <b>On-screen toasts</b> are the pop-ups the usage panel floats over Claude Code's Ghostty window (and, inside a session with the mod, the <a href="#" data-target="sec-band">In-session band</a>'s toasts): failing over and back, limits, failures, the network, guards repairing the redirect, compaction and more. The panel has its own on/off switch too, under <a href="#" data-target="sec-sessions">Session options</a>. <b>macOS Notification Center</b> banners come from the Claude Burst app's notifier, listed as Claude Burst in System Settings, Notifications; they reach you in any app, not only over Ghostty. <b>Critical only</b> is errors plus: Burst bypassed, requests failing, the network down, the pf guard, a broken redirect or certificate, and a compaction that failed. The all-clear that ends one is sent wherever the problem went.</div>
+      <div class="nt-ch">
+        <label for="ntToasts"><b>On-screen toasts</b></label>
+        <select id="ntToasts"><option value="off">Off</option><option value="critical">Critical only</option><option value="all">All alerts</option></select>
+        <label for="ntNC"><b>macOS Notification Center</b></label>
+        <select id="ntNC"><option value="off">Off</option><option value="critical">Critical only</option><option value="all">All alerts</option></select>
+      </div>
+      <div id="ntPerm" class="hint" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="ntSave" disabled>&#x2713; Save</button><button id="ntTest">Send a test alert</button><button id="ntTestNC">Send a test notification</button></div>
       <div id="ntNote"></div>
     </div>
   </section>
@@ -6919,6 +6927,49 @@ $("ntTest").onclick = async () => {
   } catch (err) { note($("ntNote"), "bad", "Could not send: " + err.message); }
   finally { $("ntTest").disabled = false; }
 };
+// Notification Center's permission, in words. The helper only reads it:
+// the prompt comes from the first notification, or the test below.
+function ntPermText(v) {
+  if (v.helper_error) return "Notification Center: " + v.helper_error + ".";
+  const say = {
+    "authorized": "Notification Center: allowed. Banner style and sounds are under System Settings, Notifications, Claude Burst.",
+    "provisional": "Notification Center: delivered quietly (straight to the list, no banner). Turn banners on under System Settings, Notifications, Claude Burst.",
+    "denied": "Notification Center: turned off for Claude Burst. Nothing is shown there until it is allowed again under System Settings, Notifications, Claude Burst.",
+    "not-determined": "Notification Center: not asked yet. macOS asks once, the first time Burst sends one; Send a test notification asks now.",
+  };
+  return (say[v.permission] || "Notification Center: macOS says \"" + v.permission + "\".") + (v.running ? "" : " This gateway is not posting to Notification Center (it is not running here).");
+}
+function ntShow(v) {
+  $("ntToasts").value = v.toasts;
+  $("ntNC").value = v.notification_center;
+  $("ntSave").disabled = true;
+  $("ntPerm").textContent = ntPermText(v);
+  $("ntPerm").dataset.permission = v.permission || "";
+}
+async function ntLoad() {
+  try { ntShow(await getJSON("/api/alert-channels")); }
+  catch (err) { $("ntPerm").textContent = "Could not read the alert settings: " + err.message; }
+}
+$("ntToasts").onchange = $("ntNC").onchange = () => { $("ntSave").disabled = false; };
+$("ntSave").onclick = async () => {
+  $("ntSave").disabled = true;
+  try {
+    const v = await post("/api/alert-channels", {toasts: $("ntToasts").value, notification_center: $("ntNC").value});
+    ntShow(v);
+    note($("ntNote"), "ok", "Saved. It applies to the next alert.");
+  } catch (err) { $("ntSave").disabled = false; note($("ntNote"), "bad", "Could not save: " + err.message); }
+};
+$("ntTestNC").onclick = async () => {
+  $("ntTestNC").disabled = true;
+  if ($("ntPerm").dataset.permission === "not-determined") note($("ntNote"), "warn", "macOS is asking whether Claude Burst may send notifications: answer its prompt (top right of the screen).");
+  try {
+    const r = await post("/api/alert-test-nc");
+    if (r.posted) note($("ntNote"), "ok", "Sent to Notification Center. A banner shows top right within a second; if not, check Focus and System Settings, Notifications, Claude Burst.");
+    else note($("ntNote"), "bad", "Not shown: " + (r.error || ("macOS says " + r.status)));
+  } catch (err) { note($("ntNote"), "bad", "Could not send: " + err.message); }
+  finally { $("ntTestNC").disabled = false; ntLoad(); }
+};
+ntLoad();
 $("hsSave").onclick = () => {
   const n = id => parseInt($(id).value, 10) || 0;
   const body = {hotspot: {ssid: $("hsSsid").value, when: $("hsWhen").value,

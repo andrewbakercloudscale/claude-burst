@@ -62,6 +62,22 @@ type Event struct {
 	Session string `json:"session,omitempty"`
 	// AuditOnly marks an entry recorded for the audit and never shown.
 	AuditOnly bool `json:"audit_only,omitempty"`
+	// Hidden marks an alert the toasts' level held back (config "alerts"):
+	// it is in the audit and not in notices.json.
+	Hidden bool `json:"hidden,omitempty"`
+	// NotifyDone says the process that published the alert decided about
+	// Notification Center itself (the gateway does). Without it the support
+	// console, watching the audit, decides: a script's alert written with
+	// the gateway down still reaches Notification Center that way.
+	NotifyDone bool `json:"notify_done,omitempty"`
+}
+
+// Channels routes each alert that passed the repeat limit. Route says
+// whether it goes in notices.json, the toasts' source, and whether
+// Notification Center has been dealt with here (Event.NotifyDone). It is
+// called on the writer goroutine, once per alert, never for Record.
+type Channels interface {
+	Route(ev Event) (toast, notifyDone bool)
 }
 
 type file struct {
@@ -80,6 +96,11 @@ type Publisher struct {
 	lastTitle map[string]string    // kind -> last title shown
 	seq       int64
 	errLogged bool
+	channels  Channels
+	// once is the kind|title pairs PublishOnce has found or published, so
+	// a pair the toasts' level kept out of notices.json is not published
+	// again every round.
+	once map[string]bool
 }
 
 type flushReq chan struct{}
@@ -89,7 +110,7 @@ func New(path string, logger *log.Logger) *Publisher {
 	p := &Publisher{
 		path: path, logger: logger, now: time.Now,
 		ch:    make(chan any, 64),
-		shown: map[string]time.Time{}, lastTitle: map[string]string{},
+		shown: map[string]time.Time{}, lastTitle: map[string]string{}, once: map[string]bool{},
 	}
 	go p.run()
 	return p
@@ -115,6 +136,17 @@ func (p *Publisher) PublishOnce(kind, severity, title, detail string) bool {
 	return p.publish("", kind, severity, title, detail, true)
 }
 
+// SetChannels routes this publisher's alerts from now on. nil, the
+// default, puts every alert in notices.json, as before channels existed.
+func (p *Publisher) SetChannels(c Channels) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.channels = c
+	p.mu.Unlock()
+}
+
 // Path is the notices.json this publisher writes.
 func (p *Publisher) Path() string {
 	if p == nil {
@@ -127,14 +159,8 @@ func (p *Publisher) publish(session, kind, severity, title, detail string, once 
 	if p == nil {
 		return false
 	}
-	if once {
-		p.Flush(2 * time.Second)
-		evs, _ := Read(p.path)
-		for _, e := range evs {
-			if e.Kind == kind && e.Title == title {
-				return false
-			}
-		}
+	if once && p.seenOnce(kind, title) {
+		return false
 	}
 	now := p.now()
 	key := kind + "|" + title
@@ -160,6 +186,39 @@ func (p *Publisher) publish(session, kind, severity, title, detail string, once 
 		return false
 	}
 }
+
+// seenOnce is PublishOnce's check: this process has published the pair,
+// or notices.json holds it, or the audit holds it held back by the toasts'
+// level (Event.Hidden), which notices.json never will. Only a miss reads
+// the files, so the rounds that call it read them once per pair.
+func (p *Publisher) seenOnce(kind, title string) bool {
+	key := kind + "|" + title
+	p.mu.Lock()
+	seen := p.once[key]
+	p.once[key] = true
+	p.mu.Unlock()
+	// Flushed either way: the caller expects what it published before to
+	// be on disk once PublishOnce returns, as it always was.
+	p.Flush(2 * time.Second)
+	if seen {
+		return true
+	}
+	evs, _ := Read(p.path)
+	for _, e := range evs {
+		if e.Kind == kind && e.Title == title {
+			return true
+		}
+	}
+	for _, e := range ReadAudit(AuditPath(p.path), onceAuditLook) {
+		if e.Hidden && e.Kind == kind && e.Title == title {
+			return true
+		}
+	}
+	return false
+}
+
+// onceAuditLook is how far back seenOnce looks in the audit: days of it.
+const onceAuditLook = 2000
 
 // Record adds an entry to the audit trail only: something done (a restart
 // from the console, a setting saved) that support needs to see later but
@@ -214,13 +273,22 @@ func (p *Publisher) run() {
 }
 
 func (p *Publisher) write(ev Event) error {
+	if !ev.AuditOnly {
+		p.mu.Lock()
+		ch := p.channels
+		p.mu.Unlock()
+		if ch != nil {
+			toast, done := ch.Route(ev)
+			ev.Hidden, ev.NotifyDone = !toast, done
+		}
+	}
 	// The audit first: a notices.json that will not write must not cost the
 	// support trail its record of the event.
 	auditErr := appendAudit(AuditPath(p.path), ev)
 	if p.logger != nil {
-		p.logger.Printf("notice kind=%q severity=%q audit_only=%v title=%q detail=%q", ev.Kind, ev.Severity, ev.AuditOnly, ev.Title, ev.Detail)
+		p.logger.Printf("notice kind=%q severity=%q audit_only=%v hidden=%v title=%q detail=%q", ev.Kind, ev.Severity, ev.AuditOnly, ev.Hidden, ev.Title, ev.Detail)
 	}
-	if ev.AuditOnly {
+	if ev.AuditOnly || ev.Hidden {
 		return auditErr
 	}
 	if err := p.writeNotices(ev); err != nil {
