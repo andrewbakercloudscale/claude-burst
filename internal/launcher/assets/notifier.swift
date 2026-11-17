@@ -10,8 +10,8 @@
 // which is why Burst stopped posting any on 3 Oct 2026.
 //
 //   claude-burst-notifier status
-//   claude-burst-notifier request [--wait SECONDS]
-//   claude-burst-notifier post --title T [--body B] [--id ID] [--group G] [--url U] [--sound] [--wait SECONDS]
+//   claude-burst-notifier request [--wait SECONDS]    (run through open -n, as an app)
+//   claude-burst-notifier post --title T [--body B] [--id ID] [--group G] [--url U] [--sound]
 //
 // Each prints one JSON line: {"status": ..., "posted": ..., "error": ...}.
 // status is authorized, denied, not-determined, provisional or unknown.
@@ -63,9 +63,9 @@ func currentStatus() -> String {
 }
 
 // authorize asks macOS for permission the first time and waits up to wait
-// seconds for the answer; after that it only reads the answer given. The
-// first alert is what asks, and it waits for the answer so that it is shown
-// rather than lost.
+// seconds for the answer; after that it only reads the answer given. Only
+// "request" calls it, and only as an app LaunchServices started (see
+// below).
 func authorize(wait: Double) -> (String, String) {
     var st = currentStatus()
     if st != "not-determined" {
@@ -134,19 +134,48 @@ case "status":
     reply(currentStatus(), posted: false, error: "", code: 0)
 
 case "request":
-    let (st, err) = authorize(wait: waitFlag(120))
-    reply(st, posted: false, error: err, code: (st == "authorized" || st == "provisional") ? 0 : 2)
+    // Asked as an app, from the front. Until 17 Nov 2026 the install ran
+    // this as a plain child process of claude-burst, with no NSApplication:
+    // macOS answered "denied" without showing anyone a prompt, and a denial
+    // is final for the bundle id (it is never asked again). Burst now starts
+    // "request" through LaunchServices (open -n), and the helper becomes a
+    // running app, comes to the front and asks from there, which is how
+    // macOS expects the question to come. stdout goes nowhere under open:
+    // the answer is read back with "status".
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let wait = waitFlag(120)
+    DispatchQueue.global(qos: .userInitiated).async {
+        let (st, err) = authorize(wait: wait)
+        DispatchQueue.main.async {
+            reply(st, posted: false, error: err, code: (st == "authorized" || st == "provisional") ? 0 : 2)
+        }
+    }
+    DispatchQueue.main.async {
+        if #available(macOS 14.0, *) {
+            app.activate()
+        } else {
+            app.activate(ignoringOtherApps: true)
+        }
+    }
+    // Gone after the wait either way, so an unanswered prompt leaves no
+    // process behind.
+    DispatchQueue.main.asyncAfter(deadline: .now() + wait + 5) { exit(2) }
+    app.run()
 
 case "post":
     guard let title = flag("--title"), !title.isEmpty else {
         reply("unknown", posted: false, error: "post needs --title", code: 1)
     }
-    let (st, authErr) = authorize(wait: waitFlag(60))
+    // Never asks: a post comes from the gateway, a background process, and
+    // a question asked from there was answered "denied" unseen (17 Nov
+    // 2026). Not yet asked, the caller starts "request" as an app instead.
+    let st = currentStatus()
     guard st == "authorized" || st == "provisional" else {
         let why = st == "denied"
             ? "Notifications for Claude Burst are turned off in System Settings > Notifications."
-            : "macOS has not been answered yet: allow Claude Burst in the prompt, or in System Settings > Notifications."
-        reply(st, posted: false, error: authErr.isEmpty ? why : authErr, code: 2)
+            : "macOS has not asked yet: Burst opens its permission prompt; choose Allow."
+        reply(st, posted: false, error: why, code: 2)
     }
     let content = UNMutableNotificationContent()
     content.title = title

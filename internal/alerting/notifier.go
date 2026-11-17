@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -113,8 +114,19 @@ func (n *Notifier) loop() {
 	}
 }
 
-// Post runs the helper for ev now and waits for it.
+// Post runs the helper for ev now and waits for it. Not yet asked, the
+// helper does not post and does not ask (a background process asking was
+// answered "denied" unseen, 17 Nov 2026): Post then starts the prompt as an
+// app, and a later alert posts once the person has allowed it.
 func (n *Notifier) Post(ctx context.Context, ev notice.Event) (Result, error) {
+	r, err := n.post(ctx, ev)
+	if err == nil && r.Status == "not-determined" {
+		askSoon()
+	}
+	return r, err
+}
+
+func (n *Notifier) post(ctx context.Context, ev notice.Event) (Result, error) {
 	args := []string{"post", "--title", ev.Title, "--body", clip(ev.Detail, 400), "--group", ev.Kind}
 	if ev.ID != "" {
 		args = append(args, "--id", ev.ID)
@@ -183,9 +195,21 @@ func (n *Notifier) logOnce(key, format string, args ...any) {
 }
 
 // startHelper starts the helper and does not wait for it; a variable for
-// tests.
+// tests. It goes through LaunchServices (open -n) rather than exec: on
+// 17 Nov 2026 the install started "request" as its own child, a process
+// with no app around it, and macOS recorded "denied" for Claude Burst
+// without showing anyone a prompt. Started by open, the helper is a running
+// app in the person's login session, whatever started Burst's install (a
+// Terminal, deploy.sh over ssh, the dashboard), and asks from the front.
 var startHelper = func(path string, args ...string) error {
-	return exec.Command(path, args...).Start()
+	return exec.Command("/usr/bin/open", openArgs(path, args...)...).Start()
+}
+
+// openArgs are open's arguments to run the app holding the executable path
+// with args: -n for a new instance even if one is posting.
+func openArgs(path string, args ...string) []string {
+	app := filepath.Dir(filepath.Dir(filepath.Dir(path))) // .app/Contents/MacOS/exe
+	return append([]string{"-n", app, "--args"}, args...)
 }
 
 // AskIfUnasked starts macOS's permission prompt when it has never been
@@ -206,3 +230,36 @@ func AskIfUnasked(ctx context.Context) (string, error) {
 	}
 	return r.Status, nil
 }
+
+// askGap keeps a run of alerts from opening a prompt each: the one the
+// first started is still up, waiting for its two minutes.
+const askGap = 3 * time.Minute
+
+var asked struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+// askSoon starts the prompt unless it was started within askGap.
+func askSoon() {
+	asked.mu.Lock()
+	if !asked.at.IsZero() && time.Since(asked.at) < askGap {
+		asked.mu.Unlock()
+		return
+	}
+	asked.at = time.Now()
+	asked.mu.Unlock()
+	if p := helperPath(); p != "" {
+		_ = startHelper(p, "request", "--wait", "120")
+	}
+}
+
+// SettingsURL opens System Settings at Claude Burst's notifications, the
+// one place a "denied" can be changed: macOS never asks again.
+const SettingsURL = "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=" + launcher.NotifierBundleID
+
+// openSettings is a variable for tests.
+var openSettings = func() error { return exec.Command("/usr/bin/open", SettingsURL).Run() }
+
+// OpenSettings shows Claude Burst in System Settings, Notifications.
+func OpenSettings() error { return openSettings() }

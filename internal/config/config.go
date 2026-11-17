@@ -635,7 +635,8 @@ type AlertChannel struct {
 // Center is macOS's own banner, posted by the notifier helper inside the
 // Claude Burst app; its default is critical only, so it is a second line
 // for what must not be missed (Burst bypassed, requests failing) rather
-// than a copy of every toast.
+// than a copy of every toast. Where nothing shows the toasts (a Claude
+// Desktop user), its default is all: NotificationCenterLevelFor.
 type AlertsConfig struct {
 	Toasts             AlertChannel `json:"toasts,omitempty"`
 	NotificationCenter AlertChannel `json:"notification_center,omitempty"`
@@ -665,9 +666,22 @@ func alertLevel(v, def string) string {
 func (a AlertsConfig) ToastLevel() string { return alertLevel(a.Toasts.Level, AlertLevelAll) }
 
 // NotificationCenterLevel is Notification Center's level with its default
-// filled in.
+// filled in, on a Mac where something shows the toasts.
 func (a AlertsConfig) NotificationCenterLevel() string {
 	return alertLevel(a.NotificationCenter.Level, AlertLevelCritical)
+}
+
+// NotificationCenterLevelFor is Notification Center's level given whether
+// anything on this Mac shows the toasts (the usage panel, the mod). Where
+// nothing does, as for someone who uses Claude Code only through Claude
+// Desktop, Notification Center is the only place an alert can be seen, so
+// its default is all rather than critical only (17 Nov 2026). A level the
+// person chose is kept either way.
+func (a AlertsConfig) NotificationCenterLevelFor(toastsShown bool) string {
+	if toastsShown {
+		return a.NotificationCenterLevel()
+	}
+	return alertLevel(a.NotificationCenter.Level, AlertLevelAll)
 }
 
 // Values for HotspotConfig.When.

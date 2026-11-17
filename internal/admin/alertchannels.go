@@ -36,7 +36,19 @@ type alertChannelsView struct {
 	HelperError string `json:"helper_error,omitempty"`
 	// Running: this gateway posts to Notification Center.
 	Running bool `json:"running"`
+	// ToastsShown: something on this Mac shows the toasts. Without it
+	// (Claude Desktop only) Notification Center's default is all.
+	ToastsShown bool `json:"toasts_shown"`
+	// NotificationCenterDefault: Notification Center's level is the
+	// default, not one chosen.
+	NotificationCenterDefault bool `json:"notification_center_default"`
+	// SettingsURL opens Claude Burst in System Settings, Notifications:
+	// after "denied", the only place to turn it back on.
+	SettingsURL string `json:"settings_url"`
 }
+
+// toastsShown is a variable for tests.
+var toastsShown = alerting.ToastsShownCached
 
 func (s *Server) handleAlertChannels(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -48,7 +60,10 @@ func (s *Server) handleAlertChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) alertChannelsView(ctx context.Context, a config.AlertsConfig) alertChannelsView {
-	v := alertChannelsView{Toasts: a.ToastLevel(), NotificationCenter: a.NotificationCenterLevel()}
+	shown := toastsShown()
+	v := alertChannelsView{Toasts: a.ToastLevel(), NotificationCenter: a.NotificationCenterLevelFor(shown),
+		ToastsShown: shown, NotificationCenterDefault: a.NotificationCenter.Level == "" || !config.ValidAlertLevel(a.NotificationCenter.Level),
+		SettingsURL: alerting.SettingsURL}
 	_, n := alerting.Default()
 	v.Running = n != nil
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -105,7 +120,7 @@ func (s *Server) alertChannelsPost(w http.ResponseWriter, r *http.Request) {
 	if live, _ := alerting.Default(); live != nil {
 		live.Set(saved)
 	}
-	s.gateway.Logf("alert: channels set: toasts %s, Notification Center %s", saved.ToastLevel(), saved.NotificationCenterLevel())
+	s.gateway.Logf("alert: channels set: toasts %s, Notification Center %s", saved.ToastLevel(), saved.NotificationCenterLevelFor(toastsShown()))
 	writeJSON(w, s.alertChannelsView(r.Context(), saved))
 }
 

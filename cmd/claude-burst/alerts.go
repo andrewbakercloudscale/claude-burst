@@ -18,7 +18,7 @@ import (
 // them from the person's login session.
 func routeAlerts(p *notice.Publisher, direct bool, logger *log.Logger) (*alerting.Live, *alerting.Notifier) {
 	live := alerting.NewLive()
-	r := &alerting.Router{Config: live.Get}
+	r := &alerting.Router{Config: live.Get, ToastsShown: alerting.ToastsShownCached}
 	var n *alerting.Notifier
 	if direct {
 		n = alerting.NewNotifier(dashboardURL(), logf(logger))
@@ -38,6 +38,9 @@ func watchAlerts(live *alerting.Live, auditPath string, logger *log.Logger) {
 		Notifier:  alerting.NewNotifier(dashboardURL(), logf(logger)),
 		Config:    live.Get,
 		Now:       time.Now,
+		// With nothing showing the toasts (Claude Desktop only),
+		// Notification Center takes every alert by default.
+		ToastsShown: alerting.ToastsShownCached,
 	}
 	go w.Run(context.Background())
 }

@@ -6934,10 +6934,13 @@ function ntPermText(v) {
   const say = {
     "authorized": "Notification Center: allowed. Banner style and sounds are under System Settings, Notifications, Claude Burst.",
     "provisional": "Notification Center: delivered quietly (straight to the list, no banner). Turn banners on under System Settings, Notifications, Claude Burst.",
-    "denied": "Notification Center: turned off for Claude Burst. Nothing is shown there until it is allowed again under System Settings, Notifications, Claude Burst.",
-    "not-determined": "Notification Center: not asked yet. macOS asks once, the first time Burst sends one; Send a test notification asks now.",
+    "denied": "Notification Center: turned off for Claude Burst. macOS never asks again, so nothing is shown there until it is allowed under System Settings, Notifications, Claude Burst (claude-burst app notifications opens it there).",
+    "not-determined": "Notification Center: not asked yet. A prompt from Claude Burst asks the first time Burst sends one; Send a test notification asks now.",
   };
-  return (say[v.permission] || "Notification Center: macOS says \"" + v.permission + "\".") + (v.running ? "" : " This gateway is not posting to Notification Center (it is not running here).");
+  // Nothing shows the toasts here (no usage panel, no mod: Claude Desktop
+  // only), so Notification Center takes every alert unless a level was chosen.
+  const dflt = v.notification_center_default && !v.toasts_shown ? " Nothing on this Mac shows the toasts (as with Claude Desktop), so Notification Center gets every alert by default." : "";
+  return (say[v.permission] || "Notification Center: macOS says \"" + v.permission + "\".") + dflt + (v.running ? "" : " This gateway is not posting to Notification Center (it is not running here).");
 }
 function ntShow(v) {
   $("ntToasts").value = v.toasts;

@@ -24,7 +24,9 @@ func stubNC(t *testing.T, status string) *[]notice.Event {
 		*posted = append(*posted, ev)
 		return alerting.Result{Status: status, Posted: status == "authorized"}, nil
 	}
-	t.Cleanup(func() { ncStatus, ncPost = oldS, oldP })
+	oldShown := toastsShown
+	toastsShown = func() bool { return true } // a terminal user's Mac
+	t.Cleanup(func() { ncStatus, ncPost, toastsShown = oldS, oldP, oldShown })
 	return posted
 }
 
@@ -88,5 +90,26 @@ func TestAlertTestNotificationGoesThroughTheHelper(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &r)
 	if w.Code != http.StatusOK || !r.Posted || len(*posted) != 1 || (*posted)[0].Kind != "test" {
 		t.Fatalf("test = %d %s, posted %+v", w.Code, w.Body, *posted)
+	}
+}
+
+// With nothing showing the toasts (Claude Desktop only), Notification
+// Center's default is all, and the view says it is the default and where
+// to turn a denial back on; a level the person chose is kept.
+func TestAlertChannelsDefaultToAllWithoutToasts(t *testing.T) {
+	stubNC(t, "denied")
+	toastsShown = func() bool { return false }
+	s := newTestServer(t)
+	alerting.SetDefault(&alerting.Live{Load: config.Load}, alerting.NewNotifier("", nil))
+	t.Cleanup(func() { alerting.SetDefault(nil, nil) })
+
+	_, v := alertChannelsDo(t, s, http.MethodGet, "/api/alert-channels", "")
+	if v.NotificationCenter != "all" || !v.NotificationCenterDefault || v.ToastsShown || v.Permission != "denied" ||
+		!strings.Contains(v.SettingsURL, "ninja.andrewbaker.claude-burst.notifier") {
+		t.Fatalf("GET = %+v", v)
+	}
+	_, v = alertChannelsDo(t, s, http.MethodPost, "/api/alert-channels", `{"notification_center":"critical"}`)
+	if v.NotificationCenter != "critical" || v.NotificationCenterDefault {
+		t.Fatalf("chosen level not kept: %+v", v)
 	}
 }
