@@ -2,7 +2,9 @@ package router
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
@@ -73,9 +75,24 @@ func contextBytes(top map[string]json.RawMessage, msgs []json.RawMessage) []int6
 	return out
 }
 
-// mediaBytes is what a base64 image or document counts for in tokenBytes:
-// about 1,600 tokens (an image at Claude's largest size) at 4 bytes a token.
+// mediaBytes is what a base64 image counts for in tokenBytes: about 1,600
+// tokens (an image at Claude's largest size) at 4 bytes a token. A PDF
+// counts its pages instead (pdfTokens).
 const mediaBytes = 6400
+
+const (
+	// pdfPageTokens is what a page of a PDF costs: Anthropic sends each
+	// page as its text, 1,500 to 3,000 tokens by its documentation, and as
+	// a picture of the page, up to about 1,600 more. Until 17 Nov 2026 a
+	// PDF counted as one screenshot whatever its length, so a 30-page one
+	// summarised away put the history Claude Code holds some 100k too low.
+	pdfPageTokens = 3800
+	// pdfBytesPerPage guesses the pages of a PDF whose page objects cannot
+	// be counted, because they are compressed into object streams.
+	pdfBytesPerPage = 64 << 10
+	// pdfMostPages is the most pages Anthropic takes in one request.
+	pdfMostPages = 600
+)
 
 // tokenBytes is the body's size in bytes as text, for scaling a token count
 // by: each base64 payload counts as mediaBytes, not its length. A screenshot
@@ -96,10 +113,46 @@ func tokenBytes(body []byte) int64 {
 			end++
 		}
 		if end < len(body) && body[end] == '"' && end-start >= 1024 {
-			n -= int64(end-start) - mediaBytes
+			cost := int64(mediaBytes)
+			if pdfSource(body, i+j, end) {
+				cost = 4 * pdfTokens(body[start:end])
+			}
+			n -= int64(end-start) - cost
 		}
 		i = end
 	}
+}
+
+// pdfSource reports whether the base64 payload ending at end, whose "data"
+// key is at key, is a PDF: its source object names application/pdf, before
+// the data or after it. Base64 has no braces, so the object is the span
+// between the brace before the key and the one after the payload.
+func pdfSource(body []byte, key, end int) bool {
+	pdf := []byte(`"application/pdf"`)
+	if lo := bytes.LastIndexByte(body[:key], '{'); lo >= 0 && bytes.Contains(body[lo:key], pdf) {
+		return true
+	}
+	hi := bytes.IndexByte(body[end:], '}')
+	return hi >= 0 && bytes.Contains(body[end:end+hi], pdf)
+}
+
+// pdfPageObject is a page object of a PDF, and not the /Pages tree above it.
+var pdfPageObject = regexp.MustCompile(`/Type\s*/Page\b`)
+
+// pdfTokens estimates what a base64 PDF costs: its pages, counted where
+// they can be and guessed from its size where they cannot, at pdfPageTokens
+// each. Data that is not base64 is taken as one picture.
+func pdfTokens(b64 []byte) int64 {
+	raw := make([]byte, base64.StdEncoding.DecodedLen(len(b64)))
+	n, err := base64.StdEncoding.Decode(raw, b64)
+	if err != nil {
+		return mediaBytes / 4
+	}
+	pages := len(pdfPageObject.FindAllIndex(raw[:n], pdfMostPages))
+	if pages == 0 {
+		pages = n/pdfBytesPerPage + 1
+	}
+	return int64(min(pages, pdfMostPages)) * pdfPageTokens
 }
 
 func isBase64(c byte) bool {

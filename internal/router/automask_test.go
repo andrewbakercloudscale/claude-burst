@@ -492,3 +492,32 @@ func TestASummarySurvivesAutomaskBeingSwitched(t *testing.T) {
 		t.Fatalf("a summary written with the rule off went out unmasked: %s", got)
 	}
 }
+
+// Base64 is never masked: a key-shaped or card-shaped run inside a
+// picture's or a PDF's data is part of the file, and a mask there would
+// send a corrupt image. The same run in text beside it is masked, so the
+// rule would have matched; the data goes on byte for byte, at the top of a
+// message and inside a tool result whose text is rewritten (checked
+// 17 Nov 2026).
+func TestAutomaskLeavesBase64DataByteIdentical(t *testing.T) {
+	f := &fakeAnthropic{context: 1000}
+	s := compactServer(t, f, config.CompactionConfig{})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	// Made up, and split so the commit hook's secret scanner sees no key.
+	secret := "AKIA" + "IOSFODNN7EXAMPL3"
+	data := strings.Repeat("iVBORw0KGgo", 200) + "+" + secret + "+/4111111111111111/" + strings.Repeat("AAAA", 200) + "=="
+	img := `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + data + `"}}`
+	doc := `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"` + data + `"}}`
+	send(t, s, "S1", []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":[` + img + `,{"type":"text","text":"key ` + secret + ` here"}]}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/nowhere/a.png"}}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"card 4111 1111 1111 1111"},` + img + `,` + doc + `]}]}`),
+	})
+	got := f.last()
+	if strings.Contains(got, "key "+secret) || strings.Contains(got, "card 4111 1111") {
+		t.Fatalf("the text beside the data was not masked: %.600s", got)
+	}
+	if n := strings.Count(got, `"data":"`+data+`"`); n != 3 {
+		t.Fatalf("base64 data changed: %d of 3 payloads arrived byte for byte", n)
+	}
+}

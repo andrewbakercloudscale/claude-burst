@@ -68,6 +68,54 @@ func TestGzippedRequestIsReadAndForwardedGzipped(t *testing.T) {
 	}
 }
 
+// A conversation of pictures near Anthropic's 32 MB limit, gzipped, is
+// opened and sent on whole: neither max_request_mb's default nor the limit
+// on what a gzipped body opens to is below what the API itself takes, and
+// the pictures arrive byte for byte with Automask and compaction on
+// (checked 17 Nov 2026).
+func TestAnImageHeavyGzippedBodyNearTheAPILimitGoesThrough(t *testing.T) {
+	pic := strings.Repeat("iVBORw0KGgoAAAANSUhEUgAA+/", 40_000) // about 1 MB of base64
+	var b strings.Builder
+	b.WriteString(`{"model":"claude-opus-5-5","messages":[`)
+	for i := 0; i < 30; i++ {
+		if i > 0 {
+			b.WriteString(`,{"role":"assistant","content":"seen"},`)
+		}
+		b.WriteString(`{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + pic + `"}},{"type":"text","text":"and this one"}]}`)
+	}
+	b.WriteString(`]}`)
+	body := b.String()
+	if len(body) < 30_000_000 {
+		t.Fatalf("setup: body is %d bytes", len(body))
+	}
+	var got []byte
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Errorf("upstream body is not gzip: %v", err)
+			return
+		}
+		got, _ = io.ReadAll(zr)
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-opus-5-5","usage":{"input_tokens":2,"output_tokens":5}}`))
+	}))
+	defer primary.Close()
+	s, logs := newTestServer(t, primary.URL, "")
+	s.SetCompaction(config.CompactionConfig{Enabled: true, NoPromptNotice: true})
+	s.SetAutomask(config.AutomaskConfig{Enabled: true})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", bytes.NewReader(gz(t, body)))
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("x-claude-code-session-id", "sess-big")
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status %d: %s\n%s", rr.Code, rr.Body, logs)
+	}
+	if string(got) != body {
+		t.Fatalf("upstream got %d bytes, want the %d sent", len(got), len(body))
+	}
+}
+
 // A body that says gzip and is not is refused, never forwarded as it came.
 func TestBrokenGzipIsRefused(t *testing.T) {
 	called := false

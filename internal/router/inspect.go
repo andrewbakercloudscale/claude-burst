@@ -426,12 +426,16 @@ func contextItems(body []byte) ([]ContextItem, int) {
 				if name == "" {
 					name = "Tool result"
 				}
-				text, pics := resultText(blk.Content)
+				text, pics, docs := resultText(blk.Content)
 				add(grpResults, name, turn, text)
-				if it := &items[len(items)-1]; len(pics) > 0 && !it.Removed {
+				if it := &items[len(items)-1]; !it.Removed {
 					it.Pictures = len(pics)
 					for _, p := range pics {
 						it.Extra += pictureTokens(p)
+					}
+					// A document sent by URL ("") is taken as one page.
+					for _, d := range docs {
+						it.Extra += pdfTokens([]byte(d))
 					}
 				}
 			}
@@ -509,34 +513,58 @@ func describeCall(name string, input json.RawMessage) string {
 // from any other, and the pictures themselves (base64, as sent). Without
 // the line every result that is a picture alone had the same empty text,
 // so removing one removed them all, and each showed as 0 tokens.
-func resultText(c json.RawMessage) (string, []string) {
+//
+// A document (a PDF the Read tool returns) has the same line, and docs are
+// the documents (base64, as sent; "" for one sent by URL), for pdfTokens:
+// until 17 Nov 2026 a result that was a PDF alone had empty text, the fault
+// fixed for pictures on 7 Oct 2026. A picture or a document sent by URL is
+// told apart by its URL.
+func resultText(c json.RawMessage) (text string, pics, docs []string) {
 	var str string
 	if json.Unmarshal(c, &str) == nil {
-		return str, nil
+		return str, nil, nil
 	}
 	var blocks []struct {
 		Type   string `json:"type"`
 		Text   string `json:"text"`
 		Source struct {
+			Type      string `json:"type"`
 			MediaType string `json:"media_type"`
 			Data      string `json:"data"`
+			URL       string `json:"url"`
 		} `json:"source"`
 	}
 	if json.Unmarshal(c, &blocks) != nil {
-		return "", nil
+		return "", nil, nil
 	}
-	var out, pics []string
+	// The picture's line is unchanged from 7 Oct 2026, so a picture removed
+	// then keeps its id.
+	line := func(kind, mediaType, d string) string {
+		return fmt.Sprintf("[%s: %s, %d KB, %s]", kind, mediaType, len(d)*3/4/1024, ctxview.ID(kind, d[:min(len(d), 4096)]+fmt.Sprint(len(d)))[:8])
+	}
+	var out []string
 	for _, b := range blocks {
-		switch b.Type {
-		case "text":
+		src := b.Source
+		switch {
+		case b.Type == "text":
 			out = append(out, b.Text)
-		case "image":
-			d := b.Source.Data
-			out = append(out, fmt.Sprintf("[picture: %s, %d KB, %s]", strings.TrimPrefix(b.Source.MediaType, "image/"), len(d)*3/4/1024, ctxview.ID("picture", d[:min(len(d), 4096)]+fmt.Sprint(len(d)))[:8]))
-			pics = append(pics, d)
+		case b.Type == "image" && src.Type == "url":
+			out = append(out, "[picture: "+src.URL+"]")
+			pics = append(pics, src.URL)
+		case b.Type == "image":
+			out = append(out, line("picture", strings.TrimPrefix(src.MediaType, "image/"), src.Data))
+			pics = append(pics, src.Data)
+		case b.Type == "document" && src.Type == "text":
+			out = append(out, src.Data)
+		case b.Type == "document" && src.Type == "url":
+			out = append(out, "[document: "+src.URL+"]")
+			docs = append(docs, "")
+		case b.Type == "document":
+			out = append(out, line("document", strings.TrimPrefix(src.MediaType, "application/"), src.Data))
+			docs = append(docs, src.Data)
 		}
 	}
-	return strings.Join(out, "\n"), pics
+	return strings.Join(out, "\n"), pics, docs
 }
 
 // pictureTokens estimates what a picture costs: its pixels over 750, as

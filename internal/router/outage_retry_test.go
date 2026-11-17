@@ -1,11 +1,17 @@
 package router
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/config"
 )
 
 // failingUpstream answers the first `fail` model requests with status, then 200.
@@ -72,6 +78,66 @@ func TestClientErrorIsNotResent(t *testing.T) {
 	s.ServeHTTP(httptest.NewRecorder(), messagesRequest("claude-opus-5-5"))
 	if calls() != 1 {
 		t.Fatalf("a 400 must not be resent, got %d attempts", calls())
+	}
+}
+
+// A request too large, or a picture over the API's limit, is the request's
+// own fault: it goes back to Claude Code as Anthropic wrote it, once, and
+// is never replayed to the secondary, which would refuse it too and be paid
+// for the trying. Checked with the strictest failover there is, one failure
+// and a plan already on overage (17 Nov 2026).
+func TestATooLargeRequestIsPassedBackAndNeverFailsOver(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		body   string
+	}{
+		{http.StatusRequestEntityTooLarge, `{"type":"error","error":{"type":"request_too_large","message":"Request exceeds the maximum allowed number of bytes."}}`},
+		{http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"messages.3.content.0.image.source.base64: image exceeds 5 MB maximum: 7340032 bytes > 5242880 bytes"}}`},
+	} {
+		var mu sync.Mutex
+		calls := 0
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+			w.WriteHeader(c.status)
+			_, _ = w.Write([]byte(c.body))
+		}))
+		t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-key")
+		cfg := config.Default()
+		cfg.AnthropicBaseURL = up.URL
+		cfg.BedrockBaseURL = "http://127.0.0.1:1"
+		cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: up.URL, FailoverStrategy: "subscription-limit+metered-failures"}
+		cfg.Secondary = config.RouteConfig{}
+		cfg.MeteredFailover = config.MeteredFailoverConfig{WindowSeconds: 60, MinFailures: 1, TransportErrorMinFailures: 1}
+		dir := t.TempDir()
+		var logBuf bytes.Buffer
+		s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(&logBuf, "", 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !s.HasSecondary() {
+			t.Fatal("setup: the secondary should be ready")
+		}
+		for i := 0; i < 2; i++ {
+			rr := httptest.NewRecorder()
+			s.ServeHTTP(rr, messagesRequest("claude-opus-5-5"))
+			if rr.Code != c.status || rr.Body.String() != c.body {
+				t.Fatalf("status %d: the client got %d %s", c.status, rr.Code, rr.Body.String())
+			}
+		}
+		mu.Lock()
+		n := calls
+		mu.Unlock()
+		if n != 2 {
+			t.Errorf("status %d: %d upstream calls for 2 requests: resent", c.status, n)
+		}
+		if s.inOverflow(time.Now()) || s.modelInOverflow("claude-opus-5-5", time.Now()) {
+			t.Errorf("status %d: counted as a provider failure and failed over:\n%s", c.status, logBuf.String())
+		}
+		up.Close()
 	}
 }
 
