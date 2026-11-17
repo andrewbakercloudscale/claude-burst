@@ -27,6 +27,11 @@ type packedEvent struct {
 	repeatedCalls, rerunsAfterStub, compactedMessages, compactedBytes    int32
 
 	pricingUnknown, repriced bool
+	// client (Event.Client) sits in the padding after the bools, so a
+	// packed event stays at 160 bytes: a handful of values, so its
+	// interned index fits 16 bits, and an event whose does not is kept
+	// unpacked.
+	client uint16
 }
 
 // strTable is a file's repeated strings. Index 0 is the empty string.
@@ -68,12 +73,16 @@ func pack(e *Event, t *strTable) (packedEvent, bool) {
 		e.RepeatedCalls, e.RerunsAfterStub, e.CompactedMessages, e.CompactedBytes) {
 		return packedEvent{}, false
 	}
+	client := t.intern(e.Client)
+	if client > 0xffff {
+		return packedEvent{}, false
+	}
 	return packedEvent{
 		time: e.Time, requestID: e.RequestID, resetAt: e.ResetAt, prunedUSD: e.PrunedUSD, usd: e.APIEquivalentUSD,
 
 		sessionID: t.intern(e.SessionID), agentID: t.intern(e.AgentID), slot: t.intern(e.Slot),
 		route: t.intern(e.Route), model: t.intern(e.Model), requestedModel: t.intern(e.RequestedModel),
-		destination: t.intern(e.Destination), limitClaim: t.intern(e.LimitClaim), note: t.intern(e.Note),
+		destination: t.intern(e.Destination), client: uint16(client), limitClaim: t.intern(e.LimitClaim), note: t.intern(e.Note),
 
 		httpStatus: int32(e.HTTPStatus), durationMS: int32(e.DurationMS),
 		inputTokens: int32(e.InputTokens), outputTokens: int32(e.OutputTokens),
@@ -94,7 +103,7 @@ func (p *packedEvent) unpack(strs []string) Event {
 
 		SessionID: strs[p.sessionID], AgentID: strs[p.agentID], Slot: strs[p.slot],
 		Route: strs[p.route], Model: strs[p.model], RequestedModel: strs[p.requestedModel],
-		Destination: strs[p.destination], LimitClaim: strs[p.limitClaim], Note: strs[p.note],
+		Destination: strs[p.destination], Client: strs[p.client], LimitClaim: strs[p.limitClaim], Note: strs[p.note],
 
 		HTTPStatus: int(p.httpStatus), DurationMS: int64(p.durationMS),
 		InputTokens: int64(p.inputTokens), OutputTokens: int64(p.outputTokens),
