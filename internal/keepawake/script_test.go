@@ -157,3 +157,49 @@ func TestApplySaysWhetherTheScreenIsOff(t *testing.T) {
 		}
 	}
 }
+
+// screenSteps feeds lid readings through the daemon's screen_step, with stub
+// ioreg, pmset and system_profiler on PATH that only record being called.
+func screenSteps(t *testing.T, events, sleepDisabled, displays string) (out, calls string) {
+	t.Helper()
+	stubs := t.TempDir()
+	record := filepath.Join(stubs, "calls")
+	for _, name := range []string{"ioreg", "pmset", "system_profiler", "sleep"} {
+		os.WriteFile(filepath.Join(stubs, name), []byte("#!/bin/sh\necho "+name+" >> "+record+"\n"), 0o755)
+	}
+	cmd := exec.Command("zsh", "../../scripts/lid-awake-root.sh", "screen-steps")
+	cmd.Env = append(os.Environ(), "PATH="+stubs+":"+os.Getenv("PATH"),
+		"CLAUDE_BURST_ROOT_STATE_DIR="+t.TempDir(), "CLAUDE_BURST_TEST_LID_EVENTS="+events,
+		"CLAUDE_BURST_TEST_SLEEPDISABLED="+sleepDisabled, "CLAUDE_BURST_TEST_DISPLAYS="+displays)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("screen-steps: %v: %s", err, b)
+	}
+	c, _ := os.ReadFile(record)
+	return strings.TrimSpace(string(b)), strings.TrimSpace(string(c))
+}
+
+// With the lid open the watcher's readings start no process at all: the old
+// loop ran an ioreg and a sleep every second, all day.
+func TestLidOpenStartsNoProcess(t *testing.T) {
+	out, calls := screenSteps(t, strings.Repeat("open\n", 20), "1", builtInOnly)
+	if out != "" || calls != "" {
+		t.Errorf("lid open: want nothing run, got output %q, calls %q", out, calls)
+	}
+}
+
+// Shut with nothing external: the screen goes dark at once and is not asked
+// again every second; a monitor connected means it is left alone.
+func TestLidShutDarkensOnceAndDecidesRarely(t *testing.T) {
+	out, calls := screenSteps(t, "open\nshut\nshut\nshut\nshut\nopen", "1", builtInOnly)
+	if out != "displaysleepnow" {
+		t.Errorf("shut for a moment: want one displaysleepnow, got %q", out)
+	}
+	if strings.Contains(calls, "ioreg") || strings.Contains(calls, "sleep") {
+		t.Errorf("shut: want no ioreg or sleep, got calls %q", calls)
+	}
+	out, _ = screenSteps(t, "open\nshut\nshut\nshut", "1", withMonitor)
+	if out != "" {
+		t.Errorf("shut with a monitor: want the screen left alone, got %q", out)
+	}
+}
