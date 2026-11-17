@@ -16,6 +16,9 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Setenv(desktop.ApplicationsDirEnv, dir)
+	// Nor does it hide the real usage panel: whether toasts are shown
+	// changes Notification Center's default.
+	toastsShown = func() bool { return true }
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

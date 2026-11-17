@@ -26,6 +26,8 @@ type Watcher struct {
 	Notifier  *Notifier
 	Config    func() config.AlertsConfig
 	Now       func() time.Time
+	// ToastsShown: as Router's.
+	ToastsShown func() bool
 
 	offset  int64
 	started bool
@@ -86,7 +88,7 @@ func (w *Watcher) Tick() {
 		return
 	}
 	w.offset += int64(end + 1)
-	level := w.Config().NotificationCenterLevel()
+	level := ncLevel(w.Config(), w.ToastsShown)
 	now := w.Now()
 	for _, line := range bytes.Split(b[:end], []byte("\n")) {
 		var ev notice.Event

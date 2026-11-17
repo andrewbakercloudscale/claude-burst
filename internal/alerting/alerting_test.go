@@ -28,6 +28,7 @@ func TestMain(m *testing.M) {
 	startHelper = func(string, ...string) error {
 		panic("a test started the notifier helper without stubbing it")
 	}
+	openSettings = func() error { panic("a test opened System Settings without stubbing it") }
 	os.Exit(m.Run())
 }
 

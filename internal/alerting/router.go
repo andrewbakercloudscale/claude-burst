@@ -23,8 +23,19 @@ type Router struct {
 	Direct *Notifier
 	// Config returns the current "alerts" settings.
 	Config func() config.AlertsConfig
+	// ToastsShown says whether anything shows the toasts, which decides
+	// Notification Center's default level; nil is "yes", the old default.
+	ToastsShown func() bool
 
 	toast, nc gate
+}
+
+// ncLevel is Notification Center's level for cfg.
+func ncLevel(cfg config.AlertsConfig, shown func() bool) string {
+	if shown == nil {
+		return cfg.NotificationCenterLevel()
+	}
+	return cfg.NotificationCenterLevelFor(shown())
 }
 
 // Route implements notice.Channels.
@@ -34,7 +45,7 @@ func (r *Router) Route(ev notice.Event) (toast, notifyDone bool) {
 	if r.Direct == nil {
 		return toast, false
 	}
-	if r.nc.pass(cfg.NotificationCenterLevel(), ev) {
+	if r.nc.pass(ncLevel(cfg, r.ToastsShown), ev) {
 		r.Direct.Enqueue(ev)
 	}
 	return toast, true

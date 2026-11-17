@@ -85,3 +85,20 @@ func TestAlertsBadLevelIsTheDefault(t *testing.T) {
 		}
 	}
 }
+
+// Where nothing shows the toasts (Claude Desktop only), Notification
+// Center's default is all; a level set by hand, or a typo, never off.
+func TestNotificationCenterDefaultFollowsTheToasts(t *testing.T) {
+	var a AlertsConfig
+	if a.NotificationCenterLevelFor(true) != AlertLevelCritical || a.NotificationCenterLevelFor(false) != AlertLevelAll {
+		t.Fatalf("defaults %q %q", a.NotificationCenterLevelFor(true), a.NotificationCenterLevelFor(false))
+	}
+	a.NotificationCenter.Level = AlertLevelOff
+	if a.NotificationCenterLevelFor(false) != AlertLevelOff {
+		t.Fatal("a chosen off was overridden")
+	}
+	a.NotificationCenter.Level = "loud"
+	if a.NotificationCenterLevelFor(false) != AlertLevelAll || a.NotificationCenterLevelFor(true) != AlertLevelCritical {
+		t.Fatal("a typo did not fall back to the default")
+	}
+}
