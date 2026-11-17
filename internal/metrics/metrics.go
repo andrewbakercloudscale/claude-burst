@@ -40,6 +40,12 @@ type Event struct {
 	// this request was sent to -- what actually answers "did this go to
 	// primary or secondary", independent of the Slot label.
 	Destination string `json:"destination,omitempty"`
+	// Client is the Claude Code front end that sent the request, from its
+	// User-Agent (internal/desktop.ClientOf): "cli", "claude-desktop",
+	// "cowork", "sdk". Recorded from 17 Nov 2026 so a Claude Desktop user
+	// can see their sessions go through Burst at all: nothing else in the
+	// gateway's records told the Code tab apart from the terminal.
+	Client string `json:"client,omitempty"`
 	// HTTPStatus is what the client was answered. A request that never got
 	// an upstream answer records the status the gateway sent (502), and one
 	// the client abandoned records StatusClientClosed. Until 2026-10-03 both

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrewbakercloudscale/claude-burst/internal/desktop"
 	"github.com/andrewbakercloudscale/claude-burst/internal/metrics"
 )
 
@@ -467,8 +468,16 @@ func (s *Server) forward(w http.ResponseWriter, in *http.Request, body []byte, s
 		// to note (a heartbeat, an event upload), is in the minute's quiet
 		// count from ServeHTTP and in metrics.jsonl: not a line of its own.
 		if isInference(in.URL.Path) || note != "" || time.Since(start) >= quietSlow {
-			s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q",
-				rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note)
+			// The client is named only when it is not the terminal's, so
+			// the lines most installs write are as they were; a Claude
+			// Desktop session says so, which is how its user (and
+			// diagnose.sh) can tell its requests reach Burst at all.
+			client := ""
+			if c := desktop.ClientOf(in.Header.Get("User-Agent")); c != "" && c != desktop.ClientCLI {
+				client = " client=" + c
+			}
+			s.logger.Printf("req=%s ok route=%s model=%q status=%d dur_ms=%d in_tok=%d out_tok=%d note=%q%s",
+				rid, p.Name(), model, resp.StatusCode, time.Since(start).Milliseconds(), tok.input, tok.output, note, client)
 		}
 		s.writeMetric(in, slot, p.Name(), serveModel, model, resp.StatusCode, start, tok, "", 0, note, destination)
 		return
