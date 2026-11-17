@@ -435,8 +435,10 @@ install() {
   # burst-off: the one-command off switch, on the PATH (see the script).
   zsh "$ROOT/scripts/install-burst-off.sh"
 
-  # The Claude Burst app (Spotlight, Dock) that opens the dashboard. Never
-  # fails the install: an app of that name that is not ours is left alone.
+  # The Claude Burst app (Spotlight, Dock) that opens the dashboard, with the
+  # Notification Center helper built and signed inside it (macOS then asks
+  # once whether Claude Burst may notify). Never fails the install: an app of
+  # that name that is not ours is left alone.
   "$TARGET" app install || echo "WARNING: the Claude Burst app was not installed; run: claude-burst app install" >&2
 
   ZPROFILE="$HOME/.zprofile"

@@ -38,6 +38,10 @@ func noticeCmd(args []string) {
 		fatal(err)
 	}
 	p := notice.New(notice.Path(dir), nil)
+	// The toasts' level applies here too. Notification Center is the
+	// support console's to post (see routeAlerts): this runs as the console
+	// user under sudo from a root daemon, outside the login session.
+	routeAlerts(p, false, nil)
 	p.Publish("ext-"+*kind, *severity, *title, *detail)
 	p.Flush(3 * time.Second)
 }

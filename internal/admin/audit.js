@@ -68,7 +68,7 @@
         <div class="au-row ${esc(e.severity)}">
           <div class="au-head"><span class="au-time">${when(e.at)}</span>
             <span class="au-title">${esc(e.title)}</span>
-            <span class="au-kind">${esc(e.audit_only ? "action" : e.kind)}</span></div>
+            <span class="au-kind">${esc(e.audit_only ? "action" : e.hidden ? e.kind + ", no toast (alert level)" : e.kind)}</span></div>
           ${e.detail ? `<div class="au-detail">${esc(e.detail)}</div>` : ""}
           <button type="button" class="au-more" data-at="${Number(e.ts) || 0}">Log around this</button>
         </div>`).join("");

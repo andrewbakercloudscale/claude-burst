@@ -28,7 +28,8 @@ Everything lives in `~/.config/claude-burst/config.json`. You rarely need to edi
 | `keep_awake_lid_closed` | `false` | Keep the Mac awake with the lid shut, see below. | `configure --keep-awake-lid-closed`; Dashboard, This Mac |
 | `keep_awake_lid_closed_power` | `ac` | `ac` (plugged in only) or `always`. | `configure --keep-awake-power`; Dashboard, This Mac |
 | `keep_awake_idle_minutes` | `0` (no limit) | Only stay awake this long after Claude Code was last used. | `configure --keep-awake-idle-minutes`; Dashboard, This Mac |
-| `notify` | all off | Retired: Burst no longer sends macOS notifications; kept so older files still load. See [Notifications](lid-and-hotspot.md#notifications). | none |
+| `notify` | all off | Retired (the osascript notifications, replaced by `alerts`); kept so older files still load. See [Notifications](lid-and-hotspot.md#notifications). | none |
+| `alerts` | toasts all, Notification Center critical | Where alerts go: `toasts.level` and `notification_center.level`, each `off`, `critical` or `all`. Read live. See [Notifications](lid-and-hotspot.md#notifications). | Dashboard, Notifications |
 | `alert_daily_spend_usd` | 0 (off) | An on-screen alert once today's API-equivalent spend passes this many dollars, once a day. Read live. See [Gateway alerts on screen](dashboard.md#gateway-alerts-on-screen). | Dashboard, Session options |
 | `hotspot` | off | `ssid`, `when` (`lid-closed` or `always`), `check_seconds` (5), `offline_checks` (2), `retry_seconds` (60), `give_up_minutes` (30). Read live. See [Join a hotspot](lid-and-hotspot.md#join-a-hotspot-when-offline). | Dashboard, This Mac |
 | `anthropic_base_url`, `bedrock_base_url`, `keychain_service`, `model_map` | see below | Legacy flat fields, still read: they are turned into `primary`/`secondary` when those blocks are absent. | Older configs only |

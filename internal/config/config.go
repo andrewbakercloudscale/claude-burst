@@ -593,19 +593,81 @@ type Config struct {
 	// once per day per level. 0 is off. Read live.
 	AlertDailySpendUSD float64 `json:"alert_daily_spend_usd,omitempty"`
 
+	// Alerts is where the gateway's alerts go and how many of them: the
+	// on-screen toasts (usage panel, mod) and macOS Notification Center.
+	// Read live. An absent block is the defaults (AlertsConfig).
+	Alerts AlertsConfig `json:"alerts,omitempty"`
+
 	// Hotspot joins a named Wi-Fi network when this Mac is offline, so a
 	// session left running with the lid shut can reach Anthropic from a
 	// phone's hotspot. Read live, no restart needed. See internal/hotspot.
 	Hotspot HotspotConfig `json:"hotspot,omitempty"`
 }
 
-// NotifyConfig is retired: Burst no longer sends macOS notifications (the
-// usage panel's on-screen alerts replaced them on 3 Oct 2026). Kept so a
-// config.json that still has a "notify" block reads and saves unchanged.
+// NotifyConfig is retired: it set the osascript notifications that the
+// usage panel's on-screen alerts replaced on 3 Oct 2026 (Notification
+// Center is now AlertsConfig). Kept so a config.json that still has a
+// "notify" block reads and saves unchanged.
 type NotifyConfig struct {
 	Failover   bool `json:"failover,omitempty"`   // requests move to the secondary, and back
 	Compaction bool `json:"compaction,omitempty"` // Burst compacted a session
 	Guards     bool `json:"guards,omitempty"`     // a guard repaired or removed the redirect
+}
+
+// Alert levels for one delivery channel (AlertChannel.Level).
+const (
+	AlertLevelOff      = "off"      // nothing goes out on this channel
+	AlertLevelCritical = "critical" // errors and the few kinds that need a person now
+	AlertLevelAll      = "all"      // every alert
+)
+
+// AlertChannel is one way an alert reaches the person. Level "" is the
+// channel's own default (AlertsConfig), so a config.json written before
+// this existed keeps today's behaviour: every alert as a toast.
+type AlertChannel struct {
+	Level string `json:"level,omitempty"`
+}
+
+// AlertsConfig picks the delivery channels and their levels.
+//
+// Toasts are the floating notices the usage panel and the mod show, from
+// notices.json; their default is all, as before this setting. Notification
+// Center is macOS's own banner, posted by the notifier helper inside the
+// Claude Burst app; its default is critical only, so it is a second line
+// for what must not be missed (Burst bypassed, requests failing) rather
+// than a copy of every toast.
+type AlertsConfig struct {
+	Toasts             AlertChannel `json:"toasts,omitempty"`
+	NotificationCenter AlertChannel `json:"notification_center,omitempty"`
+}
+
+// ValidAlertLevel reports whether v is a level a channel may be set to;
+// "" is the channel's default.
+func ValidAlertLevel(v string) bool {
+	switch v {
+	case "", AlertLevelOff, AlertLevelCritical, AlertLevelAll:
+		return true
+	}
+	return false
+}
+
+func alertLevel(v, def string) string {
+	switch v {
+	case AlertLevelOff, AlertLevelCritical, AlertLevelAll:
+		return v
+	}
+	// "" and anything a hand edit got wrong: the default, never off. A typo
+	// must not be what silences Burst's alerts.
+	return def
+}
+
+// ToastLevel is the toasts' level with its default filled in.
+func (a AlertsConfig) ToastLevel() string { return alertLevel(a.Toasts.Level, AlertLevelAll) }
+
+// NotificationCenterLevel is Notification Center's level with its default
+// filled in.
+func (a AlertsConfig) NotificationCenterLevel() string {
+	return alertLevel(a.NotificationCenter.Level, AlertLevelCritical)
 }
 
 // Values for HotspotConfig.When.
