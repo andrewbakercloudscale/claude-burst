@@ -31,7 +31,9 @@ package desktop
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -110,10 +112,19 @@ type Paths struct {
 	Projects string // ~/.claude/projects, where Code-tab transcripts land
 }
 
+// ApplicationsDirEnv overrides /Applications, for tests (Go's and
+// diagnose.sh's): a test's temporary HOME does not hide the real
+// /Applications/Claude.app of the Mac running it.
+const ApplicationsDirEnv = "CLAUDE_BURST_APPLICATIONS_DIR"
+
 // DefaultPaths are this Mac's: Claude.app in /Applications, or in
 // ~/Applications when it was dragged there instead.
 func DefaultPaths(home string) Paths {
-	app := "/Applications/Claude.app"
+	apps := "/Applications"
+	if d := os.Getenv(ApplicationsDirEnv); d != "" {
+		apps = d
+	}
+	app := filepath.Join(apps, "Claude.app")
 	if _, err := os.Stat(filepath.Join(app, "Contents", "Info.plist")); err != nil {
 		if alt := filepath.Join(home, "Applications", "Claude.app"); exists(filepath.Join(alt, "Contents", "Info.plist")) {
 			app = alt
@@ -336,4 +347,85 @@ func (s Status) Advice(mode string) (ok bool, msg string) {
 			s.CABundleAt.Local().Format("2 Jan 15:04") + ") lacks Burst's CA. Trust the CA system-wide (sudo scripts/trust-ca-systemwide.sh), then quit and reopen Claude Desktop"
 	}
 	return true, "Claude Desktop's CA bundle holds Burst's CA, so its Code and Cowork sessions trust the gateway"
+}
+
+// Seen is what metrics.jsonl says reached the gateway: model requests by
+// client (ClientOf) since a time.
+type Seen struct {
+	ByClient map[string]int
+	// Tagged: some record in the window names its client. Records written
+	// before 17 Nov 2026 never do, so their absence says nothing.
+	Tagged bool
+}
+
+// seenTail bounds how much of metrics.jsonl ReadSeen reads: the newest
+// records, which a week of one person's sessions fits in.
+const seenTail = 8 << 20
+
+// ReadSeen counts metrics.jsonl's records since since by client.
+func ReadSeen(metricsPath string, since time.Time) Seen {
+	seen := Seen{ByClient: map[string]int{}}
+	f, err := os.Open(metricsPath)
+	if err != nil {
+		return seen
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err == nil && fi.Size() > seenTail {
+		if _, err := f.Seek(fi.Size()-seenTail, 0); err != nil {
+			return seen
+		}
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	first := true
+	for sc.Scan() {
+		line := sc.Bytes()
+		if first {
+			// A seek lands mid-line; that partial line is not a record.
+			first = false
+			if len(line) == 0 || line[0] != '{' {
+				continue
+			}
+		}
+		var e struct {
+			Time   time.Time `json:"time"`
+			Client string    `json:"client"`
+		}
+		if json.Unmarshal(line, &e) != nil || e.Time.Before(since) {
+			continue
+		}
+		if e.Client != "" {
+			seen.Tagged = true
+			seen.ByClient[e.Client]++
+		}
+	}
+	return seen
+}
+
+// Check is the one-line answer to "do Claude Desktop's sessions go through
+// Burst", for the support console and claude-burst status. ok false means
+// something is wrong that the person can fix; detail says what.
+func Check(p Paths, caPEM []byte, metricsPath, mode string, now time.Time) (installed, ok bool, detail string) {
+	week := now.Add(-7 * 24 * time.Hour)
+	st := Inspect(p, caPEM, week)
+	if !st.Installed {
+		return false, true, "Claude Desktop is not installed"
+	}
+	ok, detail = st.Advice(mode)
+	if !ok {
+		return true, false, detail
+	}
+	seen := ReadSeen(metricsPath, week)
+	n := seen.ByClient[ClientDesktop] + seen.ByClient[ClientCowork]
+	switch {
+	case n > 0:
+		detail = fmt.Sprintf("%d requests from Claude Desktop reached Burst in the last 7 days. %s", n, detail)
+	case st.Sessions > 0 && seen.Tagged:
+		// Desktop's Code tab ran and wrote transcripts, the gateway was
+		// recording clients, and none of its requests arrived.
+		return true, false, fmt.Sprintf("Claude Desktop ran %d Code session(s) in the last 7 days and none of their requests reached Burst. %s", st.Sessions, detail)
+	default:
+		detail = "No Claude Desktop requests in the last 7 days. " + detail
+	}
+	return true, true, detail
 }

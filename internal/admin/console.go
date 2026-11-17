@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/andrewbakercloudscale/claude-burst/internal/config"
+	"github.com/andrewbakercloudscale/claude-burst/internal/desktop"
 	"github.com/andrewbakercloudscale/claude-burst/internal/tlsca"
 )
 
@@ -175,6 +176,9 @@ func (c *Console) handleStatus(w http.ResponseWriter, r *http.Request) {
 	} else {
 		st.Checks = append(st.Checks, dialCheck("Gateway port", cfg.Listen))
 	}
+	if chk, ok := desktopCheck(cfg, time.Now()); ok {
+		st.Checks = append(st.Checks, chk)
+	}
 	if a := cfg.AdminListen; a != "" && a != "off" {
 		st.Dashboard = "http://" + a + "/"
 		chk := httpCheck(ctx, "Dashboard", st.Dashboard+"api/state")
@@ -232,6 +236,26 @@ func bundleCheck(bundle string) consoleCheck {
 		return consoleCheck{name, false, "Burst's CA is not in " + bundle + ", so new Claude Code sessions refuse the gateway. The gateway puts it back when it starts: Restart gateway, or Turn Burst back on."}
 	}
 	return consoleCheck{name, true, "Burst's CA is in " + bundle}
+}
+
+// desktopCheck is whether Claude Desktop's sessions go through Burst, shown
+// only where Claude Desktop is installed. Its Code tab and Cowork run their
+// own Claude Code with their own CA bundle, so the bundle check above can be
+// green while every Desktop session refuses the gateway, and nothing showed
+// it until 17 Nov 2026. It never sets NeedsTurnOn: what fixes it is a
+// system-wide trust and a restart of Claude Desktop, not Burst.
+func desktopCheck(cfg config.Config, now time.Time) (consoleCheck, bool) {
+	var caPEM []byte
+	if cfg.Intercept.Mode == config.InterceptTransparent {
+		cert, _, _, _ := tlsca.Files(cfg.Intercept.CADir)
+		caPEM, _ = os.ReadFile(cert)
+	}
+	metricsPath, _ := config.MetricsPath()
+	installed, ok, detail := desktop.Check(desktop.DefaultPaths(homeDir()), caPEM, metricsPath, cfg.Intercept.Mode, now)
+	if !installed {
+		return consoleCheck{}, false
+	}
+	return consoleCheck{"Claude Desktop", ok, detail}, true
 }
 
 func dialCheck(name, addr string) consoleCheck {
