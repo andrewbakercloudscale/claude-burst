@@ -172,3 +172,80 @@ func TestBundleHasComparesCertificatesNotText(t *testing.T) {
 		t.Error("BundleHas")
 	}
 }
+
+func writeMetrics(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	write(t, path, strings.Join(lines, "\n")+"\n")
+}
+
+// Check says whether Desktop's sessions reach Burst, and only blames Burst
+// for missing ones once its records name clients at all.
+func TestCheckSaysWhetherDesktopReachesBurst(t *testing.T) {
+	t.Parallel()
+	p := fakeDesktop(t)
+	ca := testCA(t, "claude-burst local CA")
+	write(t, p.CABundle(), string(ca))
+	now := time.Now()
+	recent := now.Add(-time.Hour).UTC().Format(time.RFC3339)
+	old := now.Add(-10 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	mpath := filepath.Join(t.TempDir(), "metrics.jsonl")
+
+	// No Desktop transcripts and no records: nothing to say against it.
+	writeMetrics(t, mpath, `{"time":"`+recent+`","route":"anthropic"}`)
+	if inst, ok, msg := Check(p, ca, mpath, "transparent", now); !inst || !ok || !strings.Contains(msg, "No Claude Desktop requests") {
+		t.Fatalf("idle: %v %v %q", inst, ok, msg)
+	}
+
+	// Code sessions ran, but the records predate the client field: Burst
+	// cannot tell, so it does not fail.
+	write(t, filepath.Join(p.Projects, "-a", "d1.jsonl"), `{"type":"user","entrypoint":"claude-desktop"}`+"\n")
+	if _, ok, _ := Check(p, ca, mpath, "transparent", now); !ok {
+		t.Fatal("untagged records were taken as Desktop missing")
+	}
+
+	// Records name their clients, only the terminal's arrived: Desktop's
+	// sessions went around Burst.
+	writeMetrics(t, mpath, `{"time":"`+recent+`","route":"anthropic","client":"cli"}`, `{"time":"`+old+`","client":"claude-desktop"}`)
+	if _, ok, msg := Check(p, ca, mpath, "transparent", now); ok || !strings.Contains(msg, "none of their requests reached Burst") {
+		t.Fatalf("missing Desktop: %v %q", ok, msg)
+	}
+
+	// They arrived.
+	writeMetrics(t, mpath, `{"time":"`+recent+`","client":"claude-desktop"}`, `{"time":"`+recent+`","client":"cowork"}`, "not json")
+	if _, ok, msg := Check(p, ca, mpath, "transparent", now); !ok || !strings.HasPrefix(msg, "2 requests from Claude Desktop") {
+		t.Fatalf("seen: %v %q", ok, msg)
+	}
+
+	// The CA missing from Desktop's bundle outranks everything else.
+	write(t, p.CABundle(), string(testCA(t, "other")))
+	if _, ok, msg := Check(p, ca, mpath, "transparent", now); ok || !strings.Contains(msg, "do not trust Burst") {
+		t.Fatalf("untrusted: %v %q", ok, msg)
+	}
+}
+
+// A metrics.jsonl past the read limit is read from its tail, and the line
+// the seek cut in half is skipped rather than miscounted.
+func TestReadSeenReadsTheTail(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	now := time.Now().UTC().Format(time.RFC3339)
+	line := `{"time":"` + now + `","client":"cli","note":"` + strings.Repeat("x", 1000) + `"}` + "\n"
+	var b strings.Builder
+	for b.Len() < seenTail+5000 {
+		b.WriteString(line)
+	}
+	b.WriteString(`{"time":"` + now + `","client":"claude-desktop"}` + "\n")
+	write(t, path, b.String())
+	seen := ReadSeen(path, time.Now().Add(-time.Hour))
+	if seen.ByClient[ClientDesktop] != 1 || !seen.Tagged || seen.ByClient[ClientCLI] == 0 || seen.ByClient[ClientCLI] > seenTail/len(line)+1 {
+		t.Fatalf("%+v", seen)
+	}
+}
+
+func TestDefaultPathsHonourTheApplicationsOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(ApplicationsDirEnv, dir)
+	if got := DefaultPaths("/Users/x").App; got != filepath.Join(dir, "Claude.app") && got != "/Users/x/Applications/Claude.app" {
+		t.Fatalf("App = %q", got)
+	}
+}

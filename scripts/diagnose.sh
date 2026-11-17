@@ -85,6 +85,10 @@ LISTEN="$(cfg listen 127.0.0.1:7777)"
 ADMIN="$(cfg admin_listen 127.0.0.1:7788)"
 CONSOLE="$(cfg console_listen 127.0.0.1:7789)"
 MODE="$(cfg intercept.mode base-url)"
+# Claude Desktop's app; tests point CLAUDE_BURST_APPLICATIONS_DIR at a
+# temporary folder, since their temporary HOME does not hide /Applications.
+DESKTOP_APP="${CLAUDE_BURST_APPLICATIONS_DIR:-/Applications}/Claude.app"
+[ -f "$DESKTOP_APP/Contents/Info.plist" ] || { [ -f "$HOME/Applications/Claude.app/Contents/Info.plist" ] && DESKTOP_APP="$HOME/Applications/Claude.app"; }
 OFF=""; [ -f "$CFG/rolled-back" ] && OFF=1
 
 run_checks() {
@@ -160,6 +164,25 @@ run_checks() {
     v="$(cfg intercept.ca_bundle "$HOME/.claude/certs/node-extra-ca-certs.pem")"
     if grep -q '^# BEGIN claude-burst CA' "$v" 2>/dev/null; then pass "Claude Code's CA bundle holds Burst's CA ($v)"
     else fail "Burst's CA is not in Claude Code's CA bundle ($v): new sessions refuse the gateway" "run: burst-on (or claude-burst enable --force)"; fi
+  fi
+
+  # Claude Desktop's Code tab and Cowork run their own Claude Code, which
+  # trusts the CA bundle Desktop writes at launch from the System keychain
+  # (~/Library/Application Support/Claude/ca-bundle.pem), never the bundle
+  # checked above. So the check above can pass while every Desktop session
+  # refuses the gateway (found 17 Nov 2026). Compared by certificate body,
+  # since Desktop rewrites the PEM.
+  if [ ! -f "$DESKTOP_APP/Contents/Info.plist" ]; then
+    skip "Claude Desktop is not installed"
+  elif [ "$MODE" = transparent ] && [ -z "$OFF" ]; then
+    v="$HOME/Library/Application Support/Claude/ca-bundle.pem"
+    ca="$(cfg intercept.ca_dir "$CFG/ca")/ca-cert.pem"
+    body="$(grep -v -- '-----' "$ca" 2>/dev/null | tr -d '\r\n')"
+    if [ ! -f "$v" ]; then skip "Claude Desktop has not written its CA bundle yet (it does when it starts)"
+    elif [ -n "$body" ] && tr -d '\r\n' <"$v" | grep -qF -- "$body"; then pass "Claude Desktop's CA bundle holds Burst's CA, so its Code and Cowork sessions trust the gateway"
+    else fail "Claude Desktop's CA bundle lacks Burst's CA: its Code and Cowork sessions refuse the gateway" "trust it system-wide: sudo $REPO/scripts/trust-ca-systemwide.sh, then quit and reopen Claude Desktop"; fi
+  else
+    pass "Claude Desktop is installed; its Code tab reads ~/.claude/settings.json (Cowork does not: transparent mode reaches it)"
   fi
 
   # Model requests the gateway could not read leave model="" on their ok
@@ -251,6 +274,20 @@ fi
 echo
 echo "environment of this shell:"
 env | grep -E '^(ANTHROPIC_|CLAUDE_|NODE_EXTRA_CA|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)' | redact | sed 's/^/  /'
+
+section "Claude Desktop"
+if [ -f "$DESKTOP_APP/Contents/Info.plist" ]; then
+  echo "app: $DESKTOP_APP, version $(/usr/bin/plutil -extract CFBundleShortVersionString raw "$DESKTOP_APP/Contents/Info.plist" 2>/dev/null || echo unknown)"
+  echo "Claude Code builds its Code tab runs:"
+  ls "$HOME/Library/Application Support/Claude/claude-code" 2>/dev/null | sed 's/^/  /'
+  ls -l "$HOME/Library/Application Support/Claude/ca-bundle.pem" 2>&1 | sed 's/^/  /'
+  echo "requests from Claude Desktop in the gateway's log (client=claude-desktop, client=cowork; recorded by releases after v0.20.59):"
+  if [ -f "$CFG/claude-burst.log" ]; then
+    grep -E ' ok route=.* client=(claude-desktop|cowork)$' "$CFG/claude-burst.log" | awk '{print substr($1,1,10), $NF}' | sort | uniq -c | tail -10 | sed 's/^/  /'
+  fi
+else
+  echo "not installed"
+fi
 
 section "LaunchAgents and LaunchDaemons"
 for l in "$LABEL" "$LABEL-selfheal"; do
