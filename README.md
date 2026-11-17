@@ -2,6 +2,17 @@
 
 Written and designed by [Andrew Baker](https://github.com/andrewbakercloudscale), Group Chief Information Officer at [Capitec Bank](https://www.capitecbank.co.za/). Blog: [andrewbaker.ninja](https://andrewbaker.ninja/). LinkedIn: [andrew-baker-ninja](https://www.linkedin.com/in/andrew-baker-ninja/).
 
+> [!IMPORTANT]
+> ### Install: one line, recommended
+>
+> Open the Terminal app on your Mac, paste this line and press Return:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/scripts/get.sh | bash
+> ```
+>
+> It checks the Mac, installs what is missing (Go, from Homebrew or go.dev), clones Burst to `~/claude-burst` (or updates the copy you have), installs it in transparent mode, offers to restart Claude Desktop so it trusts Burst, and ends with a green or red check. It asks for your password once (macOS may also show a window to allow its certificate). Rerun it any time to update. Ending the line with `bash -s -- --dry-run` instead of `bash` shows the plan and changes nothing; `CLAUDE_BURST_DIR=~/elsewhere bash` clones somewhere else. Works for [Claude Desktop](docs/claude-desktop.md) users too.
+
 > [!TIP]
 > ### ⚡ One-line setup: let Claude Code install it
 >
