@@ -103,8 +103,8 @@ func TestKeepAwakeModeIsValidatedAndSaved(t *testing.T) {
 	setGhosttyAppNap = func(on bool) error { nap = append(nap, on); return nil }
 	t.Cleanup(func() { setGhosttyAppNap = oldNap })
 	defer func() {
-		if len(nap) != 3 || !nap[0] || nap[1] || !nap[2] {
-			t.Errorf("Ghostty App Nap calls %v, want [true false true]", nap)
+		if len(nap) != 6 || !nap[0] || nap[1] || !nap[2] || !nap[3] || !nap[4] || !nap[5] {
+			t.Errorf("Ghostty App Nap calls %v, want [true false true true true true]", nap)
 		}
 	}()
 	scripts := filepath.Join(t.TempDir(), "scripts")
@@ -147,11 +147,36 @@ func TestKeepAwakeModeIsValidatedAndSaved(t *testing.T) {
 	}
 	cfg, _ = config.Load()
 	last := ran[len(ran)-1]
-	if cfg.KeepAwakeIdleMinutes != 60 || len(last) != 5 || last[3] != "60" || filepath.Base(last[4]) != "last-activity" {
+	// The minimum battery is passed too: the default 50 with none saved.
+	if cfg.KeepAwakeIdleMinutes != 60 || len(last) != 7 || last[3] != "60" || filepath.Base(last[4]) != "last-activity" ||
+		last[5] != "--min-battery" || last[6] != "50" {
 		t.Fatalf("idle: config %d, ran %v", cfg.KeepAwakeIdleMinutes, last)
 	}
 	if _, err := os.Stat(last[4]); err != nil {
 		t.Fatalf("activity file not created: %v", err)
+	}
+
+	// min_battery is saved (an explicit 0 included) and reaches the script;
+	// left out, the saved value stays; out of range is refused.
+	if c := post(`{"mode":"always","min_battery":101}`); c != http.StatusBadRequest {
+		t.Fatalf("min_battery 101: status %d", c)
+	}
+	if c := post(`{"mode":"always","min_battery":0}`); c != http.StatusOK {
+		t.Fatalf("min_battery 0: status %d", c)
+	}
+	cfg, _ = config.Load()
+	last = ran[len(ran)-1]
+	if cfg.KeepAwakeMinBatteryPercent() != 0 || last[len(last)-1] != "0" {
+		t.Fatalf("min_battery 0: config %d, ran %v", cfg.KeepAwakeMinBatteryPercent(), last)
+	}
+	if c := post(`{"mode":"always","min_battery":30}`); c != http.StatusOK {
+		t.Fatalf("min_battery 30: status %d", c)
+	}
+	post(`{"mode":"always"}`)
+	cfg, _ = config.Load()
+	last = ran[len(ran)-1]
+	if cfg.KeepAwakeMinBatteryPercent() != 30 || last[len(last)-1] != "30" {
+		t.Fatalf("min_battery left out: config %d, ran %v", cfg.KeepAwakeMinBatteryPercent(), last)
 	}
 }
 

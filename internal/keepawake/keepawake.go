@@ -36,7 +36,10 @@ const GhosttyDomain = "com.mitchellh.ghostty"
 const (
 	ModeFile = "/etc/claude-burst/lid-awake.mode"
 	IdleFile = "/etc/claude-burst/lid-awake.idle"
-	Plist    = "/Library/LaunchDaemons/ninja.andrewbaker.claude-burst-lidawake.plist"
+	// MinBatteryFile holds the minimum battery the root half applies, in
+	// percent. Absent: a daemon from before the setting, which never checks.
+	MinBatteryFile = "/etc/claude-burst/lid-awake.minbattery"
+	Plist          = "/Library/LaunchDaemons/ninja.andrewbaker.claude-burst-lidawake.plist"
 )
 
 // ActivityPath is the file the gateway touches on every real Claude turn.
@@ -224,6 +227,18 @@ func WantSleepDisabled(mode string, onAC bool) bool {
 	return mode == config.KeepAwakeAlways || onAC
 }
 
+// LowBattery says the minimum battery applies: on battery, below a
+// non-zero minimum. pct < 0 is an unknown charge, which never counts.
+func LowBattery(onAC bool, pct, min int) bool {
+	return !onAC && min > 0 && pct >= 0 && pct < min
+}
+
+// WantSleepDisabledAt is WantSleepDisabled with the minimum battery: 0 on
+// battery below it, whatever the mode.
+func WantSleepDisabledAt(mode string, onAC bool, pct, min int) bool {
+	return WantSleepDisabled(mode, onAC) && !LowBattery(onAC, pct, min)
+}
+
 // Blocker is another process holding the Mac awake. Only PreventSystemSleep
 // counts: the idle assertions every `caffeinate -i` takes (Claude Code holds
 // several) do not stop lid-close sleep. On 2026-09-29 the Mac slept with the
@@ -263,9 +278,11 @@ type Status struct {
 	SleepDisabled      bool      `json:"sleep_disabled"`
 	SleepDisabledKnown bool      `json:"sleep_disabled_known"`
 	OnAC               bool      `json:"on_ac"`
-	Battery            string    `json:"battery,omitempty"` // "85%; charging"
-	AppliedMode        string    `json:"applied_mode"`      // what the root half is doing: "", ac, always
-	AppliedIdle        int       `json:"applied_idle"`      // idle window the root half applies, minutes; 0 none
+	Battery            string    `json:"battery,omitempty"`   // "85%; charging"
+	BatteryPercent     int       `json:"battery_percent"`     // the charge, -1 with no battery
+	AppliedMode        string    `json:"applied_mode"`        // what the root half is doing: "", ac, always
+	AppliedIdle        int       `json:"applied_idle"`        // idle window the root half applies, minutes; 0 none
+	AppliedMinBattery  int       `json:"applied_min_battery"` // minimum battery the root half applies, percent; 0 none
 	LastActivity       time.Time `json:"last_activity,omitempty"`
 	DaemonInstalled    bool      `json:"daemon_installed"`
 	GhosttyNapOff      bool      `json:"ghostty_nap_off"`
@@ -273,6 +290,19 @@ type Status struct {
 }
 
 var batteryLine = regexp.MustCompile(`\t(\d+%; [a-zA-Z ]+);`)
+
+var batteryPercent = regexp.MustCompile(`(\d+)%;`)
+
+// BatteryPercent is the charge in `pmset -g batt` output, or -1 when there
+// is none (a Mac without a battery, or pmset failed).
+func BatteryPercent(battOut string) int {
+	if m := batteryPercent.FindStringSubmatch(battOut); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return n
+		}
+	}
+	return -1
+}
 
 func Read() Status {
 	var st Status
@@ -282,10 +312,13 @@ func Read() Status {
 	if m := batteryLine.FindStringSubmatch(string(batt)); m != nil {
 		st.Battery = m[1]
 	}
+	st.BatteryPercent = BatteryPercent(string(batt))
 	mode, _ := os.ReadFile(ModeFile)
 	st.AppliedMode = strings.TrimSpace(string(mode))
 	idle, _ := os.ReadFile(IdleFile)
 	st.AppliedIdle, _ = strconv.Atoi(strings.TrimSpace(string(idle)))
+	minBatt, _ := os.ReadFile(MinBatteryFile)
+	st.AppliedMinBattery, _ = strconv.Atoi(strings.TrimSpace(string(minBatt)))
 	st.LastActivity = LastActivity()
 	_, err := os.Stat(Plist)
 	st.DaemonInstalled = err == nil
@@ -298,7 +331,7 @@ func Read() Status {
 
 // Problem says what is wrong with the live state for a configured setting,
 // or "" when the machine is doing what the config asks.
-func (st Status) Problem(on bool, mode string, idle int) string {
+func (st Status) Problem(on bool, mode string, idle, minBattery int) string {
 	if !st.SleepDisabledKnown {
 		return "could not read SleepDisabled from pmset"
 	}
@@ -313,12 +346,14 @@ func (st Status) Problem(on bool, mode string, idle int) string {
 		return "the machine is not applying mode " + mode
 	case st.AppliedIdle != idle:
 		return "the machine is not applying the idle window"
+	case st.AppliedMinBattery != minBattery:
+		return "the machine is not applying the minimum battery"
 	case (mode == config.KeepAwakeOnAC || idle > 0) && !st.DaemonInstalled:
 		return "the keep-awake daemon is not installed"
 	case idle > 0:
 		// The daemon follows the clock too; SleepDisabled legitimately
 		// reads 0 once the window has passed.
-	case st.SleepDisabled != WantSleepDisabled(mode, st.OnAC):
+	case st.SleepDisabled != WantSleepDisabledAt(mode, st.OnAC, st.BatteryPercent, minBattery):
 		return "SleepDisabled does not match the power source"
 	case !st.GhosttyNapOff:
 		return "Ghostty may App Nap"

@@ -68,6 +68,38 @@ func TestOnACPowerAndWantSleepDisabled(t *testing.T) {
 	}
 }
 
+func TestBatteryPercentAndLowBattery(t *testing.T) {
+	for out, want := range map[string]int{
+		"Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t42%; discharging; present: true\n": 42,
+		"Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged; present: true\n":         100,
+		"Now drawing from 'AC Power'\n": -1,
+		"":                              -1,
+	} {
+		if got := BatteryPercent(out); got != want {
+			t.Errorf("BatteryPercent(%q) = %d, want %d", out, got, want)
+		}
+	}
+	for _, c := range []struct {
+		onAC     bool
+		pct, min int
+		want     bool
+	}{
+		{false, 42, 50, true},
+		{false, 50, 50, false}, // at the minimum: still kept awake
+		{false, 60, 50, false},
+		{true, 10, 50, false}, // on AC the charge does not matter
+		{false, 10, 0, false}, // 0 turns the check off
+		{false, -1, 50, false},
+	} {
+		if got := LowBattery(c.onAC, c.pct, c.min); got != c.want {
+			t.Errorf("LowBattery(onAC=%v, %d, %d) = %v", c.onAC, c.pct, c.min, got)
+		}
+	}
+	if WantSleepDisabledAt("always", false, 42, 50) || !WantSleepDisabledAt("always", false, 50, 50) {
+		t.Error("WantSleepDisabledAt: always on battery must follow the minimum")
+	}
+}
+
 func TestParseBlockers(t *testing.T) {
 	out := "Assertion status system-wide:\n" +
 		"   PreventSystemSleep             1\n" +
@@ -97,7 +129,7 @@ func TestParseBlockers(t *testing.T) {
 }
 
 func TestProblem(t *testing.T) {
-	good := Status{SleepDisabled: true, SleepDisabledKnown: true, OnAC: true, AppliedMode: "ac", DaemonInstalled: true, GhosttyNapOff: true}
+	good := Status{SleepDisabled: true, SleepDisabledKnown: true, OnAC: true, BatteryPercent: 80, AppliedMode: "ac", AppliedMinBattery: 50, DaemonInstalled: true, GhosttyNapOff: true}
 	with := func(f func(*Status)) Status { s := good; f(&s); return s }
 	cases := []struct {
 		name  string
@@ -123,7 +155,28 @@ func TestProblem(t *testing.T) {
 		{"Ghostty may nap", with(func(s *Status) { s.GhosttyNapOff = false }), true, "ac", 0, false},
 	}
 	for _, c := range cases {
-		got := c.st.Problem(c.on, c.mode, c.idle)
+		got := c.st.Problem(c.on, c.mode, c.idle, 50)
+		if (got == "") != c.empty {
+			t.Errorf("%s: Problem = %q", c.name, got)
+		}
+	}
+	// The minimum battery: applied as configured, and on battery below it
+	// SleepDisabled 0 is right even in mode always.
+	always := with(func(s *Status) { s.AppliedMode = "always"; s.OnAC = false; s.BatteryPercent = 42 })
+	for _, c := range []struct {
+		name  string
+		st    Status
+		min   int
+		empty bool
+	}{
+		{"minimum not applied", good, 30, false},
+		{"daemon from before the minimum", with(func(s *Status) { s.AppliedMinBattery = 0 }), 50, false},
+		{"below the minimum, SleepDisabled 0", with(func(s *Status) { *s = always; s.SleepDisabled = false }), 50, true},
+		{"below the minimum, SleepDisabled still 1", always, 50, false},
+		{"above the minimum, SleepDisabled 1", with(func(s *Status) { *s = always; s.AppliedMinBattery = 40 }), 40, true},
+		{"minimum off, SleepDisabled 1", with(func(s *Status) { *s = always; s.AppliedMinBattery = 0 }), 0, true},
+	} {
+		got := c.st.Problem(true, c.st.AppliedMode, 0, c.min)
 		if (got == "") != c.empty {
 			t.Errorf("%s: Problem = %q", c.name, got)
 		}

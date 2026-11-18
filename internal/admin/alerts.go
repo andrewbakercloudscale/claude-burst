@@ -110,7 +110,7 @@ func (s *Server) alertKeepAwake(a *alertRounds, cfg config.Config, now time.Time
 		return
 	}
 	on := st.SleepDisabled
-	problem := st.Problem(true, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
+	problem := st.Problem(true, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes, cfg.KeepAwakeMinBatteryPercent())
 	if problem == "" {
 		// The lid daemon is what turns the screen off behind a shut lid; an
 		// old or missing one drains the battery with the screen lit. Only a
@@ -178,6 +178,8 @@ func keepAwakeOffExplained(st keepawake.Status, cfg config.Config, now time.Time
 		return fmt.Sprintf("No Claude Code use for %d minutes, the time limit, so the Mac sleeps if the lid is shut. Using Claude Code turns it back on.", cfg.KeepAwakeIdleMinutes)
 	case cfg.KeepAwakeLidClosedPower == config.KeepAwakeOnAC && !st.OnAC:
 		return "On battery, and keep-awake applies only while plugged in, so the Mac sleeps if the lid is shut."
+	case keepawake.LowBattery(st.OnAC, st.BatteryPercent, cfg.KeepAwakeMinBatteryPercent()):
+		return fmt.Sprintf("On battery at %d%%, below the %d%% minimum, so the Mac sleeps if the lid is shut. Plugging in turns it back on.", st.BatteryPercent, cfg.KeepAwakeMinBatteryPercent())
 	case problem != "":
 		return problem + ". The Mac sleeps if the lid is shut."
 	}

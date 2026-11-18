@@ -579,6 +579,14 @@ type Config struct {
 	// 0 (default) keeps it awake for as long as the power mode applies.
 	KeepAwakeIdleMinutes int `json:"keep_awake_idle_minutes,omitempty"`
 
+	// KeepAwakeMinBattery lets the Mac sleep with the lid shut anyway while
+	// it is on battery below this charge, in percent, whatever the power
+	// mode and idle window say. nil is the default
+	// (DefaultKeepAwakeMinBattery, also for a config.json written before the
+	// setting existed); 0 turns the check off. Read it through
+	// KeepAwakeMinBatteryPercent.
+	KeepAwakeMinBattery *int `json:"keep_awake_min_battery,omitempty"`
+
 	// AdminHostname is an optional friendly name for the admin UI, e.g.
 	// "cloudscale-claudeburst.test", paired with an /etc/hosts entry pointing
 	// it at 127.0.0.1.
@@ -1025,6 +1033,23 @@ func (c *Config) ValidateIntercept() error {
 // MaxKeepAwakeIdleMinutes is a day, the most lid-awake-root.sh accepts.
 const MaxKeepAwakeIdleMinutes = 1440
 
+// DefaultKeepAwakeMinBattery is the charge below which a Mac on battery
+// sleeps with the lid shut even with keep-awake on: a closed laptop kept
+// awake in a bag should not run itself flat.
+const DefaultKeepAwakeMinBattery = 50
+
+// MaxKeepAwakeMinBattery is the most lid-awake-root.sh accepts.
+const MaxKeepAwakeMinBattery = 100
+
+// KeepAwakeMinBatteryPercent is KeepAwakeMinBattery with the default
+// filled in: 0 (no check) to 100.
+func (c Config) KeepAwakeMinBatteryPercent() int {
+	if c.KeepAwakeMinBattery == nil {
+		return DefaultKeepAwakeMinBattery
+	}
+	return *c.KeepAwakeMinBattery
+}
+
 // ValidateKeepAwakePower rejects an unknown power mode rather than guessing:
 // "always" read as "ac" would let the Mac sleep when the user expected it not
 // to, and the reverse would keep it awake on battery in a bag.
@@ -1169,6 +1194,9 @@ func loadFile(p string) (Config, error) {
 	}
 	if cfg.KeepAwakeIdleMinutes < 0 || cfg.KeepAwakeIdleMinutes > MaxKeepAwakeIdleMinutes {
 		return cfg, fmt.Errorf("parse %s: keep_awake_idle_minutes must be 0 to %d, got %d", p, MaxKeepAwakeIdleMinutes, cfg.KeepAwakeIdleMinutes)
+	}
+	if n := cfg.KeepAwakeMinBatteryPercent(); n < 0 || n > MaxKeepAwakeMinBattery {
+		return cfg, fmt.Errorf("parse %s: keep_awake_min_battery must be 0 to %d, got %d", p, MaxKeepAwakeMinBattery, n)
 	}
 	return cfg, nil
 }

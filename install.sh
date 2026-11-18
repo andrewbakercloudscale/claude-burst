@@ -133,16 +133,18 @@ choose_intercept_mode() {
 }
 
 apply_keep_awake() {
-  local cfg="$HOME/.config/claude-burst/config.json" on mode
+  local cfg="$HOME/.config/claude-burst/config.json" on mode idle minbatt
   on="$(python3 -c "import json;print(str(json.load(open('$cfg')).get('keep_awake_lid_closed',False)).lower())" 2>/dev/null || echo false)"
   [[ "$on" == true ]] || return 0
   mode="$(python3 -c "import json;print(json.load(open('$cfg')).get('keep_awake_lid_closed_power') or 'ac')" 2>/dev/null || echo ac)"
+  idle="$(python3 -c "import json;print(int(json.load(open('$cfg')).get('keep_awake_idle_minutes') or 0))" 2>/dev/null || echo 0)"
+  minbatt="$(python3 -c "import json;v=json.load(open('$cfg')).get('keep_awake_min_battery');print(50 if v is None else int(v))" 2>/dev/null || echo 50)"
   echo "keep_awake_lid_closed is true (mode $mode): applying; sudo will ask for your password."
   appnap_record_original
   defaults write com.mitchellh.ghostty NSAppSleepDisabled -bool YES
-  if ! sudo "$ROOT/scripts/lid-awake-root.sh" apply "$mode"; then
+  if ! sudo "$ROOT/scripts/lid-awake-root.sh" apply "$mode" "$idle" "$HOME/.config/claude-burst/last-activity" --min-battery "$minbatt"; then
     echo "WARNING: keep-awake not applied; the lid will still sleep the Mac. Run:" >&2
-    echo "  sudo $ROOT/scripts/lid-awake-root.sh apply $mode" >&2
+    echo "  sudo $ROOT/scripts/lid-awake-root.sh apply $mode $idle $HOME/.config/claude-burst/last-activity --min-battery $minbatt" >&2
   fi
 }
 

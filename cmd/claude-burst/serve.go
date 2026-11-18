@@ -360,6 +360,14 @@ func startableConfig(cfg config.Config, loadErr error) (config.Config, []router.
 		})
 		cfg.KeepAwakeIdleMinutes = def
 	}
+	if n := cfg.KeepAwakeMinBatteryPercent(); n < 0 || n > config.MaxKeepAwakeMinBattery {
+		def := config.DefaultKeepAwakeMinBattery
+		found = append(found, router.StartupProblem{
+			Title:  "The keep-awake minimum battery was ignored",
+			Detail: fmt.Sprintf("keep_awake_min_battery must be 0 to %d, got %d. Running as if it were %d until config.json is corrected and the gateway restarted.", config.MaxKeepAwakeMinBattery, n, def),
+		})
+		cfg.KeepAwakeMinBattery = nil
+	}
 	return cfg, found, len(found) > 0
 }
 

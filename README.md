@@ -379,7 +379,8 @@ claude-burst version
 
 claude-burst configure --keep-awake-lid-closed true|false   # lid shut: keep Claude Code + Remote Control running
 claude-burst configure --keep-awake-power ac|always         # ac (default): only while plugged in
-sudo scripts/lid-awake-root.sh apply ac|always              # the root half; configure prints this
+claude-burst configure --keep-awake-min-battery 50          # on battery below this %, the lid sleeps the Mac anyway (0 = off)
+sudo scripts/lid-awake-root.sh apply ac|always [IDLE ACTIVITY] [--min-battery N]   # the root half; configure prints this
 sudo scripts/lid-awake-root.sh remove
 scripts/lid-awake-root.sh status
 

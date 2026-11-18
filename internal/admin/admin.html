@@ -1789,6 +1789,10 @@
           <option value="480">for 8 hours after I last used it</option>
         </select>
       </label>
+      <label style="display:block;margin-top:10px;font-size:15px;font-weight:600;color:var(--text)">Sleep anyway on battery below
+        <input id="kaMinBatt" type="number" min="0" max="100" step="1" inputmode="numeric" style="width:64px;margin-left:8px;font-weight:normal">%
+      </label>
+      <div class="hint" style="margin-top:4px">On battery with less charge than this, a shut lid sleeps the Mac as usual whatever is chosen above, so a laptop kept awake in a bag does not run itself flat. 50% by default; 0 turns the check off. Plugged in, the charge does not matter.</div>
       <div class="hint" style="margin-top:4px">"Used" is a Claude Code turn, from this Mac or from your phone through Remote Control, or the lid being open. Once the time passes the Mac sleeps as usual; opening the lid wakes it and starts the time again, and if there is no network the hotspot is tried at once and then on the usual timing until the Mac is back online.</div>
       <div class="row" style="margin-top:10px">
         <button class="primary" id="kaApply" disabled>&#x2713; Apply</button>
@@ -5996,7 +6000,8 @@ function renderMac() {
   // A choice not yet applied survives a refresh; otherwise show what is saved.
   if (!kaPick) for (const r of document.querySelectorAll('input[name="kaMode"]')) r.checked = r.value === ka.mode;
   if (!kaPick) $("kaIdle").value = String(ka.idle_minutes || 0);
-  $("kaIdle").disabled = ((document.querySelector('input[name="kaMode"]:checked') || {}).value || "off") === "off";
+  if (!kaPick) $("kaMinBatt").value = String(ka.min_battery ?? 50);
+  $("kaIdle").disabled = $("kaMinBatt").disabled = ((document.querySelector('input[name="kaMode"]:checked') || {}).value || "off") === "off";
   kaUpdateApply();
   renderOriginal();
   const power = lv.on_ac ? "on mains power" : "on battery";
@@ -6008,6 +6013,11 @@ function renderMac() {
     html += until > new Date()
       ? ` Last used ${new Date(lv.last_activity).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}; with the lid shut it stays awake until at least <b>${until.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}</b>.`
       : ` Not used for ${ka.idle_minutes >= 60 ? ka.idle_minutes / 60 + " h" : ka.idle_minutes + " min"}: closing the lid now sleeps the Mac.`;
+  }
+  if (ka.mode !== "off" && ka.min_battery > 0) {
+    html += !lv.on_ac && lv.battery_percent >= 0 && lv.battery_percent < ka.min_battery
+      ? ` Battery at ${lv.battery_percent}%, below the <b>${ka.min_battery}%</b> minimum: closing the lid sleeps the Mac until it is plugged in.`
+      : ` On battery below ${ka.min_battery}%, closing the lid sleeps the Mac anyway.`;
   }
   if (ka.problem) html += `<div class="note warn" style="margin-top:6px">Saved but not applied on this Mac: ${esc(ka.problem)}. Click <b>Apply</b> to apply it (the machine-wide part asks for your password in a Terminal window).</div>`;
   const bl = (lv.blockers || []).filter(b => b.process !== "powerd");
@@ -6116,7 +6126,7 @@ async function grantLid(btn, noteEl) {
   if (!ka || ka.mode === "off") return;
   btn.disabled = true;
   try {
-    const x = await post("/api/keep-awake", {mode: ka.mode, idle_minutes: ka.idle_minutes || 0});
+    const x = await post("/api/keep-awake", {mode: ka.mode, idle_minutes: ka.idle_minutes || 0, min_battery: ka.min_battery ?? 50});
     note(noteEl, "ok", x.detail);
     for (let i = 0; i < 40 && x.script; i++) {
       await new Promise(r => setTimeout(r, 3000));
@@ -6134,35 +6144,48 @@ $("permLidGrant").onclick = () => grantLid($("permLidGrant"), $("permNote"));
 // which for the machine-wide part means a password prompt.
 let kaPick = null;
 const kaLabels = {off: "Off", ac: "Plugged in only", always: "Plugged in and on battery"};
+// kaMinBatt: the minimum battery on the form, a whole number 0 to 100, or
+// null when the box does not hold one.
+function kaMinBatt() {
+  const v = $("kaMinBatt").value.trim();
+  const n = Number(v);
+  return v !== "" && Number.isInteger(n) && n >= 0 && n <= 100 ? n : null;
+}
 function kaUpdateApply() {
   const ka = macState && macState.keep_awake;
   if (!ka) return;
   const sel = (document.querySelector('input[name="kaMode"]:checked') || {}).value;
   const idle = sel === "off" ? 0 : Number($("kaIdle").value);
-  const changed = sel && (sel !== ka.mode || (sel !== "off" && idle !== (ka.idle_minutes || 0)));
+  const minb = kaMinBatt(), savedMinb = ka.min_battery ?? 50;
+  const changed = sel && (sel !== ka.mode || (sel !== "off" && (idle !== (ka.idle_minutes || 0) || (minb !== null && minb !== savedMinb))));
   // Never disabled: rerunning apply is how a newer lid-awake-root.sh reaches
   // the root daemon, and it is safe to repeat.
-  $("kaApply").disabled = false;
+  $("kaApply").disabled = sel !== "off" && minb === null;
   $("kaApply").textContent = changed ? "\u2713 Apply" : "\u2713 Apply again";
-  const idleText = (mode, mins) => mode === "off" ? "" : mins ? `, for ${mins >= 60 ? mins / 60 + " h" : mins + " min"} after last use` : ", no time limit";
+  const battText = (mode, pct) => mode === "off" ? "" : pct ? `, sleeping on battery below ${pct}%` : ", no battery minimum";
+  const idleText = (mode, mins, pct) => (mode === "off" ? "" : mins ? `, for ${mins >= 60 ? mins / 60 + " h" : mins + " min"} after last use` : ", no time limit") + battText(mode, pct);
+  if (sel && sel !== "off" && minb === null) { $("kaPending").textContent = "The battery minimum must be a whole number from 0 to 100."; return; }
   // Name both sides: "now 2 h" beside a dropdown reading 1 hour looked like
   // the page disagreeing with itself.
   $("kaPending").textContent = changed
-    ? `Not applied yet. This Mac is using ${kaLabels[ka.mode] || ka.mode}${idleText(ka.mode, ka.idle_minutes)}; Apply switches it to ${kaLabels[sel] || sel}${idleText(sel, idle)}.`
+    ? `Not applied yet. This Mac is using ${kaLabels[ka.mode] || ka.mode}${idleText(ka.mode, ka.idle_minutes, savedMinb)}; Apply switches it to ${kaLabels[sel] || sel}${idleText(sel, idle, minb)}.`
     : "";
 }
 for (const r of document.querySelectorAll('input[name="kaMode"]')) {
-  r.addEventListener("change", () => { kaPick = r.value; $("kaIdle").disabled = r.value === "off"; kaUpdateApply(); });
+  r.addEventListener("change", () => { kaPick = r.value; $("kaIdle").disabled = $("kaMinBatt").disabled = r.value === "off"; kaUpdateApply(); });
 }
 $("kaIdle").addEventListener("change", () => { kaPick = kaPick || "idle"; kaUpdateApply(); });
+$("kaMinBatt").addEventListener("input", () => { kaPick = kaPick || "battery"; kaUpdateApply(); });
 $("kaApply").onclick = async () => {
   const mode = (document.querySelector('input[name="kaMode"]:checked') || {}).value;
   if (!mode) return;
-  if (mode === "always" && !confirm("Stay awake with the lid shut on battery too?\n\nThe Mac will not sleep in a bag. It keeps using the battery and can get hot.")) return;
+  const minb = kaMinBatt();
+  if (mode !== "off" && minb === null) { note($("kaNote"), "bad", "The battery minimum must be a whole number from 0 to 100."); return; }
+  if (mode === "always" && !confirm(`Stay awake with the lid shut on battery too?\n\nThe Mac will not sleep in a bag${minb ? ` until the battery is below ${minb}%` : ""}. It keeps using the battery and can get hot.`)) return;
   $("kaApply").disabled = true;
   note($("kaNote"), "warn", "Applying...");
   let viaTerminal = false;
-  try { const x = await post("/api/keep-awake", {mode, idle_minutes: mode === "off" ? 0 : Number($("kaIdle").value)}); note($("kaNote"), "ok", x.detail); kaPick = null; viaTerminal = !!x.script; }
+  try { const x = await post("/api/keep-awake", mode === "off" ? {mode, idle_minutes: 0} : {mode, idle_minutes: Number($("kaIdle").value), min_battery: minb}); note($("kaNote"), "ok", x.detail); kaPick = null; viaTerminal = !!x.script; }
   catch (e) { note($("kaNote"), "bad", e.message); }
   await loadMac();
   // The password is typed in Terminal: keep checking for two minutes, so

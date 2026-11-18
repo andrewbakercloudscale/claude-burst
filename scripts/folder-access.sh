@@ -58,7 +58,7 @@ PY
 # say where to do it. Only when keep-awake is on. Never fails the caller.
 burst_lid_daemon_update() {
   local root="$1" cfg="$HOME/.config/claude-burst/config.json" installed=/usr/local/libexec/claude-burst/lid-awake-root.sh
-  local on mode idle
+  local on mode idle minbatt
   on="$(python3 -c "import json;print(str(json.load(open('$cfg')).get('keep_awake_lid_closed',False)).lower())" 2>/dev/null || echo false)"
   [[ "$on" == true ]] || return 0
   if [[ -f "$installed" ]] && cmp -s "$root/scripts/lid-awake-root.sh" "$installed" && pgrep -f 'lid-awake-root.sh watch' >/dev/null 2>&1; then
@@ -70,10 +70,12 @@ burst_lid_daemon_update() {
   fi
   mode="$(python3 -c "import json;print(json.load(open('$cfg')).get('keep_awake_lid_closed_power') or 'ac')" 2>/dev/null || echo ac)"
   idle="$(python3 -c "import json;print(int(json.load(open('$cfg')).get('keep_awake_idle_minutes') or 0))" 2>/dev/null || echo 0)"
+  # Absent means the default, 50; an explicit 0 (no battery check) is kept.
+  minbatt="$(python3 -c "import json;v=json.load(open('$cfg')).get('keep_awake_min_battery');print(50 if v is None else int(v))" 2>/dev/null || echo 50)"
   echo
   echo "Keep-awake: the lid daemon (it keeps the Mac awake and turns the screen off behind"
   echo "the shut lid) is out of date or not running. sudo will ask for your password."
-  sudo "$root/scripts/lid-awake-root.sh" apply "$mode" "$idle" "$HOME/.config/claude-burst/last-activity" \
+  sudo "$root/scripts/lid-awake-root.sh" apply "$mode" "$idle" "$HOME/.config/claude-burst/last-activity" --min-battery "$minbatt" \
     || echo "  keep-awake: not updated. Press Grant permission under Lid & hotspot on the dashboard."
   return 0
 }
