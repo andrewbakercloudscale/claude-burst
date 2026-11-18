@@ -145,7 +145,7 @@ func TestAlertKeepAwakeTurnsOffAndBack(t *testing.T) {
 	s := newTestServer(t)
 	alerts := captureAlerts(t)
 	live := keepawake.Status{SleepDisabled: true, SleepDisabledKnown: true, OnAC: true,
-		AppliedMode: config.KeepAwakeOnAC, DaemonInstalled: true, GhosttyNapOff: true}
+		AppliedMode: config.KeepAwakeOnAC, AppliedMinBattery: 50, BatteryPercent: 80, DaemonInstalled: true, GhosttyNapOff: true}
 	old := readKeepAwake
 	readKeepAwake = func() keepawake.Status { return live }
 	t.Cleanup(func() { readKeepAwake = old })
@@ -178,7 +178,7 @@ func TestAlertKeepAwakeTurnsOffAndBack(t *testing.T) {
 	since := func() []string { return alerts()[base:] }
 	a = &alertRounds{}
 	live = keepawake.Status{SleepDisabled: true, SleepDisabledKnown: true, OnAC: true,
-		AppliedMode: config.KeepAwakeOnAC, DaemonInstalled: true, GhosttyNapOff: true}
+		AppliedMode: config.KeepAwakeOnAC, AppliedMinBattery: 50, BatteryPercent: 80, DaemonInstalled: true, GhosttyNapOff: true}
 	s.alertKeepAwake(a, cfg, now)
 	live.SleepDisabled = false
 	s.alertKeepAwake(a, cfg, now.Add(30*time.Second))
@@ -201,6 +201,11 @@ func TestAlertKeepAwakeTurnsOffAndBack(t *testing.T) {
 	cfg.KeepAwakeIdleMinutes = 30
 	if r := keepAwakeOffReason(keepawake.Status{OnAC: true, LastActivity: now.Add(-31 * time.Minute)}, cfg, now, ""); !strings.Contains(r, "30 minutes") {
 		t.Errorf("idle reason = %q", r)
+	}
+	cfg.KeepAwakeIdleMinutes = 0
+	cfg.KeepAwakeLidClosedPower = config.KeepAwakeAlways
+	if r := keepAwakeOffReason(keepawake.Status{OnAC: false, BatteryPercent: 42}, cfg, now, ""); !strings.Contains(r, "42%, below the 50% minimum") {
+		t.Errorf("low battery reason = %q", r)
 	}
 }
 

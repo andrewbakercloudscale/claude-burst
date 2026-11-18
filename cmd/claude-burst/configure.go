@@ -31,6 +31,7 @@ func configure(args []string) {
 	keepAwake := fs.String("keep-awake-lid-closed", "", "true | false: keep the Mac (and Claude Code in Ghostty, and Remote Control) running with the lid shut")
 	keepAwakePower := fs.String("keep-awake-power", "", "when --keep-awake-lid-closed applies: ac (default, only while plugged in) | always")
 	keepAwakeIdle := fs.Int("keep-awake-idle-minutes", -1, "stay awake with the lid shut only this many minutes after Claude Code was last used or the lid was last open; 0 = as long as the power mode applies")
+	keepAwakeMinBattery := fs.Int("keep-awake-min-battery", -1, "with the lid shut, sleep anyway on battery below this charge, in percent (default 50); 0 = no battery check")
 	allowNonLoopback := fs.Bool("allow-non-loopback-listen", false, "accept a --listen or --admin-listen address that is not loopback (not a supported setup: the gateway has no login)")
 	_ = fs.Parse(args)
 
@@ -185,6 +186,13 @@ func configure(args []string) {
 			}
 			cfg.KeepAwakeIdleMinutes = *keepAwakeIdle
 		}
+		if *keepAwakeMinBattery >= 0 {
+			if *keepAwakeMinBattery > config.MaxKeepAwakeMinBattery {
+				return fmt.Errorf("invalid --keep-awake-min-battery %d (0 to %d)", *keepAwakeMinBattery, config.MaxKeepAwakeMinBattery)
+			}
+			n := *keepAwakeMinBattery
+			cfg.KeepAwakeMinBattery = &n
+		}
 		cfg.ResolveRoutes()
 		saved = *cfg
 		return nil
@@ -197,8 +205,8 @@ func configure(args []string) {
 	fmt.Printf("wrote %s\n", p)
 	// A power-mode change only needs applying while the feature is on; while
 	// it is off it is just remembered for the next time it is switched on.
-	if *keepAwake != "" || ((*keepAwakePower != "" || *keepAwakeIdle >= 0) && cfg.KeepAwakeLidClosed) {
-		applyKeepAwake(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
+	if *keepAwake != "" || ((*keepAwakePower != "" || *keepAwakeIdle >= 0 || *keepAwakeMinBattery >= 0) && cfg.KeepAwakeLidClosed) {
+		applyKeepAwake(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes, cfg.KeepAwakeMinBatteryPercent())
 	}
 }
 

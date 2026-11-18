@@ -49,6 +49,10 @@ func TestABadKeepAwakeSettingDoesNotStopTheGateway(t *testing.T) {
 			func(c config.Config) bool {
 				return c.KeepAwakeIdleMinutes == config.Default().KeepAwakeIdleMinutes
 			}},
+		"min battery": {`{"keep_awake_min_battery":150}`,
+			func(c config.Config) bool {
+				return c.KeepAwakeMinBatteryPercent() == config.DefaultKeepAwakeMinBattery
+			}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, err := loadConfigJSON(t, c.body)

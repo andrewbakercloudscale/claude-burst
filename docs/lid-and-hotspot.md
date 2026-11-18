@@ -44,16 +44,19 @@ Off by default. `keep_awake_lid_closed` in `config.json` keeps a Claude Code ses
 | `keep_awake_lid_closed_power` | Lid shut, plugged in | Lid shut, on battery |
 | --- | --- | --- |
 | `ac` **(default)** | stays awake | sleeps as normal |
-| `always` | stays awake | stays awake |
+| `always` | stays awake | stays awake (until the battery drops below the minimum, 50% by default) |
 
 **Only while in use** (`keep_awake_idle_minutes`, 0 by default): either mode can be limited to a set time after you last used it, so a session you walked away from does not keep a closed laptop awake all night. "Used" is a Claude Code turn (from the Mac or from your phone through Remote Control) or the lid being open. Once the time passes, closing the lid sleeps the Mac as usual; opening it wakes the Mac, starts the time again, and tries the hotspot at once if there is no network. The dashboard offers 30 minutes to 8 hours and shows until when the Mac stays awake. The gateway touches `~/.config/claude-burst/last-activity` on each turn, and the root daemon, which checks every minute, reads only that file's time and only at that path.
+
+**Minimum battery** (`keep_awake_min_battery`, 50 by default): on battery below this charge, the Mac sleeps with the lid shut as usual whatever the mode and time limit say, so a laptop kept awake in a bag does not run itself flat. Plugged in, the charge does not matter. 0 turns the check off. The daemon reads the charge from the same `pmset -g batt` it reads the power source from, on each power-source change and once a minute, and logs each crossing ("battery 42% below 50%: lid-close sleep allowed"). In mode `ac` it changes nothing, since the Mac already sleeps on battery. On the dashboard it is the "Sleep anyway on battery below" box under the time limit.
 
 ```bash
 claude-burst configure --keep-awake-lid-closed true                 # mode ac
 claude-burst configure --keep-awake-idle-minutes 60                 # awake for an hour after last use
+claude-burst configure --keep-awake-min-battery 30                  # sleep anyway on battery below 30% (0 = no check)
 claude-burst configure --keep-awake-power always                    # switch mode
 claude-burst configure --keep-awake-lid-closed false                # undo
-sudo scripts/lid-awake-root.sh apply ac                             # printed for you if sudo is not cached; ./install.sh re-applies it from config.json
+sudo scripts/lid-awake-root.sh apply ac 0 ~/.config/claude-burst/last-activity --min-battery 50   # printed for you if sudo is not cached; ./install.sh re-applies it from config.json
 ```
 
 - **`pmset -a disablesleep 1`** (root), the only switch that overrides clamshell sleep; `caffeinate` and `pmset sleep 0` do not. The prior value is recorded and restored by `remove`.
@@ -69,6 +72,7 @@ With `always`, a closed laptop never sleeps: on battery in a bag that means heat
 
 ```text
 keep awake lid closed: on, mode ac (now on AC: SleepDisabled on, Ghostty App Nap disabled on)
+  minimum battery: 50%, a shut lid sleeps the Mac on battery below it
 ```
 
 Any line starting `->` beneath it is drift, with the command that fixes it.

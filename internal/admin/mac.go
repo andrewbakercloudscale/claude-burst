@@ -31,10 +31,13 @@ import (
 var keepAwakeModes = map[string]bool{"off": true, config.KeepAwakeOnAC: true, config.KeepAwakeAlways: true}
 
 type keepAwakeView struct {
-	Mode    string           `json:"mode"` // off, ac, always: what config.json asks for
-	Idle    int              `json:"idle_minutes"`
-	Live    keepawake.Status `json:"live"`
-	Problem string           `json:"problem,omitempty"`
+	Mode string `json:"mode"` // off, ac, always: what config.json asks for
+	Idle int    `json:"idle_minutes"`
+	// MinBattery: with the lid shut, sleep anyway on battery below this
+	// charge, percent; 0 no check.
+	MinBattery int              `json:"min_battery"`
+	Live       keepawake.Status `json:"live"`
+	Problem    string           `json:"problem,omitempty"`
 	// Daemon is the machine-wide half, which only a password can install
 	// or update: off (keep-awake off), ok, stale (an older copy of
 	// lid-awake-root.sh), missing (never installed) or stopped.
@@ -72,11 +75,11 @@ var installedLidScript = "/usr/local/libexec/claude-burst/lid-awake-root.sh"
 
 func (s *Server) readKeepAwake() keepAwakeView {
 	cfg, _ := config.Load()
-	v := keepAwakeView{Mode: "off", Live: keepawake.Read(), Idle: cfg.KeepAwakeIdleMinutes}
+	v := keepAwakeView{Mode: "off", Live: keepawake.Read(), Idle: cfg.KeepAwakeIdleMinutes, MinBattery: cfg.KeepAwakeMinBatteryPercent()}
 	if cfg.KeepAwakeLidClosed {
 		v.Mode = cfg.KeepAwakeLidClosedPower
 	}
-	v.Problem = v.Live.Problem(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes)
+	v.Problem = v.Live.Problem(cfg.KeepAwakeLidClosed, cfg.KeepAwakeLidClosedPower, cfg.KeepAwakeIdleMinutes, cfg.KeepAwakeMinBatteryPercent())
 	v.Daemon = s.lidDaemonState(cfg.KeepAwakeLidClosed)
 	v.Original = readOriginal()
 	if v.Problem == "" {
@@ -125,6 +128,8 @@ func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Mode string `json:"mode"`
 		Idle int    `json:"idle_minutes"`
+		// MinBattery left out keeps what config.json has.
+		MinBattery *int `json:"min_battery"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !keepAwakeModes[req.Mode] {
 		http.Error(w, "mode must be off, ac or always", http.StatusBadRequest)
@@ -134,20 +139,29 @@ func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("idle_minutes must be 0 to %d", config.MaxKeepAwakeIdleMinutes), http.StatusBadRequest)
 		return
 	}
+	if m := req.MinBattery; m != nil && (*m < 0 || *m > config.MaxKeepAwakeMinBattery) {
+		http.Error(w, fmt.Sprintf("min_battery must be 0 to %d", config.MaxKeepAwakeMinBattery), http.StatusBadRequest)
+		return
+	}
 	dir, ok := s.scriptsDir()
 	if !ok {
 		http.Error(w, "could not locate the claude-burst repo's scripts/ directory", http.StatusBadRequest)
 		return
 	}
 	on := req.Mode != "off"
-	if _, ok := updateConfig(w, func(c *config.Config) error {
+	saved, ok := updateConfig(w, func(c *config.Config) error {
 		c.KeepAwakeLidClosed = on
 		if on {
 			c.KeepAwakeLidClosedPower = req.Mode
 			c.KeepAwakeIdleMinutes = req.Idle
+			if req.MinBattery != nil {
+				n := *req.MinBattery
+				c.KeepAwakeMinBattery = &n
+			}
 		}
 		return nil
-	}); !ok {
+	})
+	if !ok {
 		return
 	}
 	// The user half needs no root.
@@ -159,7 +173,8 @@ func (s *Server) handleKeepAwake(w http.ResponseWriter, r *http.Request) {
 	script := filepath.Join(dir, "lid-awake-root.sh")
 	args := []string{script, "remove"}
 	if on {
-		args = []string{script, "apply", req.Mode, strconv.Itoa(req.Idle), keepawake.ActivityPath()}
+		args = []string{script, "apply", req.Mode, strconv.Itoa(req.Idle), keepawake.ActivityPath(),
+			"--min-battery", strconv.Itoa(saved.KeepAwakeMinBatteryPercent())}
 		// The window starts now, not at the next Claude turn.
 		keepawake.MarkNow()
 	}

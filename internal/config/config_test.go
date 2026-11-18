@@ -240,6 +240,52 @@ func TestKeepAwakePowerDefaultsToACAndRejectsUnknown(t *testing.T) {
 	}
 }
 
+// The minimum battery defaults to 50 for a fresh config and for one written
+// before the key existed; an explicit 0 (no check) survives a save and load,
+// and a value outside 0 to 100 is refused.
+func TestKeepAwakeMinBatteryDefaultAndZeroSurvives(t *testing.T) {
+	if got := Default().KeepAwakeMinBatteryPercent(); got != 50 {
+		t.Fatalf("default min battery = %d, want 50", got)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "claude-burst")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"keep_awake_lid_closed": true}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.KeepAwakeMinBatteryPercent(); got != 50 {
+		t.Fatalf("legacy config min battery = %d, want 50", got)
+	}
+	zero := 0
+	cfg.KeepAwakeMinBattery = &zero
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = Load(); err != nil || cfg.KeepAwakeMinBatteryPercent() != 0 {
+		t.Fatalf("explicit 0 after save and load: %d, %v", cfg.KeepAwakeMinBatteryPercent(), err)
+	}
+	write(`{"keep_awake_min_battery": 30}`)
+	if cfg, err = Load(); err != nil || cfg.KeepAwakeMinBatteryPercent() != 30 {
+		t.Fatalf("30: got %d, %v", cfg.KeepAwakeMinBatteryPercent(), err)
+	}
+	for _, bad := range []string{`{"keep_awake_min_battery": 101}`, `{"keep_awake_min_battery": -1}`} {
+		write(bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "keep_awake_min_battery") {
+			t.Fatalf("%s: want a keep_awake_min_battery error, got %v", bad, err)
+		}
+	}
+}
+
 // A fallback chain in config.json replaces the default instead of merging
 // into it; before, a removed default entry came back on every load, and an
 // emptied chain could not be saved at all.

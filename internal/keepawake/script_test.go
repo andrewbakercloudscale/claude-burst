@@ -203,3 +203,62 @@ func TestLidShutDarkensOnceAndDecidesRarely(t *testing.T) {
 		t.Errorf("shut with a monitor: want the screen left alone, got %q", out)
 	}
 }
+
+// desiredBatt runs the root script's no-root "desired" check with the lid
+// open (in use), a minimum battery file (none when min is ""), and
+// pmset -g batt output given through CLAUDE_BURST_TEST_BATT.
+func desiredBatt(t *testing.T, mode, min, batt string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if min != "" {
+		os.WriteFile(filepath.Join(dir, "lid-awake.minbattery"), []byte(min+"\n"), 0o644)
+	}
+	cmd := exec.Command("zsh", "../../scripts/lid-awake-root.sh", "desired", mode)
+	cmd.Env = append(os.Environ(), "CLAUDE_BURST_ROOT_STATE_DIR="+dir, "CLAUDE_BURST_TEST_LID=open", "CLAUDE_BURST_TEST_BATT="+batt)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("desired: %v: %s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func battAt(source, pct string) string {
+	return "Now drawing from '" + source + "'\n -InternalBattery-0 (id=1)\t" + pct + "%; discharging; 3:10 remaining present: true\n"
+}
+
+// The minimum battery: on battery below it a shut lid sleeps the Mac, in
+// mode always too; at or above it, on mains power, or with the minimum 0
+// (or a daemon applied before it existed), nothing changes.
+func TestMinimumBattery(t *testing.T) {
+	cases := []struct{ name, mode, min, batt, want string }{
+		{"battery below the minimum", "always", "50", battAt("Battery Power", "42"), "0"},
+		{"battery at the minimum", "always", "50", battAt("Battery Power", "50"), "1"},
+		{"battery above the minimum", "always", "50", battAt("Battery Power", "51"), "1"},
+		{"on AC with a low charge", "always", "50", battAt("AC Power", "10"), "1"},
+		{"on AC with a low charge, mode ac", "ac", "50", battAt("AC Power", "10"), "1"},
+		{"minimum 0: no check", "always", "0", battAt("Battery Power", "5"), "1"},
+		{"no minimum file: no check", "always", "", battAt("Battery Power", "5"), "1"},
+		{"mode ac on battery above the minimum: sleeps anyway", "ac", "50", battAt("Battery Power", "90"), "0"},
+		{"no battery at all", "always", "50", "Now drawing from 'AC Power'\n", "1"},
+		{"garbage minimum ignored", "always", "abc", battAt("Battery Power", "5"), "1"},
+	}
+	for _, c := range cases {
+		if got := desiredBatt(t, c.mode, c.min, c.batt); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+// status names the minimum and what it is doing now.
+func TestStatusNamesTheMinimumBattery(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "lid-awake.minbattery"), []byte("50\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "lid-awake.mode"), []byte("always\n"), 0o644)
+	cmd := exec.Command("zsh", "../../scripts/lid-awake-root.sh", "status")
+	cmd.Env = append(os.Environ(), "CLAUDE_BURST_ROOT_STATE_DIR="+dir, "CLAUDE_BURST_TEST_LID=open",
+		"CLAUDE_BURST_TEST_BATT="+battAt("Battery Power", "42"))
+	out, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(out), "minimum battery: 50% (now 42% on battery, below it: lid-close sleep allowed)") {
+		t.Errorf("status: %s", out)
+	}
+}
