@@ -48,19 +48,65 @@ RENOTIFY_SECONDS=3600
 # with truncate-on-exceed is enough insurance against it ever running away.
 LOG_MAX_BYTES=2097152
 
-mkdir -p "$HOME/.config/claude-burst"
+[[ -d "$HOME/.config/claude-burst" ]] || mkdir -p "$HOME/.config/claude-burst"
 
 # shellcheck source=./health-diagnostics.sh
 source "$DIR/health-diagnostics.sh"
+
+# This runs every 30 seconds, all day, so it does its own small jobs inside
+# zsh rather than starting a process for each: on 18 Nov 2026 System Sentinel
+# counted about 2 process starts a second from it (date, stat, cat, a
+# launchctl print for every question about the gateway, and python3, which is
+# an xcrun shim that starts several more). zstat only, not all of zsh/stat:
+# that would replace the stat command health-diagnostics.sh calls.
+zmodload zsh/datetime
+zmodload -F zsh/stat b:zstat
+mtime() { local -a m; zstat -A m +mtime -- "$1" 2>/dev/null && print -r -- "$m[1]" || print 0; }
+readf() { [[ -r "$1" ]] && print -r -- "$(<"$1")"; }
+# rm only what is there: most runs have nothing to remove.
+rmf() { local f; for f; do [[ -e "$f" ]] && rm -f "$f"; done; return 0; }
+rotate_log_file() {
+  local -a z; zstat -A z +size -- "$1" 2>/dev/null || return 0
+  (( z[1] > ${2:-2097152} )) && mv -f "$1" "$1.1" 2>/dev/null
+  return 0
+}
+
+# One launchctl print per run, asked again only after this script changes the
+# job (kickstart). health-diagnostics.sh's versions print it for every call.
+LA_PRINT=""
+la_refresh() { LA_PRINT="$(launchctl print "gui/$UID/${LABEL:-ninja.andrewbaker.claude-burst}" 2>/dev/null)"; }
+launchagent_pid() { [[ $'\n'"$LA_PRINT" =~ $'\n'[[:space:]]*'pid = '([0-9]+) ]] && print -r -- "$match[1]"; }
+launchagent_running() { [[ -n "$(launchagent_pid)" ]]; }
+
+# The gateway's port and intercept host read from config.json here;
+# health-diagnostics.sh asks python3 for each.
+CFG_TEXT="$(readf "$HOME/.config/claude-burst/config.json")"
+gateway_port() {
+  if [[ "$CFG_TEXT" =~ '"listen"[[:space:]]*:[[:space:]]*"[^"]*:([0-9]+)"' ]]; then print -rn -- "$match[1]"; else print -rn 7777; fi
+}
+gateway_healthz_body() {
+  local host=api.anthropic.com
+  [[ "$CFG_TEXT" =~ '"intercept"[^}]*"host"[[:space:]]*:[[:space:]]*"([^"]+)"' ]] && host=$match[1]
+  curl -sk -m 3 "https://$host/healthz" 2>/dev/null
+}
+gateway_healthy() {
+  local port; port="$(gateway_port)"
+  curl -skf -m 3 "https://127.0.0.1:$port/healthz" >/dev/null 2>&1 && return 0
+  curl -sf  -m 3 "http://127.0.0.1:$port/healthz"  >/dev/null 2>&1 && return 0
+  case "$(gateway_healthz_body)" in
+    *'"overflow"'*) return 0 ;;
+  esac
+  return 1
+}
 
 rotate_log_file "$LOG" "$LOG_MAX_BYTES"
 
 # Before every early return below, including the rolled-back stand-down: a
 # heartbeat that only appeared on the cycles that did something would go stale
 # exactly when this is working correctly and read as dead.
-date +%s > "$HEARTBEAT_FILE" 2>/dev/null || true
+print -r -- "$EPOCHSECONDS" > "$HEARTBEAT_FILE" 2>/dev/null || true
 
-log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
+log() { local ts; strftime -s ts '%Y-%m-%d %H:%M:%S' "$EPOCHSECONDS"; print -r -- "$ts $*" >> "$LOG"; }
 
 # Passes the message as a genuine argv element to osascript (via `on run
 # argv`) rather than interpolating it into the -e script text -- sidesteps
@@ -81,9 +127,9 @@ audit() { "$DIR/audit-add.sh" "$@" >/dev/null 2>&1 || true; }
 planned="$HOME/.config/claude-burst/planned-restart"
 planned_recent() {
   local f now
-  now=$(date +%s)
+  now=$EPOCHSECONDS
   for f in "$planned" "$planned.done"; do
-    [[ -f "$f" ]] && (( now - $(stat -f %m "$f" 2>/dev/null || echo 0) < 180 )) && return 0
+    [[ -f "$f" ]] && (( now - $(mtime "$f") < 180 )) && return 0
   done
   return 1
 }
@@ -107,8 +153,8 @@ CRASH_WINDOW="${CLAUDE_BURST_CRASH_WINDOW:-600}"
 # recent_restarts prints the restarts still inside the window, one per line.
 recent_restarts() {
   local now t
-  now=$(date +%s)
-  for t in $(cat "$RESTARTS_FILE" 2>/dev/null); do
+  now=$EPOCHSECONDS
+  for t in $(readf "$RESTARTS_FILE"); do
     [[ "$t" == <-> ]] && (( now - t < CRASH_WINDOW )) && echo "$t"
   done
 }
@@ -117,12 +163,12 @@ recent_restarts() {
 # limit, once an hour at most while the loop goes on.
 note_restart() {
   local kept n now
-  now=$(date +%s)
+  now=$EPOCHSECONDS
   kept="$(recent_restarts)"
   { [[ -n "$kept" ]] && echo "$kept"; echo "$now"; } > "$RESTARTS_FILE"
   n=$(wc -l < "$RESTARTS_FILE" | tr -d ' ')
   (( n < CRASH_LIMIT )) && return 0
-  if [[ -f "$CRASHLOOP_FILE" ]] && (( now - $(stat -f %m "$CRASHLOOP_FILE" 2>/dev/null || echo 0) < RENOTIFY_SECONDS )); then
+  if [[ -f "$CRASHLOOP_FILE" ]] && (( now - $(mtime "$CRASHLOOP_FILE") < RENOTIFY_SECONDS )); then
     return 0
   fi
   : > "$CRASHLOOP_FILE"
@@ -153,18 +199,19 @@ if [[ -f "$ROLLED_BACK_MARKER" ]]; then
   fi
   exit 0
 fi
-rm -f "$ROLLED_BACK_MARKER.noted"
+rmf "$ROLLED_BACK_MARKER.noted"
 
 # --- 0b. Did launchd restart it since the last check? ---
 # A new pid that nobody asked for is the gateway having exited: launchd's
 # KeepAlive brought it back, and this is the only place that can count it.
+la_refresh
 pid_now="$(launchagent_pid)"
-pid_last="$(cat "$PID_FILE" 2>/dev/null || true)"
+pid_last="$(readf "$PID_FILE")"
 if [[ -n "$pid_now" && -n "$pid_last" && "$pid_now" != "$pid_last" ]] && ! planned_recent; then
   log "gateway restarted by itself (pid $pid_last, now $pid_now)"
   note_restart "it exited and launchd started it again"
 fi
-if [[ -n "$pid_now" ]]; then echo "$pid_now" > "$PID_FILE"; else rm -f "$PID_FILE"; fi
+if [[ -n "$pid_now" ]]; then print -r -- "$pid_now" > "$PID_FILE"; else rmf "$PID_FILE"; fi
 
 # --- 1. Is the gateway's own LaunchAgent even loaded? Reload if not. ---
 # No root needed for this half: enable/bootstrap on a LaunchAgent is entirely
@@ -179,7 +226,7 @@ if [[ -n "$pid_now" ]]; then echo "$pid_now" > "$PID_FILE"; else rm -f "$PID_FIL
 # halfway (2026-11-16 09:55). Only the live marker counts, for 90s: the
 # helper removes it when it fails, and .done means the restart is over.
 reloading_now() {
-  [[ -f "$planned" ]] && (( $(date +%s) - $(stat -f %m "$planned" 2>/dev/null || echo 0) < 90 ))
+  [[ -f "$planned" ]] && (( EPOCHSECONDS - $(mtime "$planned") < 90 ))
 }
 if ! launchagent_running && reloading_now; then
   log "gateway is not running, but an install or deploy is reloading it (planned-restart is fresh): leaving it to that"
@@ -190,6 +237,7 @@ if ! launchagent_running; then
   # kickstart -k restarts a registered-but-dead job; ensure_launchagent_loaded
   # handles the harder case where the job is gone from launchd entirely.
   launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
+  la_refresh
   if launchagent_running || ensure_launchagent_loaded; then
     log "reloaded successfully"
     notify "Gateway had stopped (LaunchAgent was unloaded) -- reloaded automatically."
@@ -219,12 +267,12 @@ HANG_FILE="$HOME/.config/claude-burst/self-heal-hang"
 HANG_LIMIT="${CLAUDE_BURST_HANG_LIMIT:-2}"
 KILL="${CLAUDE_BURST_KILL:-kill}"
 if planned_recent; then
-  rm -f "$HANG_FILE"
+  rmf "$HANG_FILE"
 elif launchagent_running; then
   if gateway_healthy || curl -s -m 5 -o /dev/null "$ADMIN_URL/api/mod-status" 2>/dev/null; then
-    rm -f "$HANG_FILE"
+    rmf "$HANG_FILE"
   else
-    hung=$(( $(cat "$HANG_FILE" 2>/dev/null || echo 0) + 1 ))
+    hung=$(( ${$(readf "$HANG_FILE"):-0} + 1 ))
     echo "$hung" > "$HANG_FILE"
     pid="$(launchagent_pid)"
     log "gateway (pid $pid) is running but not answering: check $hung of $HANG_LIMIT"
@@ -246,6 +294,11 @@ fi
 # by step 1's reload, checked again next cycle) rather than a spurious error.
 result="$(curl -s -m 5 "$ADMIN_URL/api/test-connection" 2>/dev/null || true)"
 [[ -z "$result" ]] && exit 0
+# The usual answer, settled here: python3 below only for one that needs it.
+if [[ "$result" == '{"ok":true'* ]]; then
+  [[ -e "$STATE_FILE" ]] && rm -f "$STATE_FILE"
+  exit 0
+fi
 
 python3 - "$result" "$STATE_FILE" "$RENOTIFY_SECONDS" <<'PY' >> "$LOG" 2>&1
 import json, subprocess, sys, time
