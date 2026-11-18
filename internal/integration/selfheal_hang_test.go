@@ -276,3 +276,28 @@ func TestRollbackRecordsHowItEnded(t *testing.T) {
 		}
 	}
 }
+
+// A healthy run, every 30 seconds all day, asks launchd once and never starts
+// python3: on 18 Nov 2026 the watchdog was about 2 process starts a second.
+func TestSelfHealHealthyRunIsCheap(t *testing.T) {
+	home, run := watchdogHome(t)
+	bin := filepath.Join(home, "bin")
+	os.WriteFile(filepath.Join(home, "pid"), []byte("4242"), 0o644)
+	os.WriteFile(filepath.Join(bin, "curl"), []byte("#!/bin/sh\necho '{\"ok\":true,\"mode\":\"transparent\"}'\n"), 0o755)
+	launchctl := "#!/bin/sh\necho \"$1\" >> " + filepath.Join(home, "launchctl-calls") + "\necho '\tpid = 4242'\n"
+	os.WriteFile(filepath.Join(bin, "launchctl"), []byte(launchctl), 0o755)
+	for _, name := range []string{"python3", "date", "stat", "cat"} {
+		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\necho "+name+" >> "+filepath.Join(home, "started")+"\n"), 0o755)
+	}
+	run()
+	run()
+	if got := readFile(filepath.Join(home, "started")); got != "" {
+		t.Errorf("healthy runs started %q, want none of python3, date, stat, cat", got)
+	}
+	if n := strings.Count(readFile(filepath.Join(home, "launchctl-calls")), "print"); n != 2 {
+		t.Errorf("launchctl print %d times in two runs, want 2", n)
+	}
+	if got := readFile(filepath.Join(home, ".config", "claude-burst", "self-heal-pid")); strings.TrimSpace(got) != "4242" {
+		t.Errorf("pid file %q, want 4242", got)
+	}
+}
