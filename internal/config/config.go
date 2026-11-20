@@ -373,6 +373,7 @@ type RouteConfig struct {
 	KeychainService  string            `json:"keychain_service,omitempty"`
 	ModelMap         map[string]string `json:"model_map,omitempty"` // bedrock: required per-Claude-model mapping; openai-compatible: optional "consistent failover" mapping
 	Model            string            `json:"model,omitempty"`     // openai-compatible: fixed/fallback target model
+	Disabled         bool              `json:"disabled,omitempty"`  // fallback_routes only: keep a provider profile configured but out of live routing
 }
 
 type MeteredFailoverConfig struct {
@@ -523,8 +524,13 @@ type Config struct {
 	// enable pointed it at this gateway: an enterprise gateway such as
 	// Portkey, which then becomes Primary.BaseURL. disable and rollback.sh
 	// put it back, so Claude Code is left exactly as it was found.
-	AdoptedBaseURL  string                `json:"adopted_base_url,omitempty"`
-	Secondary       RouteConfig           `json:"secondary,omitempty"`
+	AdoptedBaseURL string      `json:"adopted_base_url,omitempty"`
+	Secondary      RouteConfig `json:"secondary,omitempty"`
+	// FallbackRoutes are additional provider routes tried in order after
+	// Secondary. Secondary remains the first fallback for backwards
+	// compatibility; this list makes later (third, fourth, nth) routes
+	// configurable without a fixed number of slots.
+	FallbackRoutes  []RouteConfig         `json:"fallback_routes,omitempty"`
 	MeteredFailover MeteredFailoverConfig `json:"metered_failover,omitempty"`
 	Intercept       InterceptConfig       `json:"intercept,omitempty"`
 

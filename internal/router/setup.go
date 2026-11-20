@@ -44,20 +44,39 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		primaryDetector = subscriptionLimitDetector{}
 	}
 
-	var secondary Provider
+	var fallbacks []Provider
+	routes := make([]config.RouteConfig, 0, 1+len(cfg.FallbackRoutes))
 	if cfg.Secondary.Provider != "" && cfg.Secondary.Provider != config.ProviderNone {
-		secondary, err = buildProvider(cfg.Secondary, cfg.KeychainService, cfg.ModelMap, logger)
-		if err != nil {
-			problem("The secondary provider is not in use", fmt.Sprintf(
-				"secondary provider: %v. Running on the primary alone, so nothing fails over, until it is corrected (dashboard, Setup) and the gateway restarted.", err))
-			secondary = nil
+		routes = append(routes, cfg.Secondary)
+	}
+	for _, rc := range cfg.FallbackRoutes {
+		// A disabled route is a saved provider profile, not an active rung.
+		// This lets account-specific providers (for example Cloudflare Workers
+		// AI, whose URL contains the user's account ID) be listed without
+		// sending traffic until their settings are complete.
+		if rc.Disabled {
+			continue
 		}
-		// Set here rather than in buildProvider: pruning belongs to the
-		// secondary SLOT, and an openai-compatible primary must never be
-		// pruned. See prune.go.
-		if op, ok := secondary.(*OpenAICompatibleProvider); ok {
+		if rc.Provider != "" && rc.Provider != config.ProviderNone {
+			routes = append(routes, rc)
+		}
+	}
+	for i, rc := range routes {
+		p, buildErr := buildProvider(rc, cfg.KeychainService, cfg.ModelMap, logger)
+		if buildErr != nil {
+			problem(fmt.Sprintf("Fallback route %d is not in use", i+2), fmt.Sprintf(
+				"fallback route %d: %v. Later configured routes remain available; correct this route and restart the gateway.", i+2, buildErr))
+			continue
+		}
+		// Pruning applies to overflow providers, not the primary.
+		if op, ok := p.(*OpenAICompatibleProvider); ok {
 			op.setPruning(cfg.SecondaryPruning)
 		}
+		fallbacks = append(fallbacks, p)
+	}
+	var secondary Provider
+	if len(fallbacks) > 0 {
+		secondary = fallbacks[0]
 	}
 
 	timeout := time.Duration(cfg.ResponseHeaderTimeoutSeconds) * time.Second
@@ -121,6 +140,7 @@ func New(cfg config.Config, statePath, metricsPath string, logger *log.Logger) (
 		primary:         primary,
 		primaryDetector: primaryDetector,
 		secondary:       secondary,
+		fallbacks:       fallbacks,
 		client:          &http.Client{Timeout: 0, Transport: inference, CheckRedirect: neverFollow},
 		probe:           probeNetwork,
 		freshClient:     &http.Client{Timeout: 5 * time.Second, Transport: fresh, CheckRedirect: neverFollow},
@@ -361,7 +381,7 @@ const secondaryReadyTTL = time.Minute
 // the way it does without Burst.
 func (s *Server) secondaryReady() bool {
 	if s.secondary == nil {
-		return false
+		return s.additionalFallbackReady(0)
 	}
 	c, ok := s.secondary.(credentialChecker)
 	if !ok {
@@ -375,7 +395,10 @@ func (s *Server) secondaryReady() bool {
 		// once a minute every request queued behind it.
 		ok := s.readyErr == nil
 		s.readyMu.Unlock()
-		return ok
+		if ok {
+			return true
+		}
+		return s.additionalFallbackReady(1)
 	}
 	first := s.readyAt.IsZero()
 	wasOK := s.readyErr == nil
@@ -385,7 +408,10 @@ func (s *Server) secondaryReady() bool {
 	if first {
 		// Nothing to answer from yet, so this one request waits: once in
 		// the life of the process.
-		return s.checkSecondaryCredential(c, first, wasOK)
+		if s.checkSecondaryCredential(c, first, wasOK) {
+			return true
+		}
+		return s.additionalFallbackReady(1)
 	}
 	// Every later check runs beside the request that noticed it was due,
 	// which answers from the last result like the others. Until 12 Oct 2026
@@ -403,7 +429,22 @@ func (s *Server) secondaryReady() bool {
 		}()
 		s.checkSecondaryCredential(c, first, wasOK)
 	}()
-	return wasOK
+	return wasOK || s.additionalFallbackReady(1)
+}
+
+// additionalFallbackReady checks later configured routes only when the
+// first route is absent or has no usable credential. The common case keeps
+// using the cached first-route check; later routes are checked in order.
+func (s *Server) additionalFallbackReady(start int) bool {
+	for i := start; i < len(s.fallbacks); i++ {
+		if c, ok := s.fallbacks[i].(credentialChecker); ok {
+			if err := c.CredentialReady(); err != nil {
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // checkSecondaryCredential asks the secondary whether its key can be read,
@@ -415,7 +456,7 @@ func (s *Server) checkSecondaryCredential(c credentialChecker, first, wasOK bool
 	s.readyAt, s.readyErr, s.readyChecking = time.Now(), err, false
 	s.readyMu.Unlock()
 	if err != nil && (first || wasOK) {
-		s.logger.Printf("secondary route=%s has no usable credential (%v): treating it as absent, so Anthropic's own limits pass through to Claude Code", s.secondary.Name(), err)
+		s.logger.Printf("secondary route=%s has no usable credential (%v): this route is skipped; later configured fallbacks may still be tried", s.secondary.Name(), err)
 	}
 	s.alertSecondaryKey(err)
 	return err == nil
