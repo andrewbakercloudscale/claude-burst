@@ -611,7 +611,7 @@ func (s *Server) applyCompaction(in *http.Request, body []byte) ([]byte, *http.R
 	if st.firstRaw == nil || !bytes.Equal(st.firstRaw, msgs[0]) {
 		st.firstRaw = append(json.RawMessage(nil), msgs[0]...)
 	}
-	if s.compaction.supersede(key, msgs[0]) {
+	if s.compaction.supersede(key, msgs) {
 		dirty = true
 	}
 	if first {

@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { dashboardURL } from '../hooks/register.js'
+import { HANDED_LINE, dashboardURL } from '../hooks/register.js'
 
 const BAND = {
   plugin: 'claude-burst',
@@ -439,9 +439,13 @@ test("Claude Code's compaction is answered with Burst's summary: no summary requ
   // The kept tool result (h7) goes back without its handle: with it, Claude
   // Code writes the row pointing at the history this compaction replaced,
   // and claude --resume loads that history again.
-  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h5', 'h6', undefined, 'h8'])
-  expect(r.messages[3]).toEqual({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't2', text: 'output' }] })
-  expect(r.messages[0]).toEqual({ role: 'user', text: LEAD, toolUses: [] })
+  expect(r.messages.map((m) => m.handle)).toEqual([undefined, undefined, undefined, 'h5', 'h6', undefined, 'h8'])
+  expect(r.messages[5]).toEqual({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't2', text: 'output' }] })
+  // The summary goes in as a read of the gateway's copy of it, which Claude
+  // Code draws folded, after a line saying what it is.
+  expect(r.messages[0]).toEqual({ role: 'user', text: HANDED_LINE, toolUses: [] })
+  expect(r.messages[1]).toEqual({ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'toolu_burst_abc', tool: 'Read', input: { file_path: '/Users/me/.config/claude-burst/summaries/S1-abc.md' } }] })
+  expect(r.messages[2]).toEqual({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'toolu_burst_abc', text: LEAD }] })
   expect(toasts).toContain("\u{1F535} Async Full Compaction: 5 messages replaced with the summary Burst already wrote")
 })
 
@@ -457,8 +461,8 @@ test('a hand-off whose last anchor is a system note still fits by its first', as
   await start($)
   const r = await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
   expect(calls).toEqual([])
-  expect(r.messages[0].text).toBe(LEAD)
-  expect(r.messages[1].handle).toBe('h4')
+  expect(r.messages[2].toolResults[0].text).toBe(LEAD)
+  expect(r.messages[3].handle).toBe('h4')
 })
 
 test('/resume and /clear carry on under another session with no session.start: the mod follows it', async ($, on) => {
@@ -477,11 +481,11 @@ test('/resume and /clear carry on under another session with no session.start: t
   expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[0].text).toBe('CORE SUMMARY')
   // Once Burst has summarised S2, its own summary is what answers.
   world.files = { [other]: handoff({ session: 'S2' }) }
-  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[0].text).toBe(LEAD)
+  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[2].toolResults[0].text).toBe(LEAD)
   // And the move is seen at the compaction itself, before any poll.
   world.sid = 'S1'
   world.files = { [HANDOFF_FILE]: handoff() }
-  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[0].text).toBe(LEAD)
+  expect((await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })).messages[2].toolResults[0].text).toBe(LEAD)
 })
 
 test('a hand-off that does not fit the transcript, or is turned off, leaves the compaction to Claude Code', async ($, on) => {
@@ -514,7 +518,7 @@ test('a prompt named by its text is found only after the message the summary end
   // The same words said earlier are not the cut.
   const twice = [{ role: 'user', text: 'second task, the long one', toolUses: [], handle: 'e0' }, { role: 'assistant', text: 'which one?', toolUses: [], handle: 'e1' }, ...TRANSCRIPT]
   const r = await $.session.compact({ trigger: 'manual', messages: twice })
-  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 'h4', 'h5', 'h6', undefined, 'h8'])
+  expect(r.messages.map((m) => m.handle)).toEqual([undefined, undefined, undefined, 'h4', 'h5', 'h6', undefined, 'h8'])
   expect((await $.session.compact({ trigger: 'manual', messages: r.messages })).messages[0].text).toBe('CORE SUMMARY')
   expect(calls).toEqual(['manual'])
 })
@@ -532,7 +536,7 @@ test('a prompt too short to name is found by the reply before it, and only where
     { role: 'assistant', text: 'doing both', toolUses: [], handle: 's2' },
   ]
   const r = await $.session.compact({ trigger: 'auto', messages: short })
-  expect(r.messages.map((m) => m.handle)).toEqual([undefined, 's1', 's2'])
+  expect(r.messages.map((m) => m.handle)).toEqual([undefined, undefined, undefined, 's1', 's2'])
   // The same reply followed by other words is not the cut.
   const other = short.map((m) => (m.handle === 's1' ? { ...m, text: 'neither' } : m))
   expect((await $.session.compact({ trigger: 'auto', messages: other })).messages[0].text).toBe('CORE SUMMARY')
@@ -605,18 +609,28 @@ test("/compact-async-full hands Burst's summary over with Burst in the path, and
   // With one it fits, the summary is handed over.
   await $.command.run({ command: 'compact-async-full', args: '' })
   await new Promise((r) => setTimeout(r, 0))
-  expect((await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT })).messages[0].text).toBe(LEAD)
+  expect((await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT })).messages[2].toolResults[0].text).toBe(LEAD)
   expect(calls).toEqual(['/compact', '/compact'])
   // Asked for again while the session opens with that summary: said as what it is.
   await $.command.run({ command: 'compact-async-full', args: '' })
   await new Promise((r) => setTimeout(r, 0))
   const taken = [{ role: 'user', text: LEAD, toolUses: [], handle: 'l0' }, ...TRANSCRIPT.slice(5)]
   expect(String((await $.session.compact({ trigger: 'manual', messages: taken })).skip)).toContain('Already compacted')
+  // As handed over since mod 0.12.9: the line, the read, and the summary as its result.
+  await $.command.run({ command: 'compact-async-full', args: '' })
+  await new Promise((r) => setTimeout(r, 0))
+  const read = [
+    { role: 'user', text: HANDED_LINE, toolUses: [], handle: 'l0' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'toolu_burst_abc', tool: 'Read', input: {} }], handle: 'l1' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'toolu_burst_abc', text: LEAD }], handle: 'l2' },
+    ...TRANSCRIPT.slice(5),
+  ]
+  expect(String((await $.session.compact({ trigger: 'manual', messages: read })).skip)).toContain('Already compacted')
   // No summary on offer after one was taken in: the same, and nothing runs.
   world.files = { '/etc/hosts': HOSTS_IN }
   await $.command.run({ command: 'compact-async-full', args: '' })
   await new Promise((r) => setTimeout(r, 0))
-  expect(calls).toEqual(['/compact', '/compact', '/compact'])
+  expect(calls).toEqual(['/compact', '/compact', '/compact', '/compact'])
   expect(toasts.some((t) => t.includes('Already compacted'))).toBe(true)
   expect(toasts.some((t) => t.includes('Burst holds no summary of this session'))).toBe(false)
 })
