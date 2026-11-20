@@ -144,6 +144,7 @@ whole history:
   If the summary does not fit, nothing is compacted and a line says so.
 - **A session opened again is compacted as it opens.** `claude --resume`, `--continue`
 - **A session opened again after a hand-off opens on the summary.** The tool results kept after the summary are written to the transcript as new rows. Before mod 0.11.7 they were written still linked to their rows from before the compaction, so `claude --resume` followed the links and loaded the replaced history again. An image inside a kept tool result is not carried over; its text is.
+- **The summary is shown folded.** A mod can hand Claude Code only plain messages, and Claude Code draws a plain message in full, so until mod 0.12.9 every hand-off filled the window with the whole summary. It now goes in as one line saying Burst compacted the conversation, then a `Read` of `~/.config/claude-burst/summaries/<session>-<id>.md` whose result is the summary: drawn folded like any file read, ctrl+o opens it. Claude reads all of it either way. The gateway writes that copy when the mod tells it the summary was taken in and removes copies after 30 days.
 - **`/clear`, `/resume` and `/branch` are followed.** They carry on under another session without starting the mod again, so it checks which session it is in at every poll and every compaction.
   or a Finder shortcut on a session Burst had summarised, holding 300k or more: the mod
   runs the same `/compact` within 5 seconds of opening, with Burst in the path or not.

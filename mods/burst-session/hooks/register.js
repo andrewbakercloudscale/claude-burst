@@ -208,10 +208,38 @@ function handoffCut(h, msgs) {
     if (cut < 1) continue
     // Tool results cannot open a conversation: their calls would be gone.
     if (msgs[cut].role === 'user' && (msgs[cut].toolResults || []).length > 0) return -1
-    if (msgs.slice(0, cut).some((m) => m.text === h.lead)) return -1
+    if (msgs.slice(0, cut).some((m) => holdsLead(m, h.lead, false))) return -1
     return cut
   }
   return -1
+}
+
+// Burst's summary as Claude Code is handed it: a line saying what happened,
+// then the summary as the result of reading the copy the gateway keeps of it
+// (~/.config/claude-burst/summaries, written when it is told the summary was
+// taken in). A plain message is all a mod can hand back, and Claude Code
+// draws a plain user message in full: a summary of 20KB filled the window
+// after every hand-off (20 Nov 2026). A tool result is drawn folded, as
+// Claude Code's own summary is, and ctrl+o opens it. The model still reads
+// all of it, and the line before it says it is the conversation so far.
+export const HANDED_LINE = 'Burst compacted the earlier part of this conversation. Its summary, the user\'s instructions and constraints included, is the file read below: carry on from it as the conversation so far.'
+export function handedOver(h) {
+  const id = 'toolu_burst_' + String(h.of || 'summary').replace(/[^A-Za-z0-9_-]/g, '')
+  const file = home + '/.config/claude-burst/summaries/' + sid + '-' + String(h.of || '').replace(/[^A-Za-z0-9_-]/g, '') + '.md'
+  return [
+    { role: 'user', text: HANDED_LINE, toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input: { file_path: file } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: h.lead }] },
+  ]
+}
+
+// A message that is Burst's summary: the plain message it was handed over
+// as until mod 0.12.9, or the read of it since. loose: contains it, as
+// Claude Code may add its own notes to that message.
+function holdsLead(m, lead, loose) {
+  if (!m || !lead) return false
+  const is = (t) => (loose ? String(t || '').includes(lead) : t === lead)
+  return is(m.text) || (m.toolResults || []).some((r) => is(r.text))
 }
 
 // A kept tool result handed back with its handle is written to the
@@ -380,14 +408,14 @@ export function register(on) {
     // writing a summary of the whole history is the user's to ask for.
     const mine = asking || (h !== null && asked === h.of && e.trigger === 'manual')
     asked = ''
-    if (cut < 1 && mine && h && String((e.messages && e.messages[0] && e.messages[0].text) || '').includes(h.lead)) return { skip: ALREADY }
+    if (cut < 1 && mine && h && (e.messages || []).slice(0, 3).some((m) => holdsLead(m, h.lead, true))) return { skip: ALREADY }
     if (cut < 1 && mine) return { skip: "Burst's summary does not fit this session as Claude Code holds it, so nothing was compacted. /compact has Claude Code write its own" }
     if (cut < 1) return next(e)
     await markHanded($, h.of)
     tookIn = true
     await taken($, h)
     toast($, "Async Full Compaction: " + cut + ' messages replaced with the summary Burst already wrote')
-    return { messages: [{ role: 'user', text: h.lead, toolUses: [] }, ...e.messages.slice(cut).map(asNewIfResult)] }
+    return { messages: [...handedOver(h), ...e.messages.slice(cut).map(asNewIfResult)] }
   })
 
   on('session.start', async ($, e, next) => {

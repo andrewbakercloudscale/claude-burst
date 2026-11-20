@@ -294,3 +294,72 @@ func TestHandoffAnchorsSkipSystemNotes(t *testing.T) {
 		t.Fatalf("first must be the prompt after the note, got %+v", h.First)
 	}
 }
+
+// Since mod 0.12.9 the summary goes in as the result of a read, after a line
+// saying so, so Claude Code draws it folded. The gateway finds it there, and
+// keeps the copy the read names.
+func TestASummaryTakenInAsAReadIsFoundAndKept(t *testing.T) {
+	f := &fakeAnthropic{context: 450_000}
+	s := compactServer(t, f, config.CompactionConfig{Enabled: true})
+	all := msgs(t, session)
+	send(t, s, "S", all[:5])
+	send(t, s, "S", all[:7])
+	waitFor(t, func() bool { return s.compactionReady("S") })
+	send(t, s, "S", all[:9])
+	old, ok := readHandoff(t, s, "S")
+	if !ok {
+		t.Fatal("want a hand-off file once the summary is in force")
+	}
+	if !s.TookIn("S", old.Of) {
+		t.Fatal("the session's own hand-off must be found")
+	}
+	copyPath := filepath.Join(summariesDir(s.compaction.path), "S-"+old.Of+".md")
+	b, err := os.ReadFile(copyPath)
+	if err != nil || strings.TrimSpace(string(b)) != old.Lead {
+		t.Fatalf("the copy the read names must hold the summary: %v %q", err, b)
+	}
+
+	result, err := json.Marshal(map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_burst_" + old.Of, "content": old.Lead}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opening := msgs(t, `[
+ {"role":"user","content":"Burst compacted the earlier part of this conversation."},
+ {"role":"assistant","content":[{"type":"tool_use","id":"toolu_burst_x","name":"Read","input":{}}]}
+]`)
+	opening[1] = json.RawMessage(strings.Replace(string(opening[1]), "toolu_burst_x", "toolu_burst_"+old.Of, 1))
+	taken := append(append(opening, result), all[old.Messages:]...)
+	taken = append(taken, msgs(t, `[
+ {"role":"assistant","content":[{"type":"text","text":"done with third"}]},
+ {"role":"user","content":[{"type":"text","text":"fourth task"}]}
+]`)...)
+	send(t, s, "S", taken)
+	if h, ok := readHandoff(t, s, "S"); ok && h.Of == old.Of {
+		t.Fatalf("the summary Claude Code holds already must not be handed to it again: %d messages", h.Messages)
+	}
+}
+
+func TestSummaryCopiesAreSafeAndPruned(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	writeSummaryCopy(dir, "../x", "abc", "lead", now)
+	writeSummaryCopy(dir, "S", "a.b", "lead", now)
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Fatalf("a session or summary id that is a path must write nothing: %d files", len(ents))
+	}
+	stale := filepath.Join(dir, "OLD-1.md")
+	if err := os.WriteFile(stale, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-summaryKept - time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	writeSummaryCopy(dir, "S", "abc", "lead", now)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("a copy older than summaryKept must go")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "S-abc.md")); string(b) != "lead\n" {
+		t.Fatalf("copy = %q", b)
+	}
+}

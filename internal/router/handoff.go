@@ -180,7 +180,11 @@ func handoffDir(statePath string) string {
 // Code had adopted it, over the summary of 169 made of the history that
 // followed, so the next full compaction had nothing to give. Reports whether
 // anything changed. Caller holds c.mu.
-func (c *compactor) supersede(key string, first json.RawMessage) bool {
+//
+// Since mod 0.12.9 the summary is handed over as the result of a read, the
+// third message (a line, the read, its result), so the opening messages are
+// read, tool results included.
+func (c *compactor) supersede(key string, opening []json.RawMessage) bool {
 	sid, _, _ := strings.Cut(key, "|")
 	text, read := "", false
 	changed := false
@@ -190,18 +194,10 @@ func (c *compactor) supersede(key string, first json.RawMessage) bool {
 		}
 		if !read {
 			read = true
-			var msg map[string]any
-			if json.Unmarshal(first, &msg) != nil {
+			text = openingText(opening)
+			if text == "" {
 				return false
 			}
-			var b strings.Builder
-			for _, blk := range contentBlocks(msg["content"]) {
-				bm, _ := blk.(map[string]any)
-				t, _ := bm["text"].(string)
-				b.WriteString(t)
-				b.WriteByte('\n')
-			}
-			text = b.String()
 		}
 		if strings.Contains(text, d.summary) {
 			d.hand = nil
@@ -261,6 +257,35 @@ func (c *compactor) handoffFiles() (dir string, files map[string][]byte) {
 	return dir, files
 }
 
+// openingText is the text of a history's first three messages, tool results
+// included: where a summary Claude Code took in from the mod is found.
+func openingText(msgs []json.RawMessage) string {
+	if len(msgs) > 3 {
+		msgs = msgs[:3]
+	}
+	var b strings.Builder
+	var add func(c any)
+	add = func(c any) {
+		for _, blk := range contentBlocks(c) {
+			bm, _ := blk.(map[string]any)
+			if t, ok := bm["text"].(string); ok {
+				b.WriteString(t)
+				b.WriteByte('\n')
+			}
+			if bm["type"] == "tool_result" {
+				add(bm["content"])
+			}
+		}
+	}
+	for _, m := range msgs {
+		var msg map[string]any
+		if json.Unmarshal(m, &msg) == nil {
+			add(msg["content"])
+		}
+	}
+	return b.String()
+}
+
 // writeHandoffFiles makes dir hold exactly files: one hand-off a session,
 // and none for a session that has none. Disk only, so it runs off the
 // compaction lock.
@@ -310,6 +335,7 @@ func (s *Server) TookIn(sid, of string) bool {
 			continue
 		}
 		found = true
+		writeSummaryCopy(summariesDir(s.compaction.path), sid, of, st.hand.Lead, time.Now())
 		s.logger.Printf("compaction taken in session=%q: Claude Code compacted with Burst's summary, and holds %dk where it held %dk", key, st.lastContext/1000, st.rawContext/1000)
 		st.rawContext = st.lastContext
 	}
@@ -317,4 +343,38 @@ func (s *Server) TookIn(sid, of string) bool {
 		s.compaction.save()
 	}
 	return found
+}
+
+// summariesDir holds a copy of each summary Claude Code took in from the mod:
+// the file its hand-off reads (mod 0.12.9), so the read Claude Code shows,
+// and anyone opening the path later, find what Claude was given.
+func summariesDir(statePath string) string {
+	if statePath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(statePath), "summaries")
+}
+
+// summaryKept: copies older than this go, a session that old long since
+// compacted again.
+const summaryKept = 30 * 24 * time.Hour
+
+func writeSummaryCopy(dir, sid, of, lead string, now time.Time) {
+	if dir == "" || lead == "" || strings.ContainsAny(sid+of, "/\\.") || sid == "" || of == "" {
+		return
+	}
+	if os.MkdirAll(dir, 0o700) != nil {
+		return
+	}
+	p := filepath.Join(dir, sid+"-"+of+".md")
+	tmp := p + ".tmp"
+	if os.WriteFile(tmp, []byte(lead+"\n"), 0o600) == nil {
+		_ = os.Rename(tmp, p)
+	}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > summaryKept {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
