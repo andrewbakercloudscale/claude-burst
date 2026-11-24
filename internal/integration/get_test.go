@@ -163,9 +163,11 @@ func newGetRig(t *testing.T) *getRig {
 	return r
 }
 
+// core.hooksPath=/dev/null: the developer's own git hooks (a secret scanner
+// reading the rig's random test keys, say) are not part of the test.
 func (r *getRig) git(dir string, args ...string) string {
 	r.t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		r.t.Fatalf("git %v: %v\n%s", args, err, out)
