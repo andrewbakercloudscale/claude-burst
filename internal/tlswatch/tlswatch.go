@@ -83,14 +83,34 @@ const RejectThreshold = 30
 // hang-ups, and quiet days see under 15 failures of any kind a DAY.
 const HangupThreshold = 10
 
+// BlipSpan is how close together failures must be to count as one burst.
+// On 2026-11-24 at 13:12:59, on a phone hotspot, twenty handshakes failed
+// in the same second as the open connections dropped (broken pipes,
+// cancelled requests, clients gone), and the check said the local CA had
+// changed. It had not: nothing failed after, and the next handshakes
+// completed. A CA change fails every retry of every old session, so its
+// failures keep coming; a network blip is over in an instant.
+const BlipSpan = 2 * time.Second
+
+// blipShare is the share of the window's failures (in tenths) that must
+// fall in one BlipSpan for them to be read as a blip, and blipAfter the
+// most failures allowed after it.
+const (
+	blipShare = 8
+	blipAfter = 2
+)
+
 // maxEvents bounds memory if something hammers the port. The worst storm on
 // record was about 70 a minute; this is two orders of magnitude above it.
 const maxEvents = 50000
 
 type event struct {
-	at    time.Time
-	ok    bool
-	class Class
+	at time.Time
+	ok bool
+	// closed is an open connection (one that had carried a request)
+	// closing, which a network blip does to many at once.
+	closed bool
+	class  Class
 }
 
 // Watcher counts handshakes. The zero value is not usable; call New.
@@ -103,6 +123,7 @@ type Watcher struct {
 	active    map[net.Conn]struct{}
 	started   time.Time
 	lastFail  time.Time
+	lastOK    time.Time
 	lastError string
 	lastClass Class
 }
@@ -174,8 +195,13 @@ func (w *Watcher) ConnState(c net.Conn, st http.ConnState) {
 			return
 		}
 		w.active[c] = struct{}{}
-		w.add(event{at: w.now(), ok: true})
+		now := w.now()
+		w.lastOK = now
+		w.add(event{at: now, ok: true})
 	case http.StateClosed, http.StateHijacked:
+		if _, seen := w.active[c]; seen && st == http.StateClosed {
+			w.add(event{at: w.now(), closed: true})
+		}
 		delete(w.active, c)
 	}
 }
@@ -212,8 +238,22 @@ type Snapshot struct {
 	// "too many" was without restating the number.
 	Threshold int `json:"threshold"`
 	// Rejecting is the verdict: Failures >= Threshold and Failures >
-	// Successes.
-	Rejecting     bool   `json:"rejecting"`
+	// Successes, or HangupThreshold hang-ups; and not a Blip.
+	Rejecting bool `json:"rejecting"`
+	// Blip is failures that would have been a rejection, but nearly all
+	// fell within BlipSpan, handshakes completed after them and (almost)
+	// none failed: the network dropping every connection at once, not
+	// clients refusing the certificate. BlipAt is when, BlipFailures how
+	// many failed in it, BlipClosed how many open connections closed in
+	// the same span, SuccessesSince how many handshakes completed after.
+	Blip           bool   `json:"blip"`
+	BlipAt         string `json:"blip_at,omitempty"`
+	BlipFailures   int    `json:"blip_failures,omitempty"`
+	BlipClosed     int    `json:"blip_closed,omitempty"`
+	SuccessesSince int    `json:"successes_since,omitempty"`
+	// LastSuccess is the newest completed handshake since the gateway
+	// started, RFC 3339.
+	LastSuccess   string `json:"last_success,omitempty"`
 	LastFailure   string `json:"last_failure,omitempty"`
 	LastError     string `json:"last_error,omitempty"`
 	LastClass     string `json:"last_class,omitempty"`
@@ -228,10 +268,17 @@ func (w *Watcher) Snapshot() Snapshot {
 	w.prune(now)
 	s := Snapshot{WindowSeconds: int(Window / time.Second), ByClass: map[string]int{},
 		Threshold: RejectThreshold, WatchingSince: w.started.Format(time.RFC3339)}
+	var fails []time.Time
 	for _, e := range w.events {
+		if e.closed {
+			continue
+		}
 		if e.ok {
 			s.Successes++
 			continue
+		}
+		if e.class != PlainHTTP {
+			fails = append(fails, e.at)
 		}
 		s.ByClass[string(e.class)]++
 		if e.class != PlainHTTP {
@@ -240,9 +287,55 @@ func (w *Watcher) Snapshot() Snapshot {
 	}
 	s.Rejecting = (s.Failures >= RejectThreshold && s.Failures > s.Successes) ||
 		s.ByClass[string(Hangup)] >= HangupThreshold
+	if s.Rejecting {
+		w.checkBlip(&s, fails)
+	}
+	if !w.lastOK.IsZero() {
+		s.LastSuccess = w.lastOK.Format(time.RFC3339)
+	}
 	if !w.lastFail.IsZero() {
 		s.LastFailure = w.lastFail.Format(time.RFC3339)
 		s.LastError, s.LastClass = w.lastError, string(w.lastClass)
 	}
 	return s
+}
+
+// checkBlip turns a rejection into a Blip when the failures were one burst
+// that handshakes recovered from. fails is the window's failures (not plain
+// HTTP), oldest first; called under w.mu.
+func (w *Watcher) checkBlip(s *Snapshot, fails []time.Time) {
+	// The BlipSpan holding the most failures.
+	best, bestStart, bestEnd := 0, time.Time{}, time.Time{}
+	i := 0
+	for j, at := range fails {
+		for at.Sub(fails[i]) > BlipSpan {
+			i++
+		}
+		if n := j - i + 1; n > best {
+			best, bestStart, bestEnd = n, fails[i], at
+		}
+	}
+	if best == 0 || best*10 < len(fails)*blipShare {
+		return
+	}
+	after, okAfter, closed := 0, 0, 0
+	for _, e := range w.events {
+		switch {
+		case e.closed:
+			if !e.at.Before(bestStart.Add(-BlipSpan)) && !e.at.After(bestEnd.Add(BlipSpan)) {
+				closed++
+			}
+		case e.ok:
+			if e.at.After(bestEnd) {
+				okAfter++
+			}
+		case e.class != PlainHTTP && e.at.After(bestEnd):
+			after++
+		}
+	}
+	if okAfter == 0 || after > blipAfter {
+		return
+	}
+	s.Rejecting, s.Blip = false, true
+	s.BlipAt, s.BlipFailures, s.BlipClosed, s.SuccessesSince = bestStart.Format(time.RFC3339), best, closed, okAfter
 }

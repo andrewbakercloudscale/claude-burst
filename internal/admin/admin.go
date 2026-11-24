@@ -275,10 +275,21 @@ func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if events == nil {
-		events = []metrics.Event{} // the page reads .length, so an empty log is [] and never null
+	// Each row says whether this Mac's network dropped it, so the list can
+	// label it "network" rather than show a bare 502 that reads as Burst
+	// failing.
+	rows := make([]requestRow, 0, len(events)) // the page reads .length, so an empty log is [] and never null
+	for _, e := range events {
+		rows = append(rows, requestRow{Event: e, Network: metrics.NetworkKind(e)})
 	}
-	writeJSON(w, events)
+	writeJSON(w, rows)
+}
+
+// requestRow is one /api/requests row: the event, plus the network failure
+// it was (metrics.NetworkKind), if any.
+type requestRow struct {
+	metrics.Event
+	Network string `json:"network,omitempty"`
 }
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {

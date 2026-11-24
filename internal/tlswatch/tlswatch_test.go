@@ -195,3 +195,57 @@ func TestWatcherOnARealTLSServer(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// 2026-11-24 13:12:59, a phone hotspot behind Zscaler: twenty handshakes
+// failed in the same second as the open connections dropped, then the next
+// ones completed and nothing else failed. A network blip, not a CA change.
+func TestOneInstantBurstThatRecoversIsABlip(t *testing.T) {
+	ck := &clock{t: time.Date(2026, 11, 24, 13, 10, 0, 0, time.Local)}
+	w := newWithClock(io.Discard, ck.now)
+	var open []*fakeConn
+	for i := 0; i < 6; i++ {
+		c := &fakeConn{}
+		open = append(open, c)
+		w.ConnState(c, http.StateActive)
+	}
+	ck.add(2*time.Minute + 59*time.Second)
+	for _, c := range open {
+		w.ConnState(c, http.StateClosed)
+	}
+	for i := 0; i < 20; i++ {
+		logLine(w, 55000+i, "EOF")
+		if i%7 == 6 {
+			ck.add(300 * time.Millisecond)
+		}
+	}
+	if s := w.Snapshot(); !s.Rejecting || s.Blip {
+		t.Fatalf("with nothing completed since, the burst is still read as a rejection: %+v", s)
+	}
+	ck.add(20 * time.Second)
+	for i := 0; i < 3; i++ {
+		w.ConnState(&fakeConn{}, http.StateActive)
+	}
+	s := w.Snapshot()
+	if s.Rejecting || !s.Blip || s.BlipFailures != 20 || s.BlipClosed != 6 || s.SuccessesSince != 3 || s.BlipAt == "" || s.LastSuccess == "" {
+		t.Fatalf("one burst that handshakes recovered from is a blip: %+v", s)
+	}
+}
+
+// A CA change keeps failing: each old session retries, so the failures are
+// spread out and keep coming after any burst. That stays a rejection even
+// with new sessions completing handshakes beside it.
+func TestSustainedFailuresAreNotABlip(t *testing.T) {
+	ck := &clock{t: time.Date(2026, 10, 2, 12, 50, 0, 0, time.Local)}
+	w := newWithClock(io.Discard, ck.now)
+	for i := 0; i < 15; i++ {
+		logLine(w, 60000+i, "EOF")
+	}
+	for i := 0; i < 15; i++ {
+		ck.add(10 * time.Second)
+		logLine(w, 60100+i, "EOF")
+		w.ConnState(&fakeConn{}, http.StateActive)
+	}
+	if s := w.Snapshot(); !s.Rejecting || s.Blip {
+		t.Fatalf("failures that keep coming are a rejection, not a blip: %+v", s)
+	}
+}

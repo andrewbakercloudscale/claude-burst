@@ -1171,7 +1171,7 @@
         <div><label for="ugModel">Model</label><select id="ugModel"><option value="">All models</option></select></div>
         <div><label for="ugProvider">Provider</label><select id="ugProvider"><option value="">All providers</option><option value="primary">primary (slot)</option><option value="secondary">secondary (slot)</option></select></div>
         <div><label for="ugRepo">Repository</label><select id="ugRepo"><option value="">All repositories</option></select></div>
-        <div><label for="ugResult">Result</label><select id="ugResult"><option value="">All results</option><option value="ok">ok</option><option value="error">error</option><option value="cancelled">cancelled</option><option value="offline">offline</option><option value="unknown">unknown</option></select></div>
+        <div><label for="ugResult">Result</label><select id="ugResult"><option value="">All results</option><option value="ok">ok</option><option value="error">error</option><option value="cancelled">cancelled</option><option value="offline">offline</option><option value="network">network</option><option value="unknown">unknown</option></select></div>
         <div><label for="ugTraffic">Traffic</label><select id="ugTraffic"><option value="">Model requests</option><option value="all">All traffic</option></select></div>
         <div><label for="ugSession">Session</label><input id="ugSession" placeholder="session id"></div>
         <div><button id="ugReset">Reset</button></div>
@@ -2861,6 +2861,7 @@ function renderRequests(rows, el = "requests") {
         <td class="mono" title="${esc(e.destination || "")}">${esc(destHost(e.destination))}</td>
         <td class="mono">${esc(e.model || controlPlaneLabel(e.destination) || "-")}${e.requested_model && e.requested_model !== e.model ? `<div style="font-size:10.5px;color:var(--muted)">asked: ${esc(e.requested_model)}</div>` : ""}</td>
         ${e.http_status === 502 && String(e.note || "").startsWith("local network ") ? `<td class="mono" style="color:var(--muted)" title="502: this Mac had no network">offline</td>`
+          : e.network ? `<td class="mono" style="color:var(--muted)" title="502: the network between this Mac and the provider dropped it (${esc(e.network)}), not Burst">network</td>`
           : `<td class="mono st-${slot === "refused" || slot === "not http" ? 5 : String(e.http_status)[0]}">${esc((slot === "refused" || slot === "not http") && !e.http_status ? "no answer" : e.http_status)}</td>`}
         <td class="num">${num(e.duration_ms)}</td>
         <td class="num">${num(e.input_tokens)}</td>
@@ -4132,10 +4133,49 @@ function axisMoney(n) {
 function leftOut(days) {
   const off = (days || []).reduce((a, d) => a + (d.offline || 0), 0);
   const gone = (days || []).reduce((a, d) => a + (d.cancelled || 0), 0);
+  const net = (days || []).reduce((a, d) => a + (d.network || 0), 0);
   const parts = [];
+  if (net) parts.push(`${num(net)} dropped by the network between this Mac and the provider`);
   if (off) parts.push(`${num(off)} sent while this Mac was offline`);
   if (gone) parts.push(`${num(gone)} Claude Code cancelled`);
   return parts.length ? `; not counted: ${parts.join(" and ")}` : "";
+}
+
+// networkCheck is "Network to Anthropic", from today's network failures
+// (/api/history network: upstream calls reset, timed out or unresolved
+// between this Mac and the provider). On 2026-11-24, on a phone hotspot
+// behind Zscaler, about 8,000 of them, mostly Remote Control heartbeats,
+// showed only as a 2.0% "Error rate" telling the reader to look for limit
+// errors, while Burst and Anthropic were both fine. A warning, never
+// critical: nothing here can fix the link. It fails while the network has
+// dropped calls in the last 30 minutes and they are significant (at least
+// 20 today, or more than Burst's own errors today), and clears once it has
+// been clean for 30 minutes; the days in Activity keep the history. Null
+// when today has none. Pure, for page_script_test.go.
+function networkCheck(hist, now) {
+  const n = hist && hist.network;
+  if (!n || !n.count) return null;
+  const last = n.last ? Date.parse(n.last) : 0;
+  const t = new Date(last).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  const days = hist.days || [];
+  const todayErrs = days.length ? (days[days.length - 1].errors || 0) : 0;
+  const cleanMs = 30 * 60 * 1000; // clean this long, and the check clears
+  const recent = last && now - last < cleanMs;
+  const failing = !!recent && (n.count >= 20 || n.count > todayErrs);
+  const kinds = n.kinds || [], paths = n.paths || [];
+  const kind = kinds.length ? (kinds[0].count * 2 >= n.count ? kinds[0].key : `most often ${kinds[0].key}`) : "";
+  const top = paths.slice(0, 2).filter((p, i) => i === 0 || p.count * 5 >= n.count).map(p => p.key);
+  const what = top.length ? `, mostly ${top.join(" and ")}` : "";
+  const conns = `${num(n.count)} connection${n.count === 1 ? "" : "s"}`;
+  return {
+    key: "netpath", label: "Network to Anthropic", target: "sec-activity",
+    ok: !failing, critical: false,
+    detail: failing
+      ? `Your network dropped ${conns} to Anthropic today${kind ? ` (${kind})` : ""}${what}, the last at ${t}. ` +
+        `Burst is working; the link between this Mac and Anthropic is not. Usually a hotspot, VPN or Zscaler. ` +
+        `These are not counted as Burst errors`
+      : `${conns} dropped by the network today${kind ? ` (${kind})` : ""}, the last at ${t}${recent ? "" : "; clean since"}. Not counted as Burst errors`,
+  };
 }
 
 function primaryHealthCheck(ph, now) {
@@ -4202,6 +4242,20 @@ function clientTLSCheck(ct) {
     by.distrust ? `${by.distrust} sent a certificate alert` : "",
     by.other ? `${by.other} other` : "",
   ].filter(Boolean).join(", ");
+  // A network blip (2026-11-24 13:12:59): the failures all came in one
+  // instant, with the open connections dropping beside them, and handshakes
+  // completed after it with nothing failing since. A CA change keeps
+  // failing on every retry, so tlswatch only calls it a blip when it stops.
+  if (ct.blip) {
+    const at = ct.blip_at ? new Date(Date.parse(ct.blip_at)).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "";
+    return {
+      key: "clienttls", label: "Claude Code accepts the gateway's certificate", target: "installSection",
+      ok: true, critical: false,
+      detail: `yes. ${ct.blip_failures} handshakes dropped at once${at ? ` at ${at}` : ""}` +
+        (ct.blip_closed ? `, as ${ct.blip_closed} open connection${ct.blip_closed === 1 ? "" : "s"} dropped in the same second` : "") +
+        `: a network blip, not a certificate problem. ${ct.successes_since} handshake${ct.successes_since === 1 ? "" : "s"} completed since, and the failures stopped`,
+    };
+  }
   return {
     key: "clienttls", label: "Claude Code accepts the gateway's certificate", target: "installSection",
     ok: !ct.rejecting, critical: true,
@@ -4260,9 +4314,14 @@ function readinessChecks(s, verdict) {
   const primary = primaryHealthCheck(s.primary_health, Date.now());
   if (primary) out.push(primary);
 
+  // The network between this Mac and Anthropic dropping calls: said as that,
+  // apart from the error rate, which does not count them.
+  const net = networkCheck(lastHistory, Date.now());
+  if (net) out.push(net);
+
   // Error rate over the charted window, of requests that failed: not the
-  // ones refused while this Mac was offline, nor the ones Claude Code gave
-  // up on (leftOut says how many). Uses the same numbers the chart
+  // ones refused while this Mac was offline, dropped by the network on the
+  // way, or given up on by Claude Code (leftOut says how many). Uses the same numbers the chart
   // draws, so the check and the picture below it can never disagree.
   if (lastHistory && lastHistory.window && lastHistory.window.Requests > 0) {
     const errs = lastHistory.days.reduce((a, d) => a + d.errors, 0);
@@ -4303,6 +4362,7 @@ const CHECK_FIX = {
   secondary: "add the secondary's API key under Secondary, then press Test secondary.",
   primary: "Anthropic is refusing or failing requests, usually a usage limit or an outage (status.anthropic.com). With a secondary set up, requests already go there.",
   network: "nothing: requests go through again by themselves when the network is back.",
+  netpath: "switch network, or pause the VPN or Zscaler; requests resume on their own, and Claude Code retries what was dropped.",
   errors: "open Activity to see which requests failed and why. A burst of limit errors is normal; a steady stream is not.",
   cxroute: "route Codex through Burst with the button, then quit and reopen the Codex app (it reads its config when a session starts).",
   cxport: "Codex is routed to a port nothing answers on, so it cannot work. Send Codex straight to ChatGPT below (or run burst-off), then restart the gateway from the support console.",
@@ -4325,6 +4385,7 @@ const CHECK_ACTION = {
   secondary: { label: "Add the key", run: () => { setSecondaryOpen(true); scrollToEl($("secondarySection"), "start"); } },
   primary: { label: "Test now", run: b => runTestConnection(b, $("actNote")) },
   errors: { label: "Show the failures", run: () => scrollToEl($("sec-activity"), "start") },
+  netpath: { label: "Show the failures", run: () => scrollToEl($("sec-activity"), "start") },
   cxroute: { label: "Route Codex through Burst", run: () => $("codexEnable").click() },
   cxport: { label: "Open the support console", run: () => window.open("http://127.0.0.1:7789/", "_blank") },
   cxchatgpt: { label: "Trace the path", run: () => $("codexTrace").click() },
@@ -7592,8 +7653,8 @@ loadBand();
     if (!r) return;
     const t = r.totals;
     const tiles = [
-      {k: "Requests", v: num(t.requests), h: `${num(t.ok)} ok, ${num(t.errors)} errors, ${num(t.cancelled)} cancelled${t.offline ? ", " + num(t.offline) + " while offline" : ""}${t.unknown ? ", " + num(t.unknown) + " unknown" : ""}`},
-      {k: "Success rate", v: pct(t.success_rate), h: "cancelled (Esc) and unknown left out",
+      {k: "Requests", v: num(t.requests), h: `${num(t.ok)} ok, ${num(t.errors)} errors, ${num(t.cancelled)} cancelled${t.offline ? ", " + num(t.offline) + " while offline" : ""}${t.network ? ", " + num(t.network) + " dropped by the network" : ""}${t.unknown ? ", " + num(t.unknown) + " unknown" : ""}`},
+      {k: "Success rate", v: pct(t.success_rate), h: "cancelled (Esc), offline, network and unknown left out",
        cls: t.success_rate != null && t.success_rate < 0.95 ? "bad" : t.success_rate != null && t.success_rate < 0.98 ? "warn" : ""},
       {k: "Tokens", v: short(t.input_tokens + t.output_tokens + t.cache_read_tokens + t.cache_write_tokens),
        h: `in ${short(t.input_tokens)}, out ${short(t.output_tokens)}, cache read ${short(t.cache_read_tokens)}, write ${short(t.cache_write_tokens)}`},

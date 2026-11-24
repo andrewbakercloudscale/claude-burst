@@ -317,8 +317,13 @@ type Day struct {
 	Errors int `json:"errors"`
 	// Offline and Cancelled are what Errors leaves out: requests refused
 	// while this Mac had no network, and ones the client gave up on.
-	Offline          int     `json:"offline"`
-	Cancelled        int     `json:"cancelled"`
+	Offline   int `json:"offline"`
+	Cancelled int `json:"cancelled"`
+	// Network is upstream calls this Mac's network dropped (a reset, a
+	// handshake that timed out, a lookup that failed): the path between
+	// here and the provider failing, not Burst or the provider. Also left
+	// out of Errors. See IsNetwork.
+	Network          int     `json:"network"`
 	InputTokens      int64   `json:"input_tokens"`
 	OutputTokens     int64   `json:"output_tokens"`
 	APIEquivalentUSD float64 `json:"api_equivalent_usd"`
@@ -421,6 +426,42 @@ type History struct {
 	// were actually read, so the coverage claim above is checkable rather
 	// than asserted.
 	Files int `json:"files"`
+
+	// Network is today's network failures in detail, for the dashboard's
+	// "Network to Anthropic" check: how many, the last one, and what they
+	// were. The days above keep the per-day counts for the whole window.
+	Network NetworkSummary `json:"network"`
+}
+
+// NetworkSummary describes one local day's network failures (IsNetwork).
+type NetworkSummary struct {
+	Count int `json:"count"`
+	// Last is the newest one, RFC 3339, empty when there were none.
+	Last string `json:"last,omitempty"`
+	// Kinds counts them by error (NetworkKind), Paths by what the call was
+	// (NetworkPathLabel), most first.
+	Kinds []Tally `json:"kinds"`
+	Paths []Tally `json:"paths"`
+}
+
+// Tally is one row of a count, most first when in a list.
+type Tally struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
+}
+
+func sortedTallies(m map[string]int) []Tally {
+	out := make([]Tally, 0, len(m))
+	for k, n := range m {
+		out = append(out, Tally{Key: k, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
 }
 
 // dayNum is t's local calendar day as yyyymmdd, the key the daily buckets
@@ -465,6 +506,10 @@ func Daily(path string, days int) (History, error) {
 	models := map[string]*ModelUse{}
 	var latencies []int64
 	var earliest time.Time
+
+	today := dayNum(now)
+	var netLast time.Time
+	netKinds, netPaths := map[string]int{}, map[string]int{}
 
 	ct := newCompactionTracker()
 	for _, f := range historyFiles(path, start) {
@@ -512,6 +557,16 @@ func Daily(path string, days int) (History, error) {
 				d.Offline++
 			case e.HTTPStatus == StatusClientClosed:
 				d.Cancelled++
+			case IsNetwork(e):
+				d.Network++
+				if dayNum(e.Time) == today {
+					h.Network.Count++
+					netKinds[NetworkKind(e)]++
+					netPaths[NetworkPathLabel(e.Destination)]++
+					if e.Time.After(netLast) {
+						netLast = e.Time
+					}
+				}
 			}
 			d.InputTokens += e.InputTokens
 			d.OutputTokens += e.OutputTokens
@@ -559,6 +614,10 @@ func Daily(path string, days int) (History, error) {
 
 	for i := range h.Days {
 		h.Days[i].Sessions = len(daySessions[h.Days[i].Date])
+	}
+	h.Network.Kinds, h.Network.Paths = sortedTallies(netKinds), sortedTallies(netPaths)
+	if !netLast.IsZero() {
+		h.Network.Last = netLast.Format(time.RFC3339)
 	}
 	h.Sessions = len(sessions)
 	h.Models = make([]ModelUse, 0, len(models))
@@ -724,9 +783,92 @@ func IsOffline(e Event) bool {
 }
 
 // IsError is a request that failed for a reason other than the client
-// leaving or this Mac being offline.
+// leaving, this Mac being offline, or this Mac's network dropping the call.
 func IsError(e Event) bool {
-	return e.HTTPStatus >= 400 && e.HTTPStatus != StatusClientClosed && !IsOffline(e) && !socketExpired(e)
+	return e.HTTPStatus >= 400 && e.HTTPStatus != StatusClientClosed && !IsOffline(e) && !IsNetwork(e) && !socketExpired(e)
+}
+
+// IsNetwork is an upstream call the network between this Mac and the
+// provider dropped: the Mac was online (that is IsOffline), but the
+// connection was reset, a handshake or read timed out, or a lookup failed.
+// On 2026-11-24, on a phone hotspot behind Zscaler, about 8,000 of these
+// (mostly Remote Control heartbeats and event streams, "read: connection
+// reset by peer") put the error rate at 2.0% while the same endpoints
+// answered curl from the same Mac: Burst and Anthropic were both fine.
+// Only a 502, the status the gateway answers with when the upstream call
+// itself fails, so a provider's own error response is never one of these.
+func IsNetwork(e Event) bool {
+	return NetworkKind(e) != ""
+}
+
+// networkKinds maps text in a transport error to a short name for it, in
+// the order they are tried: a TLS handshake timeout is also an i/o timeout
+// in spirit, and is named for the more specific one.
+var networkKinds = []struct{ match, kind string }{
+	{"connection reset by peer", "connection reset by peer"},
+	{"broken pipe", "broken pipe"},
+	{"tls handshake timeout", "TLS handshake timeout"},
+	{"i/o timeout", "i/o timeout"},
+	{"operation timed out", "connection timed out"},
+	{"http2: client connection lost", "connection lost"},
+	{"connection lost, primary answers on a new one", "connection lost"},
+	{"no route to host", "network unreachable"},
+	{"network is unreachable", "network unreachable"},
+	{"no such host", "DNS lookup failed"},
+	{"server misbehaving", "DNS lookup failed"},
+	{"unexpected eof", "connection closed (EOF)"},
+}
+
+// NetworkKind names the network failure e is, or "" when it is not one.
+func NetworkKind(e Event) string {
+	if e.HTTPStatus != 502 || IsOffline(e) {
+		return ""
+	}
+	m := strings.ToLower(e.Note)
+	for _, k := range networkKinds {
+		if strings.Contains(m, k.match) {
+			return k.kind
+		}
+	}
+	// A bare EOF ends the text: `Post "https://...": EOF`.
+	if strings.HasSuffix(m, ": eof") {
+		return "connection closed (EOF)"
+	}
+	return ""
+}
+
+// NetworkPathLabel says in words what a call to destination was, for the
+// network check's "mostly ..." clause. Session ids are dropped, so every
+// session's heartbeats are one row.
+func NetworkPathLabel(destination string) string {
+	p := destination
+	if i := strings.Index(p, "://"); i >= 0 {
+		p = p[i+3:]
+		if j := strings.IndexByte(p, '/'); j >= 0 {
+			p = p[j:]
+		} else {
+			p = "/"
+		}
+	}
+	switch {
+	case strings.HasSuffix(p, "/worker/heartbeat"):
+		return "remote-session heartbeats"
+	case strings.Contains(p, "/worker/events"):
+		return "remote-session event streams"
+	case strings.HasSuffix(p, "/client/presence"):
+		return "remote-session presence"
+	case strings.HasPrefix(p, "/v1/code/sessions/"):
+		return "remote-session updates"
+	case strings.HasPrefix(p, "/api/event_logging"):
+		return "telemetry"
+	case strings.HasPrefix(p, "/v1/messages/count_tokens"):
+		return "token counts"
+	case strings.HasPrefix(p, "/v1/messages"):
+		return "model requests"
+	case p == "":
+		return "other calls"
+	}
+	return p
 }
 
 // socketExpired is ChatGPT ending a Codex WebSocket at its 60 minutes with

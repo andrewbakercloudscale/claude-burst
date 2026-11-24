@@ -480,3 +480,56 @@ out({some: strategyTrack({track}), none: strategyTrack({actual: {usd: 5}}), empt
 		t.Errorf("nothing on record or too few requests, want nothing: %+v %+v %+v", got["none"], got["empty"], got["few"])
 	}
 }
+
+// 2026-11-24, a phone hotspot behind Zscaler: about 8,000 upstream calls
+// reset by the network, mostly Remote Control heartbeats. The page says it
+// is the network, as a warning, and clears once the network is clean.
+func TestNetworkCheckSaysItIsTheNetwork(t *testing.T) {
+	var got map[string]*pageCheck
+	runPageJS(t, []string{"num", "networkCheck"}, `
+const now = Date.parse("2026-11-24T13:45:00Z");
+const network = {count: 7994, last: "2026-11-24T13:40:00Z",
+  kinds: [{key: "connection reset by peer", count: 7800}, {key: "TLS handshake timeout", count: 194}],
+  paths: [{key: "remote-session heartbeats", count: 3744}, {key: "remote-session event streams", count: 2901}, {key: "telemetry", count: 682}]};
+const days = [{errors: 3}, {errors: 12}];
+out({
+  none: networkCheck({days, network: {count: 0}}, now),
+  nohist: networkCheck(null, now),
+  now: networkCheck({days, network}, now),
+  cleared: networkCheck({days, network}, now + 30 * 60 * 1000),
+  few: networkCheck({days, network: {count: 3, last: "2026-11-24T13:40:00Z", kinds: [{key: "broken pipe", count: 3}], paths: []}}, now),
+});`, &got)
+	if got["none"] != nil || got["nohist"] != nil {
+		t.Errorf("no network failures today, want no check: %+v %+v", got["none"], got["nohist"])
+	}
+	c := got["now"]
+	if c == nil || c.OK || c.Critical || c.Key != "netpath" || c.Label != "Network to Anthropic" {
+		t.Fatalf("network failures in the last 30 minutes must be a failing warning: %+v", c)
+	}
+	// num() groups digits by the runner's locale, so only the tail is pinned.
+	for _, want := range []string{"Your network dropped 7", "994 connections to Anthropic today (connection reset by peer)",
+		"mostly remote-session heartbeats and remote-session event streams", "the last at 13:40",
+		"Burst is working; the link between this Mac and Anthropic is not", "hotspot, VPN or Zscaler"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail missing %q: %s", want, c.Detail)
+		}
+	}
+	if c := got["cleared"]; c == nil || !c.OK || !strings.Contains(c.Detail, "clean since") {
+		t.Errorf("30 minutes clean must clear the check and say so: %+v", c)
+	}
+	if c := got["few"]; c == nil || !c.OK {
+		t.Errorf("3 drops beside 12 Burst errors are not the network's doing: %+v", c)
+	}
+	if !strings.Contains(string(indexHTML), "  netpath: \"switch network, or pause the VPN or Zscaler") {
+		t.Error("the network check needs its fix text")
+	}
+}
+
+// The error rate leaves network failures out and says how many.
+func TestLeftOutNamesNetworkFailures(t *testing.T) {
+	var got string
+	runPageJS(t, []string{"num", "leftOut"}, `out(leftOut([{network: 7994, offline: 0, cancelled: 4}]));`, &got)
+	if !strings.Contains(got, "994 dropped by the network between this Mac and the provider") || !strings.Contains(got, "4 Claude Code cancelled") {
+		t.Errorf("leftOut: %q", got)
+	}
+}

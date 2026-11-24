@@ -531,7 +531,7 @@ func TestDailyLeavesOfflineAndCancelledOutOfErrors(t *testing.T) {
 		Event{Time: now, Slot: "primary", HTTPStatus: 502, Note: "local network unavailable; not failed over: dial tcp"},
 		Event{Time: now, Slot: "primary", HTTPStatus: StatusClientClosed, Note: "client cancelled: context canceled"},
 		// A 502 for any other reason is an error.
-		Event{Time: now, Slot: "primary", HTTPStatus: 502, Note: "upstream call failed: EOF"},
+		Event{Time: now, Slot: "primary", HTTPStatus: 502, Note: "upstream call failed: net/http: timeout awaiting response headers"},
 	)
 	h, err := Daily(path, 1)
 	if err != nil {
@@ -543,6 +543,79 @@ func TestDailyLeavesOfflineAndCancelledOutOfErrors(t *testing.T) {
 	}
 	if got := ResultOf(Event{HTTPStatus: 502, Note: "local network unavailable; not failed over: x"}); got != ResultOffline {
 		t.Fatalf("result = %q, want offline", got)
+	}
+}
+
+// 2026-11-24, a phone hotspot behind Zscaler: thousands of upstream calls
+// reset by the network, mostly Remote Control heartbeats. They are the
+// network's failures, counted apart from Burst's errors, and today's are
+// described for the dashboard's network check.
+func TestDailyCountsNetworkFailuresApart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.jsonl")
+	now := time.Now()
+	hb := "https://api.anthropic.com/v1/code/sessions/cse_1/worker/heartbeat"
+	reset := `upstream call failed: Post "` + hb + `": read tcp 172.20.22.146:55265->160.79.104.10:443: read: connection reset by peer`
+	writeEvents(t, path,
+		Event{Time: now.Add(-3 * time.Second), Slot: "primary", HTTPStatus: 502, Destination: hb, Note: reset},
+		Event{Time: now.Add(-2 * time.Second), Slot: "primary", HTTPStatus: 502, Destination: hb, Note: reset},
+		Event{Time: now.Add(-time.Second), Slot: "primary", HTTPStatus: 502, Destination: "https://api.anthropic.com/api/event_logging/v2/batch",
+			Note: `upstream call failed: Post "https://api.anthropic.com/api/event_logging/v2/batch": net/http: TLS handshake timeout`},
+		Event{Time: now, Slot: "primary", HTTPStatus: 200},
+		// Not network: a provider's own 502, and a slow reply.
+		Event{Time: now, Slot: "primary", HTTPStatus: 502, Note: "upstream returned 502: bad gateway"},
+		Event{Time: now, Slot: "primary", HTTPStatus: 502, Note: "upstream call failed: net/http: timeout awaiting response headers"},
+	)
+	h, err := Daily(path, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dayByDate(t, h, now.Format("2006-01-02"))
+	if d.Requests != 6 || d.Errors != 2 || d.Network != 3 {
+		t.Fatalf("requests %d, errors %d, network %d; want 6, 2, 3", d.Requests, d.Errors, d.Network)
+	}
+	n := h.Network
+	if n.Count != 3 || n.Last == "" || len(n.Kinds) != 2 || n.Kinds[0] != (Tally{"connection reset by peer", 2}) ||
+		n.Kinds[1] != (Tally{"TLS handshake timeout", 1}) || n.Paths[0] != (Tally{"remote-session heartbeats", 2}) {
+		t.Fatalf("network summary: %+v", n)
+	}
+	if got := ResultOf(Event{HTTPStatus: 502, Note: reset}); got != ResultNetwork {
+		t.Fatalf("result = %q, want network", got)
+	}
+}
+
+func TestNetworkKind(t *testing.T) {
+	cases := map[string]string{
+		`upstream call failed: Post "https://x/v1/messages": read tcp 1.2.3.4:5->6.7.8.9:443: read: connection reset by peer`: "connection reset by peer",
+		`upstream call failed: Post "https://x/v1/messages": write tcp 1:2->3:4: write: broken pipe`:                          "broken pipe",
+		`upstream call failed: Post "https://x/": net/http: TLS handshake timeout`:                                            "TLS handshake timeout",
+		`upstream call failed: Post "https://x/": dial tcp 1.2.3.4:443: i/o timeout`:                                          "i/o timeout",
+		`upstream call failed: Post "https://x/": EOF`:                                                                        "connection closed (EOF)",
+		`upstream reply broke mid-stream: unexpected EOF`:                                                                     "connection closed (EOF)",
+		`connection lost, primary answers on a new one; not failed over: http2: client connection lost`:                       "connection lost",
+		`upstream call failed: dial tcp: lookup api.anthropic.com: no such host`:                                              "DNS lookup failed",
+		`upstream call failed: dial tcp 1.2.3.4:443: connect: no route to host`:                                               "network unreachable",
+		`upstream call failed: net/http: timeout awaiting response headers`:                                                   "",
+		`local network unavailable; not failed over: read: connection reset by peer`:                                          "",
+	}
+	for note, want := range cases {
+		if got := NetworkKind(Event{HTTPStatus: 502, Note: note}); got != want {
+			t.Errorf("NetworkKind(%q) = %q, want %q", note, got, want)
+		}
+	}
+	if got := NetworkKind(Event{HTTPStatus: 429, Note: "connection reset by peer"}); got != "" {
+		t.Errorf("only a 502 the gateway answered is a network failure, got %q", got)
+	}
+	for dest, want := range map[string]string{
+		"https://api.anthropic.com/v1/code/sessions/cse_9/worker/heartbeat":     "remote-session heartbeats",
+		"https://api.anthropic.com/v1/code/sessions/cse_9/worker/events/stream": "remote-session event streams",
+		"https://api.anthropic.com/v1/code/sessions/cse_9":                      "remote-session updates",
+		"https://api.anthropic.com/api/event_logging/v2/batch":                  "telemetry",
+		"https://api.anthropic.com/v1/messages":                                 "model requests",
+		"":                                                                      "other calls",
+	} {
+		if got := NetworkPathLabel(dest); got != want {
+			t.Errorf("NetworkPathLabel(%q) = %q, want %q", dest, got, want)
+		}
 	}
 }
 

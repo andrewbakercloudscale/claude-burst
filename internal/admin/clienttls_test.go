@@ -67,7 +67,7 @@ func TestReadinessChecksIncludeClientTLS(t *testing.T) {
 		Checks []pageCheck `json:"checks"`
 		State  string      `json:"state"`
 	}
-	runPageJS(t, []string{"primaryHealthCheck", "secondaryCheck", "clientTLSCheck", "readinessChecks", "checksState"}, fmt.Sprintf(`
+	runPageJS(t, []string{"primaryHealthCheck", "secondaryCheck", "clientTLSCheck", "networkCheck", "readinessChecks", "checksState"}, fmt.Sprintf(`
 const lastHistory = null;
 const checks = readinessChecks(%s, {ok: true});
 out({checks, state: checksState(checks)});`, js), &got)
@@ -132,7 +132,7 @@ func TestReadinessChecksFollowTheMode(t *testing.T) {
 		var got struct {
 			Checks []pageCheck `json:"checks"`
 		}
-		runPageJS(t, []string{"primaryHealthCheck", "secondaryCheck", "clientTLSCheck", "readinessChecks", "checksState"}, fmt.Sprintf(`
+		runPageJS(t, []string{"primaryHealthCheck", "secondaryCheck", "clientTLSCheck", "networkCheck", "readinessChecks", "checksState"}, fmt.Sprintf(`
 const lastHistory = null;
 out({checks: readinessChecks(%s, {ok: true})});`, js), &got)
 		var k []string
@@ -157,5 +157,28 @@ out({checks: readinessChecks(%s, {ok: true})});`, js), &got)
 	})
 	if got, want := strings.Join(transparent, ","), "path,clienttls,watchdog,pfguard,secondary,primary"; got != want {
 		t.Errorf("transparent with a secondary: checks %s, want %s", got, want)
+	}
+}
+
+// 2026-11-24 13:12:59: twenty handshakes dropped in the same second as the
+// open connections, then handshakes completed again. tlswatch calls that a
+// blip, and the check passes and says it was the network, not the CA.
+func TestClientTLSCheckBlip(t *testing.T) {
+	var c *pageCheck
+	runPageJS(t, []string{"clientTLSCheck"}, `
+out(clientTLSCheck({window_seconds: 300, successes: 4, failures: 20, threshold: 30, rejecting: false,
+  blip: true, blip_at: "2026-11-24T13:12:59Z", blip_failures: 20, blip_closed: 9, successes_since: 4,
+  by_class: {hangup: 20}, last_error: "EOF"}));`, &c)
+	if c == nil || !c.OK || c.Critical {
+		t.Fatalf("a blip must not fail the check: %+v", c)
+	}
+	for _, want := range []string{"20 handshakes dropped at once at 13:12:59", "9 open connections dropped in the same second",
+		"a network blip, not a certificate problem", "4 handshakes completed since"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("blip detail missing %q: %s", want, c.Detail)
+		}
+	}
+	if strings.Contains(c.Detail, "CA changed") {
+		t.Errorf("a blip must not blame the CA: %s", c.Detail)
 	}
 }

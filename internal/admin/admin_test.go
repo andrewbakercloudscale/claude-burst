@@ -976,6 +976,40 @@ func TestSecondaryKeyRevealPromptNamesTheProvider(t *testing.T) {
 	}
 }
 
+// A request the network dropped carries what it was, so the list labels it
+// "network" rather than as a bare 502; others carry nothing extra.
+func TestRequestsEndpointNamesNetworkFailures(t *testing.T) {
+	s := newTestServer(t)
+	var lines []byte
+	for _, e := range []metrics.Event{
+		{Time: time.Now(), Slot: "primary", Route: "anthropic", HTTPStatus: 200},
+		{Time: time.Now(), Slot: "primary", Route: "anthropic", HTTPStatus: 502,
+			Note: `upstream call failed: Post "https://api.anthropic.com/v1/code/sessions/x/worker/heartbeat": read tcp 1.2.3.4:5->6.7.8.9:443: read: connection reset by peer`},
+	} {
+		b, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(append(lines, b...), '\n')
+	}
+	if err := os.WriteFile(s.metricsPath, lines, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, localRequest("GET", "http://127.0.0.1/api/requests?limit=10", nil))
+	var rows []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("%v: %s", err, rr.Body.String())
+	}
+	kinds := map[float64]any{}
+	for _, r := range rows {
+		kinds[r["http_status"].(float64)] = r["network"]
+	}
+	if len(rows) != 2 || kinds[200] != nil || kinds[502] != "connection reset by peer" {
+		t.Fatalf("rows: %v", rows)
+	}
+}
+
 // TestHistoryEndpoint covers the two things the chart needs and cannot get
 // from /api/requests: per-day buckets, and a claim about whether the window
 // it is drawing is actually backed by data.
