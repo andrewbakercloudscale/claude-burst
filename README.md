@@ -50,7 +50,7 @@ Claude Burst is a local gateway that sits between Claude Code and Anthropic. **I
 
 <img src="docs/screenshots/app-icon.png" alt="The Claude Burst app icon: a yellow lightning bolt on blue" width="64" align="left">
 
-**There is an app.** The installer puts **Claude Burst** in `~/Applications`, so the dashboard is one Spotlight search away: Cmd-Space, type "burst", Return. Launchpad shows it too, and you can drag it to the Dock. It opens the dashboard, or the support console when the gateway is down, and needs no root, certificate or hosts entry. `claude-burst app remove` deletes it and `claude-burst app install` puts it back. More in [Dashboard](docs/dashboard.md).
+**There are two apps.** The installer puts them in `~/Applications`, so both pages are one Spotlight search away: Cmd-Space, type "burst", then pick one. Launchpad shows them too, and you can drag them to the Dock. **Claude Burst** opens the dashboard (port 7788), or the support console when the gateway is down. **Claude Burst Support** always opens the support console (port 7789): restart, repair, turn Burst off and back on, up even when the gateway is not. Neither needs root, a certificate or a hosts entry. `claude-burst app remove` deletes both and `claude-burst app install` puts them back. More in [Dashboard](docs/dashboard.md).
 
 <br clear="left">
 
@@ -263,7 +263,7 @@ claude-burst status
 curl -s http://127.0.0.1:7777/healthz        # base-url mode only
 open http://127.0.0.1:7788                   # the dashboard
 claude-burst open                            # the same, or the support console when the gateway is down
-                                             # (also the Claude Burst app: Cmd-Space, "burst")
+                                             # (also the Claude Burst app: Cmd-Space, "burst"; --console: the support console, the Claude Burst Support app)
 
 # Undo
 ./install.sh uninstall
@@ -366,7 +366,7 @@ claude-burst enable
 claude-burst disable                         # off; sessions already open keep working (a pass-through on the port)
 claude-burst status
 claude-burst open                            # the dashboard, or the support console when the gateway is down
-claude-burst app install                     # the Claude Burst app in ~/Applications (the installer does this); app remove deletes it
+claude-burst app install                     # the Claude Burst and Claude Burst Support apps in ~/Applications (the installer does this); app remove deletes both
 claude-burst reset                           # back to primary now
 claude-burst force-secondary --minutes 15    # route to the secondary on purpose (testing)
 claude-burst stats --days 30

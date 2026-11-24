@@ -99,6 +99,7 @@ Commands:
   restore-config    Put back the newest backup of config.json that loads, when the one in place does not
   console           support console: audit, log, restart and repair, up when the gateway is not (127.0.0.1:7789)
   open              Open the dashboard in the browser, or the support console when the gateway is down
+                    (--console: the support console only)
   app               The Claude Burst app in ~/Applications (Spotlight, Dock) that does the same: install, remove
   version           Print version
 

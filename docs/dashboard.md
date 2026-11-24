@@ -10,7 +10,7 @@ Claude Burst runs a local dashboard beside the gateway, on port **7788**:
 open http://127.0.0.1:7788
 ```
 
-Or open the **Claude Burst** app: Cmd-Space, type "burst", Return. `install.sh` puts it in `~/Applications` (drag it to the Dock to keep it there), and it needs no root, certificate or hosts entry. It runs `claude-burst open`, which shows the dashboard, or the [support console](#audit-and-the-support-console) when the gateway is down. `claude-burst app remove` deletes it, `claude-burst app install` puts it back, and neither touches an app of that name Burst did not make.
+Or open the **Claude Burst** app: Cmd-Space, type "burst", Return. `install.sh` puts it in `~/Applications` (drag it to the Dock to keep it there), and it needs no root, certificate or hosts entry. It runs `claude-burst open`, which shows the dashboard, or the [support console](#audit-and-the-support-console) when the gateway is down. Beside it is **Claude Burst Support**, which always opens the support console (`claude-burst open --console`), where Burst is restarted, repaired, turned off and turned back on. `claude-burst app remove` deletes both, `claude-burst app install` puts them back, and neither touches an app of those names Burst did not make.
 
 It binds loopback only and needs no login (see [the admin UI](#the-local-admin-ui) for how it is protected). Change the address with `claude-burst configure --admin-listen 127.0.0.1:PORT`, turn it off with `--admin-listen off`, or give it a friendlier name with [a friendlier admin URL](#a-friendlier-admin-url).
 

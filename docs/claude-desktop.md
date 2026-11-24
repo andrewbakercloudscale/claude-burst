@@ -30,7 +30,7 @@ By hand, install as the [Quickstart](../README.md#quickstart) says; there is no 
 2. **Quit and reopen Claude Desktop** (Claude, Quit; not just closing the window). Desktop writes its CA bundle as it starts, so a Desktop that was open during the install keeps refusing the gateway until it restarts. The same goes after `claude-burst ca-rotate`.
 3. In **base-url mode**, start a new Code session after the install: a running one keeps the settings it started with.
 
-The installer needs a Terminal once, to build Burst and, for transparent mode, to ask for your password. After that nothing needs a terminal: the dashboard (`http://127.0.0.1:7788`, or Cmd-Space, "burst") and the support console have every switch.
+The installer needs a Terminal once, to build Burst and, for transparent mode, to ask for your password. After that nothing needs a terminal: the dashboard (`http://127.0.0.1:7788`, or Cmd-Space, "burst") and the support console (`http://127.0.0.1:7789`, or the Claude Burst Support app) have every switch.
 
 ## Checking that Desktop goes through Burst
 

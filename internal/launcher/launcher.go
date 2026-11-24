@@ -1,14 +1,21 @@
-// Package launcher is the "Claude Burst" app in ~/Applications: Spotlight
-// (Cmd-Space, "burst"), Launchpad or the Dock opens the dashboard with no
-// address to remember. The app is a shell script in a bundle that runs
-// `claude-burst open`, which goes to the dashboard, or to the support console
-// when the gateway is down. Nothing in it needs root, a certificate or a
-// hosts entry.
+// Package launcher is the two apps in ~/Applications that open Burst's pages
+// with no address to remember: Spotlight (Cmd-Space, "burst"), Launchpad or
+// the Dock.
+//
+//   - "Claude Burst" runs `claude-burst open`: the dashboard, or the support
+//     console when the gateway is down.
+//   - "Claude Burst Support" runs `claude-burst open --console`: always the
+//     support console (its own port, up when the gateway is not), where Burst
+//     is restarted, repaired, turned off and back on.
+//
+// Each is a shell script in a bundle. Nothing in them needs root, a
+// certificate or a hosts entry.
 package launcher
 
 import (
 	"bytes"
 	_ "embed"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,12 +26,30 @@ import (
 	"time"
 )
 
-// Name is what Spotlight and the Dock show.
-const Name = "Claude Burst"
+// Name is what Spotlight and the Dock show for the dashboard's app, and
+// ConsoleName for the support console's.
+const (
+	Name        = "Claude Burst"
+	ConsoleName = "Claude Burst Support"
+)
 
 // bundleID marks the bundle as ours: Install never writes over, and Remove
-// never deletes, an app of the same name that does not carry it.
-const bundleID = "ninja.andrewbaker.claude-burst.launcher"
+// never deletes, an app of the same name that does not carry it. The console's
+// app has its own, so Launch Services keeps the two apart.
+const (
+	bundleID        = "ninja.andrewbaker.claude-burst.launcher"
+	consoleBundleID = "ninja.andrewbaker.claude-burst.launcher.console"
+)
+
+// spec is one of the two apps.
+type spec struct {
+	name, id, args, what string
+}
+
+var (
+	dashboardApp = spec{Name, bundleID, "open", "opens the dashboard, or the support console when the gateway is down"}
+	consoleApp   = spec{ConsoleName, consoleBundleID, "open --console", "opens the support console: restart, repair, turn Burst off or back on"}
+)
 
 //go:embed assets/ClaudeBurst.icns
 var icon []byte
@@ -40,31 +65,53 @@ var (
 
 // Path is where the app goes: the user's own Applications folder, which
 // Spotlight indexes and which needs no admin rights.
-func Path(home string) string { return filepath.Join(home, "Applications", Name+".app") }
+func Path(home string) string { return appPath(home, dashboardApp) }
 
-// ours is whether the app at path is one Install wrote.
-func ours(path string) bool {
+// ConsolePath is where the support console's app goes.
+func ConsolePath(home string) string { return appPath(home, consoleApp) }
+
+func appPath(home string, a spec) string { return filepath.Join(home, "Applications", a.name+".app") }
+
+// ours is whether the app at path is one Install wrote with bundle id id.
+// The closing tag keeps the dashboard's id from matching the console's.
+func ours(path, id string) bool {
 	b, err := os.ReadFile(filepath.Join(path, "Contents", "Info.plist"))
-	return err == nil && bytes.Contains(b, []byte(bundleID))
+	return err == nil && bytes.Contains(b, []byte("<string>"+id+"</string>"))
 }
 
-// Install writes the app, or brings ours up to date. bin is the claude-burst
-// binary it runs. An app of that name that is not ours is left alone.
-func Install(home, bin, version string) (string, error) {
-	app := Path(home)
-	if _, err := os.Stat(app); err == nil && !ours(app) {
-		return "", fmt.Errorf("%s is there and was not made by Claude Burst; move it away and run this again", app)
-	}
+// Install writes both apps, or brings ours up to date, and returns their
+// paths, the dashboard's first. bin is the claude-burst binary they run. An
+// app of either name that is not ours is left alone; the other is still
+// written, and the error names the one that was not.
+func Install(home, bin, version string) ([]string, error) {
 	if strings.ContainsAny(bin, "\"$`\\\n") {
-		return "", fmt.Errorf("binary path %q has characters that cannot go inside the launcher script", bin)
+		return nil, fmt.Errorf("binary path %q has characters that cannot go inside the launcher script", bin)
+	}
+	var apps []string
+	var errs []error
+	for _, a := range []spec{dashboardApp, consoleApp} {
+		app, err := install(home, bin, version, a)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		apps = append(apps, app)
+	}
+	return apps, errors.Join(errs...)
+}
+
+func install(home, bin, version string, a spec) (string, error) {
+	app := appPath(home, a)
+	if _, err := os.Stat(app); err == nil && !ours(app, a.id) {
+		return "", fmt.Errorf("%s is there and was not made by Claude Burst; move it away and run this again", app)
 	}
 	files := []struct {
 		rel  string
 		data []byte
 		mode os.FileMode
 	}{
-		{"Contents/Info.plist", []byte(fmt.Sprintf(infoPlistTmpl, version)), 0o644},
-		{"Contents/MacOS/claude-burst-open", []byte(fmt.Sprintf(scriptTmpl, bin)), 0o755},
+		{"Contents/Info.plist", []byte(fmt.Sprintf(infoPlistTmpl, version, a.name, a.id)), 0o644},
+		{"Contents/MacOS/claude-burst-open", []byte(fmt.Sprintf(scriptTmpl, bin, a.name, a.what, a.args)), 0o755},
 		{"Contents/Resources/ClaudeBurst.icns", icon, 0o644},
 	}
 	for _, f := range files {
@@ -86,13 +133,21 @@ func Install(home, bin, version string) (string, error) {
 	return app, nil
 }
 
-// Remove deletes the app if it is ours. It reports whether it did.
-func Remove(home string) (bool, error) {
-	app := Path(home)
-	if !ours(app) {
-		return false, nil
+// Remove deletes each of the two apps that is ours, and returns the paths
+// it deleted.
+func Remove(home string) ([]string, error) {
+	var removed []string
+	for _, a := range []spec{dashboardApp, consoleApp} {
+		app := appPath(home, a)
+		if !ours(app, a.id) {
+			continue
+		}
+		if err := os.RemoveAll(app); err != nil {
+			return removed, err
+		}
+		removed = append(removed, app)
 	}
-	return true, os.RemoveAll(app)
+	return removed, nil
 }
 
 // Open shows the first of urls that answers, in the default browser, and
@@ -129,16 +184,16 @@ func URL(listen string) (string, error) {
 // The app's executable. It is a script, so there is nothing to sign and an
 // update of the binary needs no new app.
 const scriptTmpl = `#!/bin/bash
-# Claude Burst.app: opens the dashboard, or the support console when the
-# gateway is down. Written by "claude-burst app install".
-BIN="%s"
+# %[2]s.app: %[3]s.
+# Written by "claude-burst app install".
+BIN="%[1]s"
 [ -x "$BIN" ] || BIN="$HOME/.local/bin/claude-burst"
 if [ ! -x "$BIN" ]; then
   osascript -e 'display alert "Claude Burst is not installed" message "The claude-burst command is gone. Run install.sh again, or move this app to the Bin."'
   exit 1
 fi
-if ! "$BIN" open >/dev/null 2>&1; then
-  osascript -e 'display alert "Claude Burst is not running" message "Neither the dashboard nor the support console answered. Start it from Terminal with: launchctl kickstart -k gui/$UID/ninja.andrewbaker.claude-burst"'
+if ! "$BIN" %[4]s >/dev/null 2>&1; then
+  osascript -e 'display alert "Claude Burst is not running" message "The page did not answer. Start it from Terminal with: launchctl kickstart -k gui/$UID/ninja.andrewbaker.claude-burst"'
   exit 1
 fi
 `
@@ -150,11 +205,11 @@ const infoPlistTmpl = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Claude Burst</string>
+	<string>%[2]s</string>
 	<key>CFBundleDisplayName</key>
-	<string>Claude Burst</string>
+	<string>%[2]s</string>
 	<key>CFBundleIdentifier</key>
-	<string>` + bundleID + `</string>
+	<string>%[3]s</string>
 	<key>CFBundleExecutable</key>
 	<string>claude-burst-open</string>
 	<key>CFBundleIconFile</key>

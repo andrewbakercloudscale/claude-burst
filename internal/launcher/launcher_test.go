@@ -22,7 +22,7 @@ func stub(t *testing.T) (registered, opened *[]string) {
 	return registered, opened
 }
 
-func TestInstallWritesAnAppThatRunsOpen(t *testing.T) {
+func TestInstallWritesTwoAppsThatRunOpen(t *testing.T) {
 	registered, _ := stub(t)
 	home := t.TempDir()
 	// A stand-in claude-burst that records how it was called.
@@ -32,58 +32,66 @@ func TestInstallWritesAnAppThatRunsOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := Install(home, bin, "1.2.3")
+	apps, err := Install(home, bin, "1.2.3")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, "Applications", "Claude Burst.app"); app != want {
-		t.Fatalf("app = %s, want %s", app, want)
+	dash := filepath.Join(home, "Applications", "Claude Burst.app")
+	cons := filepath.Join(home, "Applications", "Claude Burst Support.app")
+	if strings.Join(apps, "|") != dash+"|"+cons || Path(home) != dash || ConsolePath(home) != cons {
+		t.Fatalf("apps = %v, want %s and %s", apps, dash, cons)
 	}
-	if len(*registered) != 1 || (*registered)[0] != app {
-		t.Fatalf("Launch Services was told %v, want the app once", *registered)
+	if strings.Join(*registered, "|") != dash+"|"+cons {
+		t.Fatalf("Launch Services was told %v, want each app once", *registered)
 	}
-	plist, err := os.ReadFile(filepath.Join(app, "Contents", "Info.plist"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"<string>claude-burst-open</string>", "<string>ClaudeBurst</string>", "<string>1.2.3</string>", bundleID} {
-		if !strings.Contains(string(plist), want) {
-			t.Errorf("Info.plist lacks %s", want)
+	for _, c := range []struct{ app, name, id, args string }{
+		{dash, "Claude Burst", bundleID, "open"},
+		{cons, "Claude Burst Support", consoleBundleID, "open --console"},
+	} {
+		plistPath := filepath.Join(c.app, "Contents", "Info.plist")
+		plist, err := os.ReadFile(plistPath)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if out, err := exec.Command("/usr/bin/plutil", "-lint", filepath.Join(app, "Contents", "Info.plist")).CombinedOutput(); err != nil {
-		t.Fatalf("Info.plist is not a property list: %s", out)
-	}
-	if fi, err := os.Stat(filepath.Join(app, "Contents", "Resources", "ClaudeBurst.icns")); err != nil || fi.Size() == 0 {
-		t.Fatalf("the icon is missing: %v", err)
-	}
+		for _, want := range []string{"<string>claude-burst-open</string>", "<string>ClaudeBurst</string>", "<string>1.2.3</string>", "<string>" + c.id + "</string>", "<string>" + c.name + "</string>"} {
+			if !strings.Contains(string(plist), want) {
+				t.Errorf("%s Info.plist lacks %s", c.name, want)
+			}
+		}
+		if out, err := exec.Command("/usr/bin/plutil", "-lint", plistPath).CombinedOutput(); err != nil {
+			t.Fatalf("%s Info.plist is not a property list: %s", c.name, out)
+		}
+		if fi, err := os.Stat(filepath.Join(c.app, "Contents", "Resources", "ClaudeBurst.icns")); err != nil || fi.Size() == 0 {
+			t.Fatalf("%s: the icon is missing: %v", c.name, err)
+		}
 
-	// The executable is what macOS runs when the app is opened. It is run
-	// here from a copy beside the bundle: on this Mac a script inside an
-	// .app that starts a program out of a temporary folder is killed
-	// (SIGKILL, by something outside the test), and the stand-in can be
-	// nowhere else.
-	exe := filepath.Join(app, "Contents", "MacOS", "claude-burst-open")
-	fi, err := os.Stat(exe)
-	if err != nil || fi.Mode().Perm() != 0o755 {
-		t.Fatalf("the app's executable: %v, mode %v, want 0755", err, fi.Mode())
-	}
-	script, err := os.ReadFile(exe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plain := filepath.Join(home, "claude-burst-open")
-	if err := os.WriteFile(plain, script, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(plain)
-	cmd.Env = append(os.Environ(), "HOME="+home) // its fallback is $HOME/.local/bin
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("the app's executable failed: %v: %s", err, out)
-	}
-	got, err := os.ReadFile(called)
-	if err != nil || strings.TrimSpace(string(got)) != "open" {
-		t.Fatalf("the app ran claude-burst with %q (%v), want open", got, err)
+		// The executable is what macOS runs when the app is opened. It is run
+		// here from a copy beside the bundle: on this Mac a script inside an
+		// .app that starts a program out of a temporary folder is killed
+		// (SIGKILL, by something outside the test), and the stand-in can be
+		// nowhere else.
+		exe := filepath.Join(c.app, "Contents", "MacOS", "claude-burst-open")
+		fi, err := os.Stat(exe)
+		if err != nil || fi.Mode().Perm() != 0o755 {
+			t.Fatalf("%s's executable: %v, mode %v, want 0755", c.name, err, fi.Mode())
+		}
+		script, err := os.ReadFile(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain := filepath.Join(home, "claude-burst-open")
+		if err := os.WriteFile(plain, script, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(plain)
+		cmd.Env = append(os.Environ(), "HOME="+home) // its fallback is $HOME/.local/bin
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s's executable failed: %v: %s", c.name, err, out)
+		}
+		got, err := os.ReadFile(called)
+		if err != nil || strings.TrimSpace(string(got)) != c.args {
+			t.Fatalf("%s ran claude-burst with %q (%v), want %s", c.name, got, err, c.args)
+		}
 	}
 }
 
@@ -93,19 +101,22 @@ func TestInstallBringsItsOwnAppUpToDate(t *testing.T) {
 	if _, err := Install(home, "/old/claude-burst", "1.0.0"); err != nil {
 		t.Fatal(err)
 	}
-	app, err := Install(home, "/new/claude-burst", "2.0.0")
-	if err != nil {
-		t.Fatal(err)
+	apps, err := Install(home, "/new/claude-burst", "2.0.0")
+	if err != nil || len(apps) != 2 {
+		t.Fatal(apps, err)
 	}
-	script, _ := os.ReadFile(filepath.Join(app, "Contents", "MacOS", "claude-burst-open"))
-	if !strings.Contains(string(script), `BIN="/new/claude-burst"`) || strings.Contains(string(script), "/old/") {
-		t.Fatalf("the script still runs the old binary:\n%s", script)
+	for _, app := range apps {
+		script, _ := os.ReadFile(filepath.Join(app, "Contents", "MacOS", "claude-burst-open"))
+		if !strings.Contains(string(script), `BIN="/new/claude-burst"`) || strings.Contains(string(script), "/old/") {
+			t.Fatalf("%s still runs the old binary:\n%s", app, script)
+		}
 	}
 }
 
 func TestAnAppThatIsNotOursIsLeftAlone(t *testing.T) {
 	registered, _ := stub(t)
 	home := t.TempDir()
+	// Somebody else's "Claude Burst.app": the console's app is still written.
 	theirs := filepath.Join(Path(home), "Contents", "Info.plist")
 	if err := os.MkdirAll(filepath.Dir(theirs), 0o755); err != nil {
 		t.Fatal(err)
@@ -114,35 +125,42 @@ func TestAnAppThatIsNotOursIsLeftAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Install(home, "/bin/claude-burst", "1.0.0"); err == nil {
-		t.Fatal("Install wrote over an app it did not make")
+	apps, err := Install(home, "/bin/claude-burst", "1.0.0")
+	if err == nil {
+		t.Fatal("Install wrote over an app it did not make, or said nothing")
 	}
-	if removed, err := Remove(home); err != nil || removed {
-		t.Fatalf("Remove = %v, %v: it deleted an app it did not make", removed, err)
+	if strings.Join(apps, "|") != ConsolePath(home) {
+		t.Fatalf("Install wrote %v, want only the console's app", apps)
+	}
+	removed, err := Remove(home)
+	if err != nil || strings.Join(removed, "|") != ConsolePath(home) {
+		t.Fatalf("Remove = %v, %v: want only the console's app", removed, err)
 	}
 	if b, _ := os.ReadFile(theirs); string(b) != "<plist>somebody else's</plist>" {
 		t.Fatalf("their Info.plist was changed: %s", b)
 	}
-	if len(*registered) != 0 {
-		t.Fatalf("Launch Services was told %v about an app that was not written", *registered)
+	if strings.Join(*registered, "|") != ConsolePath(home) {
+		t.Fatalf("Launch Services was told %v, want only the console's app", *registered)
 	}
 }
 
 func TestRemoveDeletesOurApp(t *testing.T) {
 	stub(t)
 	home := t.TempDir()
-	if removed, err := Remove(home); err != nil || removed {
+	if removed, err := Remove(home); err != nil || len(removed) != 0 {
 		t.Fatalf("Remove with no app = %v, %v", removed, err)
 	}
-	app, err := Install(home, "/bin/claude-burst", "1.0.0")
+	apps, err := Install(home, "/bin/claude-burst", "1.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if removed, err := Remove(home); err != nil || !removed {
+	if removed, err := Remove(home); err != nil || len(removed) != 2 {
 		t.Fatalf("Remove = %v, %v", removed, err)
 	}
-	if _, err := os.Stat(app); !os.IsNotExist(err) {
-		t.Fatalf("the app is still there: %v", err)
+	for _, app := range apps {
+		if _, err := os.Stat(app); !os.IsNotExist(err) {
+			t.Fatalf("%s is still there: %v", app, err)
+		}
 	}
 }
 

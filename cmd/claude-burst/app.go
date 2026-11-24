@@ -14,15 +14,24 @@ import (
 
 // openCmd shows the dashboard in the browser: `claude-burst open`. With the
 // gateway down it shows the support console, which is up when the gateway is
-// not. A config that does not load falls back to defaults, as the console does.
+// not. `claude-burst open --console` shows the support console only (the
+// Claude Burst Support app runs it). A config that does not load falls back
+// to defaults, as the console does.
 func openCmd(args []string) {
-	rejectArgs("open", args)
+	consoleOnly := len(args) == 1 && args[0] == "--console"
+	if !consoleOnly {
+		rejectArgs("open [--console]", args)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		cfg = config.Default()
 	}
+	listens := []string{cfg.AdminListen, cfg.ConsoleListen()}
+	if consoleOnly {
+		listens = listens[1:]
+	}
 	var urls []string
-	for _, listen := range []string{cfg.AdminListen, cfg.ConsoleListen()} {
+	for _, listen := range listens {
 		if listen == "" {
 			continue
 		}
@@ -59,21 +68,31 @@ func appCmd(args []string) {
 		if !filepath.IsAbs(bin) {
 			fatal(fmt.Errorf("cannot tell where claude-burst is installed (%q)", bin))
 		}
-		app, err := launcher.Install(home, bin, version)
+		apps, err := launcher.Install(home, bin, version)
+		for _, app := range apps {
+			fmt.Printf("%s: installed\n", app)
+		}
+		if len(apps) > 0 {
+			fmt.Printf("Cmd-Space, type \"burst\": %q opens the dashboard, %q the support console (restart, repair, turn Burst off or on). Drag them to the Dock to keep them there.\n", launcher.Name, launcher.ConsoleName)
+		}
 		if err != nil {
+			// The dashboard's app carries the notifier: build it if that one is there.
+			if len(apps) > 0 && apps[0] == launcher.Path(home) {
+				installNotifier(home)
+			}
 			fatal(err)
 		}
-		fmt.Printf("%s: installed. Cmd-Space, type \"burst\", Return opens the dashboard; drag it to the Dock to keep it there.\n", app)
 		installNotifier(home)
 	case len(args) == 1 && args[0] == "remove":
 		removed, err := launcher.Remove(home)
+		for _, app := range removed {
+			fmt.Printf("%s: removed\n", app)
+		}
 		if err != nil {
 			fatal(err)
 		}
-		if removed {
-			fmt.Printf("%s: removed\n", launcher.Path(home))
-		} else {
-			fmt.Printf("%s: not there, or not made by Claude Burst; nothing removed\n", launcher.Path(home))
+		if len(removed) == 0 {
+			fmt.Printf("%s, %s: not there, or not made by Claude Burst; nothing removed\n", launcher.Path(home), launcher.ConsolePath(home))
 		}
 	case len(args) == 1 && args[0] == "notifications":
 		// After "denied" macOS never asks again: System Settings is the

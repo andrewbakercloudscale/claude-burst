@@ -222,13 +222,19 @@ func TestInstallScriptUninstallRemovesEveryHook(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The Claude Burst app, as `claude-burst app install` leaves it.
-	app := filepath.Join(u.home, "Applications", "Claude Burst.app")
-	if err := os.MkdirAll(filepath.Join(app, "Contents"), 0o755); err != nil {
-		t.Fatal(err)
+	// The Claude Burst and Claude Burst Support apps, as `claude-burst app
+	// install` leaves them.
+	apps := map[string]string{
+		filepath.Join(u.home, "Applications", "Claude Burst.app"):         "ninja.andrewbaker.claude-burst.launcher",
+		filepath.Join(u.home, "Applications", "Claude Burst Support.app"): "ninja.andrewbaker.claude-burst.launcher.console",
 	}
-	if err := os.WriteFile(filepath.Join(app, "Contents", "Info.plist"), []byte("<string>ninja.andrewbaker.claude-burst.launcher</string>"), 0o644); err != nil {
-		t.Fatal(err)
+	for app, id := range apps {
+		if err := os.MkdirAll(filepath.Join(app, "Contents"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(app, "Contents", "Info.plist"), []byte("<string>"+id+"</string>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	out, code := u.uninstall()
@@ -236,8 +242,10 @@ func TestInstallScriptUninstallRemovesEveryHook(t *testing.T) {
 		t.Fatalf("uninstall failed (%d):\n%s", code, out)
 	}
 
-	if _, err := os.Stat(app); err == nil {
-		t.Errorf("%s opens a dashboard that is gone; it must be removed", app)
+	for app := range apps {
+		if _, err := os.Stat(app); err == nil {
+			t.Errorf("%s opens a page that is gone; it must be removed", app)
+		}
 	}
 	if b, _ := os.ReadFile(codexToml); string(b) != codexUser {
 		t.Errorf("Codex config after uninstall:\n%s", b)

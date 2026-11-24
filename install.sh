@@ -270,7 +270,7 @@ uninstall() {
   #    says so if not.
   if [[ -x "$TARGET" ]]; then
     "$TARGET" uninstall-hooks || echo "WARNING: claude-burst uninstall-hooks failed" >&2
-    "$TARGET" app remove >/dev/null || echo "WARNING: the Claude Burst app in ~/Applications was not removed" >&2
+    "$TARGET" app remove >/dev/null || echo "WARNING: the Claude Burst apps in ~/Applications were not removed" >&2
     "$TARGET" disable >/dev/null || echo "WARNING: claude-burst disable failed" >&2
   else
     echo "WARNING: $TARGET is already gone, so Claude Code's hooks could not be removed by it" >&2
@@ -344,7 +344,7 @@ $(grep -n claude-burst "$SETTINGS" | sed 's/^/      /')
     echo " Check it with: sudo pfctl -a claude-burst -s nat   which should print nothing.)"
   fi
   echo "Removed: the redirect and root daemons (if any), the self-heal watchdog, the token-shunting,"
-  echo "coordination, handover and prompt-notice hooks, /compact-async, the Burst mod, the Claude Burst app, the LaunchAgent and the binary."
+  echo "coordination, handover and prompt-notice hooks, /compact-async, the Burst mod, the Claude Burst apps, the LaunchAgent and the binary."
   if (( purge )); then
     echo "Purged $CONFIG_DIR."
   else
@@ -437,11 +437,12 @@ install() {
   # burst-off: the one-command off switch, on the PATH (see the script).
   zsh "$ROOT/scripts/install-burst-off.sh"
 
-  # The Claude Burst app (Spotlight, Dock) that opens the dashboard, with the
+  # The Claude Burst app (Spotlight, Dock) that opens the dashboard, and the
+  # Claude Burst Support app that opens the support console. The first has the
   # Notification Center helper built and signed inside it (macOS then asks
   # once whether Claude Burst may notify). Never fails the install: an app of
   # that name that is not ours is left alone.
-  "$TARGET" app install || echo "WARNING: the Claude Burst app was not installed; run: claude-burst app install" >&2
+  "$TARGET" app install || echo "WARNING: the Claude Burst apps were not installed; run: claude-burst app install" >&2
 
   ZPROFILE="$HOME/.zprofile"
   PATH_LINE='export PATH="$HOME/.local/bin:$PATH" # claude-burst'
@@ -587,6 +588,8 @@ PLIST
   # project keeps getting bitten by.
   local gw dash mode sec_line health
   dash="$(python3 -c "import json;print(json.load(open('$cfgjson')).get('admin_listen') or '127.0.0.1:7788')" 2>/dev/null || echo '127.0.0.1:7788')"
+  local console
+  console="$(python3 -c "import json;c=json.load(open('$cfgjson')).get('console_listen') or '127.0.0.1:7789';print('off (console_listen)' if c=='off' else 'http://'+c)" 2>/dev/null || echo 'http://127.0.0.1:7789')"
   gw="$(python3 -c "import json;print(json.load(open('$cfgjson')).get('listen','127.0.0.1:7777'))" 2>/dev/null || echo '127.0.0.1:7777')"
   mode="$(python3 -c "import json;print((json.load(open('$cfgjson')).get('intercept') or {}).get('mode') or 'base-url')" 2>/dev/null || echo base-url)"
   # shellcheck source=./scripts/folder-access.sh
@@ -618,7 +621,8 @@ PLIST
 
 Installed claude-burst $($TARGET version)
 Gateway: http://$gw (intercept mode: $mode)
-Dashboard: http://$dash
+Dashboard: http://$dash   (or Cmd-Space, type burst: the Claude Burst app)
+Support console: $console   (restart, repair, turn off and on; the Claude Burst Support app)
 Claude Code settings: enabled
 LaunchAgent: $LABEL
 $sec_line

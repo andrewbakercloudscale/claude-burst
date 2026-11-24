@@ -77,7 +77,7 @@ func TestInstallNotifierBuildsOnceAndAgainWhenSigningChanges(t *testing.T) {
 	if _, err := os.Stat(NotifierExecutable(home)); err != nil {
 		t.Fatalf("updating the app removed the helper: %v", err)
 	}
-	if removed, err := Remove(home); err != nil || !removed {
+	if removed, err := Remove(home); err != nil || len(removed) == 0 {
 		t.Fatalf("Remove = %v, %v", removed, err)
 	}
 	if _, err := os.Stat(NotifierPath(home)); !os.IsNotExist(err) {

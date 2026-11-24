@@ -511,7 +511,7 @@ fi
 echo "  Mode:       $MODE   Version: $("$BIN" version 2>/dev/null | head -1)"
 echo "  Checkout:   $REPO"
 echo "  Dashboard:  http://$DASH   (or Cmd-Space, type burst, Return)"
-echo "  Help:       http://127.0.0.1:7789   (the support console, up even when Burst is not)"
+echo "  Help:       http://127.0.0.1:7789   (the support console, up even when Burst is not; Cmd-Space, type burst support)"
 echo "  Turn off:   burst-off   (burst-on turns it back on)"
 printf '  Remove:     %q/install.sh uninstall   (add --purge to delete settings too)\n' "$REPO"
 [ -n "$DESKTOP_LINE" ] && echo "  To do:      $DESKTOP_LINE"

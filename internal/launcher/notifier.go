@@ -95,7 +95,7 @@ func notifierStamp(identity string) string {
 // what it did, for the install's output. The app must be installed first.
 func InstallNotifier(home string) (string, error) {
 	app := Path(home)
-	if !ours(app) {
+	if !ours(app, bundleID) {
 		return "", fmt.Errorf("%s is not installed; run claude-burst app install", app)
 	}
 	identity := signingIdentity()
