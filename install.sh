@@ -632,14 +632,23 @@ $health
 Lid-closed keep-awake (off by default; see docs/lid-and-hotspot.md):
   claude-burst configure --keep-awake-lid-closed true [--keep-awake-power ac|always]
 
-To remove everything later:
-  ./install.sh uninstall
 OUT
 
   offer_panel
   # Burst inside Claude Code sessions (mods/burst-session). CLAUDE_BURST_MOD=no skips it.
   echo
   zsh "$ROOT/scripts/update-mod.sh"
+
+  # Last, so it is on screen when the install ends, with the full path so it
+  # works from any directory.
+  print_remove_line
+}
+
+# The command that removes Claude Burst, quoted for a shell, from any directory.
+print_remove_line() {
+  echo
+  echo "To remove Claude Burst (keeps your settings; add --purge to delete them too):"
+  echo "  ${(q-)ROOT}/install.sh uninstall"
 }
 
 # The usage panel (a separate repo) shows each turn's context and cost next

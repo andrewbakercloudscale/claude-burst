@@ -334,7 +334,7 @@ func TestGetFreshMacInstallsGoWithHomebrewAndRerunsCleanly(t *testing.T) {
 	}
 	wantIn(t, "calls", calls, "brew install go", "install.sh mode=transparent force=1 signing=no from "+filepath.Join(r.home, "claude-burst")+" at v2")
 	wantNotIn(t, "calls", calls, "installer -pkg", "curl")
-	wantIn(t, "output", out, "on release v2", "DONE: Claude Burst is installed and working", "./install.sh uninstall", "burst-off")
+	wantIn(t, "output", out, "on release v2", "DONE: Claude Burst is installed and working", "Remove:     "+filepath.Join(r.home, "claude-burst", "install.sh")+" uninstall", "burst-off")
 	if n := strings.Count(calls, "sudo -v"); n != 1 {
 		t.Errorf("want the password asked for once, got %d:\n%s", n, calls)
 	}
