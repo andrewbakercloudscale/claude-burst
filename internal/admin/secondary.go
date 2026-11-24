@@ -220,6 +220,7 @@ func (s *Server) handleSecondary(w http.ResponseWriter, r *http.Request) {
 			if err := s.storeKey(service, key); err != nil {
 				return serverError("could not store the API key in the Keychain, so nothing was saved: " + err.Error())
 			}
+			s.keyInfos.forget()
 		}
 
 		cfg.Secondary = rc

@@ -18,6 +18,9 @@ func newTestCodexAlerts(t *testing.T, front int) (*CodexAlerts, *notice.Publishe
 	t.Helper()
 	dir := t.TempDir()
 	var got []shown
+	// Each look at the clock is one front-app interval later, so every tick
+	// here looks at the front app (see TestCodexAlertWaitingStartsFewProcesses).
+	clock := time.Now()
 	c := &CodexAlerts{
 		NoticesPath: filepath.Join(dir, "notices.json"),
 		ClaimsDir:   filepath.Join(dir, "claims"),
@@ -25,7 +28,7 @@ func newTestCodexAlerts(t *testing.T, front int) (*CodexAlerts, *notice.Publishe
 		Front:       func() int { return front },
 		IsCodex:     func(pid int) bool { return pid == 42 },
 		Show:        func(pid, secs int, sev, title, detail string) { got = append(got, shown{pid, sev, title}) },
-		Now:         time.Now,
+		Now:         func() time.Time { clock = clock.Add(codexFrontEvery); return clock },
 	}
 	return c, notice.New(c.NoticesPath, nil), &got
 }
@@ -116,5 +119,30 @@ func TestCodexAlertTestRequest(t *testing.T) {
 	c.tick(seen)
 	if st, _ := readCodexAlertTest(c.TestPath); st.Error == "" || len(*got) != 1 {
 		t.Errorf("expired request: %+v, shown %d", st, len(*got))
+	}
+}
+
+// While an alert waits with Codex not in front, the frontmost app is looked
+// up at most every codexFrontEvery, and each pid is asked about once: each
+// look starts a process.
+func TestCodexAlertWaitingStartsFewProcesses(t *testing.T) {
+	c, p, got := newTestCodexAlerts(t, 7)
+	fronts, asks := 0, 0
+	c.Front = func() int { fronts++; return 7 }
+	c.IsCodex = func(pid int) bool { asks++; return pid == 42 }
+	now := time.Now()
+	c.Now = func() time.Time { return now }
+	seen := map[string]bool{}
+	p.Publish("network", notice.Error, "Network offline", "")
+	p.Flush(2 * time.Second)
+	for i := 0; i < 30; i++ { // 30 one-second ticks
+		c.tick(seen)
+		now = now.Add(time.Second)
+	}
+	if fronts != 10 || asks != 1 {
+		t.Fatalf("30 seconds waiting: %d front looks (want 10), %d IsCodex asks (want 1)", fronts, asks)
+	}
+	if len(*got) != 0 {
+		t.Fatalf("shown over another app: %+v", *got)
 	}
 }

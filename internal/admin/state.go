@@ -246,7 +246,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Model: cfg.Secondary.Model, Strategy: cfg.Secondary.FailoverStrategy}
 	secondary.KeychainService, secondary.KeyEnvVar = credentialNames(cfg.Secondary, cfg.KeychainService)
 	if secondary.KeyEnvVar != "" {
-		info := s.keyInfo(secondary.KeychainService, secondary.KeyEnvVar)
+		info := s.keyInfos.get(secondary.KeychainService, secondary.KeyEnvVar, time.Now(), s.keyInfo)
 		secondary.KeyPresent, secondary.KeySource = info.Present, info.Source
 		if !info.Modified.IsZero() {
 			secondary.KeyUpdated = info.Modified.Format(time.RFC3339)

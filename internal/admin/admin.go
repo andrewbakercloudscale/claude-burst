@@ -84,6 +84,8 @@ type Server struct {
 	// running on.
 	storeKey func(service, value string) error
 	keyInfo  func(service, envVar string) keychain.Info
+	// keyInfos holds keyInfo's last answer for /api/state; see keyInfoTTL.
+	keyInfos keyInfoCache
 	loadKey  func(service, envVar string) (string, error)
 	// authenticate gates the one endpoint that hands out a secret. A field
 	// so tests can drive both answers: a gate that is only ever exercised

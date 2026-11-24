@@ -37,7 +37,18 @@ type CodexAlerts struct {
 	IsCodex func(pid int) bool
 	Show    func(pid int, secs int, severity, title, detail string)
 	Now     func() time.Time
+
+	// frontAt is when Front was last asked while an alert waited; isCodex
+	// holds IsCodex's answer per pid. Each ask starts a process, and an
+	// alert can wait ten minutes: asked every second, that was two process
+	// starts a second for as long as any alert waited.
+	frontAt time.Time
+	isCodex map[int]bool
 }
+
+// codexFrontEvery is the least time between two looks at the frontmost app
+// while an alert waits for Codex.
+const codexFrontEvery = 3 * time.Second
 
 // codexAlertHold is how long an alert waits for Codex to come to the front,
 // as long as the panels hold one for a Ghostty.
@@ -149,8 +160,13 @@ func (c *CodexAlerts) tick(seen map[string]bool) {
 	if len(waiting) == 0 {
 		return
 	}
+	now := c.Now()
+	if !c.frontAt.IsZero() && now.Sub(c.frontAt) < codexFrontEvery && now.After(c.frontAt) {
+		return
+	}
+	c.frontAt = now
 	pid := c.Front()
-	if !c.IsCodex(pid) {
+	if !c.codexPid(pid) {
 		return // held: a panel may take it, or Codex may come to the front
 	}
 	e := waiting[0]
@@ -159,6 +175,23 @@ func (c *CodexAlerts) tick(seen map[string]bool) {
 		return // a panel took it first
 	}
 	c.Show(pid, alertSeconds(e.Severity), e.Severity, e.Title, e.Detail)
+}
+
+// codexPid is IsCodex, asked once per pid: a process does not change what it
+// runs. Pids are reused, so the answers are dropped once there are many.
+func (c *CodexAlerts) codexPid(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if v, ok := c.isCodex[pid]; ok {
+		return v
+	}
+	if c.isCodex == nil || len(c.isCodex) > 256 {
+		c.isCodex = map[int]bool{}
+	}
+	v := c.IsCodex(pid)
+	c.isCodex[pid] = v
+	return v
 }
 
 func (c *CodexAlerts) claimed(id string) bool {
