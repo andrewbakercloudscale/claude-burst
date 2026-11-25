@@ -194,12 +194,19 @@ screen_decision() {
 DARK_FILE="$STATE_DIR/lid-awake.dark"   # exists while the screen is off for this closing
 LID_SEEN=""   # the lid as the last check saw it, so each change is logged once
 DECISION=""; DECIDED_AT=0; DARKENED_AT=0
-DECIDE_EVERY=30   # seconds between fresh screen decisions while the lid stays shut
-DARKEN_EVERY=2    # seconds between displaysleepnow calls while it should be dark
+# While the lid stays shut. The decision runs system_profiler, the costliest
+# thing this daemon does, so it is made on closing and then every 5 minutes
+# (a monitor plugged into a shut Mac is rare). The screen is re-darkened every
+# 10 seconds, enough to catch a notification waking it behind the lid.
+DECIDE_EVERY=300
+DARKEN_EVERY=10
 
 # lid_events: one long-lived osascript reads AppleClamshellState straight from
-# IOKit once a second and prints "shut" or "open": on every change, and every
-# second while shut. Asking ioreg each second cost two process starts a second
+# IOKit and prints "shut" or "open": on every change, and every second while
+# shut. With the lid open it looks every 3 seconds and prints nothing, so the
+# shell side does no work at all; measured over 7.5 days (to 25 Nov 2026) the
+# whole daemon averaged about 0.1% of one core. A true lid-close event needs
+# an IOKit callback, which JXA cannot provide without a compiled helper. Asking ioreg each second cost two process starts a second
 # all day (an ioreg and a sleep), about 15 a second as System Sentinel counts
 # them on 17 Nov 2026; this starts none. Its memory levels off at about 39 MB.
 # CLAUDE_BURST_TEST_LID_EVENTS (lines of shut|open) is for the tests only.
@@ -217,7 +224,7 @@ while (true) {
   if (v) $.CFRelease(v);
   if (s !== last || s === 'shut') out.writeData($(s + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
   last = s;
-  $.NSThread.sleepForTimeInterval(1);
+  $.NSThread.sleepForTimeInterval(s === 'shut' ? 1 : 3);
 }
 JXA
 }
@@ -424,8 +431,8 @@ do_watch() {
   # waits inside zsh, where `sleep` would start a process each time.
   ( while true; do zselect -t 6000; do_reconcile; done ) &
   local clock=$!
-  # The screen, every second: dark before anyone sees it lit behind the lid.
-  # Five seconds left it glowing long enough to look like no fix at all.
+  # The screen: dark within about 3 seconds of closing. Five seconds of
+  # ioreg polling once left it glowing long enough to look like no fix at all.
   # If the lid watcher ever exits, so does the daemon, and launchd's
   # KeepAlive restarts the lot.
   ( lid_events | while IFS= read -r lid; do screen_step "$lid"; done; kill $$ ) &

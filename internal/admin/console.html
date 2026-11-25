@@ -81,8 +81,27 @@ const audit = window.BurstAudit.mount($("audit"), { limit: 300 });
 let startingUp = false, upFor = 0;
 const ago = (sec) => sec < 90 ? sec + " seconds" : Math.round(sec / 60) + " minutes";
 
+// slowNote: while a request is still out after 5 seconds, say so and count
+// the seconds. On 25 Nov 2026 the Mac was short of memory and the page sat on
+// "Checking..." and a greyed button with no sign of life, so Turn Burst off
+// looked like it had done nothing while its Terminal window was still opening.
+function slowNote(show) {
+  const t0 = Date.now();
+  const id = setInterval(() => {
+    const sec = Math.round((Date.now() - t0) / 1000);
+    if (sec >= 5) show(sec);
+  }, 1000);
+  return () => clearInterval(id);
+}
+
+let loading = false;
 async function load() {
+  if (loading) return;   // a slow check is still out: do not pile up more
+  loading = true;
   let s;
+  const stop = slowNote((sec) => {
+    $("checks").innerHTML = "<li>Checking... " + sec + "s. Slower than usual: the Mac may be short of memory or busy. Still waiting.</li>";
+  });
   try {
     const r = await fetch("/api/console");
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -90,6 +109,9 @@ async function load() {
   } catch (e) {
     $("checks").innerHTML = "<li>Could not read the status: " + esc(e.message) + "</li>";
     return;
+  } finally {
+    stop();
+    loading = false;
   }
   $("ver").textContent = s.version ? "Version " + s.version + "." : "";
   const checks = s.checks.slice();
@@ -135,7 +157,12 @@ document.querySelector(".actions").addEventListener("click", async (ev) => {
   }
   btn.disabled = true;
   $("msg").className = "";
-  $("msg").textContent = "Working...";
+  const terminal = ["off", "on", "repair", "diagnose"].includes(act);
+  $("msg").textContent = terminal ? "Opening a Terminal window to run it..." : "Working...";
+  const stop = slowNote((sec) => {
+    $("msg").textContent = (terminal ? "Still opening the Terminal window (" : "Still working (") + sec +
+      "s). The Mac is slow, probably short of memory: it has not failed. Do not press again; the audit below records it when it runs.";
+  });
   try {
     const r = await fetch("/api/console/" + act, { method: "POST", headers: { "X-Claude-Burst-Admin": "1" } });
     const text = await r.text();
@@ -147,6 +174,7 @@ document.querySelector(".actions").addEventListener("click", async (ev) => {
     $("msg").className = "bad";
     $("msg").textContent = e.message;
   } finally {
+    stop();
     btn.disabled = false;
     setTimeout(() => { load(); audit.reload(); }, 3000);
   }

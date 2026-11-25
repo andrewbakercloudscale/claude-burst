@@ -47,7 +47,7 @@ function mod(over: Record<string, unknown> = {}) {
 // panel's pop-up already took, `lines` what the gateway's notice queue holds
 // (handed over once), `runs` and `posts` what the mod ran and posted,
 // `commands` the slash commands it added, `missing` a program that is not there.
-type World = { sid?: string; claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; taken?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string>; pid?: string }
+type World = { sid?: string; claimed?: string[]; lines?: string[]; runs?: string[][]; posts?: string[]; taken?: string[]; commands?: string[]; missing?: string; files?: Record<string, string>; env?: Record<string, string>; pid?: string; downs?: Record<string, unknown>[]; pressure?: string }
 
 function stubs(on, answers: Array<object | null>, toasts: string[], urls: string[] = [], sidebar = false, status: Array<string | undefined> = [], store: Record<string, unknown> = {}, world: World = {}) {
   const clock = mock.clock(on, { now: 1_000_000_000_000 })
@@ -70,6 +70,7 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
   on('process.run', ($, e) => {
     if (e.argv[0] === 'sh') return { value: { exitCode: 0, stdout: (world.pid || '') + '\n', stderr: '' } }
     world.runs?.push(e.argv)
+    if (e.argv[0] === '/usr/sbin/sysctl') return { value: { exitCode: 0, stdout: (world.pressure || '1') + '\n', stderr: '' } }
     if (world.missing && e.argv.includes(world.missing)) return { value: { exitCode: 1, stdout: '', stderr: 'The file ' + world.missing + ' does not exist.' } }
     const id = e.argv[e.argv.length - 1]
     return { value: { exitCode: (world.claimed || []).includes(id) ? 1 : 0, stdout: '', stderr: '' } }
@@ -82,6 +83,10 @@ function stubs(on, answers: Array<object | null>, toasts: string[], urls: string
       world.lines = []
       if (lines.length === 0) return { value: { status: 204, ok: true, headers: {}, text: '' } }
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ systemMessage: lines.join('\n') }) } }
+    }
+    if (e.url.endsWith('/api/mod/down')) {
+      world.downs?.push(JSON.parse(e.init.body))
+      return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
     }
     if (e.url.endsWith('/api/handoff/taken')) {
       world.taken?.push(e.init.body)
@@ -196,22 +201,39 @@ test('compaction lines are taken from the gateway and shown as toasts, once', as
   expect(toasts[2]).toBe('\u{1F535} Burst compaction: test line from the dashboard')
 })
 
-test('a dashboard that stops answering says so once, and again when it is back', async ($, on) => {
+test('a dashboard that stops answering says so once, after 30s, and again when it is back', async ($, on) => {
   const toasts: string[] = []
-  const clock = stubs(on, [mod(), null, null, null, mod()], toasts)
+  const world: World = { runs: [], downs: [] }
+  const clock = stubs(on, [mod(), null, null, null, null, null, null, mod()], toasts, [], false, [], {}, world)
   await start($)
-  await clock.advance(5000)
-  await clock.advance(5000)
-  // Two missed polls are a blip, not down.
+  for (let n = 0; n < 5; n++) await clock.advance(5000)
+  // 25s of misses is a freeze to sit out, not down.
   expect(toasts).toEqual([])
   await clock.advance(5000)
   // Red, since a toast cannot be coloured: a restart is the problem to notice.
   expect(toasts).toEqual(['\u{1F534} Burst dashboard not answering'])
+  // Noted as it is shown, since the gateway is not there to tell.
+  const note = world.runs!.find((r) => r[r.length - 1] === '/Users/me/.config/claude-burst/mod-down.log')!
+  expect(note[note.length - 2]).toMatch(/session=S1 shown="Burst dashboard not answering" misses=6 since=\S+ waited=30s kind=refused error=".*connection refused/)
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: '⚡ Burst down' })).toBeDefined()
   await ui.unmount()
   await clock.advance(5000)
   expect(toasts).toEqual(['\u{1F534} Burst dashboard not answering', '\u{1F535} Burst gateway back'])
+  // Back, the gateway is told, and logs it.
+  expect(world.downs!.length).toBe(1)
+  expect(world.downs![0]).toMatchObject({ session: 'S1', shown: 'Burst dashboard not answering', misses: 6, fired_ms: 1_000_000_030_000, first_ms: 1_000_000_005_000, back_ms: 1_000_000_035_000, freezing: false })
+})
+
+test('a Mac short of memory is named, and the pause the gateway measured is given when it is back', async ($, on) => {
+  const toasts: string[] = []
+  const world: World = { runs: [], downs: [], pressure: '4' }
+  const back = mod({ stall: { ended_ms: 1_000_000_034_000, seconds: 33, swap_used_mb: 9000, swap_of_mb: 10240, pressure: 'critical' } })
+  const clock = stubs(on, [mod(), null, null, null, null, null, null, back], toasts, [], false, [], {}, world)
+  await start($)
+  for (let n = 0; n < 7; n++) await clock.advance(5000)
+  expect(toasts).toEqual(['\u{1F534} Burst paused (Mac short of memory)', '\u{1F535} Burst back after a 33s pause (Mac short of memory)'])
+  expect(world.downs![0].shown).toBe('Burst paused (Mac short of memory)')
 })
 
 test('before the first answer the band is not drawn: unknown is not down', async ($, on) => {

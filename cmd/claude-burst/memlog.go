@@ -6,13 +6,17 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime/debug"
 	"runtime/metrics"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/andrewbakercloudscale/claude-burst/internal/admin"
 )
 
 // Memory logging.
@@ -23,14 +27,25 @@ import (
 // much of that was the gateway, or how long it had stood still: the process
 // was gone by the time anyone asked. So the gateway now writes what it holds
 // every few minutes, and a line as soon as it notices it did not run.
+//
+// On 25 Nov 2026 every session toasted "Burst dashboard not answering"
+// again and again while a Python job grew to 6GB, and the log could not say
+// so: a freeze under 15s wrote nothing, and none said what held the memory.
+// So the check now runs every 2s, a freeze of 5s or more is a line, and
+// that line names macOS's memory pressure and the five largest processes.
 
 const (
 	// memEvery is how often the memory line is written.
 	memEvery = 5 * time.Minute
 	// stallTick is how often the gateway checks that it is being run, and
 	// stallLate how late a check may be before that is worth a line.
-	stallTick = 10 * time.Second
-	stallLate = 5 * time.Second
+	stallTick = 2 * time.Second
+	stallLate = 3 * time.Second
+	// topEvery is how often a freeze line lists the largest processes: a
+	// Mac stalling every few seconds would otherwise run ps as often.
+	topEvery = 30 * time.Second
+	// topN is how many processes it lists.
+	topN = 5
 	// memWarnBytes is how much the gateway may hold before the line is a
 	// warning: it held under 100MB on the morning of 27 Oct 2026.
 	memWarnBytes = 1 << 30
@@ -58,6 +73,15 @@ type memSample struct {
 	goTotal, heap    uint64 // bytes the Go runtime has mapped, and live objects
 	goroutines, gcs  uint64
 	swapUsed, swapOf uint64 // the Mac's swap, bytes
+	pressure         string // macOS's memory pressure: normal, warn or critical; "" unknown
+	top              []proc // the largest processes, when asked for
+}
+
+// proc is one process in a freeze line.
+type proc struct {
+	pid  int
+	rss  uint64 // bytes
+	name string
 }
 
 // watchMemory writes a memory line every memEvery, and a warning when a
@@ -65,10 +89,11 @@ type memSample struct {
 // Go's monotonic clock, which on macOS does not run while the Mac sleeps,
 // so a night with the lid shut is not a stall.
 func watchMemory(ctx context.Context, logger *log.Logger) {
-	logger.Print(memLine(readMemory(ctx)))
+	logger.Print(memLine(readMemory(ctx, false)))
 	tick := time.NewTicker(stallTick)
 	defer tick.Stop()
 	last, lastLine := time.Now(), time.Now()
+	var lastTop time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -77,10 +102,17 @@ func watchMemory(ctx context.Context, logger *log.Logger) {
 		}
 		now := time.Now()
 		if line := stallLine(now.Sub(last), stallTick); line != "" {
-			logger.Print(line + "; " + memLine(readMemory(ctx)))
+			withTop := now.Sub(lastTop) >= topEvery
+			s := readMemory(ctx, withTop)
+			if withTop {
+				lastTop = now
+			}
+			logger.Print(line + "; " + memLine(s))
+			admin.NoteStall(admin.Stall{EndedMS: now.UnixMilli(), Seconds: now.Sub(last).Seconds(),
+				SwapUsedMB: s.swapUsed >> 20, SwapOfMB: s.swapOf >> 20, Pressure: s.pressure})
 			lastLine = now
 		} else if now.Sub(lastLine) >= memEvery {
-			logger.Print(memLine(readMemory(ctx)))
+			logger.Print(memLine(readMemory(ctx, false)))
 			lastLine = now
 		}
 		last = now
@@ -109,8 +141,20 @@ func memLine(s memSample) string {
 	if s.swapOf > 0 {
 		fmt.Fprintf(&b, "; Mac swap %s of %s used", mb(s.swapUsed), mb(s.swapOf))
 	}
+	if s.pressure != "" {
+		fmt.Fprintf(&b, "; memory pressure %s", s.pressure)
+	}
 	if s.goTotal > s.rss*2 && s.rss > 0 {
 		b.WriteString(" (most of the gateway is swapped out)")
+	}
+	if len(s.top) > 0 {
+		b.WriteString("; largest:")
+		for i, p := range s.top {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, " %s %s (pid %d)", mb(p.rss), p.name, p.pid)
+		}
 	}
 	return b.String()
 }
@@ -125,7 +169,8 @@ func mb(n uint64) string {
 
 // readMemory takes a sample. ps and sysctl are bounded: on a Mac paging
 // hard they can be slow, and a missing figure is better than a late line.
-func readMemory(ctx context.Context) memSample {
+// withTop also lists the largest processes.
+func readMemory(ctx context.Context, withTop bool) memSample {
 	var s memSample
 	ms := []metrics.Sample{
 		{Name: "/memory/classes/total:bytes"},
@@ -154,7 +199,132 @@ func readMemory(ctx context.Context) memSample {
 	if out, err := exec.CommandContext(ctx, "/usr/sbin/sysctl", "-n", "vm.swapusage").Output(); err == nil {
 		s.swapOf, s.swapUsed = parseSwap(string(out))
 	}
+	if out, err := exec.CommandContext(ctx, "/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level").Output(); err == nil {
+		s.pressure = pressureName(strings.TrimSpace(string(out)))
+	}
+	if withTop {
+		s.top = largest(ctx)
+	}
 	return s
+}
+
+// pressureName is kern.memorystatus_vm_pressure_level in words.
+func pressureName(level string) string {
+	switch level {
+	case "1":
+		return "normal"
+	case "2":
+		return "warn"
+	case "4":
+		return "critical"
+	}
+	return ""
+}
+
+// largest is the topN processes by memory in RAM, each named by its program
+// and what it was started with: "Python -c" alone does not say whose worker
+// it is, so a worker started with -c is named by its parent as well.
+func largest(ctx context.Context) []proc {
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-axo", "rss=,pid=,ppid=,comm=").Output()
+	if err != nil {
+		return nil
+	}
+	all := parsePS(string(out))
+	parent := map[int]int{}
+	comm := map[int]string{}
+	for _, p := range all {
+		parent[p.pid], comm[p.pid] = p.ppid, p.comm
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].rss > all[j].rss })
+	if len(all) > topN {
+		all = all[:topN]
+	}
+	pids := []string{}
+	for _, p := range all {
+		pids = append(pids, strconv.Itoa(p.pid), strconv.Itoa(p.ppid))
+	}
+	args := map[int]string{}
+	if out, err := exec.CommandContext(ctx, "/bin/ps", "-o", "pid=,args=", "-p", strings.Join(pids, ",")).Output(); err == nil {
+		for _, l := range strings.Split(string(out), "\n") {
+			f := strings.Fields(l)
+			if len(f) < 2 {
+				continue
+			}
+			if pid, err := strconv.Atoi(f[0]); err == nil {
+				args[pid] = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), f[0]))
+			}
+		}
+	}
+	top := make([]proc, 0, len(all))
+	for _, p := range all {
+		name := procName(comm[p.pid], args[p.pid])
+		if strings.HasSuffix(name, " -c") && parent[p.pid] > 1 {
+			name += ", child of " + procName(comm[parent[p.pid]], args[parent[p.pid]])
+		}
+		top = append(top, proc{pid: p.pid, rss: p.rss, name: name})
+	}
+	return top
+}
+
+// psRow is one line of `ps -axo rss=,pid=,ppid=,comm=`.
+type psRow struct {
+	pid, ppid int
+	rss       uint64
+	comm      string
+}
+
+// parsePS reads `ps -axo rss=,pid=,ppid=,comm=`; comm, last, may hold spaces.
+func parsePS(out string) []psRow {
+	var rows []psRow
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 4 {
+			continue
+		}
+		kb, e1 := strconv.ParseUint(f[0], 10, 64)
+		pid, e2 := strconv.Atoi(f[1])
+		ppid, e3 := strconv.Atoi(f[2])
+		if e1 != nil || e2 != nil || e3 != nil {
+			continue
+		}
+		rest := l
+		for range 3 {
+			rest = strings.TrimLeft(rest, " \t")
+			rest = rest[strings.IndexAny(rest+" ", " \t"):]
+		}
+		rows = append(rows, psRow{pid: pid, ppid: ppid, rss: kb << 10, comm: strings.TrimSpace(rest)})
+	}
+	return rows
+}
+
+// procName is the program's file name and the first two words it was
+// started with, paths cut to their last part: "Python sg_console.py serve",
+// or up to -c, whose code says nothing about whose worker it is.
+func procName(comm, args string) string {
+	name := filepath.Base(comm)
+	if comm == "" {
+		return "?"
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(args, comm))
+	if rest == args {
+		// argv[0] is not the path ps named: drop its first word.
+		if f := strings.Fields(args); len(f) > 0 {
+			rest = strings.TrimSpace(strings.TrimPrefix(args, f[0]))
+		}
+	}
+	for i, w := range strings.Fields(rest) {
+		if i == 2 {
+			break
+		}
+		name += " " + filepath.Base(w)
+		if w == "-c" {
+			break // what follows is code, not a name
+		}
+	}
+	if len(name) > 60 {
+		name = name[:60]
+	}
+	return name
 }
 
 var swapField = regexp.MustCompile(`(total|used) = ([0-9]+)[.,]?([0-9]*)M`)

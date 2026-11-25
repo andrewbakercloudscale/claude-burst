@@ -36,6 +36,9 @@ type modResponse struct {
 	// Toasts is the dashboard's "alerts and compaction lines as toasts in
 	// the session" option, on unless it was turned off.
 	Toasts bool `json:"toasts"`
+	// Stall is the gateway's last freeze in the last 10 minutes, if any:
+	// the mod says "paused (Mac short of memory)" from it.
+	Stall *Stall `json:"stall,omitempty"`
 }
 
 func (s *Server) handleMod(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +47,7 @@ func (s *Server) handleMod(w http.ResponseWriter, r *http.Request) {
 
 	st := s.gateway.Status()
 	resp := modResponse{Version: s.version, Route: "PRIMARY", Alerts: []notice.Event{}, Problems: []notice.Event{},
-		Toasts: readModSettings().Toasts}
+		Toasts: readModSettings().Toasts, Stall: recentStall(time.Now())}
 	if st.OverflowUntil > time.Now().Unix() {
 		resp.Route, resp.Overflow = "SECONDARY", true
 		resp.Reason = st.LastReason

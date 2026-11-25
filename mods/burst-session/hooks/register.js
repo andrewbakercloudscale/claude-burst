@@ -33,9 +33,18 @@ let home = ''
 let burst = null // last /api/mod answer, null while the dashboard is down
 let down = false
 let misses = 0 // polls in a row the dashboard did not answer
-// Down only after this many: one slow or lost poll (the Mac waking, a busy
-// gateway) said "not answering" then "back" seconds apart, for nothing.
-const DOWN_AFTER = 3
+// Down only once nothing has answered for DOWN_MS, and at least two polls
+// missed: one slow or lost poll (the Mac waking, a busy gateway) said "not
+// answering" then "back" seconds apart, for nothing. It was 15s until 25 Nov
+// 2026, when a Mac short of memory froze the gateway for 10 to 20s at a
+// time and every session toasted each freeze.
+const DOWN_MS = 30000
+let lastAnswer = 0 // when the dashboard last answered (clock ms)
+let firstMiss = 0 // when the first poll of this run of misses was made
+let lastError = '' // what the last missed poll said
+let downShown = '' // the toast shown when it went down
+let downAt = 0 // when that was
+let lastStall = null // the gateway's last freeze, from its last answer
 let panel = [] // the usage panel's summary rows, as parsed segments
 let since = 0 // alerts at or before this were here before the session
 const toasted = new Set() // alert ids this session has already handled
@@ -775,6 +784,66 @@ async function compactionLines($) {
   }
 }
 
+// Whether a dashboard that stopped answering is more likely frozen by a Mac
+// short of memory than gone: macOS says its memory is under pressure, or
+// the gateway itself said in the last ten minutes that it had frozen.
+async function memoryShort($, now) {
+  if (lastStall && now - lastStall.ended_ms < 600000) return true
+  try {
+    const r = await $.process.run(['/usr/sbin/sysctl', '-n', 'kern.memorystatus_vm_pressure_level'], { timeoutMs: 3000 })
+    return Number(String(r.stdout).trim()) >= 2
+  } catch (err) {
+    return false
+  }
+}
+
+// Whether the last miss timed out, the gateway's port open but no answer
+// (frozen), rather than refused (not running).
+function timedOut() {
+  return /time|abort/i.test(lastError)
+}
+
+function secs(n) {
+  const s = Math.round(n)
+  return s >= 60 ? Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's' : s + 's'
+}
+
+function clockTime(ms) {
+  const d = new Date(ms)
+  const p = (n) => String(n).padStart(2, '0')
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+}
+
+function downLine(now) {
+  return new Date(now).toISOString() + ' session=' + sid + ' shown="' + downShown + '" misses=' + misses +
+    ' since=' + clockTime(firstMiss) + ' waited=' + secs((now - lastAnswer) / 1000) +
+    ' kind=' + (timedOut() ? 'timeout' : 'refused') + ' error="' + lastError.replace(/["\n]/g, ' ') + '"'
+}
+
+// The toast goes in a file beside the gateway's log as it is shown, since
+// the gateway it would tell is the thing not answering. Once it answers it
+// is told as well, and puts the line in its own log beside its freezes.
+async function noteDown($, line) {
+  if (!home) return
+  try {
+    await $.process.run(['/bin/sh', '-c', 'mkdir -p "$(dirname "$2")" && printf "%s\\n" "$1" >> "$2"', 'sh', line, home + '/.config/claude-burst/mod-down.log'], { timeoutMs: 5000 })
+  } catch (err) {
+    $.ui.log('could not note the toast: ' + err)
+  }
+}
+
+async function reportDown($, now) {
+  try {
+    await $.http.fetch(DASHBOARD + '/api/mod/down', {
+      method: 'POST',
+      headers: { 'X-Claude-Burst-Admin': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: sid, shown: downShown, fired_ms: downAt, first_ms: firstMiss, misses, error: lastError, back_ms: now, freezing: timedOut() }),
+    })
+  } catch (err) {
+    // The line in mod-down.log stands.
+  }
+}
+
 async function refresh($) {
   let answer
   try {
@@ -782,16 +851,32 @@ async function refresh($) {
     if (!r.ok) throw new Error('status ' + r.status)
     answer = JSON.parse(r.text)
   } catch (err) {
-    if (++misses < DOWN_AFTER) return
-    if (!down) toast($, 'Burst dashboard not answering', 'error')
+    const now = await $.clock.now()
+    if (misses === 0) firstMiss = now
+    misses++
+    lastError = String((err && err.message) || err).slice(0, 200)
+    if (!lastAnswer) lastAnswer = firstMiss
+    if (down || misses < 2 || now - lastAnswer < DOWN_MS) return
+    downShown = (await memoryShort($, now)) ? 'Burst paused (Mac short of memory)' : 'Burst dashboard not answering'
+    downAt = now
+    toast($, downShown, 'error')
+    await noteDown($, downLine(now))
     down = true
     burst = null
     return
   }
-  misses = 0
+  const now = await $.clock.now()
   burst = answer
   if (burst.session) heldSeen = burst.session.raw || 0
-  if (down) toast($, 'Burst gateway back')
+  if (burst.stall) lastStall = burst.stall
+  if (down) {
+    const st = burst.stall
+    if (st && st.ended_ms >= firstMiss - POLL_MS) toast($, 'Burst back after a ' + secs(st.seconds) + ' pause (Mac short of memory)')
+    else toast($, 'Burst gateway back')
+    await reportDown($, now)
+  }
+  misses = 0
+  lastAnswer = now
   down = false
   // Its own errors are not the dashboard's: they used to say it was down.
   try {
