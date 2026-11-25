@@ -305,10 +305,9 @@ func parseEtime(s string) (time.Duration, bool) {
 // hold caPEM, else those started before it did. On 2026-10-02 13:22 a
 // re-enable with sessions open from before the CA changed failed all of them.
 func sessionsNotTrusting(bundle string, caPEM []byte) []string {
-	since, ok := tlsca.TrustedSince(bundle, caPEM)
 	var pids []string
 	for pid, started := range runningClaude() {
-		if !ok || started.Before(since) {
+		if !tlsca.Trusts(bundle, caPEM, started) {
 			pids = append(pids, pid)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const host = "api.anthropic.com"
@@ -198,4 +199,40 @@ func TestStripBlock(t *testing.T) {
 			t.Error("input modified")
 		}
 	})
+}
+
+// RemoveFromBundle keeps the spell the CA was in, so sessions started in it
+// are still known to trust that CA once it is back; a new CA gets no credit.
+func TestTrustsSpellBeforeRemoval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bundle.pem")
+	caPEM := []byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+	from := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	if err := EnsureInBundle(path, caPEM); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(sinceFile(path), []byte(from.Format(time.RFC3339)+"\n"), 0600)
+	if err := RemoveFromBundle(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureInBundle(path, caPEM); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct {
+		at   time.Time
+		want bool
+	}{
+		"before the CA arrived": {from.Add(-time.Hour), false},
+		"while it was in":       {from.Add(time.Hour), true},
+		"after it is back":      {time.Now().Add(time.Minute), true},
+	}
+	for name, c := range cases {
+		if got := Trusts(path, caPEM, c.at); got != c.want {
+			t.Errorf("%s: Trusts = %v, want %v", name, got, c.want)
+		}
+	}
+	other := []byte("-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n")
+	EnsureInBundle(path, other)
+	if Trusts(path, other, from.Add(time.Hour)) {
+		t.Error("a different CA was credited with the old spell")
+	}
 }

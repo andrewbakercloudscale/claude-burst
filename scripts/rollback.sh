@@ -210,6 +210,23 @@ if b >= 0 and e >= 0:
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(s[:b] + s[e:])
     tmp.chmod(0o600)
+    # Record the spell the CA was in, as tlsca.RemoveFromBundle does, so
+    # the next enable knows sessions started during it still trust the CA.
+    import hashlib, os, time
+    body = s[b + len("# BEGIN claude-burst CA"):s.find("# END claude-burst CA", b)]
+    body = body.split("\n", 1)[1] if "\n" in body else ""
+    since = p.with_name(p.name + ".claude-burst-since")
+    try:
+        start = since.read_text().strip()
+    except OSError:
+        start = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(os.stat(p).st_mtime))
+        start = start[:-2] + ":" + start[-2:]
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    now = now[:-2] + ":" + now[-2:]
+    off = p.with_name(p.name + ".claude-burst-off")
+    off.write_text(f"{start} {now} {hashlib.sha256(body.strip().encode()).hexdigest()}\n")
+    off.chmod(0o600)
+    since.unlink(missing_ok=True)
     tmp.replace(p)
     print(f"removed claude-burst's CA from {p}, everything else in it kept")
 PY

@@ -40,9 +40,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -520,6 +522,60 @@ func RemoveFromBundle(path string) error {
 	if !changed {
 		return nil
 	}
+	// Record the spell the CA was in the bundle, so a later enable knows the
+	// sessions started during it still trust that CA (Node read it at their
+	// startup). Without it, turning Burst off and on again flagged every
+	// session open from before the off as untrusting: 17 of them on 25 Nov
+	// 2026, all started while the same CA was in the bundle.
+	if pem := blockPEM(string(existing)); pem != "" {
+		if from, ok := TrustedSince(path, []byte(pem)); ok {
+			rec := from.Format(time.RFC3339) + " " + time.Now().Format(time.RFC3339) + " " + fingerprint([]byte(pem)) + "\n"
+			_ = writeFile(offFile(path), []byte(rec), 0600)
+		}
+	}
 	_ = os.Remove(sinceFile(path))
 	return writeFile(path, []byte(stripped), 0600)
+}
+
+// offFile records the last spell the claude-burst block was in the bundle
+// before it was removed: "<from> <to> <sha256 of the CA>".
+func offFile(bundle string) string { return bundle + ".claude-burst-off" }
+
+func fingerprint(caPEM []byte) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(string(caPEM))))
+	return hex.EncodeToString(sum[:])
+}
+
+// blockPEM returns the CA inside the bundle's claude-burst block, or "".
+func blockPEM(contents string) string {
+	start := strings.Index(contents, beginMarker)
+	if start < 0 {
+		return ""
+	}
+	rest := contents[start+len(beginMarker):]
+	end := strings.Index(rest, endMarker)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
+// Trusts reports whether a Claude Code session started at started trusts
+// caPEM through the bundle: started after the CA was last put in, or during
+// an earlier spell when the same CA was in it (taken out by burst-off since).
+func Trusts(bundle string, caPEM []byte, started time.Time) bool {
+	if since, ok := TrustedSince(bundle, caPEM); ok && !started.Before(since) {
+		return true
+	}
+	raw, err := os.ReadFile(offFile(bundle))
+	if err != nil {
+		return false
+	}
+	f := strings.Fields(string(raw))
+	if len(f) != 3 || f[2] != fingerprint(caPEM) {
+		return false
+	}
+	from, err1 := time.Parse(time.RFC3339, f[0])
+	to, err2 := time.Parse(time.RFC3339, f[1])
+	return err1 == nil && err2 == nil && !started.Before(from) && started.Before(to)
 }

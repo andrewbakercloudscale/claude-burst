@@ -7,6 +7,8 @@ package main
 // tested by running install-proxy.sh in internal/integration.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -255,4 +257,45 @@ func TestSessionsNotTrusting(t *testing.T) {
 	if got := sessionsNotTrusting(bundle, caPEM); len(got) != 0 {
 		t.Fatalf("a session that trusts the CA was flagged: %v", got)
 	}
+}
+
+// 2026-11-25 22:17: install-transparent refused over 17 sessions after a
+// burst-off and burst-on. Every one started while the same CA was in the
+// bundle, before the off, so all of them still trusted it.
+func TestSessionsNotTrustingAfterOffAndOn(t *testing.T) {
+	tempHome(t, "")
+	bundle := filepath.Join(t.TempDir(), "bundle.pem")
+	caPEM := []byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+	now := time.Now().Truncate(time.Second)
+	os.WriteFile(bundle, []byte(tlsca.BundleBlock(caPEM)), 0600)
+	os.WriteFile(bundle+".claude-burst-since", []byte(now.Add(-48*time.Hour).Format(time.RFC3339)+"\n"), 0600)
+	runningClaude = func() map[string]time.Time {
+		return map[string]time.Time{
+			"100": now.Add(-72 * time.Hour),   // before the CA arrived
+			"200": now.Add(-24 * time.Hour),   // while it was in
+			"300": now.Add(-30 * time.Minute), // while Burst was off
+		}
+	}
+	// burst-off an hour ago, back on now.
+	offAt := now.Add(-time.Hour)
+	os.WriteFile(bundle+".claude-burst-off", []byte(now.Add(-48*time.Hour).Format(time.RFC3339)+" "+offAt.Format(time.RFC3339)+" "+fp(caPEM)+"\n"), 0600)
+	os.Remove(bundle + ".claude-burst-since")
+	os.WriteFile(bundle, nil, 0600)
+	if err := tlsca.EnsureInBundle(bundle, caPEM); err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionsNotTrusting(bundle, caPEM); strings.Join(got, ",") != "100,300" {
+		t.Fatalf("want the sessions started before the CA and while it was out, got %v", got)
+	}
+	// A different CA back in: the old spell counts for nothing.
+	other := []byte("-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n")
+	tlsca.EnsureInBundle(bundle, other)
+	if got := sessionsNotTrusting(bundle, other); strings.Join(got, ",") != "100,200,300" {
+		t.Fatalf("a new CA: every earlier session refuses, got %v", got)
+	}
+}
+
+func fp(caPEM []byte) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(string(caPEM))))
+	return hex.EncodeToString(sum[:])
 }
