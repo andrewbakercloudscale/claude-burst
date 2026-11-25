@@ -10,7 +10,7 @@ import (
 	"github.com/andrewbakercloudscale/claude-burst/internal/touchid"
 )
 
-const version = "0.20.71"
+const version = "0.20.72"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -83,7 +83,7 @@ func usage() {
 Commands:
   serve             Run the local gateway (default: 127.0.0.1:7777)
   configure         Write/update config.json
-  keychain-set      Store a secondary's API key in macOS Keychain (--provider together|openrouter|bedrock)
+  keychain-set      Store an API key in macOS Keychain (--provider <vendor>, e.g. groq or openrouter)
   enable            Point Claude Code at the local gateway via ~/.claude/settings.json
   disable           Remove Claude Burst from Claude Code settings
   ca-rotate         Replace the local intercept CA (only with no Claude Code session running)

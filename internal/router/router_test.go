@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -775,6 +776,267 @@ func TestOpenAICompatibleFailoverTranslatesResponse(t *testing.T) {
 	block := content[0].(map[string]any)
 	if block["type"] != "text" || block["text"] != "hi from GLM" {
 		t.Fatalf("got block=%v", block)
+	}
+}
+
+func TestProviderFallbackChainAdvancesOnRateLimit(t *testing.T) {
+	t.Setenv("OPENROUTER_CHAIN_TEST_API_KEY", "test-openrouter-key")
+	t.Setenv("GROQ_CHAIN_TEST_API_KEY", "test-groq-key")
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"plan limit"}}`))
+	}))
+	defer primary.Close()
+	var openrouterCalls, groqCalls atomic.Int32
+	openrouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		openrouterCalls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer test-openrouter-key" {
+			t.Errorf("OpenRouter auth = %q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"free model capacity exhausted"}}`))
+	}))
+	defer openrouter.Close()
+	groq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		groqCalls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer test-groq-key" {
+			t.Errorf("Groq auth = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"answered by Groq"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`))
+	}))
+	defer groq.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primary.URL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{Provider: "openai-compatible", BaseURL: openrouter.URL, Model: "openrouter/free", KeychainService: "claude-burst-openrouter-chain-test"}
+	cfg.FallbackRoutes = []config.RouteConfig{{Provider: "openai-compatible", BaseURL: groq.URL, Model: "openai/gpt-oss-20b", KeychainService: "claude-burst-groq-chain-test"}}
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer oauth-token")
+	s.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if openrouterCalls.Load() != 1 || groqCalls.Load() != 1 {
+		t.Fatalf("route calls: OpenRouter=%d Groq=%d, want one each", openrouterCalls.Load(), groqCalls.Load())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid Anthropic response: %v", err)
+	}
+	content := got["content"].([]any)
+	if content[0].(map[string]any)["text"] != "answered by Groq" {
+		t.Fatalf("response did not come from the next successful route: %v", got)
+	}
+}
+
+func TestProviderFallbackChainSkipsMissingCredential(t *testing.T) {
+	t.Setenv("GROQ_MISSING_KEY_TEST_API_KEY", "test-groq-key")
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"plan limit"}}`))
+	}))
+	defer primary.Close()
+	var openrouterCalls, groqCalls atomic.Int32
+	openrouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		openrouterCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer openrouter.Close()
+	groq := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		groqCalls.Add(1)
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"answered after missing key"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`))
+	}))
+	defer groq.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primary.URL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{Provider: "openai-compatible", BaseURL: openrouter.URL, Model: "openrouter/free", KeychainService: "claude-burst-openrouter-missing-key-test"}
+	cfg.FallbackRoutes = []config.RouteConfig{{Provider: "openai-compatible", BaseURL: groq.URL, Model: "openai/gpt-oss-20b", KeychainService: "claude-burst-groq-missing-key-test"}}
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer oauth-token")
+	s.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if openrouterCalls.Load() != 0 || groqCalls.Load() != 1 {
+		t.Fatalf("route calls: OpenRouter=%d Groq=%d, want missing-key route skipped and Groq called once", openrouterCalls.Load(), groqCalls.Load())
+	}
+}
+
+func TestConfiguredFreeProviderPoolOrderAndDisabledCloudflare(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"plan limit"}}`))
+	}))
+	defer primary.Close()
+
+	type route struct {
+		name, model, service string
+		server               *httptest.Server
+	}
+	names := []string{"OpenRouter", "Groq", "Gemini", "SambaNova", "NVIDIA", "Cohere"}
+	models := []string{"openrouter/free", "openai/gpt-oss-20b", "gemini-3.8-flash", "gpt-oss-120b", "openai/gpt-oss-20b", "command-a-plus-05-2026"}
+	services := []string{"claude-burst-openrouter-pool-test", "claude-burst-groq-pool-test", "claude-burst-gemini-pool-test", "claude-burst-sambanova-pool-test", "claude-burst-nvidia-pool-test", "claude-burst-cohere-pool-test"}
+	envKeys := []string{"OPENROUTER_POOL_TEST_API_KEY", "GROQ_POOL_TEST_API_KEY", "GEMINI_POOL_TEST_API_KEY", "SAMBANOVA_POOL_TEST_API_KEY", "NVIDIA_POOL_TEST_API_KEY", "COHERE_POOL_TEST_API_KEY"}
+	var mu sync.Mutex
+	var order []string
+	routes := make([]route, len(names))
+	for i := range names {
+		i := i
+		t.Setenv(envKeys[i], "test-key-"+names[i])
+		routes[i] = route{name: names[i], model: models[i], service: services[i]}
+		routes[i].server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			order = append(order, names[i])
+			mu.Unlock()
+			if got, want := r.Header.Get("Authorization"), "Bearer test-key-"+names[i]; got != want {
+				t.Errorf("%s authorization = %q, want test credential", names[i], got)
+			}
+			w.Header().Set("content-type", "application/json")
+			if i < len(names)-1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"message":"mock free-tier capacity exhausted"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"answered by Cohere"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`))
+		}))
+		defer routes[i].server.Close()
+	}
+	var disabledCalls atomic.Int32
+	disabledCloudflare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		disabledCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"disabled route was called"}}]}`))
+	}))
+	defer disabledCloudflare.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primary.URL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{Provider: "openai-compatible", BaseURL: routes[0].server.URL, Model: routes[0].model, KeychainService: routes[0].service}
+	cfg.FallbackRoutes = []config.RouteConfig{
+		{Provider: "openai-compatible", BaseURL: routes[1].server.URL, Model: routes[1].model, KeychainService: routes[1].service},
+		{Provider: "openai-compatible", BaseURL: routes[2].server.URL, Model: routes[2].model, KeychainService: routes[2].service},
+		{Provider: "openai-compatible", BaseURL: routes[3].server.URL, Model: routes[3].model, KeychainService: routes[3].service},
+		{Provider: "openai-compatible", BaseURL: routes[4].server.URL, Model: routes[4].model, KeychainService: routes[4].service},
+		{Provider: "openai-compatible", BaseURL: disabledCloudflare.URL, Model: "@cf/google/gemma-4-26b-a4b-it", KeychainService: "claude-burst-cloudflare-pool-test", Disabled: true},
+		{Provider: "openai-compatible", BaseURL: routes[5].server.URL, Model: routes[5].model, KeychainService: routes[5].service},
+	}
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"test"}]}`))
+	req.Header.Set("Authorization", "Bearer test-subscription-token")
+	s.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	mu.Lock()
+	gotOrder := strings.Join(order, ",")
+	mu.Unlock()
+	if want := "OpenRouter,Groq,Gemini,SambaNova,NVIDIA,Cohere"; gotOrder != want {
+		t.Fatalf("fallback order=%q, want %q", gotOrder, want)
+	}
+	if disabledCalls.Load() != 0 {
+		t.Fatalf("disabled Cloudflare route was called %d times", disabledCalls.Load())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid translated response: %v", err)
+	}
+	content := got["content"].([]any)
+	if content[0].(map[string]any)["text"] != "answered by Cohere" {
+		t.Fatalf("final successful provider did not answer: %v", got)
+	}
+}
+
+func TestProviderFallbackChainOpenAIGroqThenClaude(t *testing.T) {
+	t.Setenv("OPENAI_CHAIN_TEST_API_KEY", "test-openai-key")
+	t.Setenv("GROQ_CHAIN_TEST_API_KEY", "test-groq-key")
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-unified-status", "rejected")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"plan limit"}}`))
+	}))
+	defer primary.Close()
+	var routeOrder []string
+	var routeOrderMu sync.Mutex
+	newLimitedOpenAI := func(name string) (*httptest.Server, *atomic.Int32) {
+		calls := new(atomic.Int32)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			routeOrderMu.Lock()
+			routeOrder = append(routeOrder, name)
+			routeOrderMu.Unlock()
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"route unavailable"}}`))
+		}))
+		return server, calls
+	}
+	openai, openaiCalls := newLimitedOpenAI("openai")
+	defer openai.Close()
+	groq, groqCalls := newLimitedOpenAI("groq")
+	defer groq.Close()
+	claude := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		routeOrderMu.Lock()
+		routeOrder = append(routeOrder, "claude")
+		routeOrderMu.Unlock()
+		if got := r.Header.Get("x-api-key"); got != "test-anthropic-api-key" {
+			t.Errorf("Anthropic API key = %q", got)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","model":"claude-haiku-4-5","content":[{"type":"text","text":"answered by Haiku"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":2,"output_tokens":2}}`))
+	}))
+	defer claude.Close()
+
+	cfg := config.Default()
+	cfg.Primary = config.RouteConfig{Provider: "oauth-passthrough", BaseURL: primary.URL, FailoverStrategy: "subscription-limit"}
+	cfg.Secondary = config.RouteConfig{Provider: "openai-compatible", BaseURL: openai.URL, Model: "gpt-test", KeychainService: "claude-burst-openai-chain-test"}
+	cfg.FallbackRoutes = []config.RouteConfig{
+		{Provider: "openai-compatible", BaseURL: groq.URL, Model: "openai/gpt-oss-20b", KeychainService: "claude-burst-groq-chain-test"},
+		{Provider: "anthropic-api-key", BaseURL: claude.URL},
+	}
+	dir := t.TempDir()
+	s, err := New(cfg, filepath.Join(dir, "state.json"), filepath.Join(dir, "metrics.jsonl"), log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/messages", strings.NewReader(`{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer test-subscription-token")
+	req.Header.Set("x-api-key", "test-anthropic-api-key")
+	s.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if openaiCalls.Load() != 1 || groqCalls.Load() != 1 {
+		t.Fatalf("fallback calls: OpenAI=%d Groq=%d, want one each", openaiCalls.Load(), groqCalls.Load())
+	}
+	if got, want := strings.Join(routeOrder, ","), "openai,groq,claude"; got != want {
+		t.Fatalf("fallback order = %q, want %q", got, want)
+	}
+	if !strings.Contains(rr.Body.String(), "answered by Haiku") {
+		t.Fatalf("last configured route did not answer: %s", rr.Body.String())
 	}
 }
 

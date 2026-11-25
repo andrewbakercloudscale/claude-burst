@@ -226,7 +226,7 @@ func (s *Server) alertSecondaryKey(err error) {
 	switch {
 	case warn:
 		notice.Publish(alertSecondary, notice.Warn, "Secondary key unavailable",
-			"The "+s.secondary.Name()+" key could not be read ("+err.Error()+"), so nothing fails over until it can.")
+			"The "+s.secondary.Name()+" key could not be read ("+err.Error()+"). Later configured fallback routes may still be available.")
 	case back:
 		notice.Publish(alertSecondary, notice.OK, "Secondary key available", "Failover to "+s.secondary.Name()+" works again.")
 	}
