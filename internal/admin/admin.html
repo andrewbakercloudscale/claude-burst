@@ -948,6 +948,9 @@
          Install panel above every card reads as an unfinished setup. It is
          still the only way to switch modes or re-run an install, so this
          reveals it on demand rather than the panel going away. -->
+    <!-- Share with a friend: the one-line install as a message, as Ghostty
+         Dock and System Sentinel have it. -->
+    <button id="shareTop" style="margin-left:10px" title="Send someone the one-line install by Messages, Mail, WhatsApp or AirDrop, or copy it">&#x2934; Share</button>
     <button id="installRevealBtn" style="margin-left:10px" hidden>⤓ Reinstall</button>
     <!-- Revert lives in the header, not down in Actions, because the moment
          you need it is the moment every request on this Mac is failing --
@@ -2107,6 +2110,20 @@
   </div>
   <div class="ver-main" id="verBody"></div>
   <div class="ver-foot"><span class="hint" id="verChecked"></span><span class="spacer"></span><button id="verClose">Close</button><button id="verGitHub" hidden>&#x2913; Install GitHub version</button><button class="primary" id="verUpgrade" hidden>&#x2913; Upgrade now</button></div>
+</dialog>
+
+<!-- Share with a friend: the install message, the Mac's share menu where the
+     browser has one, Copy, WhatsApp and Email. -->
+<dialog id="shareDialog" class="ver" data-tone="new" aria-labelledby="shareTitle">
+  <div class="ver-band">
+    <div class="ver-mark">&#x2934;</div>
+    <div><h3 id="shareTitle">Share Claude Burst with a friend</h3><div class="ver-sub">The message below, with the one line that installs it</div></div>
+  </div>
+  <div class="ver-main">
+    <textarea id="shareText" readonly rows="13" style="width:100%;box-sizing:border-box;font:inherit;font-size:12.5px;line-height:1.5;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2);color:var(--text);resize:vertical"></textarea>
+    <div class="hint" id="shareDone" role="status" style="min-height:1.4em;margin-top:6px"></div>
+  </div>
+  <div class="ver-foot"><button id="shareClose">Close</button><span class="spacer"></span><button id="shareMail">&#x2709; Email</button><button id="shareWa">WhatsApp</button><button id="shareCopy">&#x29C9; Copy</button><button class="primary" id="shareNative" hidden>&#x2934; Share...</button></div>
 </dialog>
 
 <script>
@@ -6439,6 +6456,59 @@ $("upgradeTop").onclick = () => {
   });
 };
 $("verClose").onclick = () => $("verDialog").close();
+
+// ---- Share with a friend ----
+// The same message every product of ours sends: what it is, how to open
+// Terminal, the one line (get.sh installs the newest signed release), and
+// where the source is.
+const SHARE_REPO = "https://github.com/andrewbakercloudscale/claude-burst";
+const SHARE_LINE = "curl -fsSL https://raw.githubusercontent.com/andrewbakercloudscale/claude-burst/main/scripts/get.sh | bash";
+const SHARE_SUBJECT = "Claude Burst: a free control plane for Claude Code on your Mac";
+const SHARE_TEXT = [
+  "I've been using Claude Burst, a free Mac add-on for Claude Code (and Claude Desktop). It shows what every session spends, compacts long conversations without the pause, and keeps working when you hit your plan's limits by overflowing to a second provider if you set one up. One click turns it off again.",
+  "",
+  "To install it (macOS, with Claude Code already installed):",
+  "1. Open Terminal: press Cmd+Space, type Terminal, press Return.",
+  "2. Copy just this one line, paste it into Terminal and press Return. Do not open the link inside it: that shows the installer's code, which does not work pasted into Terminal.",
+  "",
+  SHARE_LINE,
+  "",
+  "It installs the newest signed release and opens the dashboard. Afterwards Cmd+Space, type burst, opens it again. The installer's last line is the command that removes it.",
+  "",
+  "More, and the source code: " + SHARE_REPO,
+].join("\n");
+
+function shareSaid(msg) { $("shareDone").textContent = msg; }
+$("shareTop").onclick = () => {
+  $("shareText").value = SHARE_TEXT;
+  shareSaid("");
+  // The Mac's own share menu (Messages, Mail, AirDrop, Notes), where the
+  // browser offers it: Safari does, Chrome on a Mac mostly does.
+  $("shareNative").hidden = !(navigator.share && (!navigator.canShare || navigator.canShare({text: SHARE_TEXT})));
+  if (!$("shareDialog").open) $("shareDialog").showModal();
+};
+$("shareClose").onclick = () => $("shareDialog").close();
+$("shareCopy").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(SHARE_TEXT);
+    shareSaid("Copied: paste it into Slack, Teams, a message or an email.");
+  } catch (e) {
+    $("shareText").select();
+    shareSaid("Copy was blocked by the browser: the text is selected, press Cmd+C.");
+  }
+};
+$("shareNative").onclick = async () => {
+  try {
+    await navigator.share({title: SHARE_SUBJECT, text: SHARE_TEXT});
+    shareSaid("Shared.");
+  } catch (e) {
+    if (e && e.name !== "AbortError") shareSaid("The share menu failed (" + (e.message || e) + "); use Copy instead.");
+  }
+};
+$("shareWa").onclick = () => window.open("https://wa.me/?text=" + encodeURIComponent(SHARE_TEXT), "_blank", "noopener");
+$("shareMail").onclick = () => {
+  location.href = "mailto:?subject=" + encodeURIComponent(SHARE_SUBJECT) + "&body=" + encodeURIComponent(SHARE_TEXT);
+};
 async function runUpgrade(mode, btn) {
   btn.disabled = true;
   upgradeRunning = true; // a check still in flight must not redraw over the upgrade
