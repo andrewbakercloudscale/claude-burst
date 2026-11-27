@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
 	"sort"
@@ -57,13 +58,53 @@ const (
 	// past it still succeeds, with the collector capped at half a core.
 	// GOMEMLIMIT in the environment overrides it.
 	memSoftLimit = 512 << 20
+	// memSoftLimitSmall is the limit on a Mac with 8GB or less, where
+	// 512MB is a sixteenth of the machine. The gateway's live heap is
+	// usually under 100MB, so a burst of large requests still fits.
+	memSoftLimitSmall = 256 << 20
+	smallMac          = 8 << 30
+	// giveBackEvery is how often the gateway hands memory it no longer
+	// uses back to macOS, when it holds more than giveBackOver beyond its
+	// live heap. Go does this by itself only slowly: on 27 Nov 2026 it held
+	// 515MB mapped for a 66MB heap, all of it counted against the Mac.
+	giveBackEvery = 5 * time.Minute
+	giveBackOver  = 128 << 20
 )
 
-// limitMemory sets memSoftLimit, unless GOMEMLIMIT already set one.
+// limitMemory sets the soft memory limit, unless GOMEMLIMIT already set one.
 func limitMemory() {
 	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(memSoftLimit)
+		debug.SetMemoryLimit(softLimitFor(macRAM()))
 	}
+}
+
+// softLimitFor is the soft memory limit for a Mac with ram bytes of memory
+// (0 when unknown).
+func softLimitFor(ram uint64) int64 {
+	if ram > 0 && ram <= smallMac {
+		return memSoftLimitSmall
+	}
+	return memSoftLimit
+}
+
+// macRAM is the Mac's physical memory in bytes, or 0.
+func macRAM() uint64 {
+	out, err := exec.Command("/usr/sbin/sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	return n
+}
+
+// giveBack returns unused memory to macOS when the runtime holds much more
+// than its live heap. It reports whether it did.
+func giveBack(goTotal, heap uint64) bool {
+	if goTotal < heap+giveBackOver {
+		return false
+	}
+	debug.FreeOSMemory()
+	return true
 }
 
 // memSample is what one memory line says. RSS and swap come from ps and
@@ -94,6 +135,7 @@ func watchMemory(ctx context.Context, logger *log.Logger) {
 	defer tick.Stop()
 	last, lastLine := time.Now(), time.Now()
 	var lastTop time.Time
+	lastGiveBack := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -114,6 +156,15 @@ func watchMemory(ctx context.Context, logger *log.Logger) {
 		} else if now.Sub(lastLine) >= memEvery {
 			logger.Print(memLine(readMemory(ctx, false)))
 			lastLine = now
+		}
+		if now.Sub(lastGiveBack) >= giveBackEvery {
+			lastGiveBack = now
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			if giveBack(m.Sys-m.HeapReleased, m.HeapAlloc) {
+				runtime.ReadMemStats(&m)
+				logger.Printf("memory: gave unused memory back to macOS, now %dMB mapped for a %dMB heap", (m.Sys-m.HeapReleased)>>20, m.HeapAlloc>>20)
+			}
 		}
 		last = now
 	}

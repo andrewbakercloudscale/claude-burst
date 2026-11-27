@@ -3,6 +3,7 @@ package router
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -135,6 +136,7 @@ func TestAlertContextNearCompaction(t *testing.T) {
 }
 
 func TestAlertNetworkDownAndUp(t *testing.T) {
+	instantNetworkAlert(t)
 	events := captureNotices(t)
 	s, _ := newChainServer(t, "http://127.0.0.1:1", nil)
 	s.notePrimaryAnswered("primary") // up while never down says nothing
@@ -150,6 +152,7 @@ func TestAlertNetworkDownAndUp(t *testing.T) {
 // One outage, one pair of alerts: the 5xx replies a dead network causes
 // are not a second problem, before or after "Network back".
 func TestNetworkOutageDoesNotAlsoAlertUpstream(t *testing.T) {
+	instantNetworkAlert(t)
 	events := captureNotices(t)
 	s, _ := newChainServer(t, "http://127.0.0.1:1", nil)
 	for i := 0; i < upstreamFailures-1; i++ {
@@ -227,5 +230,47 @@ func TestContextAlertForATurnThatIsMostOfTheSession(t *testing.T) {
 	got := titles(events())
 	if len(got) != 1 || got[0] != "info: Context at 450k of 300k, compaction soon" || f.summaryCount() != 1 {
 		t.Fatalf("alerts %q, summaries %d", got, f.summaryCount())
+	}
+}
+
+func instantNetworkAlert(t *testing.T) {
+	old := networkAlertAfter
+	networkAlertAfter = 0
+	t.Cleanup(func() { networkAlertAfter = old })
+}
+
+// 27 Nov 2026: a patchy connection failed one request while the next
+// succeeded, and each pair put up "Network offline" then "Network back"
+// and ended every Remote Control stream. A blip says nothing and ends
+// nothing; an outage that lasts is announced, and so is its end.
+func TestNetworkBlipIsNotAnOutage(t *testing.T) {
+	events := captureNotices(t)
+	old := networkAlertAfter
+	networkAlertAfter = 80 * time.Millisecond
+	t.Cleanup(func() { networkAlertAfter = old })
+	s, _ := newChainServer(t, "http://127.0.0.1:1", nil)
+	r := httptest.NewRequest(http.MethodGet, "/v1/code/sessions/x/worker/events/stream", nil)
+	held, done := s.held.hold(r)
+	defer done()
+	for i := 0; i < 5; i++ {
+		s.alertNetworkDown()
+		s.notePrimaryAnswered("primary")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := titles(events()); len(got) != 0 {
+		t.Fatalf("a blip alerted: %q", got)
+	}
+	if held.Context().Err() != nil {
+		t.Fatal("a blip ended the held stream")
+	}
+	s.alertNetworkDown()
+	time.Sleep(200 * time.Millisecond)
+	s.notePrimaryAnswered("primary")
+	got := titles(events())
+	if len(got) != 2 || got[0] != "error: Network offline" || got[1] != "ok: Network back" {
+		t.Fatalf("a lasting outage: events = %q", got)
+	}
+	if held.Context().Err() == nil {
+		t.Fatal("the end of a lasting outage did not end the held stream")
 	}
 }

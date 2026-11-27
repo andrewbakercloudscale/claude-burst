@@ -171,6 +171,7 @@ func TestUpstreamConnectionsArePinged(t *testing.T) {
 // TestNetworkBackEndsHeldStreams: coming back on the same hotspot changes
 // no address, so the recovery itself must make sessions reconnect.
 func TestNetworkBackEndsHeldStreams(t *testing.T) {
+	instantNetworkAlert(t)
 	s := &Server{logger: log.New(io.Discard, "", 0)}
 	r := httptest.NewRequest(http.MethodGet, "/v1/code/sessions/x/worker/events/stream", nil)
 	held, done := s.held.hold(r)

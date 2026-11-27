@@ -38,13 +38,18 @@ type alertState struct {
 	mu          sync.Mutex
 	failedOver  bool
 	networkDown bool
-	keyMissing  bool
-	keyWorked   bool
-	keyFailed   int // checks in a row that could not read a key that worked
-	failures    []time.Time
-	failing     bool
-	lastFailure time.Time
-	unreadable  map[string]time.Time // session -> when its unreadable request was last reported
+	// networkSeq counts outages, so a delayed "offline" knows whether the
+	// outage it was started for is still the current one; networkShown
+	// says that outage's alert went up. See networkAlertAfter.
+	networkSeq   int
+	networkShown bool
+	keyMissing   bool
+	keyWorked    bool
+	keyFailed    int // checks in a row that could not read a key that worked
+	failures     []time.Time
+	failing      bool
+	lastFailure  time.Time
+	unreadable   map[string]time.Time // session -> when its unreadable request was last reported
 }
 
 // alertFailedOver is called when a model's rejection window opens.
@@ -157,40 +162,69 @@ func (s *Server) alertUpstreamClean(now time.Time) {
 	}
 }
 
+// networkAlertAfter is how long the network must stay down before
+// "Network offline" goes up. A request failing while the next one succeeds
+// is not an outage: on 27 Nov 2026 a patchy connection (TLS handshake
+// timeouts between replies that worked) put up 30 "offline"/"back" pairs in
+// ten minutes, and each "back" ended 17 Remote Control streams, which made
+// it worse. Only an outage shown is announced as over.
+var networkAlertAfter = 10 * time.Second
+
 func (s *Server) alertNetworkDown() {
-	s.alerts.mu.Lock()
-	first := !s.alerts.networkDown
-	s.alerts.networkDown = true
-	s.alerts.mu.Unlock()
-	if first {
-		notice.Publish(alertNetwork, notice.Error, "Network offline",
-			"DNS is failing on this Mac, so requests cannot reach Anthropic. Nothing fails over: the secondary is behind the same network.")
-	}
+	s.noteNetworkDown("Network offline",
+		"DNS is failing on this Mac, so requests cannot reach Anthropic. Nothing fails over: the secondary is behind the same network.")
 }
 
 // alertNetworkBlocked is the network being up for names and down for
 // everything else, such as a phone hotspot out of data.
 func (s *Server) alertNetworkBlocked() {
+	s.noteNetworkDown("Network not passing traffic",
+		"Names resolve, but connections from this Mac are cut, to Anthropic and to an unrelated test site alike. A phone out of data does this. Nothing fails over: the secondary is behind the same network.")
+}
+
+func (s *Server) noteNetworkDown(title, detail string) {
 	s.alerts.mu.Lock()
 	first := !s.alerts.networkDown
 	s.alerts.networkDown = true
-	s.alerts.mu.Unlock()
 	if first {
-		notice.Publish(alertNetwork, notice.Error, "Network not passing traffic",
-			"Names resolve, but connections from this Mac are cut, to Anthropic and to an unrelated test site alike. A phone out of data does this. Nothing fails over: the secondary is behind the same network.")
+		s.alerts.networkSeq++
+		s.alerts.networkShown = false
 	}
+	seq := s.alerts.networkSeq
+	s.alerts.mu.Unlock()
+	if !first {
+		return
+	}
+	show := func() {
+		s.alerts.mu.Lock()
+		still := s.alerts.networkDown && s.alerts.networkSeq == seq && !s.alerts.networkShown
+		if still {
+			s.alerts.networkShown = true
+		}
+		s.alerts.mu.Unlock()
+		if still {
+			notice.Publish(alertNetwork, notice.Error, title, detail)
+		}
+	}
+	if networkAlertAfter <= 0 {
+		show()
+		return
+	}
+	time.AfterFunc(networkAlertAfter, show)
 }
 
 func (s *Server) alertNetworkUp() {
 	s.alerts.mu.Lock()
 	was := s.alerts.networkDown
+	shown := s.alerts.networkShown
 	s.alerts.networkDown = false
+	s.alerts.networkShown = false
 	if was {
 		// Failures from before the outage belong to it too.
 		s.alerts.failures = nil
 	}
 	s.alerts.mu.Unlock()
-	if was {
+	if shown {
 		notice.Publish(alertNetwork, notice.OK, "Network back", "Anthropic is answering again.")
 		// Remote Control streams opened while the network was coming back
 		// can sit on a connection that never worked, and the Mac coming back

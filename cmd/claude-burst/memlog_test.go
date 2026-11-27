@@ -95,3 +95,28 @@ func TestProcName(t *testing.T) {
 		}
 	}
 }
+
+func TestSoftLimitFor(t *testing.T) {
+	for _, c := range []struct {
+		ram  uint64
+		want int64
+	}{
+		{8 << 30, memSoftLimitSmall},
+		{16 << 30, memSoftLimit},
+		{32 << 30, memSoftLimit},
+		{0, memSoftLimit},
+	} {
+		if got := softLimitFor(c.ram); got != c.want {
+			t.Errorf("softLimitFor(%dGB) = %dMB, want %dMB", c.ram>>30, got>>20, c.want>>20)
+		}
+	}
+}
+
+func TestGiveBackOnlyWhenWellOverHeap(t *testing.T) {
+	if giveBack(150<<20, 100<<20) {
+		t.Error("50MB over the heap was given back")
+	}
+	if !giveBack(515<<20, 66<<20) {
+		t.Error("515MB mapped for a 66MB heap was kept")
+	}
+}
